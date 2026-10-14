@@ -64,6 +64,8 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import (
     model_identity_disclosure,
     project_score_records,
+    request_settings_disclosure,
+    request_settings_readings,
     unconfirmed_model_identities,
 )
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
@@ -556,6 +558,7 @@ def assemble_context_bundle(
         measurement_window_disclosure=measurement_window_disclosure(windows, full=True),
         launch_disclosure=_launch_disclosure(runs),
         model_identity_disclosure=model_identity_disclosure(unconfirmed_model_identities(runs, results)),
+        request_settings_disclosure=request_settings_disclosure(request_settings_readings(runs, results)),
         # Scanned over every resolved run, not over a lever's cohort. A campaign that swept
         # nothing has an empty coverage map and no divergences, and both confound-bearing
         # lenses iterate levers — so without this, a campaign whose template changed

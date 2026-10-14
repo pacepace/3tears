@@ -1801,7 +1801,7 @@
       "type": "object"
     }
   },
-  "$id": "urn:threetears-evals:report:v9",
+  "$id": "urn:threetears-evals:report:v10",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "allOf": [
@@ -1958,8 +1958,8 @@
       "type": "string"
     },
     "report_version": {
-      "const": 9,
-      "default": 9,
+      "const": 10,
+      "default": 10,
       "description": "This shape's version.",
       "title": "Report Version",
       "type": "integer"

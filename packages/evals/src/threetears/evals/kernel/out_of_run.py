@@ -44,10 +44,11 @@ from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from pydantic import TypeAdapter, ValidationError
 from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.schema.models import EvalTemplate, EvalTestCase, VariationAxis
+from threetears.evals.schema.models import ClientRequestSettings, EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.completion import CompletionProtocolDefect, sent_settings_of
 from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
@@ -402,7 +403,9 @@ class OutOfRunBudget:
         reported = {
             field_name: getattr(result, attribute, None) for field_name, attribute in _COMPLETION_ATTRIBUTES.items()
         }
-        spend = await self._record(admitted, outcome="completed", **_storable(admitted, reported))
+        storable = _storable(admitted, reported)
+        storable["sent_settings"] = _sent_settings(admitted, result, storable["unreadable"])
+        spend = await self._record(admitted, outcome="completed", **storable)
         return RecordedCompletion(result, spend)
 
     def _row(self, admitted: AdmittedCall) -> dict[str, Any]:
@@ -504,6 +507,37 @@ def _storable(admitted: AdmittedCall, reported: dict[str, Any]) -> dict[str, Any
                 refused.errors()[0]["msg"],
             )
     return {**storable, "unreadable": unreadable}
+
+
+def _sent_settings(admitted: AdmittedCall, result: Any, unreadable: list[str]) -> ClientRequestSettings | None:
+    """What the completed call's request was sent with, as its client reported it, for the ledger row.
+
+    Read through :func:`~threetears.evals.schema.completion.sent_settings_of`, the one reader of the optional member,
+    so absent reads as unverified (``None``). A value of the wrong type, which that reader refuses as the host's
+    defect, is not a reason to drop the row of a paid call: it is recorded None and named in ``unreadable``, as every
+    other attribute the ledger cannot hold is.
+
+    Args:
+        admitted: The call, for the log line.
+        result: The call's completion.
+        unreadable: The row's unreadable attributes so far; ``sent_settings`` is appended when it is one.
+
+    Returns:
+        The settings to store, or ``None``.
+    """
+    try:
+        return sent_settings_of(result)
+    except CompletionProtocolDefect as defect:
+        # NOSILENT: recorded None AND named in the row's ``unreadable``, which every reader reads as unreadable, never
+        # as unverified; the defect's own text is logged.
+        unreadable.append("sent_settings")
+        log.warning(
+            "eval.out_of_run %s call on %s reported sent_settings the ledger cannot hold (%s); recorded as unreadable",
+            admitted.purpose,
+            admitted.model,
+            defect,
+        )
+        return None
 
 
 __all__ = [

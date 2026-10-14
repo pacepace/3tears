@@ -221,7 +221,10 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #: and the only one a read of one accepts.
 #:
 #: - **v9** — the baseline: the first public release's regenerable shapes.
-REGENERABLE_SCHEMA_VERSION: int = 9
+#: - **v10** — a judge's identity includes the request settings its calls were sent with: a stored judge profile
+#:   carries ``judge_sent_settings`` and its id derives from it, and an analysis's evidence tiers, agreements and
+#:   bundle carry it on every judge they name. Profiles and analyses regenerate from the core; nothing is upgraded.
+REGENERABLE_SCHEMA_VERSION: int = 10
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
 A bump is a drop: regenerable documents written under the old version are refused on read

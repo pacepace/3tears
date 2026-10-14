@@ -146,13 +146,13 @@ v<version>` prints a release's notes).
   own `judge_config_ids` holds bare config ids, so a wording change never re-keys a run's context.
 - **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
   given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
-  context bundle (shape 52, computed under cell model `CELL_MODEL_VERSION` 12, exported from `analysis`) holds the decision surface, comparisons with Holm correction for multiple comparisons
+  context bundle (shape 53, computed under cell model `CELL_MODEL_VERSION` 13, exported from `analysis`) holds the decision surface, comparisons with Holm correction for multiple comparisons
   per declared question, materiality, bars and proposed bars, mechanism checks on swept levers (a setting that
   never took effect does not read as one that changed nothing), strata, a time axis by build or by day, judge
   agreement, and every confound and disclosure. `generate_analysis` has a model write the analysis over the frozen
   bundle. Its headline and each summary bullet name the findings they rest on, and code shows each at the weakest
   of those findings.
-- **Reports and charts.** A campaign's report is one `Report` document (version 9, with a published JSON Schema).
+- **Reports and charts.** A campaign's report is one `Report` document (version 10, with a published JSON Schema).
   It is serialized to Markdown, JSON, or script-free standalone HTML (`report_markdown`, `report_html`). With no
   analysis, a code-only report lays out the evidence alone. Charts are stated as renderer-neutral `ChartIntent`s
   held to a chart policy, behind a `ChartRenderer` seam with a conformance check. The `vega` root is the Vega-Lite
@@ -171,8 +171,14 @@ v<version>` prints a release's notes).
   plus a reasoning headroom of at least 1024 tokens, never sent). What a request actually carried is the client's to
   say: a completion may carry an optional `sent_settings` member (not a protocol property, so every completion that
   conformed still does), read by `sent_settings_of`, and stored per judge score, per usage row (every distinct value
-  the row's calls were sent with) and per out-of-run call; `None` is unverified, recorded and never refused. A host
-  whose client reports it ships that in the same deploy that adopts the release.
+  the row's calls were sent with) and per out-of-run call; `None` is unverified, recorded and never refused. Cells
+  pool only where the judge and the simulated user were both asked and sent alike (`judge_sent_settings` and
+  `simulator_sent_settings` join the apparatus), so unverified never pools with verified and a run sent two ways only
+  with the same mixture; a judge sent other settings is another judge for agreement, profiles, drift and evidence
+  tiers, and a repeat sent differently is unpaired (`settings_changed`). `run_get`, `run_summary`, the bundle and the
+  report say in one sentence (`request_settings_disclosure`) where a role was sent other than asked, sent more than
+  one way, sent without enforcement or not reported; never about the candidate. A host whose client reports it ships
+  that in the same deploy that adopts the release.
 - **Conformance kits** (`testing`): the store, reader, jobs and completion kits, and the import-boundary check
   (`nonpublic_evals_imports`) a host runs over its own code. The completion kit checks the optional `sent_settings`
   member's type when present, and requires it with `require_sent_settings=True`. Beside them, `RecordedCompletions`

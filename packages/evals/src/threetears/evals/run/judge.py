@@ -37,7 +37,12 @@ from threetears.evals.schema.models import (
     JudgeTemperature,
     KnownReasoningEffort,
 )
-from threetears.evals.schema.completion import CompletionProtocolDefect, CompletionResult, ProviderFailureDescriber
+from threetears.evals.schema.completion import (
+    CompletionProtocolDefect,
+    CompletionResult,
+    ProviderFailureDescriber,
+    sent_settings_of,
+)
 from threetears.evals.kernel.provider import (
     describe_and_log_failure,
     describe_incomplete_completion,
@@ -399,7 +404,10 @@ async def run_judge_llm(
         single-dim calls, a host's own scorer however it composites), so this path returns
         the raw normalized scores and no composite of its own.
 
-        ``judge_temperature`` is what that same attempt was sent at (:func:`sent_temperature`).
+        ``judge_temperature`` is what that same attempt was sent at (:func:`sent_temperature`), and
+        ``judge_sent_settings`` the request settings it was sent with, as its completion reported them
+        (:func:`~threetears.evals.schema.completion.sent_settings_of`; ``None`` = unverified). ``judge_usage`` names
+        sent settings only when every attempt reported the same value.
 
         ``judge_served_model`` is the model the provider's response named for the attempt whose
         scores are returned — that attempt, not the last one to report a model, because it is the
@@ -409,8 +417,9 @@ async def run_judge_llm(
         making two runs judged by different models compare equal.
 
     Raises:
-        CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`),
-            carrying the calls made and what they cost.
+        CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`), or
+            its optional ``sent_settings`` holds something other than request settings or ``None``, carrying the
+            calls made and what they cost.
     """
     # Retry on parse-failure so a single malformed judge response can't
     # silently drop a rubric dimension. We retry on any parse failure of a FINISHED
@@ -440,6 +449,10 @@ async def run_judge_llm(
     # usage record names a served model only when every attempt named the same one: one record
     # folding attempts answered by different models cannot name either.
     attempt_served: set[str | None] = set()
+    # What each attempt's request was sent with, as its completion reported it (``None`` = unverified). The usage
+    # record names one value only when every attempt reported the same one: a fold of unlike or unreported sends
+    # reads as unverified, never as one of them.
+    attempt_sent: list[ClientRequestSettings | None] = []
     attempts_made = 0
     max_attempts = JUDGE_CALL_ATTEMPTS
 
@@ -463,6 +476,32 @@ async def run_judge_llm(
             # Every attempt was a real provider call that spent real tokens, so the usage
             # row must count them all — not just the one that finally parsed.
             calls=attempts_made,
+            sent_settings=_agreed_sent_settings(attempt_sent),
+        )
+
+    def _thread_spend(defect: CompletionProtocolDefect) -> None:
+        """Thread the attempts' spend onto a protocol defect and log it, for the caller to re-raise.
+
+        Args:
+            defect: The defect a member read raised, given the calls made so far and what they cost.
+        """
+        spent = _cumulative_usage()
+        if spent is not None:
+            defect.calls = spent.calls
+            defect.model = spent.model
+            defect.served_model = spent.served_model
+            defect.input_tokens = spent.input_tokens
+            defect.output_tokens = spent.output_tokens
+            defect.reasoning_tokens = spent.reasoning_tokens
+            defect.cost_usd = spent.cost_usd
+            defect.price_source = spent.price_source
+        log.error(
+            "%s reply for case %s cannot be recorded, after %d attempt(s) costing %s: the completion breaks the "
+            "protocol",
+            label,
+            case_id,
+            attempts_made,
+            "unpriced" if total_cost is None else f"${total_cost:.6f}",
         )
 
     # Every attempt sends the reply's shape, derived from the criteria the parse reads it by.
@@ -510,6 +549,16 @@ async def run_judge_llm(
         judge_model = getattr(result, "model", "") or judge_model
         judge_price_source = getattr(result, "price_source", None) or judge_price_source
         attempt_served.add(getattr(result, "served_model", None) or None)
+        # What this attempt's request carried, as its client reports it. Absent is unverified and recorded so; a value
+        # of the wrong type is the host's defect, raised like a missing temperature, with the spend threaded on. Read
+        # here, before the reply is judged usable, so a cut-short or unparsable attempt's spend row says it too.
+        try:
+            sent = sent_settings_of(result)
+        except CompletionProtocolDefect as defect:
+            attempt_sent.append(None)
+            _thread_spend(defect)
+            raise
+        attempt_sent.append(sent)
         # Logged whenever the provider reported anything about the attempt's spend — a call with
         # unreported counts and a known cost still spent, and a truthiness test would drop it.
         if attempt_input is not None or attempt_output is not None or attempt_cost is not None:
@@ -554,24 +603,7 @@ async def run_judge_llm(
         try:
             temperature = sent_temperature(result)
         except CompletionProtocolDefect as defect:
-            spent = _cumulative_usage()
-            if spent is not None:
-                defect.calls = spent.calls
-                defect.model = spent.model
-                defect.served_model = spent.served_model
-                defect.input_tokens = spent.input_tokens
-                defect.output_tokens = spent.output_tokens
-                defect.reasoning_tokens = spent.reasoning_tokens
-                defect.cost_usd = spent.cost_usd
-                defect.price_source = spent.price_source
-            log.error(
-                "%s reply for case %s cannot be recorded, after %d attempt(s) costing %s: the completion breaks the "
-                "protocol",
-                label,
-                case_id,
-                attempts_made,
-                "unpriced" if total_cost is None else f"${total_cost:.6f}",
-            )
+            _thread_spend(defect)
             raise
 
         parsed = _process_criteria_response(result, criteria_dicts, cannot_tell_offered=cannot_tell_offered)
@@ -586,6 +618,10 @@ async def run_judge_llm(
             # And the temperature that attempt was sent at, as the client reports it — the rest of the
             # scorer's identity, since a model that refuses a temperature is sent none.
             parsed["judge_temperature"] = temperature
+            # And the request settings that attempt was sent with, as the client reports them (None = unverified):
+            # the rest of how the scorer was asked, which a client may have moved to the closest setting the model
+            # accepts.
+            parsed["judge_sent_settings"] = sent
             return parsed
 
         last_preview = (getattr(result, "content", "") or "")[:200]
@@ -624,6 +660,24 @@ def defect_usage(defect: CompletionProtocolDefect) -> CallUsage | None:
         price_source=defect.price_source,
         calls=defect.calls,
     )
+
+
+def _agreed_sent_settings(attempts: Sequence[ClientRequestSettings | None]) -> ClientRequestSettings | None:
+    """The one value every attempt's request was sent with, or ``None`` when they do not all report the same one.
+
+    What a usage record folding the attempts can name: one record cannot name two values, and an attempt that reported
+    none leaves the fold unverified, as one unpriced attempt leaves its dollars unknown.
+
+    Args:
+        attempts: What each attempt was sent with, in order (``None`` = that attempt's client did not say).
+
+    Returns:
+        The shared value, or ``None``.
+    """
+    if not attempts or attempts[0] is None:
+        return None
+    first = attempts[0]
+    return first if all(sent == first for sent in attempts[1:]) else None
 
 
 def sent_temperature(completion: CompletionResult) -> JudgeTemperature:

@@ -1583,6 +1583,70 @@ def _judge_temperatures(_run: EvalRun, results: Sequence[EvalResult]) -> list[st
     return sorted(sent)
 
 
+def _distinct_settings_levels(settings: Sequence[Any]) -> list[dict[str, Any]]:
+    """Request settings values as levels (:func:`_request_settings`), each distinct value once, in canonical order."""
+    levels: dict[str, dict[str, Any]] = {}
+    for value in settings:
+        level = _request_settings(value)
+        assert level is not None  # the callers pass recorded values only
+        levels.setdefault(canonical_json(level), level)
+    return [levels[form] for form in sorted(levels)]
+
+
+def _judge_sent_settings(_run: EvalRun, results: Sequence[EvalResult]) -> list[dict[str, Any]] | None:
+    """The request settings a run's judge calls were actually SENT with, each distinct value once, in canonical order.
+
+    Read off each stored score's ``judge_sent_settings`` — what the judge client reported its request carried — and
+    never off the run's ``judge_asked_settings``, which is what the engine asked for: a client may send the closest
+    setting a model accepts. Over the same scores :func:`_judge_temperatures` reads.
+
+    A run whose calls were sent two ways (a refusal learned mid-run, an enforcement fallback) reads both values, so it
+    is a level of its own that only an identical mixture matches.
+
+    Args:
+        _run: Unused — the run records what it asked, not what was sent.
+        results: The run's results.
+
+    Returns:
+        The distinct levels when every stored score reported what it was sent with; ``None`` when ANY score is
+        unverified (its client did not report it), for the reason :func:`_judge_served_models` returns ``None`` on a
+        partial record; ``[]`` when nothing was scored. Both blanks read as undecidable, never as agreement.
+    """
+    sent = []
+    for result in results:
+        axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
+        for score in (*result.rubric_scores, *axes):
+            if score.judge_sent_settings is None:
+                return None
+            sent.append(score.judge_sent_settings)
+    return _distinct_settings_levels(sent)
+
+
+def _simulator_sent_settings(_run: EvalRun, results: Sequence[EvalResult]) -> list[dict[str, Any]] | None:
+    """The request settings a run's simulated-user calls were actually SENT with, each distinct value once.
+
+    Read off the ``simulator`` role's usage rows (``RoleUsage.sent_settings``, which already folds every call a row
+    counts), never off the run's ``simulator_asked_settings``.
+
+    Args:
+        _run: Unused — the run records what it asked, not what was sent.
+        results: The run's results.
+
+    Returns:
+        The distinct levels when every simulator row reported what its calls were sent with; ``None`` when ANY row is
+        unverified; ``[]`` when no simulator call was made. Both blanks read as undecidable, never as agreement.
+    """
+    sent = []
+    for result in results:
+        for row in result.usage:
+            if row.role != "simulator":
+                continue
+            if row.sent_settings is None:
+                return None
+            sent.extend(row.sent_settings)
+    return _distinct_settings_levels(sent)
+
+
 def _judge_dim_divergence(run: EvalRun, _results: Sequence[EvalResult]) -> list[str] | str | None:
     """Which dims were scored by something other than the run's judge pin.
 
@@ -1629,10 +1693,11 @@ def _request_settings(settings: Any) -> dict[str, Any] | None:
 
 
 #: The four concepts every LLM product has, and nothing else. A host adds to this; it never
-#: edits it. Eight declarations cover the four concepts because "the judge" is four separable
-#: axes — which model, how it was asked, which configuration, and whether any dimension departed
-#: from the pin — and "the simulator" two, and collapsing them reports one physical difference
-#: under another's name.
+#: edits it. Twelve declarations cover the four concepts because "the judge" is six separable
+#: axes — which model, at what temperature, how it was asked, what it was actually sent, which
+#: configuration, and whether any dimension departed from the pin — and "the simulator" three
+#: (which model, how it was asked, what it was sent), and collapsing them reports one physical
+#: difference under another's name.
 #:
 #: ``indeterminate_when_blank`` marks an input whose empty value means "never recorded", not
 #: "recorded as empty". The two result-level inputs are blank-indeterminate from the other
@@ -1754,6 +1819,28 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         ),
         indeterminate_when_blank=True,
     ),
+    # What each judge call was actually SENT with, observed across the results like its temperature: a client may
+    # send the closest setting a model accepts (a reasoning budget as an effort word, a strict call resent without
+    # enforcement), so one ask can be sent two ways, and the same judge model sent other settings is another judge.
+    # Cells pool only when this AND `judge_request_settings` match. Indeterminate when blank: a score whose client
+    # did not report what it sent (unverified) cannot be said to match one that did, and two runs that are both
+    # unverified are identically silent rather than shown alike.
+    Sweepable(
+        name="judge_sent_settings",
+        role="apparatus",
+        read=_judge_sent_settings,
+        reader_prose=(
+            "the output cap, reasoning parameter and enforcement each judge request was actually sent with, as the "
+            "judge's client reported them"
+        ),
+        confounds=(
+            "the judge's calls were sent with different request settings (a client sent the closest setting the "
+            "model accepts, or resent a call without enforcement), so the same judge model may have reasoned "
+            "differently before scoring"
+        ),
+        indeterminate_when_blank=True,
+        result_level=True,
+    ),
     # Built from the HASHABLE map: a `derived` reconstruction is an inference about what scored a
     # run, and letting it report `differs` here would evidence a confound from a guess. Blank
     # means absent OR derived — in both cases nobody recorded it, which is what
@@ -1819,6 +1906,23 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         ),
         indeterminate_when_blank=True,
     ),
+    # What each simulated-user call was actually SENT with, read off the simulator's usage rows, for the reason
+    # `judge_sent_settings` is: pooled only when this and `simulator_request_settings` both match.
+    Sweepable(
+        name="simulator_sent_settings",
+        role="apparatus",
+        read=_simulator_sent_settings,
+        reader_prose=(
+            "the output cap, reasoning parameter and enforcement each simulated-user request was actually sent with, "
+            "as the simulator's client reported them"
+        ),
+        confounds=(
+            "the simulated user's calls were sent with different request settings, so the same simulator model may "
+            "have played the conversation differently"
+        ),
+        indeterminate_when_blank=True,
+        result_level=True,
+    ),
     # Indeterminate when blank ONLY for the genuine absence. A null ``max_cost_usd`` has two causes —
     # "the run was uncapped" and "the run's writer recorded no ceiling" — and ``max_cost_usd_origin``
     # records which. The reader says the first with UNCAPPED_SPEND, so two uncapped runs agree, and
@@ -1843,12 +1947,13 @@ JUDGE_INPUTS: tuple[str, ...] = (
     "judge_model",
     "judge_temperature",
     "judge_request_settings",
+    "judge_sent_settings",
     "judge_dim_divergence",
     "judge_config_ids",
 )
 
 #: Who PLAYED THE USER. See :data:`JUDGE_INPUTS` for why this is its own tuple.
-SIMULATOR_INPUTS: tuple[str, ...] = ("simulator_model", "simulator_request_settings")
+SIMULATOR_INPUTS: tuple[str, ...] = ("simulator_model", "simulator_request_settings", "simulator_sent_settings")
 
 #: The two roles the engine itself declares, with the words each disclosure is rendered in. The
 #: core owns these because it owns the dimensions pinned into them; it does not own the keyspace,

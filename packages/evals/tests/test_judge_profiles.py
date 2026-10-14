@@ -269,7 +269,8 @@ def test_the_actions_record_and_list_profiles_and_render_their_receipts() -> Non
 
     text = record.render(judge_profiles_record(host, JudgeProfilesRecord(judge_run_ids=[run_id]), TOYHOST_SCOPE))
     assert text.startswith("1 judge profile(s) recorded")
-    assert f"{TOYHOST_JUDGED_DIMENSION} ({_JUDGE}, temperature 0)" in text and ": calibrated" in text
+    assert f"{TOYHOST_JUDGED_DIMENSION} ({_JUDGE}, temperature 0, request settings unconfirmed)" in text
+    assert ": calibrated" in text
     assert "on 30 cases" in text and "runs judge-arm" in text
     assert listing.render(judge_profiles_list(host, TOYHOST_SCOPE)).startswith("1 judge profile(s)")
 

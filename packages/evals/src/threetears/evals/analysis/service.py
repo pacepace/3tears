@@ -35,7 +35,12 @@ from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
-from threetears.evals.analysis.reporting import model_identity_disclosure, unconfirmed_model_identities
+from threetears.evals.analysis.reporting import (
+    model_identity_disclosure,
+    request_settings_disclosure,
+    request_settings_readings,
+    unconfirmed_model_identities,
+)
 from threetears.evals.analysis.bundle.insights import superseding_insights
 from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
@@ -1307,26 +1312,30 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     analysis = get_analysis(storage, analysis_id, scope_id)
     # The campaign titles the report by name; an analysis outliving its campaign is still reported, by its headline.
     campaign = storage.load_campaign(analysis.campaign_id, scope_id)
+    model_identity, request_settings = _record_disclosures(storage, analysis)
     return build_report(
         analysis,
         campaign_name=campaign.name if campaign is not None else None,
-        model_identity=_model_identity(storage, analysis),
+        model_identity=model_identity,
+        request_settings=request_settings,
     )
 
 
-def _model_identity(storage: CampaignReadStore, analysis: EvalAnalysis) -> str | None:
-    """Whether the analysed runs' record can say which model answered, read off their results now (#2025).
+def _record_disclosures(storage: CampaignReadStore, analysis: EvalAnalysis) -> tuple[str | None, str | None]:
+    """Whether the analysed runs' record can say which model answered (#2025), and how the judge and the simulated
+    user were sent, read off their results now.
 
-    A stored analysis keeps the ids its runs asked for (``model_versions``) and nothing on what answered, so the
-    disclosure is read where the report is: off the member runs' results, as the bundle reads it. A member run
-    deleted since contributes no result, so the counts are over what the store still holds.
+    A stored analysis keeps the ids its runs asked for (``model_versions``) and nothing on what answered or what
+    each call was sent with, so both disclosures are read where the report is: off the member runs' results, as the
+    bundle reads them. A member run deleted since contributes no result, so the counts are over what the store still
+    holds.
 
     Args:
         storage: Where the runs and their results are read.
         analysis: The analysis; its ``observation_refs`` are its member runs.
 
     Returns:
-        The sentence, or ``None`` when every response named its model.
+        ``(model identity, request settings)``: each sentence, or ``None`` when it has nothing to say.
     """
     # Whole runs: only their recorded judge attribution is read, and nothing here has a host to say what to elide.
     runs = storage.load_eval_runs(analysis.observation_refs, analysis.scope_id, elide_payload=frozenset())
@@ -1335,7 +1344,10 @@ def _model_identity(storage: CampaignReadStore, analysis: EvalAnalysis) -> str |
         for run_id in analysis.observation_refs
         for result in storage.query_eval_results_by_run(run_id, analysis.scope_id)
     ]
-    return model_identity_disclosure(unconfirmed_model_identities(runs, results))
+    return (
+        model_identity_disclosure(unconfirmed_model_identities(runs, results)),
+        request_settings_disclosure(request_settings_readings(runs, results)),
+    )
 
 
 def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
@@ -1366,7 +1378,10 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
     if live:
-        return build_report(live[0], campaign_name=campaign.name, model_identity=_model_identity(host.storage, live[0]))
+        model_identity, request_settings = _record_disclosures(host.storage, live[0])
+        return build_report(
+            live[0], campaign_name=campaign.name, model_identity=model_identity, request_settings=request_settings
+        )
     assembled_at = utc_now_iso()
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
     return build_code_only_report(

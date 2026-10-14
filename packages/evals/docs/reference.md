@@ -352,7 +352,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`REASONING_EFFORTS`** · *host contract* · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
 - **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
-  <br>`= 9`
+  <br>`= 10`
 - **`RESERVED_DIM_IDS`** · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
 - **`ROLE_MODEL_ORIGINS`** · *host contract* · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
 - **`ROUND_DONE`** · constant (str) · The scheduler's answer that the current speaker round is over and the candidate answers next.
@@ -433,7 +433,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`judge_criterion_digest`** · function · A digest of one criterion as a judge is asked it: its id, scale and wording (#628).
   <br>`judge_criterion_digest(dim: str, scale: RubricScale, criterion: RubricDim | None) -> str`
 - **`judge_profile_id`** · function · The id of the one profile of a judge on a criterion: derived from both, so recording again replaces it.
-  <br>`judge_profile_id(rubric_dim: str, scale: str, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str) -> str`
+  <br>`judge_profile_id(rubric_dim: str, scale: str, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str, *, judge_sent_settings: ClientRequestSettings | None) -> str`
 - **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none.
   <br>`judge_trial_of(kind_payload: object) -> JudgeTrial | None`
 - **`lease_lapsed`** · function · Whether a record's lease has lapsed at `now` — or it has none, which no process can be renewing.
@@ -1377,7 +1377,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`build_code_only_report`** · function · Lay a campaign's assembled evidence out as a report, when no analysis exists to report through.
   <br>`build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRegistry, assembled_at: str, campaign_name: str | None = None) -> Report`
 - **`build_report`** · function · Lay one stored analysis out as a report.
-  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None) -> Report`
+  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None, request_settings: str | None = None) -> Report`
 - **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
 - **`campaign_verdicts`** · function · Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
@@ -1630,7 +1630,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`JudgeDriftLink`** · model · A drift reading that spans a judge change: evidence of one side re-scored by the other side's judge.
 - **`JudgeGrade`** · model · One rubric dimension's score on one answer, with the judge's reason.
 - **`JudgeIdentityLevel`** · model · One judge the member runs were scored by, as each run recorded it at launch, and the runs and arms under it.
-- **`JudgeKey`** · class · Who judged a reading: the dimension, its scale, the model that served the score, the config that asked and the temperature the call was sent at.
+- **`JudgeKey`** · class · Who judged a reading: the dimension, its scale, the model that served the score, the config that asked, the temperature the call was sent at and the request settings it was sent with.
 - **`JudgeKindReading`** · model · One judge's three measures on one criterion, over the frozen cases it was asked.
 - **`JudgeKindReadings`** · model · Every judge and criterion a judge campaign's results measured, and every result left out.
 - **`JudgeParseValidity`** · model · How often one judge's replies on one criterion kept the protocol.
@@ -1677,12 +1677,14 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ReporterLabel`** · model · One reader's written verdict on a recorded memo, mapped to the dimension it bears on.
 - **`ReporterOverlays`** · model · The one knob a reporter launch may turn: which preset of the analysis generator's prompt writes the memos.
 - **`ReportSource`** · model · What the report is a report of, and how that analysis was generated — or that none was.
+- **`RequestSettingsReading`** · model · What one role asked for and what its calls were actually sent with, across the results read.
 - **`RoleSpend`** · model · What one role spent over a run, summed from its results' usage rows.
 - **`RunMeasureSummary`** · model · One measure over a run's results.
 - **`RunSummary`** · model · One run's compact digest — the levers it RAN at + its key telemetry.
 - **`ScopeDivergence`** · model · Two scopes disagreeing about what one lever change did — a finding, not a caveat.
 - **`ScoreExport`** · model · A projection's rows serialized for analysis elsewhere, with the account a CSV body cannot carry.
 - **`SelfAgreementDimension`** · model · How one judge's repeated scores on one dimension agreed with its first scores of the same evidence.
+- **`SentSettingsShare`** · model · One value a role's calls were sent with, and how many of the role's units carried it.
 - **`SeriesPoint`** · model · One run's aggregate for the measure — the trend's unit, with its denominators.
 - **`ServedModelReading`** · model · Which models answered the candidate calls a contestant, cell or row pooled (#684).
 - **`ShortCell`** · model · A cell holding fewer repetitions than the declaration intended — a short run, stated per cell.
@@ -1769,10 +1771,14 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'markdown'` | `'json'` | `'html'`
 - **`ReportSection`** · literal · Where a block sits, in reading order.
   <br>`'summary'` | `'questions'` | `'decisions'` | `'guardrails'` | `'findings'` | `'arms'` | `'surface'` | `'next'` | `'methods'`
+- **`RequestSettingsRole`** · literal · The roles whose request settings the record discloses: the judge and the simulated user, the two the apparatus pools on.
+  <br>`'judge'` | `'simulator'`
 - **`RowColumns`** · type alias · The host's own columns for each `(model, run_id)` group of a run's results, laid over a `run_summary` row after the engine's aggregates.
   <br>`Callable[['list[EvalResult]'], Mapping[tuple[str, str], Mapping[str, Any]]]`
 - **`RunLister`** · type alias · Lists a scope's runs: `list_runs(scope_id, *, status=None, include_archived=False)`.
   <br>`Callable[..., 'list[EvalRun]']`
+- **`SentSettingsState`** · literal · What a role's calls were sent with, read across a run's (or a campaign's) calls, for display only — never stored: `as_asked` (every call reported, one value, the one asked for), `sent_otherwise` (every call reported, one value, not the one asked for), `mixed` (every call reported, more than one value), `unverified` (some call's client did not report what it sent).
+  <br>`'as_asked'` | `'sent_otherwise'` | `'mixed'` | `'unverified'`
 - **`ServedModelState`** · literal · How many models answered a pooled set of candidate calls, as the provider's responses named them.
   <br>`'one'` | `'pooled'` | `'unrecorded'`
 - **`SurfaceState`** · literal · Where a table stands. Two states rather than an optional table, because "the surface froze no cell" is a fact with its own sentence, and is not an empty table.
@@ -1786,7 +1792,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`UnpairedSecondReason`** · literal · Why a second judge's score has no pair to be read in: its call failed — an infrastructure fault, which says nothing about either judge.
   <br>`'second_failed'`
 - **`UnrepeatedReason`** · literal · Why a repeated score has no pair to be read in.
-  <br>`'repeat_failed'` | `'judge_changed'` | `'config_changed'` | `'temperature_changed'`
+  <br>`'repeat_failed'` | `'judge_changed'` | `'config_changed'` | `'temperature_changed'` | `'settings_changed'`
 - **`VerdictKind`** · literal · Which reading a `Verdict` is: a contrast tested against the control, a bar read on one cell, or a guardrail checked for one arm against the control.
   <br>`'contrast'` | `'bar'` | `'guardrail'`
 - **`VerdictReason`** · literal · Why a verdict came out as it did, as a code a program branches on (`reason_detail` says it in words where there is more to say).
@@ -1803,7 +1809,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CELL_MEASURED`** · constant (str) · A pivot cell state: observations landed here and carried a value for the measure.
   <br>`= 'measured'`
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
-  <br>`= 12`
+  <br>`= 13`
 - **`CELL_NOT_RUN`** · constant (str) · A pivot cell state: no observation landed here — the combination was never run, which is not a zero.
   <br>`= 'not_run'`
 - **`CELL_WITHHELD`** · constant (str) · A fourth state, and not a kind of the other three: the cell HAS measured observations, and its mean is withheld because it would pool two quantities that are not one distribution — today a cost cell pooling replayed results with live ones (#658).
@@ -1836,7 +1842,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`READ_TIER_ROW_BUDGET`** · constant (int) · How many projected score records one read-tier call may carry before its observer line is logged at WARNING instead of INFO (#652).
   <br>`= 50000`
 - **`REPORT_VERSION`** · *host contract* · constant (int) · The report shape's version.
-  <br>`= 9`
+  <br>`= 10`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 - **`REPORTER_KIND_CONTRACT`** · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
@@ -2615,7 +2621,7 @@ One analysis, as a document every surface renders. See the module docstring for 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `report_version` | `Literal[9]` | `9` | This shape's version. |
+| `report_version` | `Literal[10]` | `10` | This shape's version. |
 | `basis` | `ReportBasis` | required | `analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it — no headline, no findings, no author's words. |
 | `headline` | `ModelProse` | required | The author's headline, as written; empty when the author wrote none, and on a code-only report. |
 | `finding_count` | `int` | required | How many findings the document holds — the range every position is in. |
@@ -2709,7 +2715,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `52` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `53` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -2762,6 +2768,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps. |
 | `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
 | `model_identity_disclosure` | `str \| None` | `None` | Set when some of the member runs' candidate calls or judge scores came back from a response that named no model, so the record holds only the model id each asked for — and a provider may answer an id with a model of its choosing (a floating alias). |
+| `request_settings_disclosure` | `str \| None` | `None` | Set when the member runs' judge or simulated-user calls were not shown to be sent as each run asked: sent other settings than asked (a client may send the closest setting a model accepts), sent more than one way (with the counts), sent without enforcement (the provider may have ignored any setting the serving model does not take), or not reported at all (unverified). |
 | `measurement_window_disclosure` | `str \| None` | `None` | Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that do not overlap — so anything that moved between those spans (a model revision, a provider's load, a rate limit) moved with the runs, and a difference between the two runs of such a pair is not attributable to the runs alone. |
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |
@@ -2770,7 +2777,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
-| `cell_model_version` | `int` | `12` | Which definition of a cell produced `cells`. |
+| `cell_model_version` | `int` | `13` | Which definition of a cell produced `cells`. |
 | `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |
 | `variant_index` | `list[VariantIndexEntry]` | `[]` | One entry per keyed variant — the variant key and the resolved lever map it was digested from. |

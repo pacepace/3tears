@@ -96,7 +96,7 @@ import math
 from pydantic import Field, computed_field, model_validator
 
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.models import DimName, JudgeTemperature, RubricScale
+from threetears.evals.schema.models import ClientRequestSettings, DimName, JudgeTemperature, RubricScale
 
 #: The least judge–human agreement (weighted kappa; kappa on pass/fail) a dimension's judge must reach
 #: to be ``calibrated`` on it. Owner ruling, 2026-10-06.
@@ -331,6 +331,14 @@ class JudgeEvidenceTier(EvalDocumentModel):
             "The temperature the scores' calls were sent at ('model_default' = sent none, the model refusing one). "
             "Part of the judge's identity too: a judge sampled at another temperature gets its own tier. None = not "
             "recorded, never a match for a recorded one."
+        ),
+    )
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the scores' calls were sent with, as each score recorded them. Part of the judge's "
+            "identity too: a client may send the closest setting a model accepts, and a judge sent other settings "
+            "gets its own tier. None = unverified (the client did not report them), never a match for a recorded one."
         ),
     )
     tier: JudgedEvidenceTier = Field(description="The tier the two criteria decide — see `tier_of`.")
