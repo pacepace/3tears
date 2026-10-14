@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Forced command for the `threetears-testlane` key on a remote test host.
+#
+# scripts/remote-setup.sh installs this file and names it in that key's
+# authorized_keys line, so every connection made with the key runs THIS with the
+# caller's request in $SSH_ORIGINAL_COMMAND. The key is passphrase-less (it must
+# work under BatchMode) and docker access on a host is effectively root, so the
+# restriction lives here. It bounds the key on the HOST; `docker exec` into the
+# test container is code execution inside that container by design.
+#
+# Allowed, and nothing else (exit 77 + `refused:` on stderr otherwise):
+#   mkdir -p 'testruns-3tears/<name>'
+#   rsync --server <flags> [--delete*] . testruns-3tears/<name>/[.git/]
+#   docker exec [-i] threetears-test bash /testruns/<name>/scripts/remote-test.sh <args>
+#   docker inspect -f {{.State.Running}} threetears-test
+#
+# The request is split into argv HERE and argv is exec'd directly: there is no
+# `bash -c`, so nothing the caller sends is ever parsed by a shell. That closes
+# the three bypasses Discodon's string-matching shim left open: extra `mkdir`
+# operands, a `docker exec` flag that names another container ahead of the pinned
+# one, and a planted symlink written through by a later rsync (`l` is refused in
+# rsync's flags, so the receiver never creates links, and a symlinked destination
+# directory is refused). One residual stays: the container can itself replace
+# /testruns/<name> with a symlink between that check and rsync's chdir (a race,
+# and only for code already running in the container).
+#
+# bash 3.2-clean (macOS): builtins only, no ${v,,}, mapfile, declare -A.
+set -u
+PATH="${PATH:+$PATH:}/usr/local/bin:/opt/homebrew/bin"
+export PATH
+
+CMD="${SSH_ORIGINAL_COMMAND:-}"
+CONTAINER=threetears-test
+ROOT=testruns-3tears
+
+refuse() {
+    echo "threetears-testlane-shim: refused: $1" >&2
+    if command -v logger >/dev/null 2>&1; then
+        logger -t threetears-testlane-shim "refused: $1" 2>/dev/null || true
+    fi
+    exit 77
+}
+
+[ -n "$CMD" ] || refuse "no interactive shell on this key"
+cd "${HOME:?}" || refuse "no home directory"
+
+# The probe is the only request carrying braces, so it is matched exactly and
+# answered with a constant argv.
+case "$CMD" in
+    "docker inspect -f {{.State.Running}} $CONTAINER" | "docker inspect -f '{{.State.Running}}' $CONTAINER")
+        exec docker inspect -f '{{.State.Running}}' "$CONTAINER" ;;
+esac
+
+case "$CMD" in
+    *$'\n'* | *$'\r'* | *$'\t'*) refuse "control character in command" ;;
+    *[\;\&\|\<\>\`\(\)\{\}\$\"\\\*\?\[\]\~\#\!]*) refuse "shell metacharacter in command" ;;
+esac
+
+# Split on spaces; a single-quoted span is one word and may hold spaces (the
+# dispatcher quotes every pytest argument, so `-k 'a or b'` stays one word).
+ARGV=()
+word="" inword=0 quoted=0 i=0
+while [ "$i" -lt "${#CMD}" ]; do
+    c="${CMD:$i:1}"
+    i=$((i + 1))
+    if [ "$c" = "'" ]; then
+        if [ "$quoted" = 1 ]; then quoted=0; else quoted=1; fi
+        inword=1
+    elif [ "$c" = " " ] && [ "$quoted" = 0 ]; then
+        if [ "$inword" = 1 ]; then ARGV+=("$word"); fi
+        word="" inword=0
+    else
+        word="$word$c" inword=1
+    fi
+done
+[ "$quoted" = 0 ] || refuse "unbalanced quote"
+if [ "$inword" = 1 ]; then ARGV+=("$word"); fi
+N=${#ARGV[@]}
+
+is_name() {
+    case "$1" in
+        "" | . | .. | *[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    return 0
+}
+
+not_a_link() {
+    if [ -L "$ROOT" ] || [ -L "$ROOT/$1" ]; then refuse "$ROOT/$1 is a symlink"; fi
+}
+
+if [ "$N" = 3 ] && [ "${ARGV[0]}" = mkdir ] && [ "${ARGV[1]}" = -p ]; then
+    case "${ARGV[2]}" in "$ROOT"/*) ;; *) refuse "mkdir outside $ROOT/<name>" ;; esac
+    name="${ARGV[2]#"$ROOT"/}"
+    is_name "$name" || refuse "mkdir outside $ROOT/<name>"
+    not_a_link "$name"
+    exec mkdir -p "$ROOT/$name"
+fi
+
+if [ "$N" -ge 5 ] && [ "${ARGV[0]}" = rsync ] && [ "${ARGV[1]}" = --server ]; then
+    flags="${ARGV[2]}"
+    case "$flags" in
+        -*) ;;
+        *) refuse "rsync without a flag group" ;;
+    esac
+    # The flags before `.` are options; after it, protocol capabilities.
+    case "${flags%%.*}" in
+        -*[!rtpzvce]*) refuse "rsync flag outside -rtpzvc (links, ownership and devices are not carried)" ;;
+    esac
+    j=3
+    while [ "$j" -lt $((N - 2)) ]; do
+        case "${ARGV[$j]}" in
+            --delete | --delete-before | --delete-during | --delete-after | --delete-delay) ;;
+            *) refuse "rsync option ${ARGV[$j]}" ;;
+        esac
+        j=$((j + 1))
+    done
+    [ "${ARGV[$((N - 2))]}" = . ] || refuse "rsync source is not ."
+    # The tree, or its .git (tags and objects, for the release gates that read them).
+    dest="${ARGV[$((N - 1))]}"
+    case "$dest" in "$ROOT"/*) ;; *) refuse "rsync destination outside $ROOT/<name>/" ;; esac
+    name="${dest#"$ROOT"/}"
+    name="${name%/}"
+    sub=""
+    case "$name" in
+        */.git) name="${name%/.git}" sub=.git ;;
+    esac
+    is_name "$name" || refuse "rsync destination outside $ROOT/<name>/"
+    not_a_link "$name"
+    if [ -n "$sub" ]; then not_a_link "$name/$sub"; fi
+    exec rsync "${ARGV[@]:1:$((N - 2))}" "$ROOT/$name/${sub:+$sub/}"
+fi
+
+if [ "$N" -ge 5 ] && [ "${ARGV[0]}" = docker ] && [ "${ARGV[1]}" = exec ]; then
+    k=2
+    if [ "${ARGV[2]}" = -i ]; then k=3; fi
+    [ "${ARGV[$k]}" = "$CONTAINER" ] || refuse "docker exec into anything but $CONTAINER, or with flags beyond -i"
+    [ "${ARGV[$((k + 1))]:-}" = bash ] || refuse "docker exec of anything but bash remote-test.sh"
+    script="${ARGV[$((k + 2))]:-}"
+    name="${script#/testruns/}"
+    name="${name%/scripts/remote-test.sh}"
+    [ "$script" = "/testruns/$name/scripts/remote-test.sh" ] && is_name "$name" || refuse "script is not /testruns/<name>/scripts/remote-test.sh"
+    m=$((k + 3))
+    while [ "$m" -lt "$N" ]; do
+        a="${ARGV[$m]}"
+        case "$a" in
+            -- | ---* | *[!A-Za-z0-9._/=:\ -]*) refuse "argument '$a'" ;;
+        esac
+        m=$((m + 1))
+    done
+    exec docker "${ARGV[@]:1}"
+fi
+
+refuse "command not in the lane allowlist"
