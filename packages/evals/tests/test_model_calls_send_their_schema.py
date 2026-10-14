@@ -122,7 +122,8 @@ def _judge_request(scale: str) -> Any:
 @pytest.mark.parametrize(
     ("scale", "answers", "refused"),
     [
-        ("ordinal", [1, 5, "cannot_tell"], [0, 6, "pass", "3"]),
+        # An ordinal score is asked for as a string: a string enum is the one enum every strict mode enforces.
+        ("ordinal", ["1", "5", "cannot_tell"], [0, 6, 1, 5, "0", "6", "pass"]),
         ("pass_fail", ["pass", "fail", "cannot_tell"], [1, "maybe"]),
     ],
 )
@@ -162,7 +163,7 @@ def test_a_scorer_offering_no_cannot_tell_is_sent_a_schema_without_it() -> None:
     schema = _strict(
         judge_reply_format([{"name": "a"}, {"name": "b", "scale": "pass_fail"}], cannot_tell_offered=False)
     )
-    jsonschema.validate({"reasoning": "r", "criteria_scores": {"a": 3, "b": "fail"}}, schema)
+    jsonschema.validate({"reasoning": "r", "criteria_scores": {"a": "3", "b": "fail"}}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({"reasoning": "r", "criteria_scores": {"a": "cannot_tell", "b": "fail"}}, schema)
 
@@ -250,3 +251,60 @@ def test_a_const_is_sent_as_its_one_value_enum_and_a_structural_keyword_is_refus
     assert authored_strict_schema({"type": "string", "const": "x", "minLength": 1}) == {"type": "string", "enum": ["x"]}
     with pytest.raises(kernel.UnportableSchema, match="'allOf'"):
         authored_strict_schema({"type": "object", "properties": {"a": {"allOf": [{"type": "string"}]}}})
+
+
+# =============================================================================
+# Every enum sent is a string enum: the one enum form every strict mode enforces
+# =============================================================================
+
+
+def _enumerated(node: Any, path: str = "") -> list[tuple[str, Any]]:
+    """Every value an ``enum`` or ``const`` anywhere in a schema enumerates, with where it sits."""
+    found: list[tuple[str, Any]] = []
+    if isinstance(node, list):
+        for index, item in enumerate(node):
+            found.extend(_enumerated(item, f"{path}[{index}]"))
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            if key == "enum":
+                found.extend((f"{path}/enum", member) for member in value)
+            elif key == "const":
+                found.append((f"{path}/const", value))
+            else:
+                found.extend(_enumerated(value, f"{path}/{key}"))
+    return found
+
+
+@pytest.mark.parametrize("call", list(_every_directive()))
+def test_every_directive_enumerates_strings_only(call: str) -> None:
+    """An integer enum was sent to a Gemini model under strict routing and not enforced: it left the field out.
+
+    Each directive is built here as the engine builds it for its call, the analysis writer's with host vocabularies
+    among its enums; every one must enumerate strings and nothing else.
+    """
+    enumerated = _enumerated(_strict(_every_directive()[call]))
+
+    assert [(path, value) for path, value in enumerated if not isinstance(value, str)] == []
+
+
+def test_the_walk_reaches_the_enums_the_directives_carry() -> None:
+    """The walk above finds nothing to refuse in a directive with no enum; it does reach the ones that carry one."""
+    carrying = {call for call, directive in _every_directive().items() if _enumerated(_strict(directive))}
+
+    assert carrying == {"proposal", "judge (ordinal)", "judge (pass_fail)", "next speaker", "analysis"}
+
+
+@pytest.mark.parametrize("scale", ["ordinal", "pass_fail"])
+@pytest.mark.parametrize("cannot_tell_offered", [True, False])
+def test_the_judge_reply_format_has_no_integer_enum_and_no_union_for_a_score(
+    scale: str, cannot_tell_offered: bool
+) -> None:
+    """A score and the offered "can't tell" are ONE string enum, so no ``anyOf`` stands where a score is asked."""
+    schema = _strict(judge_reply_format([{"name": "a", "scale": scale}], cannot_tell_offered=cannot_tell_offered))
+
+    answers = schema["properties"]["criteria_scores"]["properties"]["a"]
+    assert answers["type"] == "string" and "anyOf" not in answers
+    assert all(isinstance(value, str) for _, value in _enumerated(schema))
+    assert ("cannot_tell" in answers["enum"]) is cannot_tell_offered
+    if scale == "ordinal":
+        assert answers["enum"][:5] == ["1", "2", "3", "4", "5"]

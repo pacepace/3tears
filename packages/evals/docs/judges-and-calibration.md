@@ -12,7 +12,12 @@ The snippets run top to bottom as one script, in one async context (`python -m a
 `generate(system=, user=, response_format=)` and an `aclose()`); `models_client` from `threetears.evals.providers`
 (the `[models]` extra) is the shipped one, which `examples/llm_judge.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
 directive (the criterion's answers, "can't tell" among them); pass it to a provider that enforces structured output,
-or send the nearest mode yours has. The reply is read and refused on return either way.
+or send the nearest mode yours has. The reply is read and refused on return either way. Every enum in it is a string
+enum, the one form every provider's strict mode enforces (a Gemini model accepted an integer one and left the score
+out), so a 1-5 score is asked for as the string `"1"` to `"5"` and read back to its integer; a bare integer is read too.
+`strict_response_format` (`threetears.evals.kernel`), the projection the engine's calls go through and yours can,
+refuses a schema enumerating anything but strings with `UnportableSchema`: declare the values as strings and convert
+them on read.
 
 ## Step 1: choose a scale, and prefer pass/fail
 

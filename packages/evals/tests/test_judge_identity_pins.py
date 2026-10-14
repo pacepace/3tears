@@ -52,15 +52,15 @@ surface = load_script("public_surface.py")
 #: the reply-format suffix a configured judge of that scale is sent; the value is the 12 hex characters recorded after
 #: ``builtin:`` or ``@``.
 JUDGE_IDENTITIES: dict[str, str] = {
-    "builtin:transcript-axis": "f886726e63d2",
-    "builtin:outcome-axis": "5fd0040e2c22",
-    "builtin:ordinal:transcript": "501c023ca46f",
+    "builtin:transcript-axis": "fdfa47da36a8",
+    "builtin:outcome-axis": "576896bef534",
+    "builtin:ordinal:transcript": "61371c63c7dd",
     "builtin:pass_fail:transcript": "6a15a72a00e0",
-    "builtin:ordinal:document": "acec207171e0",
+    "builtin:ordinal:document": "24be20140704",
     "builtin:pass_fail:document": "c2362452be2f",
-    "suffix:ordinal:transcript": "48f825101269",
+    "suffix:ordinal:transcript": "244c6e35eec0",
     "suffix:pass_fail:transcript": "77f5d3e70b47",
-    "suffix:ordinal:document": "c31b0cac0f26",
+    "suffix:ordinal:document": "31a65e926680",
     "suffix:pass_fail:document": "469f6f5d4bdb",
 }
 

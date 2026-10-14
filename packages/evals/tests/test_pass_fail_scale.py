@@ -143,7 +143,7 @@ class TestTheJudgesAnswer:
         assert "criteria_scores" not in parsed and parsed["error"].startswith("Failed to parse")
 
     async def test_a_word_on_an_ordinal_criterion_is_refused(self):
-        with pytest.raises(ValueError, match="not an integer"):
+        with pytest.raises(ValueError, match="not one of the 1-5 scale's answers"):
             SCALE_READERS["ordinal"]("arc", "pass")
         parsed = await _judged("pass", _ORD)
         assert "criteria_scores" not in parsed and parsed["error"].startswith("Failed to parse")
