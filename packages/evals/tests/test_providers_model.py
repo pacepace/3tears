@@ -25,6 +25,7 @@ from threetears.evals.providers import (
     Clients,
     Completion,
     Model,
+    PriceSource,
     ProviderError,
     describe_failure,
 )
@@ -434,6 +435,27 @@ async def test_openrouter_is_priced_by_its_own_figure_and_absent_is_unpriced_nev
     assert completion.cost_usd == pytest.approx(cost) if cost is not None else completion.cost_usd is None
     assert completion.price_source == source
     assert (completion.pricing_failure is None) if why is None else why in (completion.pricing_failure or "")
+
+
+async def test_the_client_writes_exactly_the_price_source_words_a_host_compares_with() -> None:
+    byok = {"cost": 0.0001, "is_byok": True, "cost_details": {"upstream_inference_cost": 0.002}}
+    upstream = await model("deepseek/deepseek-v4-flash", Scripted(chat(usage=byok))).generate(system="", user="x")
+    reported = await model("deepseek/deepseek-v4-flash", Scripted(chat(usage={"cost": 0.1}))).generate(
+        system="", user="x"
+    )
+    direct = await model("claude-haiku-5-5", Scripted(message()), provider="anthropic").generate(system="", user="x")
+
+    assert upstream.price_source is PriceSource.OPENROUTER_REPORTED_UPSTREAM
+    assert PriceSource.OPENROUTER_REPORTED_UPSTREAM == "openrouter:reported+upstream", "the stored word is stable"
+    assert reported.price_source is PriceSource.OPENROUTER_REPORTED
+    assert PriceSource.OPENROUTER_REPORTED == "openrouter:reported"
+    assert direct.price_source == f"{PriceSource.OPENROUTER_CATALOGUE}:anthropic/claude-haiku-5.5"
+    assert PriceSource.OPENROUTER_CATALOGUE == "openrouter-catalogue"
+    assert {source.value for source in PriceSource} == {
+        "openrouter:reported",
+        "openrouter:reported+upstream",
+        "openrouter-catalogue",
+    }
 
 
 async def test_a_direct_call_is_priced_by_the_matching_catalogue_row() -> None:

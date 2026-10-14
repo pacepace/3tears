@@ -563,8 +563,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract`
 - **`tier_sentence`** · function · One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
   <br>`tier_sentence(tier: JudgeEvidenceTier) -> str`
-- **`variant_key_of_run`** · function · Which variant a run's observations carried — the authoring side of the control.
-  <br>`variant_key_of_run(results: Sequence[EvalResult]) -> str | None`
 
 **Classes**
 
@@ -904,6 +902,8 @@ The completion client: a model id in, the engine's completion port out, over eac
 - **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, refreshed every `refresh_after`, and what providers refused, for every model that reads it.
 - **`Clients`** · *host contract* · class · A host's role factory (`EvalHost.clients`): one `Model` per role, model id and temperature.
 - **`Completion`** · dataclass · One reply: the completion port's ten members, and five of the client's own.
+- **`PriceSource`** · *host contract* · enum · The words the shipped client writes as a completion's `price_source`: who priced the call.
+  <br>values: `'openrouter:reported'`, `'openrouter:reported+upstream'`, `'openrouter-catalogue'`
 - **`ProviderError`** · *host contract* · exception · A request the provider refused or failed: who, the HTTP status, and the provider's own message.
 
 **Types**

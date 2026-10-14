@@ -257,7 +257,10 @@ billed, so the price ceiling is one request's, but each refused send can take up
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
 without the upstream figure is unpriced. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
 for the matching `vendor/model` row, its `price_source` ending `;cache-approximate` when a prompt cache was read or
-written (the catalogue carries no cache rates). Unpriced is `None` with `pricing_failure` saying why, never `0`. A
+written (the catalogue carries no cache rates). The `price_source` words are `PriceSource`'s (host contract, from
+`threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
+(the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
+`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
 model's `price_ceiling` answers once its catalogue is loaded: `await clients.load_prices()` at boot, or
 `await catalogue.load()` on one you hand your models, and until then the engine refuses an out-of-run call under an
 enforced `out_of_run_cap_usd` rather than send one it cannot bound. A long-lived process is not priced from its first

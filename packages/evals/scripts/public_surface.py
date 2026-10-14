@@ -782,6 +782,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.Catalogue",
         "threetears.evals.providers.describe_failure",
         "threetears.evals.providers.ProviderError",
+        # The words the client writes as a completion's `price_source`, which a host reading spend back compares with.
+        "threetears.evals.providers.PriceSource",
     }
 )
 
@@ -864,7 +866,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.analysis.create_campaign",
         "threetears.evals.analysis.frontier",
         "threetears.evals.analysis.gate_verdicts",
-        "threetears.evals.analysis.variant_key_of_run",
         "threetears.evals.kernel.BarOverride",
         "threetears.evals.kernel.CONFUSION_CELL_MEASURE",
         "threetears.evals.kernel.CampaignDesign",

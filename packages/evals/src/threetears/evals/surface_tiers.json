@@ -1175,7 +1175,7 @@
 "threetears.evals.analysis.UnrepeatedReason": "provisional",
 "threetears.evals.analysis.UnrepeatedScore": "provisional",
 "threetears.evals.analysis.update_campaign": "provisional",
-"threetears.evals.analysis.variant_key_of_run": "stable",
+"threetears.evals.analysis.variant_key_of_run": "provisional",
 "threetears.evals.analysis.Verdict": "stable",
 "threetears.evals.analysis.verdict_token": "provisional",
 "threetears.evals.analysis.VerdictKind": "provisional",
@@ -1493,6 +1493,7 @@
 "threetears.evals.providers.Completion": "stable",
 "threetears.evals.providers.describe_failure": "host-contract",
 "threetears.evals.providers.Model": "host-contract",
+"threetears.evals.providers.PriceSource": "host-contract",
 "threetears.evals.providers.Provider": "stable",
 "threetears.evals.providers.ProviderError": "host-contract"
 }

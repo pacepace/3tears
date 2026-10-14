@@ -35,6 +35,7 @@ from threetears.evals.providers.wire import (
     BASE_URLS,
     FAMILIES,
     KEY_VARIABLES,
+    PriceSource,
     Reply,
     declared_facts,
     directive_of,
@@ -94,9 +95,10 @@ class Completion:
         output_tokens: Completion tokens, reasoning included.
         reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when unsplit.
         cost_usd: What the call cost, or ``None`` when unpriced (``pricing_failure`` says why).
-        price_source: ``openrouter:reported`` (OpenRouter's figure), ``openrouter:reported+upstream`` (its fee and a
-            bring-your-own-key upstream's charge), or ``openrouter-catalogue:<id>`` (tokens times the catalogue's
-            rates, ending ``;cache-approximate`` when a cache was read or written).
+        price_source: Who priced it, in :class:`~threetears.evals.providers.PriceSource`'s words: ``openrouter:reported``
+            (OpenRouter's figure), ``openrouter:reported+upstream`` (its fee and a bring-your-own-key upstream's
+            charge), or ``openrouter-catalogue:<id>`` (tokens times the catalogue's rates, ending
+            ``;cache-approximate`` when a cache was read or written).
         model: The model id the client was built for.
         served_model: The model the reply named; ``None`` when it named none, or named a requested alias back.
         temperature: The temperature the served request carried, or ``None``.
@@ -346,7 +348,7 @@ class _Live:
             return None, None, "the reply reported no input or output token count, so there is nothing to price", None
         dollars = reply.input_tokens * rates[0] + reply.output_tokens * rates[1]
         marker = _CACHE_APPROXIMATE if reply.cache_tokens else ""
-        source = f"openrouter-catalogue:{matched}{marker}"
+        source = f"{PriceSource.OPENROUTER_CATALOGUE}:{matched}{marker}"
         return float(dollars), source, None, self._catalogue.stale_since
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:

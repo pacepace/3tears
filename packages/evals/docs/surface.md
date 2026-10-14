@@ -42,7 +42,7 @@ Two or more arms as a campaign, its bundle, report and frontier, the classifier 
 - `schema`: `EvalCaseStratum`, `LatencyMetrics`
 - `kernel`: `BarOverride`, `CampaignDesign`, `confusion_cell`, `CONFUSION_CELL_MEASURE`, `ControlDeclaration`, `EvalAnalysis`, `EvalInsight`, `MATCH_MEASURE`, `Question`, `SweptAxis`
 - `run`: `get_result_trace`, `get_run`, `list_results`, `list_runs`
-- `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateOutcome`, `GateResult`, `GateToken`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`, `variant_key_of_run`
+- `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateOutcome`, `GateResult`, `GateToken`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`
 - `ops`: `scope_history`
 
 ## Rung 4: a world, a log, a host and serving
@@ -90,4 +90,4 @@ Declared because the production host imports it: launch and judge plumbing, the 
 
 The shipped completion client: a model, the role factory a host hands its clients, the shared catalogue, the reply and the one error it raises.
 
-- `providers`: `Catalogue`, `Clients`, `Completion`, `describe_failure`, `Model`, `Provider`, `ProviderError`
+- `providers`: `Catalogue`, `Clients`, `Completion`, `describe_failure`, `Model`, `PriceSource`, `Provider`, `ProviderError`
