@@ -621,8 +621,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.testing.StoreConformanceCase",
         "threetears.evals.testing.check_completion_conformance",
         # The reader of a completion's optional `sent_settings`: what a host whose client reports what each request
-        # carried tests its completion type against, beside the conformance check.
+        # carried tests its completion type against, beside the conformance check, and what it and every other reader
+        # of a completion's members raise on a completion that breaks the protocol, which a host's suite catches.
         "threetears.evals.schema.sent_settings_of",
+        "threetears.evals.schema.CompletionProtocolDefect",
         # Recorded completions in CI is a pattern a host uses: record its real client once, replay it in its suite.
         "threetears.evals.testing.RecordedCompletions",
         "threetears.evals.testing.RecordedPrompt",
@@ -632,6 +634,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # value a host passes for its judge client: a host cannot call the recorder without naming one.
         "threetears.evals.schema.ClientRequestSettings",
         "threetears.evals.run.JUDGE_REQUEST_SETTINGS",
+        # The simulator's own value, which a host's builder applies to its simulator client as the judge's to its judge,
+        # and the analysis generator's, which it builds from its own answer budget, effort and headroom: what each role
+        # is asked for, so a host's client sends what the run records as asked.
+        "threetears.evals.run.SIMULATOR_REQUEST_SETTINGS",
+        "threetears.evals.analysis.analysis_gen_request_settings_for",
         "threetears.evals.testing.CompletionGuard",
         "threetears.evals.testing.JobsConformanceHost",
         "threetears.evals.testing.jobs_conformance_cases",
@@ -693,6 +700,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.quick.ArmKey",
         "threetears.evals.analysis.EvalSummary",
         "threetears.evals.analysis.Report",
+        # What a summary says each apparatus role was asked for and actually sent, which a host's own surface reads to
+        # show the gap: the reading, its state and its shares.
+        "threetears.evals.analysis.RequestSettingsReading",
+        "threetears.evals.analysis.SentSettingsState",
+        "threetears.evals.analysis.SentSettingsShare",
         "threetears.evals.quick.callable_host",
         "threetears.evals.quick.CALLABLE_KIND",
         "threetears.evals.quick.Answer",
@@ -740,6 +752,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.testing.check_refusal_negotiation",
         "threetears.evals.testing.NegotiationConformanceFailure",
         "threetears.evals.testing.RouterTransport",
+        # What a host's own Anthropic client builds its request's `thinking` from, and the budget floor it holds a
+        # budget to; and the settings a refusal can name, which a host's own reader of its provider's refusals returns.
+        "threetears.evals.negotiation.anthropic_thinking",
+        "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET",
+        "threetears.evals.negotiation.RefusedSetting",
         # The shipped provider adapter: a host that brings no client of its own binds to these.
         "threetears.evals.providers.models_client",
         "threetears.evals.providers.models_clients",

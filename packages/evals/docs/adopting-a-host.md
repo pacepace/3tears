@@ -232,15 +232,17 @@ to where a model takes words only (OpenAI, OpenRouter, Anthropic's adaptive-only
 is `high`), and a word as that share of the cap where a model takes budgets only; an Anthropic effort word rides
 adaptive thinking, with no temperature beside it; a strict reply format a model cannot take goes unenforced. What is
 known of a model comes from what a provider refused in the factory's life, then 3tears-models' capabilities, then
-OpenRouter's catalogue (once `load_prices` read it); unknown is sent as asked. A provider's refusal of a setting the
+OpenRouter's catalogue (once this factory's own `load_prices` read it, and only to leave out a parameter no endpoint
+takes); unknown is sent as asked. A provider's refusal of a setting the
 request carried (an Anthropic model on which `temperature` is deprecated or a thinking budget unsupported, an OpenAI
 model that takes only its default temperature or fewer effort words) is answered by sending the request once more
-with the closest setting the model then takes: the refused request generated nothing and is not billed. Once served,
-every client of the factory sends that way for the rest of its life, logged once at WARNING. On OpenRouter, a strict
-call whose `require_parameters` leaves no endpoint (a 404 naming no parameter) is resent without its temperature,
-keeping enforcement, and only if that still finds none, without enforcement, which its `sent_settings` records as
-`strict_output=False`. Any other refusal, and a refusal of a resend for a setting already dropped, is raised as
-before.
+with the closest setting the model then takes: the refused request generated nothing and is not billed. What a served
+resend proved the model refuses is learned: every client of the factory sends that way for the rest of its life,
+logged once at WARNING. On OpenRouter, a strict call whose `require_parameters` leaves no endpoint (a 404 naming no
+parameter) is resent without its temperature, keeping enforcement, and only if that still finds none, without
+enforcement, which its `sent_settings` records as `strict_output=False`. Enforcement is never learned: the next call
+asks for it again, since a router's "no endpoint" can be an outage. Any other refusal, and a refusal of a resend for
+a setting already dropped, is raised as before.
 
 **Load prices once at boot.** `await clients.load_prices()` reads the price catalogue for every default model and
 returns, for each one left unpriced, why (`{}` when all are priced); a model the engine names beyond your defaults
@@ -262,6 +264,13 @@ reads off each provider's reply is in `threetears.evals.providers`' own docstrin
 provider is one 3tears-models has no factory for, or when you call Claude through a subscription: the adapter
 refuses the Claude CLI route, whose completions read as finished whatever stopped them, until models carries the
 CLI's real stop reason. Either way, run `check_completion_conformance` on your client's completions in your suite.
+
+**A client builder of your own sends the effort word.** None of the engine's request settings carries a token budget
+any more: `JUDGE_REQUEST_SETTINGS`, `SIMULATOR_REQUEST_SETTINGS` and `analysis_gen_request_settings_for`'s value each
+ask by `reasoning_effort` and hold `reasoning_max_tokens=None`. A builder that reads only `reasoning_max_tokens` sends
+no reasoning parameter at all, so its role reasons at the provider's default while the run records it asked for an
+effort. Build the request from every field: `wire_settings_for(settings, temperature)` (`threetears.evals.negotiation`)
+turns the engine's value into what `negotiate` sends, so nothing is hand-copied and nothing is dropped.
 
 **A client of your own maps its provider's finish reason onto five words** (`StopReason`): `end_turn` for a
 completion that finished, `max_tokens` for one stopped at the output cap (OpenAI's `length`), `content_filter` for a
@@ -319,8 +328,8 @@ place is answered unenforced rather than failed: the call is recorded as sent un
 pooled with an enforced one.
 
 Once your completion reports it, hold your suite to it:
-`check_completion_conformance(completion, require_sent_settings=True)` fails the day the member is dropped or
-renamed, rather than every later run quietly recording unverified calls. **Ship it in the same deploy that adopts
+`check_completion_conformance(completion, require_sent_settings=True)` fails the day the member is dropped, renamed or
+left `None`, rather than every later run quietly recording unverified calls. **Ship it in the same deploy that adopts
 `.25`:** a run whose calls report what they were sent with and one whose calls do not are not the same record, and
 reporting from the first `.25` deploy keeps your campaigns from splitting at a later one.
 
@@ -412,13 +421,34 @@ class RouterClient:
         pass
 ```
 
+**Tell it what you already know: `declared=`.** `negotiate` takes the facts you hold about the model before any
+refusal (`SettingFacts`), and leaves out a setting they say the model does not take. For OpenRouter,
+`facts_from_router_catalogue(supported_parameters)` reads the model's row of OpenRouter's models catalogue into them,
+as the client above does. Only the negative facts count: a parameter the row does not list is not sent (no
+temperature, no effort word, or no strict schema, the request then going unenforced), and a listed one is sent as
+asked, because `supported_parameters` says some endpoint takes it, not that one endpoint takes it beside the
+request's others; so it never rules a temperature out of a 404, and the temperature is still the first thing dropped.
+Read the catalogue once, at boot, and keep the facts: facts that moved mid-run because something else fetched the
+catalogue would send two calls of one run differently for no reason the run records. Build `asked` from the engine's
+own value (`wire_settings_for(JUDGE_REQUEST_SETTINGS, temperature)`, or the simulator's or the analysis generator's),
+never from constants copied by hand.
+
+**What a refusal teaches lasts for the process; enforcement is decided per call.** `LearnedSettings` holds what a
+served request proved the model refuses, keyed by your provider name and the model, and every client sharing it
+sends without that setting from then on: keep one per process, or per client factory as the shipped adapter does,
+never one per call, or every call pays the refusal again. Only what was proved is learned: a temperature dropped on
+the way to a request that was served only once enforcement went too taught nothing, and is sent again. Enforcement
+itself is never learned. Every call that asks for it starts enforced and drops it for that call alone, because a
+router's "no endpoint" can be an outage, and one outage must not leave a process unenforced for life; each such call
+records `strict_output=False` and is disclosed.
+
 Price it and read its served provider your own way; the negotiation is the part not to copy. For another wire,
 `read_anthropic_refusal` and `read_openai_refusal` read Anthropic's and OpenAI's error bodies the same way (an SDK
 keeps both on its exception, `exc.status_code` and `exc.body`), and `anthropic_thinking` builds Anthropic's
 `thinking` for the settings sent. **Hold your suite to it** with `check_refusal_negotiation`
-(`threetears.evals.testing`): it scripts a router that refuses the temperature, then enforcement, and fails naming
-each mistake unless your client resends in that order, reports what was served, and sends the next call that way
-at once:
+(`threetears.evals.testing`): it scripts routers that refuse the temperature, then enforcement, then an effort word
+and an output cap, and fails naming each mistake unless your client resends in that order, reports what was served,
+sends its next call at once without what a served request proved, and asks for enforcement again on every call:
 
 ```python
 from threetears.evals.testing import check_refusal_negotiation
@@ -635,10 +665,10 @@ unknown field and a missing required one, at any depth, with one exception: a co
 at a newer minor, read as above. A core document written by a newer major is refused, never guessed at, so when
 two builds share one store across a major, upgrade the older one. Only the stored read is tolerant: a document a
 caller hands an authoring surface is validated strictly, and `schema_minor` is a server field it ignores. A core
-document written before the first public release (below core v15) is refused
+document written before `.25` (`v0.67.0-evaladopt.25`, core below v15) is refused
 too: its read fails validation on `schema_version`, with a message that names it a pre-release document and
-the baseline it is below. Pre-release documents are never read, so delete them (the operator wipe) rather than
-keep them beside released ones.
+the baseline it is below. A store written before `.25` is never read, so delete its documents (the operator wipe)
+rather than keep them beside ones `.25` or a later build wrote; `.25` wrote the v15 baseline this release reads.
 A refused run stays as stored, and the boot reclaim (`sweep_abandoned_runs`) counts it `unreadable` rather than
 settling it. `runs_unreadable` (operation and action) names each stored run of the scope the current model refuses,
 of any status, with the fields it refused and why. The ones stored pending or running are marked stranded: they are

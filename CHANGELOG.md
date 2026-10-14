@@ -26,8 +26,11 @@ v<version>` prints a release's notes).
   `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`,
   `negotiation`, `providers`. A consumer
   imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
-  itself exports the roots and `__version__`, the installed version, which a host records beside what it stores
-  since no stored document or analysis bundle carries it.
+  itself exports the roots, which of them fail to import without an extra (`ROOT_EXTRAS`: `transports.fastmcp` needs
+  `[fastmcp]` and `providers` `[models]`; `vega` imports on the base install and needs `[vega]` only to rasterise),
+  both host-contract so a host's import gate reads them rather than keep its own list, and `__version__`, the
+  installed version, which a host records beside what it stores since no stored document or analysis bundle carries
+  it.
 - **The quick path** (`threetears.evals.quick`). `run_eval(cases, candidate, expected=..., k=...)` grades any async
   function from a case to an answer. `summary.misses()` lists each miss with its reason. `compare` runs arms
   against a control and returns a typed verdict per measure: `improved`, `regressed`, `not_separated` or
@@ -188,15 +191,18 @@ v<version>` prints a release's notes).
   named (`runs_unreadable`), never raised raw.
 - **Asked and sent are two facts.** A run records what the engine asked each role for (`judge_asked_settings`,
   `simulator_asked_settings`), and the engine's own roles ask in effort words: the judge `high` (`max_tokens`
-  10240, strict), the simulated user `low` (strict) and the analysis generator `medium` (its cap the answer budget
-  plus a reasoning headroom of at least 1024 tokens, never sent). What a request actually carried is the client's to
+  10240, strict), the simulated user `low` (strict) and the analysis generator `medium`
+  (`analysis_gen_request_settings_for(*, answer_budget_tokens, reasoning_effort="medium",
+  reasoning_headroom_tokens=8192)`, which replaced `reasoning_budget_tokens`: its cap the answer budget plus a
+  reasoning headroom of at least 1024 tokens, never sent). None carries a token budget, so a host's own client builder
+  sends the effort word (`wire_settings_for` builds the request from every field). What a request actually carried is the client's to
   say: a completion may carry an optional `sent_settings` member (not a protocol property, so every completion that
   conformed still does), read by `sent_settings_of`, and stored per judge score, per usage row (every distinct value
   the row's calls were sent with) and per out-of-run call; `None` is unverified, recorded and never refused. Cells
   pool only where the judge and the simulated user were both asked and sent alike (`judge_sent_settings` and
   `simulator_sent_settings` join the apparatus), so unverified never pools with verified and a run sent two ways only
   with the same mixture; a judge sent other settings is another judge for agreement, profiles, drift and evidence
-  tiers, and a repeat sent differently is unpaired (`settings_changed`). `run_get`, `run_summary`, the bundle and the
+  tiers, a second judge included, and a repeat sent differently is unpaired (`settings_changed`). `run_get`, `run_summary`, the bundle and the
   report say in one sentence (`request_settings_disclosure`) where a role was sent other than asked, sent more than
   one way, sent without enforcement or not reported; never about the candidate. A host whose client reports it ships
   that in the same deploy that adopts the release, and its client never fails a call for a setting, in the
@@ -210,7 +216,8 @@ v<version>` prints a release's notes).
   temperature and request settings (`ClientRequestSettings`, a required `settings=` on `record`, `replay` and
   `check_covers`) it was made with, and what each call was sent with is recorded and replayed beside them; a prompt
   the recording does not hold, or holds only under other settings, is refused by name with the command that
-  re-records it, never sent live. A recorder stands in for an analysis or out-of-run client too: it names its model
+  re-records it, never sent live. A recording made before `v0.67.0-evaladopt.25` (recorder format 1, with no
+  `sent_settings`) is refused by name as older; format 2 records what each call was sent with, so re-record it. A recorder stands in for an analysis or out-of-run client too: it names its model
   and prices a call (a replay at $0).
 - **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the

@@ -106,7 +106,14 @@ from threetears.evals.schema.models import (
 )
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import CalibrationRating, EvalResult, JudgeRepeat, LabelKey, RubricScore
+    from threetears.evals.schema.models import (
+        CalibrationRating,
+        EvalResult,
+        JudgeRepeat,
+        LabelKey,
+        RubricScore,
+        SecondJudging,
+    )
 
 
 #: Why a rating has no judge score to be read against.
@@ -158,6 +165,45 @@ def sent_settings_from_key(key: str | None) -> ClientRequestSettings | None:
         The settings, or ``None`` (unverified).
     """
     return None if key is None else ClientRequestSettings.model_validate_json(key)
+
+
+def sent_settings_level(scores: Iterable[RubricScore | None]) -> tuple[str, ...] | None:
+    """The distinct request settings ``scores``' calls were sent with, as canonical forms in canonical order.
+
+    How a judge that made many calls is named by what it was sent: a second-judge pass (:func:`inter_judge_agreement`,
+    :func:`~threetears.evals.analysis.judge_drift`), and a run's judge in the campaign bundle's judge-change reading,
+    which pairs a pass with the run judged as it was by this one reading. A ``None`` among ``scores`` is an answer
+    with no score (a failed call, or one that could not tell), which says nothing about what was sent and is passed
+    over.
+
+    Args:
+        scores: The scores, as the calls that made them recorded what they were sent with.
+
+    Returns:
+        Each distinct value's canonical form (:func:`~threetears.evals.schema.models.request_settings_order`), sorted;
+        ``None`` when any score is unverified (its client did not report what it sent) or there is no score: a
+        partial record is not reported as the part that is known.
+    """
+    sent: set[str] = set()
+    for score in scores:
+        if score is None:
+            continue
+        if score.judge_sent_settings is None:
+            return None
+        sent.add(request_settings_order(score.judge_sent_settings))
+    return tuple(sorted(sent)) or None
+
+
+def sent_settings_from_level(level: tuple[str, ...] | None) -> list[ClientRequestSettings] | None:
+    """A :func:`sent_settings_level` read back as the settings, for a row that names them.
+
+    Args:
+        level: The canonical forms, as :func:`sent_settings_level` made them, or ``None``.
+
+    Returns:
+        The settings in canonical order, or ``None`` (unverified).
+    """
+    return None if level is None else [ClientRequestSettings.model_validate_json(form) for form in level]
 
 
 def judge_key(result: EvalResult, dim: str) -> JudgeKey | None:
@@ -1039,6 +1085,15 @@ class InterJudgeDimension(EvalDocumentModel):
     second_temperature: float | None = Field(
         description="The temperature the second judge was requested at; None = what each dimension's prompt asks for."
     )
+    second_sent_settings: list[ClientRequestSettings] | None = Field(
+        default=None,
+        description=(
+            "The request settings the second judge's calls were sent with, read over its pass's scores "
+            "(``sent_settings_level``): every distinct value, in canonical order. Part of the second judge's identity "
+            "beside what it was asked, so a pass sent otherwise is another second judge. None = unverified: some score "
+            "of the pass did not report what it was sent with, or none scored."
+        ),
+    )
     second_served_models: list[str] = Field(
         default_factory=list,
         description="The models the second judge's responses named as having answered, sorted; empty when none named one.",
@@ -1111,6 +1166,56 @@ class InterJudgeAgreement(EvalDocumentModel):
     )
 
 
+#: One second-judge reading's group: the first judge (:class:`JudgeKey`), and the second as it was asked (its model,
+#: the config that asked it on the dimension, its requested temperature) and as it was sent (its pass's
+#: :func:`sent_settings_level`).
+SecondJudgeGroup = tuple[JudgeKey, str, str | None, float | None, tuple[str, ...] | None]
+
+
+def second_judge_group(first: JudgeKey, judging: SecondJudging, dim: str) -> SecondJudgeGroup:
+    """The group one second-judge pair is read in: the first judge, and the second as asked and as sent.
+
+    The second judge is named by what it was sent as well as what it was asked, as the first is: two passes asked
+    alike and sent differently are two second judges. What it was sent is read over the pass's own scores
+    (:func:`sent_settings_level`), the reading the campaign bundle names a pass's judge by, so a drift reading the
+    bundle links to a judge level is grouped as that level.
+
+    Args:
+        first: The first judge of the pair.
+        judging: The pass the second answer belongs to.
+        dim: The dimension asked.
+
+    Returns:
+        The group.
+    """
+    return (
+        first,
+        judging.judge.model,
+        judging.judge_config_ids.get(dim),
+        judging.judge.temperature,
+        sent_settings_level(entry.second for entry in judging.scores),
+    )
+
+
+def second_judge_group_sort_key(key: SecondJudgeGroup) -> tuple[str, ...]:
+    """The order second-judge groups are listed in: the first judge's, then the second as asked, then as sent.
+
+    Args:
+        key: The group.
+
+    Returns:
+        A sort key.
+    """
+    first, model, config_id, temperature, sent = key
+    return (
+        *judge_sort_key(first),
+        model,
+        config_id or "",
+        "" if temperature is None else str(temperature),
+        *(sent or ()),
+    )
+
+
 def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement:
     """Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
 
@@ -1127,8 +1232,8 @@ def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None 
     Returns:
         The agreement per (dimension, scale, first judge, second judge), and the scores that could not be paired.
     """
-    groups: dict[tuple[JudgeKey, str, str | None, float | None], list[_Pair]] = {}
-    served: dict[tuple[JudgeKey, str, str | None, float | None], set[str]] = {}
+    groups: dict[SecondJudgeGroup, list[_Pair]] = {}
+    served: dict[SecondJudgeGroup, set[str]] = {}
     unpaired: list[UnpairedSecondScore] = []
     read = 0
     for result in results:
@@ -1152,16 +1257,14 @@ def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None 
                     entry.first_judge_temperature,
                     sent_settings_key(entry.first_judge_sent_settings),
                 )
-                key = (first, judging.judge.model, judging.judge_config_ids.get(entry.dim), judging.judge.temperature)
+                key = second_judge_group(first, judging, entry.dim)
                 second = entry.second.score if entry.second is not None else None
                 groups.setdefault(key, []).append(_Pair(entry.first_score, second, judging.pass_id, result.id))
                 if entry.second is not None and entry.second.served_model is not None:
                     served.setdefault(key, set()).add(entry.second.served_model)
     dimensions = []
-    for key in sorted(
-        groups, key=lambda k: (*judge_sort_key(k[0]), k[1], k[2] or "", "" if k[3] is None else str(k[3]))
-    ):
-        first, model, config_id, temperature = key
+    for key in sorted(groups, key=second_judge_group_sort_key):
+        first, model, config_id, temperature, second_sent = key
         numbers = _agreement_numbers(first.scale, groups[key])
         figure = numbers.weighted_kappa if first.scale == "ordinal" else numbers.kappa
         dimensions.append(
@@ -1175,6 +1278,7 @@ def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None 
                 second_model=model,
                 second_judge_config_id=config_id,
                 second_temperature=temperature,
+                second_sent_settings=sent_settings_from_level(second_sent),
                 second_served_models=sorted(served.get(key, set())),
                 n=numbers.n,
                 results=numbers.results,
@@ -1354,6 +1458,7 @@ def _criterion_words(criterion: TierCriterion) -> str:
 
 __all__ = [
     "DimensionAgreement",
+    "SecondJudgeGroup",
     "InterJudgeAgreement",
     "InterJudgeDimension",
     "JudgeAgreement",
@@ -1378,9 +1483,13 @@ __all__ = [
     "judge_self_agreement",
     "judge_sort_key",
     "person_scores_by_result",
+    "second_judge_group",
+    "second_judge_group_sort_key",
     "self_agreement_of_repeats",
     "sent_settings_from_key",
+    "sent_settings_from_level",
     "sent_settings_key",
+    "sent_settings_level",
     "tier_for_judges",
     "tier_sentence",
 ]

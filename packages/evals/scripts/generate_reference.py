@@ -131,7 +131,7 @@ def api_section() -> Iterator[str]:
 
     for root in walked_modules():
         extra = ROOT_EXTRAS.get(root)
-        needs = f" (needs the `[{extra}]` extra)" if extra else ""
+        needs = f" (fails to import without the `[{extra}]` extra)" if extra else ""
         yield f"- [`{root}`](#{root_slug(root)}){needs}"
     yield ""
     first_root: dict[int, str] = {}
@@ -143,8 +143,9 @@ def api_section() -> Iterator[str]:
         yield ""
         if root in ROOT_EXTRAS:
             yield (
-                f"*Imports only with the `[{ROOT_EXTRAS[root]}]` extra installed "
-                f'(`pip install "3tears-evals[{ROOT_EXTRAS[root]}]"`); see `threetears.evals.ROOT_EXTRAS`.*'
+                f"*Fails to import without the `[{ROOT_EXTRAS[root]}]` extra "
+                f'(`pip install "3tears-evals[{ROOT_EXTRAS[root]}]"`); see `threetears.evals.ROOT_EXTRAS`. Every root '
+                "not so marked imports on the base install.*"
             )
             yield ""
         intro = paragraphs(module.__doc__)

@@ -202,11 +202,18 @@ def test_a_usage_row_holds_each_distinct_sent_value_once_in_canonical_order(sent
         RoleUsage(role="judge", sent_settings=sent)
 
 
-def test_a_usage_row_out_of_canonical_order_is_refused() -> None:
+def test_a_usage_row_written_out_of_canonical_order_is_put_into_it() -> None:
+    """A host lists the values in the order it met them; the row stores them in the one canonical order, so two rows
+    naming the same values are equal, and a value repeated out of order is still refused."""
     (ordered,) = [row.sent_settings for row in _two_way_row()]
-    assert ordered is not None
-    with pytest.raises(ValidationError, match="in canonical order"):
-        RoleUsage(role="judge", sent_settings=list(reversed(ordered)))
+    assert ordered is not None and len(ordered) == 2
+
+    assert RoleUsage(role="judge", sent_settings=list(reversed(ordered))).sent_settings == ordered
+    assert RoleUsage(role="judge", sent_settings=list(reversed(ordered))) == RoleUsage(
+        role="judge", sent_settings=ordered
+    )
+    with pytest.raises(ValidationError, match="each distinct value once"):
+        RoleUsage(role="judge", sent_settings=[ordered[1], ordered[0], ordered[1]])
 
 
 def _two_way_row() -> list[RoleUsage]:

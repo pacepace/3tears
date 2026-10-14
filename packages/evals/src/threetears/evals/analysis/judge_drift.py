@@ -33,7 +33,15 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import Field
 
-from threetears.evals.analysis.agreement import JudgeKey, judge_sort_key, sent_settings_from_key, sent_settings_key
+from threetears.evals.analysis.agreement import (
+    JudgeKey,
+    SecondJudgeGroup,
+    second_judge_group,
+    second_judge_group_sort_key,
+    sent_settings_from_key,
+    sent_settings_from_level,
+    sent_settings_key,
+)
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
@@ -94,6 +102,15 @@ class JudgeDriftDimension(EvalDocumentModel):
     second_temperature: float | None = Field(
         description="The temperature the second judge was requested at; None = what each prompt asks for."
     )
+    second_sent_settings: list[ClientRequestSettings] | None = Field(
+        default=None,
+        description=(
+            "The request settings the second judge's calls were sent with, read over its pass's scores: every "
+            "distinct value, in canonical order. Part of the second judge's identity beside what it was asked, read "
+            "as the campaign bundle names a judge level, so a pass sent otherwise is another second judge. None = "
+            "unverified: some score of the pass did not report what it was sent with, or none scored."
+        ),
+    )
     n_pairs: int = Field(ge=0, description="Results carrying both judges' scores on the dimension.")
     n_cases: int = Field(ge=0, description="Distinct cases behind those pairs — the unit the test and interval read.")
     n_unanswered: int = Field(
@@ -141,9 +158,6 @@ class JudgeDrift(EvalDocumentModel):
     )
     family_size: int = Field(default=0, ge=0, description="The dimensions tested together, which the correction spans.")
     disclosure: str = Field(default=DRIFT_DETECTS_MOVEMENT, description="What drift detects, and what it does not.")
-
-
-_GroupKey = tuple[JudgeKey, str, str | None, float | None]
 
 
 def _paired_test(
@@ -198,8 +212,8 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
     Returns:
         The movement per (dimension, scale, first judge, second judge), tested as one family.
     """
-    pairs: dict[_GroupKey, dict[str, list[tuple[int, int]]]] = {}
-    unanswered: dict[_GroupKey, int] = {}
+    pairs: dict[SecondJudgeGroup, dict[str, list[tuple[int, int]]]] = {}
+    unanswered: dict[SecondJudgeGroup, int] = {}
     for result in results:
         for judging in result.judge_seconds:
             if pass_id is not None and judging.pass_id != pass_id:
@@ -213,22 +227,14 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
                     entry.first_judge_temperature,
                     sent_settings_key(entry.first_judge_sent_settings),
                 )
-                key = (first, judging.judge.model, judging.judge_config_ids.get(entry.dim), judging.judge.temperature)
+                key = second_judge_group(first, judging, entry.dim)
                 cases = pairs.setdefault(key, {})
                 if entry.second is None:
                     unanswered[key] = unanswered.get(key, 0) + 1
                     continue
                 cases.setdefault(result.test_case_id, []).append((entry.first_score, entry.second.score))
-    keys = sorted(
-        pairs,
-        key=lambda k: (
-            *judge_sort_key(k[0]),
-            k[1],
-            k[2] or "",
-            "" if k[3] is None else str(k[3]),
-        ),
-    )
-    samples: dict[_GroupKey, tuple[list[Fraction], list[Fraction]]] = {}
+    keys = sorted(pairs, key=second_judge_group_sort_key)
+    samples: dict[SecondJudgeGroup, tuple[list[Fraction], list[Fraction]]] = {}
     for key in keys:
         # Each case one draw: its repeats' scores averaged on each side, exactly, in one case order.
         by_case = pairs[key]
@@ -241,7 +247,7 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
     level = 1.0 - SIGNIFICANCE_ALPHA / len(tested) if tested else None
     dimensions = []
     for key in keys:
-        first, model, config_id, temperature = key
+        first, model, config_id, temperature, second_sent = key
         a, b = samples[key]
         low, high = SCALES[first.scale].scores
         test = _paired_test(a, b, level, (float(low), float(high))) if level is not None else None
@@ -265,6 +271,7 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
                 second_model=model,
                 second_judge_config_id=config_id,
                 second_temperature=temperature,
+                second_sent_settings=sent_settings_from_level(second_sent),
                 n_pairs=sum(len(values) for values in pairs[key].values()),
                 n_cases=len(a),
                 n_unanswered=unanswered.get(key, 0),

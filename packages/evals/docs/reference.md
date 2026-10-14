@@ -32,10 +32,10 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.quick`](#api-quick)
 - [`threetears.evals.ops`](#api-ops)
 - [`threetears.evals.actions`](#api-actions)
-- [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (needs the `[fastmcp]` extra)
-- [`threetears.evals.vega`](#api-vega) (needs the `[vega]` extra)
+- [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (fails to import without the `[fastmcp]` extra)
+- [`threetears.evals.vega`](#api-vega)
 - [`threetears.evals.negotiation`](#api-negotiation)
-- [`threetears.evals.providers`](#api-providers) (needs the `[models]` extra)
+- [`threetears.evals.providers`](#api-providers) (fails to import without the `[models]` extra)
 
 <a id="api-threetears-evals"></a>
 ### `threetears.evals`
@@ -46,7 +46,7 @@ The eval engine: templates, cases, runs and results; the trial loop, its judge a
 
 - **`__version__`** · *host contract* · constant (str) · The installed distribution's version, as its metadata states it (`importlib.metadata`): the build a host records beside what it stores, since no stored document or analysis bundle carries it.
 - **`PUBLIC_ROOTS`** · *host contract* · constant (tuple) · The public roots, as absolute module names.
-- **`ROOT_EXTRAS`** · *host contract* · constant (mappingproxy) · Each public root that imports only with an extra installed, mapped to that extra's name: what a consumer reads to import every root its install can, rather than keep its own list.
+- **`ROOT_EXTRAS`** · *host contract* · constant (mappingproxy) · Each public root that fails to import without an extra installed, mapped to that extra's name: what a consumer's import gate reads to import every root its install can, rather than keep its own list.
 
 <a id="api-schema"></a>
 ### `threetears.evals.schema`
@@ -115,7 +115,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`ClientRequestSettings`** · *host contract* · model · Request parameters for one apparatus role's LLM call: what the engine ASKED for, or what a request was SENT with.
 - **`CompletionClient`** · *host contract* · protocol · The completion port eval is constructed with.
 - **`CompletionGenerator`** · protocol · The one call a consumer of a completion client makes, without the client's lifecycle.
-- **`CompletionProtocolDefect`** · exception · A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
+- **`CompletionProtocolDefect`** · *host contract* · exception · A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
 - **`CompletionResult`** · *host contract* · protocol · What eval reads off one completion, whatever produced it.
 - **`ContextComponents`** · model · The separately-recorded pieces a run's `context_key` is composed from.
 - **`ControlEndState`** · model · An end state a template's author states, to prove its goal checks can tell outcomes apart.
@@ -1356,7 +1356,7 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`= 1024`
 - **`SIMULATOR_REASONING_EFFORT`** · constant (str) · How hard the simulated user reasons: the router's `reasoning.effort`, at its lowest level that still reasons.
   <br>`= 'low'`
-- **`SIMULATOR_REQUEST_SETTINGS`** · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_asked_settings`.
+- **`SIMULATOR_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_asked_settings`.
 - **`TEMPLATE_FIELDS`** · constant (tuple) · Every `TemplateField`, in the template's order.
 - **`TEMPLATE_SERVER_FIELDS`** · constant (tuple) · Identity/lifecycle fields the template family owns — never taken from caller input.
 
@@ -1369,7 +1369,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`add_runs_to_campaign`** · function · Attach runs to a campaign (de-duplicated, order-preserving) and persist.
   <br>`add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign`
-- **`analysis_gen_request_settings_for`** · function · The generator role's request settings as ONE value, from the host's answer budget, effort and headroom.
+- **`analysis_gen_request_settings_for`** · *host contract* · function · The generator role's request settings as ONE value, from the host's answer budget, effort and headroom.
   <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings`
 - **`analysis_report`** · function · Read one stored analysis as its report — the one document every surface renders.
   <br>`analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Report`
@@ -1678,14 +1678,14 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ReporterLabel`** · model · One reader's written verdict on a recorded memo, mapped to the dimension it bears on.
 - **`ReporterOverlays`** · model · The one knob a reporter launch may turn: which preset of the analysis generator's prompt writes the memos.
 - **`ReportSource`** · model · What the report is a report of, and how that analysis was generated — or that none was.
-- **`RequestSettingsReading`** · model · What one role asked for and what its calls were actually sent with, across the results read.
+- **`RequestSettingsReading`** · *host contract* · model · What one role asked for and what its calls were actually sent with, across the results read.
 - **`RoleSpend`** · model · What one role spent over a run, summed from its results' usage rows.
 - **`RunMeasureSummary`** · model · One measure over a run's results.
 - **`RunSummary`** · model · One run's compact digest — the levers it RAN at + its key telemetry.
 - **`ScopeDivergence`** · model · Two scopes disagreeing about what one lever change did — a finding, not a caveat.
 - **`ScoreExport`** · model · A projection's rows serialized for analysis elsewhere, with the account a CSV body cannot carry.
 - **`SelfAgreementDimension`** · model · How one judge's repeated scores on one dimension agreed with its first scores of the same evidence.
-- **`SentSettingsShare`** · model · One value a role's calls were sent with, and how many of the role's units carried it.
+- **`SentSettingsShare`** · *host contract* · model · One value a role's calls were sent with, and how many of the role's units carried it.
 - **`SeriesPoint`** · model · One run's aggregate for the measure — the trend's unit, with its denominators.
 - **`ServedModelReading`** · model · Which models answered the candidate calls a contestant, cell or row pooled (#684).
 - **`ShortCell`** · model · A cell holding fewer repetitions than the declaration intended — a short run, stated per cell.
@@ -1778,7 +1778,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`Callable[['list[EvalResult]'], Mapping[tuple[str, str], Mapping[str, Any]]]`
 - **`RunLister`** · type alias · Lists a scope's runs: `list_runs(scope_id, *, status=None, include_archived=False)`.
   <br>`Callable[..., 'list[EvalRun]']`
-- **`SentSettingsState`** · literal · What a role's calls were sent with, read across a run's (or a campaign's) calls, for display only — never stored: `as_asked` (every call reported, one value, the one asked for), `sent_otherwise` (every call reported, one value, not the one asked for), `mixed` (every call reported, more than one value), `unverified` (some call's client did not report what it sent).
+- **`SentSettingsState`** · *host contract* · literal · What a role's calls were sent with, read across a run's (or a campaign's) calls, for display only — never stored: `as_asked` (every call reported, one value, the one asked for), `sent_otherwise` (every call reported, one value, not the one asked for), `mixed` (every call reported, more than one value), `unverified` (some call's client did not report what it sent).
   <br>`'as_asked'` | `'sent_otherwise'` | `'mixed'` | `'unverified'`
 - **`ServedModelState`** · literal · How many models answered a pooled set of candidate calls, as the provider's responses named them.
   <br>`'one'` | `'pooled'` | `'unrecorded'`
@@ -2451,7 +2451,7 @@ The action catalogue: every eval action, declared once, for any transport to mou
 <a id="api-transports-fastmcp"></a>
 ### `threetears.evals.transports.fastmcp`
 
-*Imports only with the `[fastmcp]` extra installed (`pip install "3tears-evals[fastmcp]"`); see `threetears.evals.ROOT_EXTRAS`.*
+*Fails to import without the `[fastmcp]` extra (`pip install "3tears-evals[fastmcp]"`); see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
 
 The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
@@ -2491,9 +2491,7 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 <a id="api-vega"></a>
 ### `threetears.evals.vega`
 
-*Imports only with the `[vega]` extra installed (`pip install "3tears-evals[vega]"`); see `threetears.evals.ROOT_EXTRAS`.*
-
-The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
+The Vega-Lite chart renderer — an optional adapter over eval's chart intent, which imports on the base install.
 
 **Functions**
 
@@ -2546,7 +2544,7 @@ Request negotiation: a client that never fails a request because a model lacks a
 
 **Functions**
 
-- **`anthropic_thinking`** · function · The `thinking` an Anthropic request carries for `sent`, or `None` for none.
+- **`anthropic_thinking`** · *host contract* · function · The `thinking` an Anthropic request carries for `sent`, or `None` for none.
   <br>`anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str | int] | None`
 - **`closest_settings`** · *host contract* · function · What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved.
   <br>`closest_settings(asked: WireSettings, facts: SettingFacts, provider_family: ProviderFamily) -> tuple[WireSettings, tuple[str, ...]]`
@@ -2571,12 +2569,12 @@ Request negotiation: a client that never fails a request because a model lacks a
 
 - **`ProviderFamily`** · *host contract* · literal · The request shape a client speaks, which decides how a setting goes on the wire: `anthropic` (Anthropic's Messages API: thinking budgets, adaptive thinking with effort words, no temperature beside thinking), `openai` (OpenAI's `reasoning_effort`, no budget) and `router` (a router's chat completions: `reasoning.effort` with all seven words, no budget, and enforcement as `provider.require_parameters`, under which a router that finds no endpoint taking every parameter refuses the request).
   <br>`'anthropic'` | `'openai'` | `'router'`
-- **`RefusedSetting`** · literal · What a provider refused:
+- **`RefusedSetting`** · *host contract* · literal · What a provider refused:
   <br>`'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'enforcement'`
 
 **Constants**
 
-- **`ANTHROPIC_MIN_THINKING_BUDGET`** · constant (int) · Anthropic's floor on a thinking budget, in tokens: a budget below it is the caller's error, and a word sent as a budget is never below it.
+- **`ANTHROPIC_MIN_THINKING_BUDGET`** · *host contract* · constant (int) · Anthropic's floor on a thinking budget, in tokens: a budget below it is the caller's error, and a word sent as a budget is never below it.
   <br>`= 1024`
 - **`BUDGET_SHARES`** · constant (dict) · The share of the output cap each effort word stands for: the `router` family's documented ratios for turning an effort into a reasoning budget on a model that takes budgets, so a budget sent to a router as its word comes back as about the budget asked (the judge's 8192 of 10240 is 0.80, `high`, and `high` is 0.80 of the cap again).
 - **`EFFORT_LADDER`** · constant (tuple) · The engine's seven reasoning words (`REASONING_EFFORTS`) as a ladder, lowest first: what "closest" is measured on.
@@ -2584,7 +2582,7 @@ Request negotiation: a client that never fails a request because a model lacks a
 <a id="api-providers"></a>
 ### `threetears.evals.providers`
 
-*Imports only with the `[models]` extra installed (`pip install "3tears-evals[models]"`); see `threetears.evals.ROOT_EXTRAS`.*
+*Fails to import without the `[models]` extra (`pip install "3tears-evals[models]"`); see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
 
 The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
 

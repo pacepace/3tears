@@ -4407,25 +4407,48 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         ),
     )
 
+    @field_validator("sent_settings")
+    @classmethod
+    def _sent_settings_in_canonical_order(
+        cls, sent: list[ClientRequestSettings] | None
+    ) -> list[ClientRequestSettings] | None:
+        """Put the distinct values into canonical order, refusing an empty list and a repeated value.
+
+        The order is the record's, not the writer's: a host building a row lists the values its calls were sent with
+        in whatever order it met them, and one canonical order (:func:`request_settings_order`) makes two rows naming
+        the same values equal and their stored form one. A repeat is refused, not merged: the list names each distinct
+        value once, so a writer repeating one has counted calls where it was asked for values.
+
+        Args:
+            sent: The values as written, or ``None`` (unverified).
+
+        Returns:
+            The values in canonical order, or ``None``.
+
+        Raises:
+            ValueError: ``sent`` is empty, or repeats a value.
+        """
+        if sent is None:
+            return None
+        if not sent:
+            raise ValueError("sent_settings lists every distinct value the row's calls were sent with, or is None")
+        by_form = {request_settings_order(settings): settings for settings in sent}
+        if len(by_form) != len(sent):
+            raise ValueError("sent_settings holds each distinct value once")
+        return [by_form[form] for form in sorted(by_form)]
+
     @model_validator(mode="after")
     def _simulator_attribution_is_the_simulators(self) -> RoleUsage:
-        """Refuse an actor or a purpose on a row of any role but ``simulator``, and sent settings out of order.
+        """Refuse an actor or a purpose on a row of any role but ``simulator``.
 
         Returns:
             The row, unchanged.
 
         Raises:
-            ValueError: ``actor_id`` or ``purpose`` is set on a row whose role is not ``simulator``, or
-                ``sent_settings`` is empty, repeats a value, or is not in canonical order.
+            ValueError: ``actor_id`` or ``purpose`` is set on a row whose role is not ``simulator``.
         """
         if (self.actor_id is not None or self.purpose is not None) and self.role != "simulator":
             raise ValueError(f"actor_id and purpose attribute simulator calls, not the {self.role!r} role's")
-        if self.sent_settings is not None:
-            forms = [request_settings_order(settings) for settings in self.sent_settings]
-            if not forms:
-                raise ValueError("sent_settings lists every distinct value the row's calls were sent with, or is None")
-            if forms != sorted(set(forms)):
-                raise ValueError("sent_settings holds each distinct value once, in canonical order")
         return self
 
 

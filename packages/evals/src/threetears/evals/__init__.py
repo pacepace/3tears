@@ -71,10 +71,10 @@ def __getattr__(name: str) -> str:
 #: The public roots, as absolute module names. A consumer imports from these and from no module
 #: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
 #: ``analysis.viz`` are roots of their own inside a package: the contract a host implements, and
-#: the chart intent with the seam a renderer sits behind. Three roots need an extra (:data:`ROOT_EXTRAS`): ``vega``, the
-#: optional Vega-Lite renderer, whose rasteriser needs ``[vega]``; ``transports.fastmcp``, which
-#: needs ``[fastmcp]``; and ``providers``, the shipped provider adapter over 3tears-models, which
-#: needs ``[models]``.
+#: the chart intent with the seam a renderer sits behind. Two roots fail to import without an extra
+#: (:data:`ROOT_EXTRAS`): ``transports.fastmcp``, which needs ``[fastmcp]``, and ``providers``, the shipped provider
+#: adapter over 3tears-models, which needs ``[models]``. ``vega``, the optional Vega-Lite renderer, imports on the base
+#: install: only its rasterising calls need ``[vega]``.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.schema",
     "threetears.evals.kernel",
@@ -94,14 +94,16 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.providers",
 )
 
-#: Each public root that imports only with an extra installed, mapped to that extra's name: what a consumer reads to
-#: import every root its install can, rather than keep its own list. A root not here imports on the base install,
-#: whose only dependency is pydantic. ``tests/test_extraction_import_boundary.py`` holds it equal to the extras the
-#: package's manifest declares and the roots each one serves.
+#: Each public root that fails to import without an extra installed, mapped to that extra's name: what a consumer's
+#: import gate reads to import every root its install can, rather than keep its own list. Every root not here imports
+#: on the base install, whose only dependency is pydantic, though some of what one does may still need an extra:
+#: ``vega`` imports without ``[vega]``, and only its rasterising calls (``VegaRenderer.png``, ``.svg``) need it, raising
+#: ``ModuleNotFoundError`` for ``vl_convert`` without it.
+#: ``tests/test_extraction_import_boundary.py`` proves the map in fresh interpreters: with every extra's dependencies
+#: unimportable, exactly these roots fail; with one extra's missing, exactly the roots listed under it fail.
 ROOT_EXTRAS: Mapping[str, str] = MappingProxyType(
     {
         "threetears.evals.transports.fastmcp": "fastmcp",
-        "threetears.evals.vega": "vega",
         "threetears.evals.providers": "models",
     }
 )

@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
+from threetears.evals.analysis.agreement import sent_settings_from_level, sent_settings_level
 from threetears.evals.analysis.judge_drift import judge_drift
-from threetears.evals.schema.models import (
-    ClientRequestSettings,
-    EvalResult,
-    RubricScore,
-    request_settings_order,
-)
+from threetears.evals.schema.models import EvalResult
 from threetears.evals.analysis.bundle.schema import (
     JudgeChange,
     JudgeDriftLink,
@@ -44,28 +40,12 @@ _JUDGE_CHANGE_NO_DRIFT = (
 _Level = tuple[str, tuple[tuple[str, str], ...], float | None, tuple[str, ...] | None]
 
 
-def _sent_level(scores: Iterable[RubricScore | None]) -> tuple[str, ...] | None:
-    """The distinct request settings ``scores``' calls were sent with, in canonical order.
-
-    ``None`` when any score is unverified (its client did not report what it sent), or when there is no score: a
-    partial record is not reported as the part that is known, the rule the apparatus readers follow.
-    """
-    sent: set[str] = set()
-    for score in scores:
-        if score is None:
-            continue
-        if score.judge_sent_settings is None:
-            return None
-        sent.add(request_settings_order(score.judge_sent_settings))
-    return tuple(sorted(sent)) or None
-
-
 def _judge_identity(run: EvalRun, results: Sequence[EvalResult]) -> _Level | None:
     """A judged run's judge — the pin, configs and temperature it recorded at launch, and the request settings its
     scores were sent with — or None for an unjudged run."""
     if run.judge_model is None:
         return None
-    sent = _sent_level(
+    sent = sent_settings_level(
         score for result in results for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
     )
     return run.judge_model, tuple(sorted((run.judge_config_ids or {}).items())), run.judge_temperature, sent
@@ -76,12 +56,14 @@ def _names_level(judging: SecondJudging, level: _Level, own: _Level) -> bool:
 
     The model must be the level's pin; the prompts are the run's own when the second judge named none; its
     temperature, when it named none, is what each prompt asks for — the run's own sampling; and the request settings
-    its scores' calls were sent with are the level's, read off the pass's own scores.
+    its scores' calls were sent with are the level's, read off the pass's own scores by the one reading
+    (:func:`~threetears.evals.analysis.agreement.sent_settings_level`) the inter-judge and drift readings key a second
+    judge by, so a drift reading linked to a level is grouped as that level.
     """
     judge = judging.judge
     configs = own[1] if judge.config_ids is None else tuple(sorted(judge.config_ids.items()))
     temperature = own[2] if judge.temperature is None else judge.temperature
-    sent = _sent_level(entry.second for entry in judging.scores)
+    sent = sent_settings_level(entry.second for entry in judging.scores)
     return judge.model == level[0] and configs == level[1] and temperature == level[2] and sent == level[3]
 
 
@@ -99,9 +81,7 @@ def _judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence
             judge_model=level[0],
             judge_config_ids=dict(level[1]),
             judge_temperature=level[2],
-            judge_sent_settings=(
-                None if level[3] is None else [ClientRequestSettings.model_validate_json(form) for form in level[3]]
-            ),
+            judge_sent_settings=sent_settings_from_level(level[3]),
             run_ids=sorted(run.id for run in by_level[level]),
             variant_keys=sorted(
                 {key for run in by_level[level] if (key := variant_key_of_run(results_by_run.get(run.id, [])))}
