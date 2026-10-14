@@ -8,6 +8,11 @@ handed. Building a chat model per unit of work would rebuild an SDK client each 
 its own life and hands the engine a lease on it, whose ``aclose`` releases nothing; :meth:`ModelsClients.aclose_all`
 closes what the factory built, once, when the host shuts down.
 
+**What one client learns, every client of the factory knows.** A provider's refusal of a setting a request carried
+(a temperature, a thinking budget, an effort word, a strict format, OpenRouter's ``require_parameters``) is answered
+by the adapter with the closest setting the model then accepts, and kept in the factory's one price book, which every
+client it builds reads, so another client of the same model sends that way from its first call.
+
 **At boot, the host awaits** ``await clients.load_prices()``: it looks up the price catalogue's rates for every
 role's default model, in the one price book every client of the factory reads, so each client's synchronous
 ``price_ceiling`` can answer before the engine makes an out-of-run call (an analysis, a case generation, a second
@@ -15,13 +20,15 @@ judge or a rejudge) under an enforced ``out_of_run_cap_usd``. Without it a ceili
 loaded the rates (never, on OpenRouter), and the engine refuses every such call. A model the engine names beyond
 ``defaults`` is loaded the same way through its client: ``await clients(role, model).load_prices()``.
 
-**The judge is built as the run records it.** A run launched with a judge records
-:data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` as its ``judge_request_settings``, so a ``judge`` role given
-no request settings of its own (no ``max_tokens``, ``reasoning_max_tokens`` or ``reasoning_effort``) is built from
-those values: its output cap and its reasoning budget, which on Anthropic is the thinking budget. Their
-``strict_output`` is the strict structured directive the judge already sends on every call. OpenAI and OpenRouter
-cannot carry a reasoning budget through the adapter, so a judge there is refused by name unless the host passes the
-judge's settings explicitly, and then the run's recorded settings do not describe what was sent.
+**Every role the run records asked settings for is built as the run asks it.** A run launched with a judge records
+:data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` as its ``judge_asked_settings``, and one with a simulated user
+:data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS` as its ``simulator_asked_settings``, so a ``judge`` or
+``simulator`` role given no request settings of its own (no ``max_tokens``, ``reasoning_max_tokens`` or
+``reasoning_effort``) is built from those values: its output cap and its reasoning parameter. What the adapter sends
+is then what the run records as asked, moved only to the closest setting a model accepts (a budget by the word's
+share of the cap, a neighbouring word), and each completion's ``sent_settings`` says what was sent. Their
+``strict_output`` is the strict structured directive each role already sends on every call. A host that passes a
+role's settings explicitly asks for those instead, and the run's asked settings do not describe them.
 """
 
 from __future__ import annotations
@@ -31,8 +38,8 @@ from collections.abc import Mapping
 from typing import Any, Final, Self, get_args
 
 from threetears.evals.kernel.host import CompletionRole
-from threetears.evals.run import JUDGE_REQUEST_SETTINGS
-from threetears.evals.schema import BoundCompletionClient, KnownReasoningEffort
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS
+from threetears.evals.schema import BoundCompletionClient, ClientRequestSettings, KnownReasoningEffort
 from threetears.models.price_lookup import HttpClient
 
 from threetears.evals.providers.adapter import (
@@ -62,9 +69,17 @@ _NOT_PER_ROLE: Final[Mapping[str, str]] = {
 #: A cached client's key: role, model, temperature, reasoning word and reasoning budget.
 _ClientKey = tuple[str, str, float | None, str | None, int | None]
 
-#: The role keywords that state a client's request settings. A ``judge`` role naming none of them is built from
-#: :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`.
+#: The role keywords that state a client's request settings. A role of :data:`_ASKED` naming none of them is built from
+#: its asked settings.
 _REQUEST_KEYWORDS: Final = ("max_tokens", "reasoning_max_tokens", "reasoning_effort")
+
+#: The request settings the engine stamps on a run as asked of a role (``EvalRun.judge_asked_settings``,
+#: ``EvalRun.simulator_asked_settings``), by role: what a role's client is built from when the host names none, so
+#: the adapter sends what the run records as asked.
+_ASKED: Final[Mapping[str, ClientRequestSettings]] = {
+    "judge": JUDGE_REQUEST_SETTINGS,
+    "simulator": SIMULATOR_REQUEST_SETTINGS,
+}
 
 
 class _Lease:
@@ -143,8 +158,7 @@ class ModelsClients:
             role_settings: Role -> keywords for :func:`~threetears.evals.providers.models_client`.
 
         Raises:
-            ModelsClientRefused: A role that is not one of the engine's, a role keyword the factory supplies, or a
-                default judge with no request settings of its own on a provider that cannot carry a reasoning budget.
+            ModelsClientRefused: A role that is not one of the engine's, or a role keyword the factory supplies.
         """
         if unknown := sorted({*defaults, *role_settings} - _ROLES):
             raise ModelsClientRefused(
@@ -159,44 +173,29 @@ class ModelsClients:
         self._role_settings = {role: dict(settings) for role, settings in role_settings.items()}
         self._book = PriceBook(prices)
         self._clients: dict[_ClientKey, ModelsCompletionClient] = {}
-        if (judge := self._defaults.get("judge")) is not None:
-            self._settings_for("judge", judge)  # a default judge that cannot be built as the run records is refused now
 
-    def _settings_for(self, role: CompletionRole, model: str) -> dict[str, Any]:  # Any: models_client's keywords
-        """The keywords ``role``'s client for ``model`` is built with: the role's own, and the judge's defaults.
+    def _settings_for(self, role: CompletionRole) -> dict[str, Any]:  # Any: models_client's keywords
+        """The keywords ``role``'s client is built with: the role's own, and the engine's asked settings for it.
 
         Args:
             role: The role.
-            model: The model the client calls.
 
         Returns:
-            The role's keywords; for a ``judge`` that states no request settings of its own, with the output cap
-            and reasoning budget of :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` added.
-
-        Raises:
-            ModelsClientRefused: A ``judge`` with no request settings of its own, on a provider that cannot carry a
-                reasoning budget.
+            The role's keywords; for a ``judge`` or ``simulator`` that states no request settings of its own, with the
+            output cap and the reasoning parameter the engine records as asked of it added (the effort word, or the
+            budget when it asks by one): :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`,
+            :data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS`.
         """
         settings = self._role_settings.get(role, {})
-        if role != "judge" or any(keyword in settings for keyword in _REQUEST_KEYWORDS):
+        stamped = _ASKED.get(role)
+        if stamped is None or any(keyword in settings for keyword in _REQUEST_KEYWORDS):
             return settings
-        provider = resolve_provider(model, settings.get("provider"))
-        if provider != "anthropic":
-            raise ModelsClientRefused(
-                "judge",
-                f"a judged run records judge_request_settings=JUDGE_REQUEST_SETTINGS (max_tokens="
-                f"{JUDGE_REQUEST_SETTINGS.max_tokens}, reasoning_max_tokens={JUDGE_REQUEST_SETTINGS.reasoning_max_tokens}),"
-                f" and the adapter cannot send a reasoning token budget to {provider}, so a judge on {model!r} would not "
-                "send what the run records and the record would be false; judge on an Anthropic model, or pass the "
-                "judge's settings explicitly (judge={'max_tokens': ..., 'reasoning_effort': ...}), knowing the run's "
-                "recorded judge_request_settings will not describe them",
-                provider=provider,
-            )
-        return {
-            **settings,
-            "max_tokens": JUDGE_REQUEST_SETTINGS.max_tokens,
-            "reasoning_max_tokens": JUDGE_REQUEST_SETTINGS.reasoning_max_tokens,
+        asked = {
+            "max_tokens": stamped.max_tokens,
+            "reasoning_effort": stamped.reasoning_effort,
+            "reasoning_max_tokens": stamped.reasoning_max_tokens,
         }
+        return {**settings, **{keyword: value for keyword, value in asked.items() if value is not None}}
 
     def _key_for(self, provider: SupportedProvider) -> str:
         """The key for ``provider``: the mapping's, else its SDK's environment variable, else a refusal by name."""
@@ -227,15 +226,14 @@ class ModelsClients:
 
         Raises:
             ModelsClientRefused: No model was named and the role has no default; no key for the model's provider is
-                in ``api_keys`` or the environment; a judge with no settings of its own on a provider that cannot
-                carry :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`; or a setting the client cannot carry.
+                in ``api_keys`` or the environment; or a setting the client cannot carry.
         """
         chosen = model if model is not None else self._defaults.get(role)
         if chosen is None:
             raise ModelsClientRefused(
                 "model", f"the engine named no model for {role!r} and defaults has none for it; add defaults[{role!r}]"
             )
-        settings = self._settings_for(role, chosen)
+        settings = self._settings_for(role)
         effort: KnownReasoningEffort | None = settings.get("reasoning_effort")
         budget: int | None = settings.get("reasoning_max_tokens")
         key: _ClientKey = (role, chosen, temperature, effort, budget)
@@ -329,19 +327,17 @@ def models_clients(
         prices: The httpx-like client every role's catalogue reads go through, or ``None`` for the adapter to
             open its own per fetch (see :func:`~threetears.evals.providers.models_client`).
         **per_role_kwargs: Role -> keywords for :func:`~threetears.evals.providers.models_client` for every client
-            of that role: ``simulator={"reasoning_effort": "minimal", "provider": "openrouter"}``. The temperature,
+            of that role: ``simulator={"reasoning_effort": "low", "provider": "openrouter"}``. The temperature,
             the key and the prices are the engine's and the factory's to supply, and are refused here. A ``judge``
-            that names no ``max_tokens``, ``reasoning_max_tokens`` or ``reasoning_effort`` is built from
-            :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` (``max_tokens`` and the reasoning budget), which
-            is what a judged run records; on a provider that cannot carry the budget it is refused unless its
-            settings are passed here.
+            or ``simulator`` that names no ``max_tokens``, ``reasoning_max_tokens`` or ``reasoning_effort`` is built
+            from :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` or
+            :data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS` (``max_tokens`` and the reasoning parameter),
+            which is what a run records it asked.
 
     Returns:
         The factory.
 
     Raises:
-        ModelsClientRefused: A role that is not one of the engine's, a role keyword the factory supplies, or a
-            default judge with no settings of its own on a provider that cannot carry
-            :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`.
+        ModelsClientRefused: A role that is not one of the engine's, or a role keyword the factory supplies.
     """
     return ModelsClients(api_keys=api_keys, defaults=defaults, prices=prices, role_settings=per_role_kwargs)

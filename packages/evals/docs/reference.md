@@ -32,9 +32,10 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.quick`](#api-quick)
 - [`threetears.evals.ops`](#api-ops)
 - [`threetears.evals.actions`](#api-actions)
-- [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp)
+- [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (fails to import without the `[fastmcp]` extra)
 - [`threetears.evals.vega`](#api-vega)
-- [`threetears.evals.providers`](#api-providers)
+- [`threetears.evals.negotiation`](#api-negotiation)
+- [`threetears.evals.providers`](#api-providers) (fails to import without the `[models]` extra)
 
 <a id="api-threetears-evals"></a>
 ### `threetears.evals`
@@ -44,7 +45,8 @@ The eval engine: templates, cases, runs and results; the trial loop, its judge a
 **Constants**
 
 - **`__version__`** · *host contract* · constant (str) · The installed distribution's version, as its metadata states it (`importlib.metadata`): the build a host records beside what it stores, since no stored document or analysis bundle carries it.
-- **`PUBLIC_ROOTS`** · constant (tuple) · The public roots, as absolute module names.
+- **`PUBLIC_ROOTS`** · *host contract* · constant (tuple) · The public roots, as absolute module names.
+- **`ROOT_EXTRAS`** · *host contract* · constant (mappingproxy) · Each public root that fails to import without an extra installed, mapped to that extra's name: what a consumer's import gate reads to import every root its install can, rather than keep its own list.
 
 <a id="api-schema"></a>
 ### `threetears.evals.schema`
@@ -87,6 +89,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`referenced_actions(expression: str) -> tuple[tuple[str, str], ...]`
 - **`refuse_on_event_loop`** · function · Raise `StoreCalledOnEventLoop` when the calling thread is running an event loop.
   <br>`refuse_on_event_loop() -> None`
+- **`sent_settings_of`** · *host contract* · function · What the request that produced `completion` actually carried, as its client reports it, or `None`.
+  <br>`sent_settings_of(completion: object) -> ClientRequestSettings | None`
 - **`utc_now_iso`** · function · Return the current UTC time in ISO-8601 format.
   <br>`utc_now_iso() -> str`
 - **`with_fault`** · function · `faults` with `entry` appended, kept inside `FaultsField`'s caps.
@@ -108,10 +112,10 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CatalogRubricDim`** · model · A reusable rubric dimension in the shared catalog.
 - **`CellIdentity`** · dataclass · Which cell execution a stretch of work belongs to.
 - **`CellTrace`** · dataclass · What one cell's tracing yielded — filled by the sink, read by the engine.
-- **`ClientRequestSettings`** · *host contract* · model · The request parameters a host applied to one apparatus role's LLM client, for one run.
+- **`ClientRequestSettings`** · *host contract* · model · Request parameters for one apparatus role's LLM call: what the engine ASKED for, or what a request was SENT with.
 - **`CompletionClient`** · *host contract* · protocol · The completion port eval is constructed with.
 - **`CompletionGenerator`** · protocol · The one call a consumer of a completion client makes, without the client's lifecycle.
-- **`CompletionProtocolDefect`** · exception · A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
+- **`CompletionProtocolDefect`** · *host contract* · exception · A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
 - **`CompletionResult`** · *host contract* · protocol · What eval reads off one completion, whatever produced it.
 - **`ContextComponents`** · model · The separately-recorded pieces a run's `context_key` is composed from.
 - **`ControlEndState`** · model · An end state a template's author states, to prove its goal checks can tell outcomes apart.
@@ -311,12 +315,12 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CELL_TIMEOUT_ORIGINS`** · *host contract* · constant (tuple) · The values of `CellTimeoutOrigin` this build knows, in the order its readers list them.
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
 - **`CORE_BASELINE_VERSION`** · *host contract* · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
-  <br>`= 14`
+  <br>`= 15`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
   <br>`= 0`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
-  <br>`= 14`
+  <br>`= 15`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
@@ -349,7 +353,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`REASONING_EFFORTS`** · *host contract* · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
 - **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
-  <br>`= 9`
+  <br>`= 10`
 - **`RESERVED_DIM_IDS`** · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
 - **`ROLE_MODEL_ORIGINS`** · *host contract* · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
 - **`ROUND_DONE`** · constant (str) · The scheduler's answer that the current speaker round is over and the candidate answers next.
@@ -430,7 +434,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`judge_criterion_digest`** · function · A digest of one criterion as a judge is asked it: its id, scale and wording (#628).
   <br>`judge_criterion_digest(dim: str, scale: RubricScale, criterion: RubricDim | None) -> str`
 - **`judge_profile_id`** · function · The id of the one profile of a judge on a criterion: derived from both, so recording again replaces it.
-  <br>`judge_profile_id(rubric_dim: str, scale: str, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str) -> str`
+  <br>`judge_profile_id(rubric_dim: str, scale: str, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str, *, judge_sent_settings: ClientRequestSettings | None) -> str`
 - **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none.
   <br>`judge_trial_of(kind_payload: object) -> JudgeTrial | None`
 - **`lease_lapsed`** · function · Whether a record's lease has lapsed at `now` — or it has none, which no process can be renewing.
@@ -650,7 +654,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ToolLike`** · protocol · The three members the cassette layer calls on a synchronous tool it wraps.
 - **`UndeclarableAxisError`** · exception · A declared axis this host will not accept: neither a registered lever nor a recognised open-family member.
 - **`UnknownCandidateKind`** · exception · A template names a kind this host did not wire.
-- **`UnportableSchema`** · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent.
+- **`UnportableSchema`** · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent; or an `enum` or `const` holding a value that is not a string, which not every strict mode enforces.
 - **`UnreadableBarName`** · dataclass · A bar name no verdict can be given on, and why — the text an author or a reader is shown.
 - **`UnreadableRecordError`** · exception · A stored record this build's model refuses, met by a read that cannot answer without it (status 500).
 - **`UnreadableRunError`** · *host contract* · exception · A read that cannot leave a run out met one this build's model refuses (status 500).
@@ -1327,13 +1331,13 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`= 4`
 - **`JUDGE_CALL_ATTEMPTS`** · constant (int) · Calls one judge dimension can make: the first, plus its parse retries.
   <br>`= 2`
-- **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning budget plus the answer budget, DERIVED rather than chosen, so it always sits above the ceiling it wraps.
+- **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning headroom plus the answer budget, DERIVED rather than chosen, so it always leaves room to think and then answer.
   <br>`= 10240`
 - **`JUDGE_REPEAT_ACTION`** · constant (str) · The name a repeat's job record (`EvalActionJob`) carries as its `action`.
   <br>`= 'judge_repeat'`
 - **`JUDGE_REPEAT_BUDGET_S`** · constant (float) · A repeat's wall-clock ceiling as a job: generous, since every call is bounded by its client and the repeat stops on an account refusal; it exists so one whose provider hangs is ended rather than held forever.
   <br>`= 21600.0`
-- **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_request_settings`.
+- **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_asked_settings`.
 - **`JUDGE_TEMPERATURE_JOB`** · constant (LeasedJobKind) · A judge temperature comparison's record.
 - **`LAUNCH_CANCEL_REASON`** · constant (str) · The reason recorded on a run its launch's cancel stopped.
   <br>`= 'its launch was cancelled'`
@@ -1351,8 +1355,8 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`SIMULATOR_REASONING_ALLOWANCE_TOKENS`** · constant (int) · Room the output cap leaves for the simulated user's private reasoning at `SIMULATOR_REASONING_EFFORT`.
   <br>`= 1024`
 - **`SIMULATOR_REASONING_EFFORT`** · constant (str) · How hard the simulated user reasons: the router's `reasoning.effort`, at its lowest level that still reasons.
-  <br>`= 'minimal'`
-- **`SIMULATOR_REQUEST_SETTINGS`** · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_request_settings`.
+  <br>`= 'low'`
+- **`SIMULATOR_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_asked_settings`.
 - **`TEMPLATE_FIELDS`** · constant (tuple) · Every `TemplateField`, in the template's order.
 - **`TEMPLATE_SERVER_FIELDS`** · constant (tuple) · Identity/lifecycle fields the template family owns — never taken from caller input.
 
@@ -1365,8 +1369,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`add_runs_to_campaign`** · function · Attach runs to a campaign (de-duplicated, order-preserving) and persist.
   <br>`add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign`
-- **`analysis_gen_request_settings_for`** · function · The generator role's request settings as ONE value, from the host's two budgets.
-  <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_budget_tokens: int) -> ClientRequestSettings`
+- **`analysis_gen_request_settings_for`** · *host contract* · function · The generator role's request settings as ONE value, from the host's answer budget, effort and headroom.
+  <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings`
 - **`analysis_report`** · function · Read one stored analysis as its report — the one document every surface renders.
   <br>`analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Report`
 - **`assemble_context_bundle`** · function · Assemble the closed context bundle for a campaign's runs.
@@ -1374,7 +1378,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`build_code_only_report`** · function · Lay a campaign's assembled evidence out as a report, when no analysis exists to report through.
   <br>`build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRegistry, assembled_at: str, campaign_name: str | None = None) -> Report`
 - **`build_report`** · function · Lay one stored analysis out as a report.
-  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None) -> Report`
+  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None, request_settings: str | None = None) -> Report`
 - **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
 - **`campaign_verdicts`** · function · Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
@@ -1556,7 +1560,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`AliasedFactors`** · model · Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them.
 - **`AmbiguousPair`** · dataclass · A (campaign, recorded memo) pair holding more than one live case.
-- **`AnalysisContextBundle`** · model · The closed context bundle a generation prompt runs over.
+- **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
 - **`AnalysisGenerationEstimate`** · model · What a generation would be priced at before it starts, against the cap it would be held to.
 - **`AnalysisStore`** · protocol · The storage calls the analysis service makes — its own, plus the bundle assembly's it hands the store to.
 - **`ArmLevel`** · model · One coordinate of an arm — which lever, and the level it carried.
@@ -1627,7 +1631,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`JudgeDriftLink`** · model · A drift reading that spans a judge change: evidence of one side re-scored by the other side's judge.
 - **`JudgeGrade`** · model · One rubric dimension's score on one answer, with the judge's reason.
 - **`JudgeIdentityLevel`** · model · One judge the member runs were scored by, as each run recorded it at launch, and the runs and arms under it.
-- **`JudgeKey`** · class · Who judged a reading: the dimension, its scale, the model that served the score, the config that asked and the temperature the call was sent at.
+- **`JudgeKey`** · class · Who judged a reading: the dimension, its scale, the model that served the score, the config that asked, the temperature the call was sent at and the request settings it was sent with.
 - **`JudgeKindReading`** · model · One judge's three measures on one criterion, over the frozen cases it was asked.
 - **`JudgeKindReadings`** · model · Every judge and criterion a judge campaign's results measured, and every result left out.
 - **`JudgeParseValidity`** · model · How often one judge's replies on one criterion kept the protocol.
@@ -1674,12 +1678,14 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ReporterLabel`** · model · One reader's written verdict on a recorded memo, mapped to the dimension it bears on.
 - **`ReporterOverlays`** · model · The one knob a reporter launch may turn: which preset of the analysis generator's prompt writes the memos.
 - **`ReportSource`** · model · What the report is a report of, and how that analysis was generated — or that none was.
+- **`RequestSettingsReading`** · *host contract* · model · What one role asked for and what its calls were actually sent with, across the results read.
 - **`RoleSpend`** · model · What one role spent over a run, summed from its results' usage rows.
 - **`RunMeasureSummary`** · model · One measure over a run's results.
 - **`RunSummary`** · model · One run's compact digest — the levers it RAN at + its key telemetry.
 - **`ScopeDivergence`** · model · Two scopes disagreeing about what one lever change did — a finding, not a caveat.
 - **`ScoreExport`** · model · A projection's rows serialized for analysis elsewhere, with the account a CSV body cannot carry.
 - **`SelfAgreementDimension`** · model · How one judge's repeated scores on one dimension agreed with its first scores of the same evidence.
+- **`SentSettingsShare`** · *host contract* · model · One value a role's calls were sent with, and how many of the role's units carried it.
 - **`SeriesPoint`** · model · One run's aggregate for the measure — the trend's unit, with its denominators.
 - **`ServedModelReading`** · model · Which models answered the candidate calls a contestant, cell or row pooled (#684).
 - **`ShortCell`** · model · A cell holding fewer repetitions than the declaration intended — a short run, stated per cell.
@@ -1766,10 +1772,14 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'markdown'` | `'json'` | `'html'`
 - **`ReportSection`** · literal · Where a block sits, in reading order.
   <br>`'summary'` | `'questions'` | `'decisions'` | `'guardrails'` | `'findings'` | `'arms'` | `'surface'` | `'next'` | `'methods'`
+- **`RequestSettingsRole`** · literal · The roles whose request settings the record discloses: the judge and the simulated user, the two the apparatus pools on.
+  <br>`'judge'` | `'simulator'`
 - **`RowColumns`** · type alias · The host's own columns for each `(model, run_id)` group of a run's results, laid over a `run_summary` row after the engine's aggregates.
   <br>`Callable[['list[EvalResult]'], Mapping[tuple[str, str], Mapping[str, Any]]]`
 - **`RunLister`** · type alias · Lists a scope's runs: `list_runs(scope_id, *, status=None, include_archived=False)`.
   <br>`Callable[..., 'list[EvalRun]']`
+- **`SentSettingsState`** · *host contract* · literal · What a role's calls were sent with, read across a run's (or a campaign's) calls, for display only — never stored: `as_asked` (every call reported, one value, the one asked for), `sent_otherwise` (every call reported, one value, not the one asked for), `mixed` (every call reported, more than one value), `unverified` (some call's client did not report what it sent).
+  <br>`'as_asked'` | `'sent_otherwise'` | `'mixed'` | `'unverified'`
 - **`ServedModelState`** · literal · How many models answered a pooled set of candidate calls, as the provider's responses named them.
   <br>`'one'` | `'pooled'` | `'unrecorded'`
 - **`SurfaceState`** · literal · Where a table stands. Two states rather than an optional table, because "the surface froze no cell" is a fact with its own sentence, and is not an empty table.
@@ -1783,7 +1793,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`UnpairedSecondReason`** · literal · Why a second judge's score has no pair to be read in: its call failed — an infrastructure fault, which says nothing about either judge.
   <br>`'second_failed'`
 - **`UnrepeatedReason`** · literal · Why a repeated score has no pair to be read in.
-  <br>`'repeat_failed'` | `'judge_changed'` | `'config_changed'` | `'temperature_changed'`
+  <br>`'repeat_failed'` | `'judge_changed'` | `'config_changed'` | `'temperature_changed'` | `'settings_changed'`
 - **`VerdictKind`** · literal · Which reading a `Verdict` is: a contrast tested against the control, a bar read on one cell, or a guardrail checked for one arm against the control.
   <br>`'contrast'` | `'bar'` | `'guardrail'`
 - **`VerdictReason`** · literal · Why a verdict came out as it did, as a code a program branches on (`reason_detail` says it in words where there is more to say).
@@ -1800,7 +1810,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CELL_MEASURED`** · constant (str) · A pivot cell state: observations landed here and carried a value for the measure.
   <br>`= 'measured'`
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
-  <br>`= 12`
+  <br>`= 13`
 - **`CELL_NOT_RUN`** · constant (str) · A pivot cell state: no observation landed here — the combination was never run, which is not a zero.
   <br>`= 'not_run'`
 - **`CELL_WITHHELD`** · constant (str) · A fourth state, and not a kind of the other three: the cell HAS measured observations, and its mean is withheld because it would pool two quantities that are not one distribution — today a cost cell pooling replayed results with live ones (#658).
@@ -1833,7 +1843,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`READ_TIER_ROW_BUDGET`** · constant (int) · How many projected score records one read-tier call may carry before its observer line is logged at WARNING instead of INFO (#652).
   <br>`= 50000`
 - **`REPORT_VERSION`** · *host contract* · constant (int) · The report shape's version.
-  <br>`= 9`
+  <br>`= 10`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 - **`REPORTER_KIND_CONTRACT`** · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
@@ -1957,7 +1967,9 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 **Functions**
 
 - **`check_completion_conformance`** · *host contract* · function · Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
-  <br>`check_completion_conformance(completion: object) -> None`
+  <br>`check_completion_conformance(completion: object, *, require_sent_settings: bool = False) -> None`
+- **`check_refusal_negotiation`** · *host contract* · async function · Fail, naming each mistake, unless the client answers a router's refusals in order and reports what was served.
+  <br>`check_refusal_negotiation(build_client: Callable[[RouterTransport], CompletionClient]) -> None`
 - **`jobs_conformance_cases`** · *host contract* · function · Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
   <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0, call_return_timeout_s: float = 10.0) -> tuple[JobsConformanceCase, ...]`
 - **`nonpublic_evals_imports`** · function · Every reach into `threetears.evals` under `sources` that goes below a public root's declared names.
@@ -1966,13 +1978,14 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 **Classes**
 
 - **`BoundaryFinding`** · dataclass · One reach into `threetears.evals` that does not go through a public root's declared names.
-- **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or reports a stop reason outside eval's vocabulary.
+- **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or holds a stop reason or sent settings eval cannot read.
 - **`CompletionGuard`** · *host contract* · dataclass · The kit's watch on a host's completion clients: what was asked outside a job, and how often inside one.
 - **`CompletionOutsideJob`** · exception · A completion request made outside any job's work, refused by the kit's guarded client before it was sent.
 - **`JobAwaitedByItsCall`** · exception · A job's completion request that waited for the call that started the job, and found it still waiting on it.
 - **`JobsConformanceCase`** · dataclass · One action held to one rule.
 - **`JobsConformanceFailure`** · exception · An action broke the job rule, or its happy path proved nothing. The message names the action and the rule.
 - **`JobsConformanceHost`** · *host contract* · dataclass · What a host hands the kit for one case: its operations host, who calls, and its sample launch.
+- **`NegotiationConformanceFailure`** · *host contract* · exception · A host's client mishandled the router's refusals: each mistake it made, named.
 - **`ReaderConformanceCase`** · dataclass · One promise a reader makes, as a check over a sample.
 - **`ReaderConformanceFailure`** · exception · A host's reader broke a promise the engine relies on; the message names the case, the reader and the run.
 - **`ReaderSample`** · dataclass · What the kit checks a host's readers over: the host's profile and runs it produced.
@@ -1989,6 +2002,8 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
   <br>`'static_import'` | `'dynamic_import'` | `'attribute_reach'` | `'private_reach'` | `'patch'`
 - **`BuildConformanceHost`** · type alias · Builds a fresh host for one case, its completion clients wrapped by the guard it is handed.
   <br>`Callable[[CompletionGuard], JobsConformanceHost]`
+- **`RouterTransport`** · *host contract* · type alias · A scripted router: the JSON body a client would POST in, the status and JSON body the router answers with out.
+  <br>`Callable[[Mapping[str, object]], Awaitable[tuple[int, Mapping[str, object]]]]`
 
 **Constants**
 
@@ -2436,6 +2451,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
 <a id="api-transports-fastmcp"></a>
 ### `threetears.evals.transports.fastmcp`
 
+*Fails to import without the `[fastmcp]` extra (`pip install "3tears-evals[fastmcp]"`); see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
+
 The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 **Functions**
@@ -2474,7 +2491,7 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 <a id="api-vega"></a>
 ### `threetears.evals.vega`
 
-The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
+The Vega-Lite chart renderer — an optional adapter over eval's chart intent, which imports on the base install.
 
 **Functions**
 
@@ -2520,8 +2537,56 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 - **`Theme`** · literal · The colour theme a chart is drawn for.
   <br>`'light'` | `'dark'`
 
+<a id="api-negotiation"></a>
+### `threetears.evals.negotiation`
+
+Request negotiation: a client that never fails a request because a model lacks a setting.
+
+**Functions**
+
+- **`anthropic_thinking`** · *host contract* · function · The `thinking` an Anthropic request carries for `sent`, or `None` for none.
+  <br>`anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str | int] | None`
+- **`closest_settings`** · *host contract* · function · What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved.
+  <br>`closest_settings(asked: WireSettings, facts: SettingFacts, provider_family: ProviderFamily) -> tuple[WireSettings, tuple[str, ...]]`
+- **`facts_from_router_catalogue`** · *host contract* · function · The facts a router's catalogue row states of a model: each parameter it does not list, as not taken.
+  <br>`facts_from_router_catalogue(supported_parameters: Collection[str] | None) -> SettingFacts`
+- **`negotiate`** · *host contract* · async function · Send the closest settings the model is known to take; on a recognised refusal, learn it and send again.
+  <br>`negotiate(asked: WireSettings, *, provider_family: ProviderFamily, model: str, provider: str | None = None, send: Callable[[WireSettings, SettingFacts], Awaitable[R]], read_refusal: Callable[[Exception], SettingRefusal | None], learned: LearnedSettings, declared: SettingFacts | None = None) -> Negotiated[R]`
+- **`read_anthropic_refusal`** · *host contract* · function · Whether Anthropic's answer refuses a request for a setting it carried, which, and in what words.
+  <br>`read_anthropic_refusal(status: int, body: object) -> SettingRefusal | None`
+- **`read_openai_refusal`** · *host contract* · function · Whether OpenAI's answer refuses a request for a setting it carried, which, and in what words.
+  <br>`read_openai_refusal(status: int, body: object) -> SettingRefusal | None`
+- **`read_router_refusal`** · *host contract* · function · Whether OpenRouter's answer refuses a request for a setting it carried, which, and in what words.
+  <br>`read_router_refusal(status: int, body: object) -> SettingRefusal | None`
+- **`wire_settings_for`** · *host contract* · function · What a client asks for when it is asked for `settings` at `temperature`: the engine's values, as wire ones.
+  <br>`wire_settings_for(settings: ClientRequestSettings, temperature: float | None) -> WireSettings`
+
+**Classes**
+
+- **`LearnedSettings`** · *host contract* · class · What providers refused, per provider and model, kept for as long as the callers that share it live.
+- **`Negotiated`** · *host contract* · dataclass · A served request: the caller's reply, and what the request that produced it carried.
+- **`SettingFacts`** · *host contract* · dataclass · What is known of the request settings one model accepts: each fact `None` while nothing says.
+- **`SettingRefusal`** · *host contract* · dataclass · A provider refusing a request for one setting it carried, in the provider's own words.
+- **`WireSettings`** · *host contract* · dataclass · Request settings as a client is asked for them, or as one request carries them.
+
+**Types**
+
+- **`ProviderFamily`** · *host contract* · literal · The request shape a client speaks, which decides how a setting goes on the wire: `anthropic` (Anthropic's Messages API: thinking budgets, adaptive thinking with effort words, no temperature beside thinking), `openai` (OpenAI's `reasoning_effort`, no budget) and `router` (a router's chat completions: `reasoning.effort` with all seven words, no budget, and enforcement as `provider.require_parameters`, under which a router that finds no endpoint taking every parameter refuses the request).
+  <br>`'anthropic'` | `'openai'` | `'router'`
+- **`RefusedSetting`** · *host contract* · literal · What a provider refused:
+  <br>`'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'max_tokens'` | `'enforcement'`
+
+**Constants**
+
+- **`ANTHROPIC_MIN_THINKING_BUDGET`** · *host contract* · constant (int) · Anthropic's floor on a thinking budget, in tokens: a budget below it is the caller's error, and a word sent as a budget is never below it.
+  <br>`= 1024`
+- **`BUDGET_SHARES`** · constant (dict) · The share of the output cap each effort word stands for: the `router` family's documented ratios for turning an effort into a reasoning budget on a model that takes budgets, so a budget sent to a router as its word comes back as about the budget asked (the judge's 8192 of 10240 is 0.80, `high`, and `high` is 0.80 of the cap again).
+- **`EFFORT_LADDER`** · constant (tuple) · The engine's seven reasoning words (`REASONING_EFFORTS`) as a ladder, lowest first: what "closest" is measured on.
+
 <a id="api-providers"></a>
 ### `threetears.evals.providers`
+
+*Fails to import without the `[models]` extra (`pip install "3tears-evals[models]"`); see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
 
 The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
 
@@ -2534,9 +2599,9 @@ The shipped provider adapter: a chat model 3tears-models builds, as the engine's
 
 **Classes**
 
-- **`ModelsClientRefused`** · *host contract* · exception · A setting the adapter cannot carry to the provider, refused before anything is sent.
+- **`ModelsClientRefused`** · *host contract* · exception · A setting the adapter refuses by name before anything is sent: the caller's error, never a model's lack.
 - **`ModelsClients`** · *host contract* · class · The engine's role factory over `models_client`: `models_clients` builds one.
-- **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's ten members and three of its own.
+- **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's members, and three of its own.
 - **`ModelsCompletionClient`** · class · The completion port over one chat model 3tears-models built: `models_client` returns one.
 - **`ModelsFailureDescriber`** · *host contract* · class · A `ProviderFailureDescriber` for the adapter's providers, total over `BaseException`.
 
@@ -2606,7 +2671,7 @@ One analysis, as a document every surface renders. See the module docstring for 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `report_version` | `Literal[9]` | `9` | This shape's version. |
+| `report_version` | `Literal[10]` | `10` | This shape's version. |
 | `basis` | `ReportBasis` | required | `analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it — no headline, no findings, no author's words. |
 | `headline` | `ModelProse` | required | The author's headline, as written; empty when the author wrote none, and on a code-only report. |
 | `finding_count` | `int` | required | How many findings the document holds — the range every position is in. |
@@ -2700,7 +2765,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `52` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `53` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -2753,6 +2818,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps. |
 | `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
 | `model_identity_disclosure` | `str \| None` | `None` | Set when some of the member runs' candidate calls or judge scores came back from a response that named no model, so the record holds only the model id each asked for — and a provider may answer an id with a model of its choosing (a floating alias). |
+| `request_settings_disclosure` | `str \| None` | `None` | Set when the member runs' judge or simulated-user calls were not shown to be sent as each run asked: sent other settings than asked (a client may send the closest setting a model accepts), sent more than one way (with the counts), sent without enforcement (the provider may have ignored any setting the serving model does not take), or not reported at all (unverified). |
 | `measurement_window_disclosure` | `str \| None` | `None` | Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that do not overlap — so anything that moved between those spans (a model revision, a provider's load, a rate limit) moved with the runs, and a difference between the two runs of such a pair is not attributable to the runs alone. |
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |
@@ -2761,7 +2827,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
-| `cell_model_version` | `int` | `12` | Which definition of a cell produced `cells`. |
+| `cell_model_version` | `int` | `13` | Which definition of a cell produced `cells`. |
 | `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |
 | `variant_index` | `list[VariantIndexEntry]` | `[]` | One entry per keyed variant — the variant key and the resolved lever map it was digested from. |

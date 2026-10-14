@@ -60,9 +60,11 @@ from threetears.evals.storage import InMemoryDocumentStore
 _UNSEATED_BY_THE_EXTRACTOR = {
     "judge_model",
     "judge_request_settings",
+    "judge_sent_settings",
     "judge_dim_divergence",
     "simulator_model",
     "simulator_request_settings",
+    "simulator_sent_settings",
 }
 
 #: A second kind on the toy host, scored by a model judge: it seats the whole judge role.
@@ -376,7 +378,12 @@ def test_holding_the_kind_to_every_seat_brings_the_unseated_confounds_back() -> 
     reported = {confound.dimension for confound in bundle.apparatus_confounds if confound.status == "undecided"}
     # The judge axes stay out even so: the toy runs name no judge, so their rigs had no judge seat — the
     # per-run narrowing, which no kind declaration can widen back.
-    assert reported == _UNSEATED_BY_THE_EXTRACTOR - {"judge_model", "judge_request_settings", "judge_dim_divergence"}, (
+    assert reported == _UNSEATED_BY_THE_EXTRACTOR - {
+        "judge_model",
+        "judge_request_settings",
+        "judge_sent_settings",
+        "judge_dim_divergence",
+    }, (
         "held to every seat, the bundle should report exactly the non-judge dimensions the extractor does not seat "
         f"as undecided, and instead reported {sorted(reported)}"
     )

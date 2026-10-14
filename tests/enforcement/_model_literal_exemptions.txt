@@ -45,3 +45,7 @@ packages/models/tests/unit/models/test_price_lookup.py::price-source fixtures (O
 # not depend on threetears.models, whose defaults are not these models.
 packages/evals/tests/test_live_example.py::per-model price and effort-support tests; the model id is the subject under test
 packages/evals/tests/test_paid_analysis_generation.py::paid-lane price table keyed by model id; evals does not depend on threetears.models
+
+# the evals examples' model pin: the owner ruled every example calls claude-haiku-5-5 and nothing else, and the
+# test holds the examples to that exact id; a canonical DEFAULT_* constant would let them drift with the family default.
+packages/evals/tests/test_examples.py::pins the owner's ruling that every evals example calls claude-haiku-5-5 and no other model

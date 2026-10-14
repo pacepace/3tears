@@ -143,7 +143,8 @@ carries the words its text prints beside the numbers, so a client shows them rat
 `headline`, `results_text`, `stopped_text` (beside `stopped_because`), `spend_cap_text`, `measure_lines` (each
 measure's `state` — `measured`, `not_a_number`, `in_confusion_matrix`, `no_successful_results`, `all_excluded`
 or `not_carried` — and its line), `confusion_lines`, `label_lines`, `stratum_lines`, `intent_text`,
-`dimension_lines`, `self_judging_warning`, `model_identity_warning` (beside `unconfirmed_models`), `spend_lines`,
+`dimension_lines`, `self_judging_warning`, `model_identity_warning` (beside `unconfirmed_models`),
+`request_settings_warning` (beside `request_settings`, each role's asked and sent settings), `spend_lines`,
 `total_spend_text`, `goal_check_lines`, and `text`, the whole of it
 as `render()` prints it. A field with nothing to say is null or empty, and the summary prints no line for it.
 

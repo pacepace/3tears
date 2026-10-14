@@ -12,8 +12,11 @@ agent drives it through: :mod:`~threetears.evals.ops` (typed operations, and one
 work), :mod:`~threetears.evals.actions` (the action catalogue every transport mounts) and
 :mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). One more is an
 optional adapter: :mod:`~threetears.evals.vega`, the Vega-Lite chart renderer (install
-``3tears-evals[vega]``), which reads the core's chart intent and which nothing in the core imports. Runs
-are launched on demand; there is no scheduled-run surface.
+``3tears-evals[vega]``), which reads the core's chart intent and which nothing in the core imports. And two
+are for a completion client: :mod:`~threetears.evals.negotiation` (sending the closest request settings a model
+takes, and answering a provider's refusal of one, on the base install) and :mod:`~threetears.evals.providers` (the
+shipped adapter over 3tears-models, ``3tears-evals[models]``, which uses it); nothing in the engine imports
+either. Runs are launched on demand; there is no scheduled-run surface.
 
 **Import only from a public root**, and only the names its ``__all__`` declares. The roots are
 :data:`PUBLIC_ROOTS`, which a consumer can read to check its own imports rather than keep a copy;
@@ -33,7 +36,9 @@ stored document carries it (each carries its own schema version), so a host that
 what records it beside what it stores.
 """
 
+from collections.abc import Mapping
 from importlib.metadata import version as _distribution_version
+from types import MappingProxyType
 
 #: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
 #: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
@@ -66,10 +71,10 @@ def __getattr__(name: str) -> str:
 #: The public roots, as absolute module names. A consumer imports from these and from no module
 #: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
 #: ``analysis.viz`` are roots of their own inside a package: the contract a host implements, and
-#: the chart intent with the seam a renderer sits behind. Three roots need an extra: ``vega``, the
-#: optional Vega-Lite renderer, whose rasteriser needs ``[vega]``; ``transports.fastmcp``, which
-#: needs ``[fastmcp]``; and ``providers``, the shipped provider adapter over 3tears-models, which
-#: needs ``[models]``.
+#: the chart intent with the seam a renderer sits behind. Two roots fail to import without an extra
+#: (:data:`ROOT_EXTRAS`): ``transports.fastmcp``, which needs ``[fastmcp]``, and ``providers``, the shipped provider
+#: adapter over 3tears-models, which needs ``[models]``. ``vega``, the optional Vega-Lite renderer, imports on the base
+#: install: only its rasterising calls need ``[vega]``.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.schema",
     "threetears.evals.kernel",
@@ -85,7 +90,22 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.actions",
     "threetears.evals.transports.fastmcp",
     "threetears.evals.vega",
+    "threetears.evals.negotiation",
     "threetears.evals.providers",
 )
 
-__all__ = ["PUBLIC_ROOTS", "__version__"]
+#: Each public root that fails to import without an extra installed, mapped to that extra's name: what a consumer's
+#: import gate reads to import every root its install can, rather than keep its own list. Every root not here imports
+#: on the base install, whose only dependency is pydantic, though some of what one does may still need an extra:
+#: ``vega`` imports without ``[vega]``, and only its rasterising calls (``VegaRenderer.png``, ``.svg``) need it, raising
+#: ``ModuleNotFoundError`` for ``vl_convert`` without it.
+#: ``tests/test_extraction_import_boundary.py`` proves the map in fresh interpreters: with every extra's dependencies
+#: unimportable, exactly these roots fail; with one extra's missing, exactly the roots listed under it fail.
+ROOT_EXTRAS: Mapping[str, str] = MappingProxyType(
+    {
+        "threetears.evals.transports.fastmcp": "fastmcp",
+        "threetears.evals.providers": "models",
+    }
+)
+
+__all__ = ["PUBLIC_ROOTS", "ROOT_EXTRAS", "__version__"]

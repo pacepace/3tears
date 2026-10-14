@@ -8,6 +8,7 @@ import pytest
 
 from threetears.evals.schema.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
+from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SIMULATOR_ANSWER_BUDGET_TOKENS,
@@ -561,6 +562,63 @@ async def test_llm_turn_from_a_client_reporting_nothing_reads_as_unobserved():
     assert usage.price_source is None
 
 
+class _MistypedSentResponse(_UsageResponse):
+    """A billed response whose ``sent_settings`` holds a word where request settings belong: the host's defect."""
+
+    def __init__(self, content="hi"):
+        super().__init__(content)
+        self.sent_settings = "low"
+
+
+class _SchedulerThenMistypedLLM:
+    """Answers the ``llm_decided`` scheduler's pick with a mistyped ``sent_settings``."""
+
+    def __init__(self, next_actor: str):
+        self._next = next_actor
+
+    async def generate(self, *, system: str, user: str, response_format: dict | None = None):
+        response = _MistypedSentResponse()
+        response.content = json.dumps({"next": self._next})
+        return response
+
+
+async def test_a_refused_sent_settings_is_raised_only_after_the_billed_utterance_is_recorded():
+    """The call was paid for: its spend is in ``calls`` (unverified) before the host's defect leaves."""
+    driver = _usage_driver()
+
+    with pytest.raises(CompletionProtocolDefect, match="sent_settings"):
+        await _speak(driver, _UsageLLM(_MistypedSentResponse()))
+
+    [call] = driver.calls
+    assert (call.purpose, call.actor_id, call.round_index) == ("utterance", "a", 0)
+    assert (call.usage.cost_usd, call.usage.input_tokens, call.usage.sent_settings) == (0.004, 12, None)
+    ledger = RoleUsageLedger(role="simulator")
+    driver.fold_usage(ledger)
+    [row] = ledger.rows()
+    assert (row.call_count, row.cost_usd, row.sent_settings) == (1, pytest.approx(0.004), None)
+
+
+async def test_a_refused_sent_settings_on_a_scheduling_pick_is_raised_after_the_pick_is_recorded():
+    driver = TurnDriver(
+        conversation=_conversation(
+            [ActorPolicy(id="a", policy="p", intent="i"), ActorPolicy(id="b", policy="p", intent="i")],
+            turn_scheduler="llm_decided",
+        ),
+        variation={},
+    )
+
+    with pytest.raises(CompletionProtocolDefect, match="sent_settings"):
+        await driver.next_speaker(_SchedulerThenMistypedLLM("b"))
+
+    [call] = driver.calls
+    assert (call.purpose, call.actor_id, call.usage.cost_usd, call.usage.sent_settings) == (
+        "schedule",
+        None,
+        0.004,
+        None,
+    )
+
+
 def test_scripted_initial_utterance_records_no_call():
     """A templated opener runs no LLM at all — distinct from an LLM call that reported nothing."""
     driver = TurnDriver(
@@ -607,10 +665,12 @@ def test_fold_usage_refuses_another_roles_ledger(role):
 
 def test_the_simulator_asks_for_its_reasoning_by_effort_under_a_derived_cap() -> None:
     """``openai/gpt-5-nano`` is effort-only: a token budget was mapped to an effort by its share of the cap and still
-    reasoned through the whole cap, so the simulator names the lowest effort that reasons and sends no token budget —
-    and its cap is still derived as room for that reasoning plus room for the reply."""
-    assert SIMULATOR_REQUEST_SETTINGS.reasoning_effort == SIMULATOR_REASONING_EFFORT == "minimal"
+    reasoned through the whole cap, so the simulator names the lowest widely accepted effort and sends no token
+    budget — and its cap is still derived as room for that reasoning plus room for the reply. Its calls all send a
+    strict reply schema, so it asks for the enforcement they carry."""
+    assert SIMULATOR_REQUEST_SETTINGS.reasoning_effort == SIMULATOR_REASONING_EFFORT == "low"
     assert SIMULATOR_REQUEST_SETTINGS.reasoning_max_tokens is None
+    assert SIMULATOR_REQUEST_SETTINGS.strict_output is True
     assert SIMULATOR_REQUEST_SETTINGS.max_tokens == SIMULATOR_MAX_TOKENS
     assert SIMULATOR_MAX_TOKENS == SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
 

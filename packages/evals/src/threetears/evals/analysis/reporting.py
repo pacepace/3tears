@@ -51,7 +51,10 @@ from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     RESERVED_DIM_IDS,
     TRANSCRIPT_DIM_ID,
+    ClientRequestSettings,
     RubricScale,
+    request_settings_order,
+    request_settings_words,
 )
 from threetears.evals.kernel.surface import FrontierDominance
 from threetears.evals.kernel.result_condition import (
@@ -549,6 +552,262 @@ def model_identity_disclosure(identities: Sequence[UnconfirmedModelIdentity]) ->
         "the model id asked for, and a provider may answer an id with a model of its choosing (a floating alias), "
         "so these numbers cannot say which model produced them; a completion client that reports the model its "
         "provider's response named (served_model) confirms it."
+    )
+
+
+#: The roles whose request settings the record discloses: the judge and the simulated user, the two the apparatus
+#: pools on. Never the candidate: a host builds its candidate's client itself, the engine asks it for nothing, and no
+#: sentence may imply its settings were verified (decision 11 of the sent-settings design).
+RequestSettingsRole = Literal["judge", "simulator"]
+
+#: What a role's calls were sent with, read across a run's (or a campaign's) calls, for display only — never stored:
+#: ``as_asked`` (every call reported, one value, the one asked for), ``sent_otherwise`` (every call reported, one
+#: value, not the one asked for), ``mixed`` (every call reported, more than one value), ``unverified`` (some call's
+#: client did not report what it sent).
+SentSettingsState = Literal["as_asked", "sent_otherwise", "mixed", "unverified"]
+
+
+class SentSettingsShare(EvalBaseModel):
+    """One value a role's calls were sent with, and how many of the role's units carried it."""
+
+    settings: ClientRequestSettings = Field(description="What the calls were sent with, as their client reported it.")
+    count: int = Field(
+        ge=1,
+        description=(
+            "Judge: the scores whose call was sent with it. Simulator: the results some of whose simulated-user calls "
+            "were (a result whose calls were sent two ways counts under both)."
+        ),
+    )
+
+
+class RequestSettingsReading(EvalBaseModel):
+    """What one role asked for and what its calls were actually sent with, across the results read.
+
+    The run stamps what the engine ASKED each role for (``EvalRun.judge_asked_settings``,
+    ``EvalRun.simulator_asked_settings``); each call's completion may report what its request actually CARRIED, and
+    the engine stores that per score (``RubricScore.judge_sent_settings``) and per usage row
+    (``RoleUsage.sent_settings``). A client may send the closest setting a model accepts, resend a strict call without
+    enforcement, or say nothing. This reads the two side by side, for the judge and the simulated user only — derived
+    on every read, never stored. :attr:`state` is the per-run "sent" value a surface displays.
+
+    The units are the judge's scores (one call produced each; a score made outside a judge phase sampled nothing and
+    is not read) and the results whose simulated user made a call, as :class:`UnconfirmedModelIdentity` counts.
+    """
+
+    role: RequestSettingsRole = Field(description="Whose calls: the judge's, or the simulated user's.")
+    asked: list[ClientRequestSettings] = Field(
+        default_factory=list,
+        description=(
+            "What the runs read asked the role for, each distinct value once, in canonical order. Empty where no run "
+            "recorded what it asked."
+        ),
+    )
+    sent: list[SentSettingsShare] = Field(
+        default_factory=list,
+        description="Each distinct value the role's calls reported being sent with, in canonical order.",
+    )
+    n_total: int = Field(
+        ge=1, description="Judge: the scores read. Simulator: the results whose simulated user called."
+    )
+    n_unverified: int = Field(
+        ge=0, description="The units some call of which did not report what it was sent with (unverified)."
+    )
+    n_not_as_asked: int = Field(
+        ge=0, description="The units some call of which reported being sent other than its run asked."
+    )
+    n_unenforced: int = Field(
+        ge=0,
+        description=(
+            "The units some call of which reported being sent without enforcement (``strict_output`` False): the "
+            "provider may have ignored any setting the serving model does not take."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _counts_nest(self) -> RequestSettingsReading:
+        """No count exceeds the units read.
+
+        Returns:
+            The validated reading.
+
+        Raises:
+            ValueError: A count exceeds ``n_total``.
+        """
+        for name in ("n_unverified", "n_not_as_asked", "n_unenforced"):
+            if getattr(self, name) > self.n_total:
+                raise ValueError(f"{name} {getattr(self, name)} of {self.n_total} is more than there are")
+        return self
+
+    @property
+    def state(self) -> SentSettingsState:
+        """The role's derived "sent" value (:data:`SentSettingsState`), for display; never stored."""
+        if self.n_unverified:
+            return "unverified"
+        if len(self.sent) > 1:
+            return "mixed"
+        return "sent_otherwise" if self.n_not_as_asked else "as_asked"
+
+    def sent_display(self) -> str:
+        """The derived "sent" value in words: the one value, the mixture with its counts, or unverified.
+
+        Returns:
+            ``{...}`` for one value; ``mixed: 3 score(s) with {...}, 1 with {...}``; or ``unverified (...)``.
+        """
+        unit = _ROLE_UNIT[self.role]
+        if self.state == "unverified":
+            return f"unverified ({self.n_unverified} of {self.n_total} {unit} not reported)"
+        if self.state == "mixed":
+            return "mixed: " + _shares_words(self.sent, unit)
+        return request_settings_words(self.sent[0].settings)
+
+    def clauses(self) -> list[str]:
+        """The role's halves of :func:`request_settings_disclosure`, one per thing worth saying; empty when none is.
+
+        Returns:
+            In order: the role sent more than one way, or other than asked; some of its calls are unverified; some
+            were sent without enforcement.
+        """
+        name = _ROLE_NAME[self.role]
+        unit = _ROLE_UNIT[self.role]
+        asked = " or ".join(request_settings_words(value) for value in self.asked) or "settings no run recorded"
+        said: list[str] = []
+        if len(self.sent) > 1:
+            ways = _COUNT_WORDS.get(len(self.sent), str(len(self.sent)))
+            said.append(f"{name}'s calls were sent {ways} ways: {_shares_words(self.sent, unit)} (asked for {asked})")
+        elif self.sent and self.n_not_as_asked:
+            said.append(
+                f"{name} was asked for {asked} and sent {request_settings_words(self.sent[0].settings)} on "
+                f"{self.n_not_as_asked} of {self.n_total} {unit}"
+            )
+        if self.n_unverified:
+            said.append(
+                f"{name}'s client did not report what it sent for {self.n_unverified} of {self.n_total} {unit}, so "
+                f"those cannot say whether what was asked ({asked}) was applied"
+            )
+        if self.n_unenforced:
+            said.append(
+                f"{name}'s settings were sent without enforcement on {self.n_unenforced} of {self.n_total} {unit}; the "
+                "provider may have ignored any the serving model does not take"
+            )
+        return said
+
+
+#: How a disclosure names each role, and the unit it counts.
+_ROLE_NAME: dict[str, str] = {"judge": "the judge", "simulator": "the simulated user"}
+_ROLE_UNIT: dict[str, str] = {"judge": "score(s)", "simulator": "result(s)"}
+_COUNT_WORDS: dict[int, str] = {2: "two", 3: "three", 4: "four"}
+
+
+def _shares_words(shares: Sequence[SentSettingsShare], unit: str) -> str:
+    """Several sent values with their counts, the unit named once: ``3 score(s) with {...}, 1 with {...}``."""
+    counted = [f"{share.count} with {request_settings_words(share.settings)}" for share in shares]
+    first, *rest = counted
+    head, _, tail = first.partition(" ")
+    return ", ".join([f"{head} {unit} {tail}", *rest])
+
+
+class _Tally:
+    """One role's running tally while :func:`request_settings_readings` reads the results."""
+
+    def __init__(self) -> None:
+        self.asked: dict[str, ClientRequestSettings] = {}
+        self.sent: dict[str, tuple[ClientRequestSettings, int]] = {}
+        self.total = self.unverified = self.not_as_asked = self.unenforced = 0
+
+    def unit(self, asked: ClientRequestSettings | None, sent: Sequence[ClientRequestSettings] | None) -> None:
+        """Count one unit: what its run asked, and every value its calls reported (``None`` = some did not)."""
+        self.total += 1
+        if asked is not None:
+            self.asked.setdefault(request_settings_order(asked), asked)
+        if sent is None:
+            self.unverified += 1
+            return
+        for value in sent:
+            form = request_settings_order(value)
+            known = self.sent.get(form)
+            self.sent[form] = (value, 1 if known is None else known[1] + 1)
+        if any(value != asked for value in sent):
+            self.not_as_asked += 1
+        if any(not value.strict_output for value in sent):
+            self.unenforced += 1
+
+    def reading(self, role: RequestSettingsRole) -> RequestSettingsReading | None:
+        """The role's reading, or ``None`` when no unit was read."""
+        if not self.total:
+            return None
+        return RequestSettingsReading(
+            role=role,
+            asked=[self.asked[form] for form in sorted(self.asked)],
+            sent=[
+                SentSettingsShare(settings=self.sent[form][0], count=self.sent[form][1]) for form in sorted(self.sent)
+            ],
+            n_total=self.total,
+            n_unverified=self.unverified,
+            n_not_as_asked=self.not_as_asked,
+            n_unenforced=self.unenforced,
+        )
+
+
+def request_settings_readings(runs: Iterable[EvalRun], results: Iterable[EvalResult]) -> list[RequestSettingsReading]:
+    """What the judge and the simulated user asked for and were actually sent, over the results given.
+
+    The judge is read off every stored score a judge phase produced (one with a ``judge_temperature``; a score made
+    outside a judge phase sampled nothing): its ``judge_sent_settings`` against its run's ``judge_asked_settings``.
+    The simulated user is read off each result's ``simulator`` usage rows (``RoleUsage.sent_settings``) against its
+    run's ``simulator_asked_settings``. The candidate is never read (:data:`RequestSettingsRole`).
+
+    Args:
+        runs: The runs the results belong to; a result whose run is absent counts as asking nothing recorded.
+        results: The results.
+
+    Returns:
+        The judge's reading then the simulated user's, each only where the role made a call; empty when neither did.
+    """
+    by_id = {run.id: run for run in runs}
+    judge, simulator = _Tally(), _Tally()
+    for result in results:
+        run = by_id.get(result.eval_run_id)
+        axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
+        for score in (*result.rubric_scores, *axes):
+            if score.judge_temperature is None:
+                continue
+            sent = score.judge_sent_settings
+            judge.unit(None if run is None else run.judge_asked_settings, None if sent is None else [sent])
+        reported = [row.sent_settings for row in result.usage if row.role == "simulator"]
+        if reported:
+            # One unit per result: unverified when any of its rows is, else every distinct value its rows hold.
+            distinct = {
+                request_settings_order(value): value for values in reported if values is not None for value in values
+            }
+            simulator.unit(
+                None if run is None else run.simulator_asked_settings,
+                None if None in reported else [distinct[form] for form in sorted(distinct)],
+            )
+    return [reading for reading in (judge.reading("judge"), simulator.reading("simulator")) if reading is not None]
+
+
+def request_settings_disclosure(readings: Sequence[RequestSettingsReading]) -> str | None:
+    """The one sentence every surface shows when a role's calls were not shown to be sent as asked.
+
+    Said where, for the judge or the simulated user, what was sent differs from what was asked, where some call's
+    client did not report what it sent (unverified), where settings were sent without enforcement, and where a role's
+    calls were sent more than one way, with the counts. Rendered verbatim by the run summary (``run_get``),
+    :func:`~threetears.evals.analysis.reads.run_summary`, the analysis bundle and the campaign report, beside
+    :func:`model_identity_disclosure`, so no surface words it its own way. Never about the candidate.
+
+    Args:
+        readings: The roles' readings, from :func:`request_settings_readings`.
+
+    Returns:
+        The disclosure, or ``None`` when every call of both roles reported being sent, enforced, exactly as asked.
+    """
+    clauses = [clause for reading in readings for clause in reading.clauses()]
+    if not clauses:
+        return None
+    return (
+        f"Request settings not confirmed as asked: {'; '.join(clauses)}. A client may send the closest setting a model "
+        "accepts, or resend a call without enforcement, and reports what each request carried (sent_settings); runs "
+        "sent differently, or one reported and one not, are not pooled as one apparatus."
     )
 
 
@@ -1611,6 +1870,12 @@ __all__ = [
     "METRIC_TRANSCRIPT",
     "model_identity_disclosure",
     "NULL_LEVEL",
+    "request_settings_disclosure",
+    "request_settings_readings",
+    "RequestSettingsReading",
+    "RequestSettingsRole",
+    "SentSettingsShare",
+    "SentSettingsState",
     "place_results",
     "PlacedResult",
     "pooled_composite_basis",

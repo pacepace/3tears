@@ -127,8 +127,12 @@ def api_section() -> Iterator[str]:
         "([stability tiers](adopting-a-host.md#stability-tiers))."
     )
     yield ""
+    from threetears.evals import ROOT_EXTRAS
+
     for root in walked_modules():
-        yield f"- [`{root}`](#{root_slug(root)})"
+        extra = ROOT_EXTRAS.get(root)
+        needs = f" (fails to import without the `[{extra}]` extra)" if extra else ""
+        yield f"- [`{root}`](#{root_slug(root)}){needs}"
     yield ""
     first_root: dict[int, str] = {}
     names = list(public_names())
@@ -137,6 +141,13 @@ def api_section() -> Iterator[str]:
         yield anchor(root_slug(root))
         yield f"### `{root}`"
         yield ""
+        if root in ROOT_EXTRAS:
+            yield (
+                f"*Fails to import without the `[{ROOT_EXTRAS[root]}]` extra "
+                f'(`pip install "3tears-evals[{ROOT_EXTRAS[root]}]"`); see `threetears.evals.ROOT_EXTRAS`. Every root '
+                "not so marked imports on the base install.*"
+            )
+            yield ""
         intro = paragraphs(module.__doc__)
         if intro:
             yield md_text(intro[0])

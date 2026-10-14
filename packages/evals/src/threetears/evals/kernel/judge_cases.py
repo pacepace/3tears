@@ -39,6 +39,7 @@ from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
+    ClientRequestSettings,
     DimName,
     EvalTestCase,
     GoalStateOutcome,
@@ -128,6 +129,14 @@ class JudgeCaseSource(EvalBaseModel):
     first_judge_temperature: JudgeTemperature | None = Field(
         default=None, description="The temperature that call was sent at; None = not recorded."
     )
+    first_judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings that call was actually sent with, as the score recorded them; None = unverified. "
+            "Left out of the case's content digest while None, so a case frozen before the field existed keeps its "
+            "digest."
+        ),
+    )
 
 
 class JudgeCase(EvalBaseModel):
@@ -178,10 +187,17 @@ class JudgeCase(EvalBaseModel):
     def content_digest(self) -> str:
         """A digest of everything the case freezes, its labels included — what makes two freezes the same case.
 
+        ``source.first_judge_sent_settings`` is left out of the pre-image while it is None, so a case whose first
+        score recorded no sent settings digests as it did before the field existed (the digest-default rule of
+        :mod:`~threetears.evals.schema.versioning`).
+
         Returns:
             The digest.
         """
-        return canonical_digest(self.model_dump(mode="json"))
+        frozen = self.model_dump(mode="json")
+        if frozen["source"]["first_judge_sent_settings"] is None:
+            del frozen["source"]["first_judge_sent_settings"]
+        return canonical_digest(frozen)
 
 
 def judge_criterion_digest(dim: str, scale: RubricScale, criterion: RubricDim | None) -> str:
@@ -276,6 +292,14 @@ class JudgeTrial(EvalBaseModel):
         description=(
             "What the call was sent at, as its client reported it; None only for a call that returned no completion "
             "to read it from (a trial with no reply). A scored trial always carries it."
+        ),
+    )
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the call was actually sent with, as its client reported them "
+            "(``sent_settings_of``); None = unverified: the client did not report them, or the call returned no "
+            "completion to read them from. Part of the judge's identity beside its temperature."
         ),
     )
 

@@ -7,26 +7,50 @@ fills the number in, and a reading the bundle lacks is refused and sent back for
 overclaim: hold it against the code's verdict, printed first. The bundle: ``docs/concepts.md#analysis-bundle``.
 Saving it and running a second prompt over the same fingerprint: ``docs/reading-reports.md``.
 
-Run it with ``python llm_analysis.py`` (``README.md`` beside it says how); it writes
-``./eval-analysis/bundle.json``. The campaign's two classifiers are keyword rules, so the campaign always runs
-offline. With ``ANTHROPIC_API_KEY`` set, Claude writes the analysis, for about a cent. Without it, a scripted
-stand-in writes it, and its first draft cites a reading the bundle lacks, to show the refusal.
+The writer's first draft is canned, not written: ``llm_analysis_first_draft.json`` beside this file cites
+"precision", a reading this campaign never measured, so the check refuses it and sends it back with the refusal.
+A model's own first draft may well pass, and then there is no refusal to show. The model writes the repair, from the
+refusal and the bundle.
+
+Run it with ``python llm_analysis.py`` (``README.md`` beside it says how); it writes ``./eval-analysis/bundle.json``.
+The campaign's two classifiers are keyword rules, so the campaign always runs offline and free. With
+``ANTHROPIC_API_KEY`` set, Claude writes the repair, one call for under a cent. Without it, the example replays
+``recordings/llm_analysis.jsonl``, what Claude wrote when the run was recorded, and calls nothing. A recording
+answers only the prompt it was made for, and the prompt is the bundle, which names this run's ids and times: so a
+replay hands the writer the bundle the recording was made from, ``recordings/llm_analysis.bundle.json``, not this
+run's. ``RECORD=1 python llm_analysis.py``, with the key set, records both again.
 """
 
 import asyncio
 import json
+import os
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from _live import Completion, anthropic_sdk, claude, online
-from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, generate_analysis, inspect_campaign_bundle
+from threetears.evals.analysis import (
+    EVAL_ANALYSIS_GEN_DEFAULT,
+    AnalysisContextBundle,
+    generate_analysis,
+    inspect_campaign_bundle,
+)
 from threetears.evals.kernel import EvalAnalysis
+from threetears.evals.providers import models_client
 from threetears.evals.quick import compare
 from threetears.evals.run import run_blocking
+from threetears.evals.schema import ClientRequestSettings
+from threetears.evals.testing import RecordedCompletions
 
 MODEL = "claude-haiku-5-5"
+#: How the writer is asked: room for a whole analysis, and low effort. No temperature: this model refuses one.
+SETTINGS = ClientRequestSettings(max_tokens=12_000, reasoning_effort="low")
+FIRST_DRAFT = Path(__file__).with_name("llm_analysis_first_draft.json")
+RECORDING = Path(__file__).with_name("recordings") / "llm_analysis.jsonl"
+#: The bundle the recording was made from: what a replay hands the writer.
+RECORDED_BUNDLE = RECORDING.with_name("llm_analysis.bundle.json")
+RERECORD = "RECORD=1 python llm_analysis.py"
 
 # -----------------------------------------------------------------------------
 # 1. The campaign: two keyword classifiers, plain rules that always run offline, over a dozen tickets.
@@ -63,50 +87,72 @@ def keyword_classifier(rules: dict[str, tuple[str, ...]]) -> Any:
 
 
 # -----------------------------------------------------------------------------
-# 2. The OFFLINE stand-in writer: a script, not a model. Live, the writer is Claude (``_live.py``).
+# 2. The writer: the canned first draft, then Claude when a key is set, else the recording of a run that called it.
 # -----------------------------------------------------------------------------
 
 
-def offline_writer() -> Any:
-    """A scripted stand-in for the writer; its first draft cites "precision", which this campaign never measured."""
+def client(model: str, settings: ClientRequestSettings) -> Any:
+    """``model``, asked as ``settings`` say: live with ``ANTHROPIC_API_KEY`` (recorded with ``RECORD=1``), else replayed."""
+    key, recording = os.environ.get("ANTHROPIC_API_KEY"), os.environ.get("RECORD") == "1"
+    if not key:
+        if recording:
+            raise SystemExit("RECORD=1 records a live run, which needs ANTHROPIC_API_KEY")
+        return RecordedCompletions.replay(RECORDING, settings=settings, model=model, rerecord=RERECORD)
+    live = models_client(
+        model,
+        api_key=key,
+        provider="anthropic",  # models' registry does not place this id on its own
+        max_tokens=settings.max_tokens,
+        reasoning_effort=settings.reasoning_effort,
+    )  # and no temperature, so the model's own sampling applies
+    return RecordedCompletions.record(live, RECORDING, settings=settings, replace=True) if recording else live
+
+
+def how_it_runs(what: str) -> str:
+    """The first line printed: running live, recording, or replaying a recording made on its date."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        recording = f", recording it into recordings/{RECORDING.name}" if os.environ.get("RECORD") == "1" else ""
+        return f"Running live against Claude ({what}){recording}."
+    made = json.loads(RECORDING.read_text(encoding="utf-8").splitlines()[0])["recorded_at"][:10]
+    return (
+        f"ANTHROPIC_API_KEY is not set: replaying recordings/{RECORDING.name}, Claude ({what}) as recorded on {made}."
+    )
+
+
+def writer(llm: Any) -> Any:
+    """A writer whose first draft is the canned one, and whose every later draft is ``llm``'s."""
     drafts = 0
 
-    async def generate(*, system: str, user: str, response_format: dict | None = None) -> Completion:
+    async def generate(*, system: str, user: str, response_format: dict | None = None) -> Any:
         nonlocal drafts
         drafts += 1
-        evidence, _ = json.JSONDecoder().raw_decode(user, user.index("{"))  # the bundle, as the writer sees it
-        tested = evidence["multiple_comparisons"]["families"][0]["comparisons"][0]
-        arm, control = tested["contrast"]["cell"], tested["control"]["cell"]
-        measure = "precision" if drafts == 1 else tested["name"]
-        cite = {cell: "{{" + f"{cell}|{measure}|measure|mean" + "}}" for cell in (arm, control)}  # code fills these
-        finding = {
-            "title": f"{measure.capitalize()} by arm",
-            "body": f"The tested arm reads {cite[arm]}, the control {cite[control]}.",
-            "evidence": [{"cell": cell, "measure_id": measure, "reading": "measure"} for cell in cite],
-            "chart": {"type": "none", "cells": [], "measures": [], "axis": "", "note": "", "caption": ""},
-        } | {"confidence": "low", "axes": [], "caveats": [], "invalidates": [], "durable": ""}
-        memo = {"headline": "Offline stand-in: a script wrote this, not a model", "summary": "- Shape only."}
-        memo |= {"headline_rests_on": [0], "summary_rests_on": [[0]]}
-        memo |= {"findings": [finding], "decisions": [], "questions": [], "next": []}
-        # No provider resolves a stand-in, so the model that answered is the one asked for: say so as served_model.
-        return Completion(
-            json.dumps(memo), None, None, None, 0.0, "offline", "offline-writer", "offline-writer", "end_turn", None
+        if drafts > 1:
+            return await llm.generate(system=system, user=user, response_format=response_format)
+        # The canned draft, as a completion: nothing was called, so nothing was spent and no model served it.
+        return SimpleNamespace(
+            content=FIRST_DRAFT.read_text(encoding="utf-8"),
+            input_tokens=None,
+            output_tokens=None,
+            reasoning_tokens=None,
+            cost_usd=0.0,
+            price_source="canned: no model was called",
+            model="canned-first-draft",
+            served_model=None,
+            stop_reason="end_turn",
+            temperature=None,
         )
 
     return SimpleNamespace(generate=generate)
 
 
 # -----------------------------------------------------------------------------
-# 3. Run the campaign, freeze its bundle to ``out_dir``, and have the writer write the analysis from it.
+# 3. Run the campaign, freeze its bundle to ``out_dir``, and have the writer write the analysis from a frozen one.
 # -----------------------------------------------------------------------------
 
 
 async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
-    if online():
-        anthropic_sdk()  # without the SDK, exit saying how to get it before claiming a live run
-        print(f"Running against Claude ({MODEL}).\n")
-    else:
-        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a scripted stand-in for the analysis writer.\n")
+    llm = client(MODEL, SETTINGS)
+    print(how_it_runs(MODEL) + "\n")
 
     arms = {"baseline": keyword_classifier(BASELINE_RULES), "candidate": keyword_classifier(CANDIDATE_RULES)}
     comparison = await compare(
@@ -129,20 +175,34 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
         comparison.campaign_id,
         comparison.scope_id,
     )
-    bundle = inspected.bundle
+    frozen = out_dir / "bundle.json"
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "bundle.json").write_text(bundle.to_json(indent=2))
-    print(f"Froze the evidence into {out_dir / 'bundle.json'}, fingerprint {bundle.fingerprint()}")
+    frozen.write_text(inspected.bundle.to_json(indent=2), encoding="utf-8")
+    print(f"Froze the evidence into {frozen}, fingerprint {inspected.bundle.fingerprint()}")
 
-    analysis, _insights = await generate_analysis(
-        bundle,  # the whole context: nothing else is read while the analysis is written
-        prompt=EVAL_ANALYSIS_GEN_DEFAULT,
-        model=MODEL if online() else "offline-writer",
-        client=claude(MODEL, max_tokens=12_000) if online() else offline_writer(),
-        prompt_id="eval_analysis_gen",
-        bundle_assembled_at=datetime.now(UTC).isoformat(),
-        profile=comparison.host.profile,
-    )
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        if not RECORDED_BUNDLE.is_file():
+            raise SystemExit(
+                f"{RECORDED_BUNDLE} is missing, and the recording answers only it; {RERECORD} records both"
+            )
+        frozen = RECORDED_BUNDLE  # this run's bundle is a prompt the recording never answered
+        print(f"Replaying: the writer reads {RECORDED_BUNDLE.name}, the bundle the recording was made from.")
+    elif os.environ.get("RECORD") == "1":
+        shutil.copyfile(frozen, RECORDED_BUNDLE)  # the bundle a replay will hand the writer
+    bundle = AnalysisContextBundle.from_json(frozen.read_text(encoding="utf-8"))  # the writer reads only the file
+
+    try:
+        analysis, _insights = await generate_analysis(
+            bundle,  # the whole context: nothing else is read while the analysis is written
+            prompt=EVAL_ANALYSIS_GEN_DEFAULT,
+            model=MODEL,
+            client=writer(llm),
+            prompt_id="eval_analysis_gen",
+            bundle_assembled_at=datetime.now(UTC).isoformat(),
+            profile=comparison.host.profile,
+        )
+    finally:
+        await llm.aclose()
     print(f"\n# {analysis.document.headline}")
     for finding in analysis.document.findings:
         print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code

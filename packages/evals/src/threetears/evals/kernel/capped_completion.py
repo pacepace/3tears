@@ -125,5 +125,8 @@ class CappedCompletion:
             # unknown here, and the cell's own record reports what its caller learned of it.
             held.release()
             raise
-        held.settle(CallUsage.of(result).cost_usd)
+        # The spend alone: the reservation is settled to what the call cost whatever else the completion holds, and a
+        # cap reads nothing a candidate's call was sent with. The simulator's sent settings are read by its own caller,
+        # after this has settled the call, so a refused ``sent_settings`` never leaves a paid call's ceiling held.
+        held.settle(CallUsage.billed(result).cost_usd)
         return result

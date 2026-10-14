@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self, get
 
 from pydantic import Field, field_validator, model_validator
 from threetears.evals.schema.base import CoreDocumentModel, known_unless_newer_minor
-from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
+from threetears.evals.schema.models import ClientRequestSettings, CoreSchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.evals.schema.completion import StopReason
 
@@ -95,6 +95,15 @@ class OutOfRunSpend(CoreDocumentModel):
         default=None, ge=0.0, description="What the call cost as reported; None when unpriced."
     )
     price_source: str | None = Field(default=None, description="Where cost_usd came from, as the client named it.")
+    sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the call was actually SENT with, as its completion reported them "
+            "(``sent_settings_of``), for audit: a client that sent the closest setting a model accepts changes what "
+            "the call cost. Nothing pools on it. None = unverified (the client did not report it), and always None "
+            "for a raised call, which returned no completion."
+        ),
+    )
     unreadable: list[str] = Field(
         default_factory=list,
         description=(
@@ -140,7 +149,14 @@ class OutOfRunSpend(CoreDocumentModel):
         if self.outcome == "raised":
             reported = {
                 name: getattr(self, name)
-                for name in ("stop_reason", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cost_usd")
+                for name in (
+                    "stop_reason",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "reasoning_tokens",
+                    "cost_usd",
+                    "sent_settings",
+                )
                 if getattr(self, name) is not None
             }
             if self.unreadable:

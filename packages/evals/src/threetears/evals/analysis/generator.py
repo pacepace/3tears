@@ -133,7 +133,7 @@ from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.host.style import prompt_fragment
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
-from threetears.evals.schema.models import ClientRequestSettings, utc_now_iso
+from threetears.evals.schema.models import ClientRequestSettings, KnownReasoningEffort, utc_now_iso
 from threetears.evals.schema.completion import RequestCeiling
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
 from threetears.evals.kernel.surface import DecisionSurface
@@ -144,10 +144,20 @@ if TYPE_CHECKING:  # the model-provider PORT — a protocol, injected; never con
 
 log = get_logger(__name__)
 
-#: The analysis generator's reasoning budget when the host sets none, sent as ``reasoning.max_tokens``.
-#: An operational limit, so a host sets it from its own configuration, whose documentation should carry
-#: the measurements behind the value it chose.
-DEFAULT_ANALYSIS_GEN_REASONING_BUDGET_TOKENS = 8192
+#: How hard the analysis generator reasons when the host names no effort: an effort word, sent natively
+#: (the judge's reasoning, :data:`~threetears.evals.run.judge.JUDGE_REASONING_EFFORT`, says why a word).
+DEFAULT_ANALYSIS_GEN_REASONING_EFFORT: KnownReasoningEffort = "medium"
+
+#: The room the generator's output cap leaves for its private reasoning when the host sets none. Never
+#: sent — the request carries the effort, not a budget — so it bounds nothing; it is what the cap is sized
+#: from. An operational limit, so a host sets it from its own configuration (a ``*_reasoning_budget_tokens``
+#: setting it kept from when budgets were sent is this headroom now), whose documentation should carry the
+#: measurements behind the value it chose.
+DEFAULT_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS = 8192
+
+#: The least reasoning headroom :func:`analysis_gen_request_settings_for` takes: below it a reasoning model
+#: has too little room to think at any effort, and a provider that takes budgets refuses one this small.
+MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS = 1024
 
 #: The output room kept for the analysis itself, after reasoning, when the host sets none — the other
 #: half of :func:`analysis_gen_request_settings_for`.
@@ -155,27 +165,42 @@ DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS = 32768
 
 
 def analysis_gen_request_settings_for(
-    *, answer_budget_tokens: int, reasoning_budget_tokens: int
+    *,
+    answer_budget_tokens: int,
+    reasoning_effort: KnownReasoningEffort = DEFAULT_ANALYSIS_GEN_REASONING_EFFORT,
+    reasoning_headroom_tokens: int = DEFAULT_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS,
 ) -> ClientRequestSettings:
-    """The generator role's request settings as ONE value, from the host's two budgets.
+    """The generator role's request settings as ONE value, from the host's answer budget, effort and headroom.
 
     The host's client builder applies it to every ``EVAL_ANALYSIS_GEN`` client: a generation from
     ``analysis_generate`` and a reporter run's candidate alike, so the two cannot be asked
-    differently. The output cap is DERIVED as reasoning plus answer, so it always sits above the
-    ceiling it wraps. ``strict_output`` is always set: the authored schema goes out as a strict
-    ``response_format``, and a provider that ignores it returns free text the generator refuses
-    after paying for it, then pays for a repair.
+    differently. The output cap is DERIVED as answer plus reasoning headroom, so it always leaves room
+    to think and then write; the headroom itself is never sent, and the request asks for reasoning by
+    ``reasoning_effort``. ``strict_output`` is always set: the authored schema goes out as a strict
+    ``response_format``, and a provider that ignores it returns free text the generator refuses after
+    paying for it, then pays for a repair.
 
     Args:
         answer_budget_tokens: Output room for the memo itself.
-        reasoning_budget_tokens: The reasoning bound.
+        reasoning_effort: How hard the generator reasons, as an effort word.
+        reasoning_headroom_tokens: Output room left for reasoning, which sizes the cap; at least
+            :data:`MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS`.
 
     Returns:
         The settings to build the client with.
+
+    Raises:
+        ValueError: ``reasoning_headroom_tokens`` is below :data:`MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS`.
     """
+    if reasoning_headroom_tokens < MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS:
+        raise ValueError(
+            f"reasoning_headroom_tokens={reasoning_headroom_tokens} leaves the analysis generator too little room to "
+            f"think at any effort: the least is {MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS} (a host's old "
+            "*_reasoning_budget_tokens setting is this headroom now)"
+        )
     return ClientRequestSettings(
-        max_tokens=reasoning_budget_tokens + answer_budget_tokens,
-        reasoning_max_tokens=reasoning_budget_tokens,
+        max_tokens=answer_budget_tokens + reasoning_headroom_tokens,
+        reasoning_effort=reasoning_effort,
         strict_output=True,
     )
 

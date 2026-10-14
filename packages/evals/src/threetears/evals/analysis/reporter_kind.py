@@ -727,7 +727,10 @@ class _RecordingClient:
         """
         ledger = RoleUsageLedger(role="candidate")
         for result in self.results:
-            read = CallUsage.of(result)
+            # The spend alone: a candidate's row carries no sent settings (only the judge's and the simulator's are
+            # disclosed), so what the generator's completion says it was sent with is never read, and a value of the
+            # wrong type there cannot cost the record of a call that was billed.
+            read = CallUsage.billed(result)
             # The bound model stands in for an unnamed ``model`` only, which attributes spend; the
             # served model stays what the response said, unrecorded when it said nothing.
             ledger.add_llm_result(replace(read, model=read.model or bound_model))

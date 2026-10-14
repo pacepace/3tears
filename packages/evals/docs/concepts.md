@@ -156,7 +156,8 @@ itself, the candidate model (`model`) and the candidate kind (`candidate_kind`);
 more. *Example:* `model` and `ticket_router.prompt_version`.
 With no host of your own, `run_eval(..., levers={"prompt": "v2"})` states one beside the model, as
 `callable.prompt` (`callable-judged.prompt` on a judged run), and `compare(..., factors=("model", "prompt"))`
-keys each arm by its level of both (`examples/prompt_x_model.py`).
+keys each arm by its level of both (`examples/prompt_x_effort.py` crosses the prompt with a reasoning effort, the
+model named as a factor at its one level).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is
@@ -176,8 +177,11 @@ arm adds observations to the same arm rather than creating a new one. *Example:*
 #### Apparatus, rig
 The **rig** is the measuring setup around the thing under test; each of its inputs is an **apparatus**
 sweepable (role `apparatus`). It is supposed to hold still, and when it moves, a comparison stops being
-about the lever. The engine's own: the judge model and its settings, which judge each dimension was actually
-scored by (`judge_dim_divergence`), the temperature each judge call was sent at, the judge configs, the simulator model and its settings, and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
+about the lever. The engine's own: the judge model, which judge each dimension was actually
+scored by (`judge_dim_divergence`), the temperature each judge call was sent at, the request settings the judge was
+asked for and those its calls were sent with (`judge_request_settings`, `judge_sent_settings`), the judge configs,
+the simulator model and the request settings it was asked for and sent with (`simulator_request_settings`,
+`simulator_sent_settings`), and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
 judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool them as one condition.
 
 #### Apparatus class

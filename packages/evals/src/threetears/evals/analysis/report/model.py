@@ -72,8 +72,12 @@ from threetears.evals.schema.prose import ModelProse
 #: the published schema refuses a key it does not name, and marks every field with a default required, since every
 #: dump carries it, so a client holding an older version's schema would refuse a document carrying the new field.
 #:
-#: - **9** — the baseline: the first public release's report shape.
-REPORT_VERSION: Literal[9] = 9
+#: - **9** — the pre-release baseline (``.21`` to ``.24``); no release wrote it.
+#: - **10** — the first public release's report shape (from ``v0.67.0-evaladopt.25``): a judge's evidence tier is the
+#:   tier of a judge keyed by the request settings its calls were sent with too, and its sentence names them; a
+#:   ``measurement`` disclosure says where a role's request settings were sent other than asked, unverified,
+#:   unenforced or mixed. The same text under 9 named a judge without them.
+REPORT_VERSION: Literal[10] = 10
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
@@ -668,7 +672,7 @@ class Report(EvalDocumentModel):
         }
     )
 
-    report_version: Literal[9] = Field(default=REPORT_VERSION, description="This shape's version.")
+    report_version: Literal[10] = Field(default=REPORT_VERSION, description="This shape's version.")
     basis: ReportBasis = Field(
         description=(
             "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "

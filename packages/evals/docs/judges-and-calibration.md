@@ -9,10 +9,15 @@ ratings that takes, and how the ratings correct the judge's mean. Grade with cod
 The snippets run top to bottom as one script, in one async context (`python -m asyncio`, or inside
 `async def main()`). A store call blocks, so a snippet makes it off the event loop with
 `await run_blocking(host.blocking_executor, fn, ...)`. `client` is any `CompletionClient` (an async
-`generate(system=, user=, response_format=)` and an `aclose()`); `examples/_live.py` has a Claude adapter, which
-`examples/llm_judge.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
+`generate(system=, user=, response_format=)` and an `aclose()`); `models_client` from `threetears.evals.providers`
+(the `[models]` extra) is the shipped one, which `examples/llm_judge.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
 directive (the criterion's answers, "can't tell" among them); pass it to a provider that enforces structured output,
-or send the nearest mode yours has. The reply is read and refused on return either way.
+or send the nearest mode yours has. The reply is read and refused on return either way. Every enum in it is a string
+enum, the one form every provider's strict mode enforces (a Gemini model accepted an integer one and left the score
+out), so a 1-5 score is asked for as the string `"1"` to `"5"` and read back to its integer; a bare integer is read too.
+`strict_response_format` (`threetears.evals.kernel`), the projection the engine's calls go through and yours can,
+refuses a schema enumerating anything but strings with `UnportableSchema`: declare the values as strings and convert
+them on read.
 
 ## Step 1: choose a scale, and prefer pass/fail
 
@@ -112,6 +117,20 @@ deterministic, though: 20 of the 50 cases still moved at 0. An earlier run on a 
 void for the question ([the void run](#the-2026-10-10-run-is-void)). On a judge whose model accepts no temperature,
 0 is requested but never applied: the run stamps `judge_temperature=0` (the request) while each score records
 `model_default` (what was sent).
+
+**Request settings.** The judge asks for `JUDGE_REQUEST_SETTINGS` (`threetears.evals.run`): an output cap of
+10,240 tokens, reasoning effort `high` and strict output. Your client builder applies it to the judge's client (the
+shipped `models_clients` does for its `judge` role), and a judged run records it as its `judge_asked_settings`. What a call was actually sent with is the client's to say, as the optional `sent_settings` on
+its completion: a client may send a model the closest setting it accepts (a budget in place of an effort word, a
+lower effort word, no enforcement where a router could not place the call). Each score records it
+(`RubricScore.judge_sent_settings`; `None` when the client did not say, which is unverified, never refused), and
+that is part of the judge's identity too, the sixth component of `JudgeKey`: agreement, evidence tiers, judge
+profiles and drift are kept apart per sent settings, so a judge sent `high` and the same model sent a reasoning budget
+are two judges, and an unverified judge is a judge of its own. A repeat (Step 8) whose call was sent other settings
+than the first score's, or where only one of the two reported them, is unpaired (`settings_changed`). Each tier's
+sentence names what its judge was sent, or says `request settings unconfirmed`, and a run whose judge calls were not
+shown to be sent as asked says so in one sentence on its summary
+([reading reports](reading-reports.md#how-the-judge-and-the-simulated-user-were-sent)).
 
 **The built-in prompt is a judge too.** A dimension with no `JudgeConfig` is judged with the engine's own
 instructions: one for the transcript axis, one for the outcome axis, and one template a rubric dimension's name,
@@ -261,10 +280,10 @@ for tier in judge_evidence_tiers(agreement, self_agreement, judged):
 With one person rating 24 results, some of them differently from the judge, it reads:
 
 ```text
-answer.grounded (judge-model, temperature 0): undetermined — agreement with people 0.4085 (bounds 0.05449 to
-0.7088) over 24 pairs from 24 results, undecided — the bounds straddle (bar 0.6 over at least 20 results) — about
-35 more results would decide it if agreement holds; with its own repeats not measured (bar 0.8 over at least 120
-results) — needs 120 results.
+answer.grounded (judge-model, built-in prompt builtin:c2362452be2f, temperature 0, request settings unconfirmed):
+undetermined — agreement with people 0.4085 (bounds 0.05449 to 0.7088) over 24 pairs from 24 results, undecided —
+the bounds straddle (bar 0.6 over at least 20 results) — about 35 more results would decide it if agreement holds;
+with its own repeats not measured (bar 0.8 over at least 120 results) — needs 120 results.
 ```
 
 **"Needs N more"** is the rest of the floor when there are too few results. When the bounds straddle the bar, it
@@ -492,8 +511,8 @@ parameter refuses the call rather than dropping it. A probe confirmed that it do
 temperature 0 was refused with "No endpoints found that can handle the requested parameters", where the void run
 had been silently served. The client reported the temperature on the wire: 0 on every pinned call, and none on
 every default call, whose requests carried no `temperature` field at all. All 500 calls were served by the pinned
-endpoint and named `openai/gpt-oss-120b` in the response. Each kept the judge's usual request settings (the 8192-token
-reasoning budget, JSON replies).
+endpoint and named `openai/gpt-oss-120b` in the response. Each kept the judge's request settings of the time (the
+8192-token reasoning budget, JSON replies).
 
 **The provider's default is the endpoint's, so check that it samples.** The first sweep was pinned to DeepInfra.
 Its default turned out to be effectively greedy: an open-ended prompt answered identically 12 times out of 12 with
@@ -543,7 +562,8 @@ prompt, another temperature), make the judge the subject of a campaign of its ow
 (`candidate_kind="judge"`):
 
 - **The candidate is a judge configuration:** a model, the prompt per criterion and the temperature, the three
-  things `JudgeKey` keys a judge by. The model is the arm's candidate model. The prompt per criterion
+  things an arm chooses of what `JudgeKey` keys a judge by (the others are the criterion's dimension and scale, and
+  the settings each call was sent with, which the client reports). The model is the arm's candidate model. The prompt per criterion
   (`config_ids`, versioned `JudgeConfig` ids) and the temperature are the arm's overlays (`JudgeKindOverlays`), so
   two arms that differ in their judge are two variants the campaign tells apart.
 - **A case is frozen from a stored result:** one judged output and one criterion. It holds the evidence the
@@ -633,7 +653,7 @@ never a write when a run completes, because which runs make up one measurement i
 several runs, and a run abandoned halfway should not overwrite a full measurement.
 
 **What a profile holds.** One `EvalJudgeProfile` per judge and criterion. The judge is everything `JudgeKey` keys:
-dim, scale, served model, config and temperature. The criterion is its wording (`criterion_digest`). The profile
+dim, scale, served model, config, temperature and the request settings its calls were sent with. The criterion is its wording (`criterion_digest`). The profile
 stores both agreements as the tiers read them (figure, bounds, pairs and distinct cases), parse validity, the
 number of cases, the case-set fingerprint, the runs, `measured_at` (the latest trial's `scored_at`) and
 `recorded_at`. Recording again replaces the profile of the same judge and criterion, and the receipt says when the
@@ -659,8 +679,9 @@ re-recorded or newly read changes the bundle's fingerprint.
 
 **A changed judge reads no profile.** A profile is found by an id derived from the whole judge and the criterion's
 wording. Change the model, the prompt (a new `JudgeConfig` version, or a release that rewords the built-in prompt
-or the reply-format suffix, whose recorded identity then changes), the temperature, or the rubric dimension's
-wording, and the campaign looks for a profile that does not exist. The old one is stale and is never read for the
+or the reply-format suffix, whose recorded identity then changes), the temperature, the request settings its calls
+were sent with (a client that starts reporting them included), or the rubric dimension's wording, and the campaign
+looks for a profile that does not exist. The old one is stale and is never read for the
 new judge. The wording comes from the template each run was judged against. A run with no template, or whose
 template was edited after the run was created, has an unknown criterion and reads no profile.
 

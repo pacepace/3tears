@@ -558,7 +558,7 @@ def test_an_unknown_reasoning_effort_is_read_and_a_call_that_would_send_it_is_re
     run = EvalRun.from_dict(
         _at_newer_minor(
             sample,
-            judge_request_settings={
+            judge_asked_settings={
                 **JUDGE_REQUEST_SETTINGS.model_dump(mode="json"),
                 "reasoning_max_tokens": None,
                 "reasoning_effort": "ultra",
@@ -566,7 +566,7 @@ def test_an_unknown_reasoning_effort_is_read_and_a_call_that_would_send_it_is_re
         )
     )
 
-    assert run.judge_request_settings is not None and run.judge_request_settings.reasoning_effort == "ultra"
+    assert run.judge_asked_settings is not None and run.judge_asked_settings.reasoning_effort == "ultra"
     with pytest.raises(ValidationFailedError, match="ultra"):
         recorded_judge_pins(run, request_settings="today")
 
@@ -837,7 +837,7 @@ def test_a_settings_difference_only_in_an_unknown_field_is_named_as_one() -> Non
     run = EvalRun.from_dict(
         _at_newer_minor(
             stored_sample(EvalRun),
-            judge_request_settings={**JUDGE_REQUEST_SETTINGS.model_dump(mode="json"), "cache_ttl_s": 300},
+            judge_asked_settings={**JUDGE_REQUEST_SETTINGS.model_dump(mode="json"), "cache_ttl_s": 300},
         )
     )
 
@@ -881,15 +881,15 @@ def test_a_run_a_newer_minor_wrote_elsewhere_passes_the_rejudge_settings_check()
     run = EvalRun.from_dict(
         _at_newer_minor(
             stored_sample(EvalRun),
-            judge_request_settings=JUDGE_REQUEST_SETTINGS.model_dump(mode="json"),
+            judge_asked_settings=JUDGE_REQUEST_SETTINGS.model_dump(mode="json"),
             judge_temperature=DEFAULT_JUDGE_TEMPERATURE,
             **NEWER_FIELD,
         )
     )
 
-    assert run.judge_request_settings == JUDGE_REQUEST_SETTINGS
+    assert run.judge_asked_settings == JUDGE_REQUEST_SETTINGS
     assert recorded_judge_pins(run, request_settings="today") == run.judge_model
-    assert "carry a field" not in request_settings_drift(run.judge_request_settings)
+    assert "carry a field" not in request_settings_drift(run.judge_asked_settings)
 
 
 def test_a_campaign_a_newer_minor_wrote_echoed_whole_keeps_its_pre_image() -> None:

@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Self
+from typing import Any, Final, Literal, Protocol, Self
+
+from threetears.evals.schema.models import ClientRequestSettings
 
 #: ``response_format`` directive asking for any JSON object, with no shape. No package call sends it: every call
 #: whose reply is read into a typed shape (the judge, the analysis generator, the proposer on either axis, the
@@ -67,6 +69,18 @@ class CompletionResult(Protocol):
     implementation that passes a raw provider string through (OpenAI's ``length``, say) reads as
     finished here, and the truncation surfaces downstream as an unexplained parse failure — after a
     repair round-trip that buys a second full generation into the identical cap.
+
+    **One optional member, not declared here: ``sent_settings``** (:data:`OPTIONAL_COMPLETION_ATTRIBUTES`). A
+    :class:`~threetears.evals.schema.ClientRequestSettings` holding what the request that produced this
+    completion ACTUALLY carried — its output cap, its reasoning effort word or budget, and whether it
+    enforced every parameter (``strict_output``) — after every change the client made to it: a setting sent
+    as the closest one the model accepts, one dropped because the model refused it, a strict call resent
+    without enforcement (``strict_output=False``). ``None``, or no such attribute at all, is "the client does
+    not say", which the engine records as unverified and never refuses. It is not a protocol property
+    because the conformance check requires every property, and a host whose completion has no such member
+    must keep conforming; the engine reads it through :func:`sent_settings_of` alone. One value per
+    completion, never what was asked: a client that copies the settings it was built with here reports a
+    mapping nobody checked, and makes a judge sent one thing compare equal to a judge sent another.
     """
 
     @property
@@ -150,6 +164,13 @@ COMPLETION_RESULT_ATTRIBUTES: tuple[str, ...] = tuple(
 )
 
 
+#: The members a completion MAY carry beyond :class:`CompletionResult`'s, each read by the engine through a reader of
+#: its own that takes an absent attribute as "not reported": ``sent_settings``, read by :func:`sent_settings_of`.
+#: Not protocol properties, so :data:`COMPLETION_RESULT_ATTRIBUTES` and the conformance check's required set never
+#: hold them; :func:`~threetears.evals.testing.check_completion_conformance` checks one's type when it is present.
+OPTIONAL_COMPLETION_ATTRIBUTES: Final[tuple[str, ...]] = ("sent_settings",)
+
+
 class CompletionProtocolDefect(TypeError):
     """A host's completion does not meet the :class:`CompletionResult` protocol, found while the engine read it.
 
@@ -162,13 +183,16 @@ class CompletionProtocolDefect(TypeError):
     completion type to find the defect before a run does.
     """
 
-    def __init__(self, completion: object, member: str, why: str) -> None:
-        """Name the completion's type, the member it lacks, and why the engine reads that member.
+    def __init__(self, completion: object, member: str, why: str, *, optional: bool = False) -> None:
+        """Name the completion's type, the member it lacks or fills wrong, and why the engine reads that member.
 
         Args:
             completion: The completion as the client returned it.
-            member: The :class:`CompletionResult` member it does not carry.
-            why: What the engine reads the member for, as a clause.
+            member: The :class:`CompletionResult` member it does not carry, or the optional member
+                (:data:`OPTIONAL_COMPLETION_ATTRIBUTES`) it holds a value of the wrong type in.
+            why: What the engine reads the member for, or what is wrong with its value, as a clause.
+            optional: ``member`` is an optional member the completion carries with a wrong value, not a protocol
+                member it lacks.
         """
         self.completion_type = type(completion).__name__
         self.member = member
@@ -185,10 +209,46 @@ class CompletionProtocolDefect(TypeError):
         self.reasoning_tokens: int | None = None
         self.cost_usd: float | None = None
         self.price_source: str | None = None
-        super().__init__(
-            f"{self.completion_type} carries no `{member}`, a member of the CompletionResult protocol: {why} — "
-            "threetears.evals.testing.check_completion_conformance holds a host's completion type to the protocol"
+        problem = (
+            f"{self.completion_type}'s optional `{member}` is not what the CompletionResult protocol documents: {why}"
+            if optional
+            else f"{self.completion_type} carries no `{member}`, a member of the CompletionResult protocol: {why}"
         )
+        super().__init__(
+            f"{problem} — threetears.evals.testing.check_completion_conformance holds a host's completion type to the "
+            "protocol"
+        )
+
+
+def sent_settings_of(completion: object) -> ClientRequestSettings | None:
+    """What the request that produced ``completion`` actually carried, as its client reports it, or ``None``.
+
+    The one reader of the optional ``sent_settings`` member (:data:`OPTIONAL_COMPLETION_ATTRIBUTES`). ``None`` —
+    an absent attribute or one holding ``None`` — is the client not saying: unverified, which the engine records and
+    discloses and never refuses. A value of any other type is not an absence: the host's completion type declares
+    the member and fills it wrong, and every call through its client would, so it is refused by name, as a missing
+    protocol member is.
+
+    Args:
+        completion: A completion, as a client returned it (or a usage record standing for one).
+
+    Returns:
+        The settings the request was sent with, or ``None`` when the client does not report them.
+
+    Raises:
+        CompletionProtocolDefect: ``sent_settings`` is present and is neither ``None`` nor a
+            :class:`~threetears.evals.schema.ClientRequestSettings`.
+    """
+    sent = getattr(completion, "sent_settings", None)
+    if sent is None or isinstance(sent, ClientRequestSettings):
+        return sent
+    raise CompletionProtocolDefect(
+        completion,
+        "sent_settings",
+        f"it holds a {type(sent).__name__}, and the member is what the request carried as a ClientRequestSettings, "
+        "or None when the client does not report it",
+        optional=True,
+    )
 
 
 #: The :class:`CompletionResult` attributes the usage ledger reads off a completion
@@ -488,6 +548,7 @@ __all__ = [
     "CompletionProtocolDefect",
     "CompletionResult",
     "JSON_OBJECT_RESPONSE_FORMAT",
+    "OPTIONAL_COMPLETION_ATTRIBUTES",
     "PricedCompletion",
     "ProviderFailure",
     "ProviderFailureDescriber",
@@ -496,4 +557,5 @@ __all__ = [
     "StopReason",
     "USAGE_LEDGER_ATTRIBUTES",
     "VariationLLM",
+    "sent_settings_of",
 ]

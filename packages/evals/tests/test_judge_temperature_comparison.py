@@ -239,7 +239,7 @@ async def _judged_run(judge: _Judge, *, cases: int = 4, **run_fields: Any) -> tu
         judge_model=_JUDGE,
         status="completed",
         effective_judges=built.effective_judges,
-        **{"judge_request_settings": JUDGE_REQUEST_SETTINGS, **run_fields},
+        **{"judge_asked_settings": JUDGE_REQUEST_SETTINGS, **run_fields},
     )
     off_loop(host.storage.save_eval_run, run)
     for case in test_cases:
@@ -517,7 +517,7 @@ class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
 
     async def test_a_run_with_older_settings_is_compared_at_the_forced_temperatures(self):
         judge = _Judge()
-        host, run_id = await _judged_run(judge, judge_request_settings=_PRE_STRICT_SETTINGS)
+        host, run_id = await _judged_run(judge, judge_asked_settings=_PRE_STRICT_SETTINGS)
         with pytest.raises(ValidationFailedError):
             await estimate_judge_repeat(host, run_id, _SCOPE, out_of_run_cap_usd=None)
 
@@ -531,7 +531,7 @@ class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
 
     async def test_a_run_whose_template_was_edited_since_is_still_refused(self):
         judge = _Judge()
-        host, run_id = await _judged_run(judge, judge_request_settings=_PRE_STRICT_SETTINGS)
+        host, run_id = await _judged_run(judge, judge_asked_settings=_PRE_STRICT_SETTINGS)
         run = off_loop(host.storage.load_eval_run, run_id, _SCOPE)
         assert run is not None
         template = off_loop(host.storage.load_template, run.template_id, _SCOPE)
@@ -547,7 +547,7 @@ class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
 
     async def test_a_run_that_recorded_no_request_settings_is_still_refused(self):
         judge = _Judge()
-        host, run_id = await _judged_run(judge, judge_request_settings=None)
+        host, run_id = await _judged_run(judge, judge_asked_settings=None)
 
         with pytest.raises(ValidationFailedError, match="request settings"):
             await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)

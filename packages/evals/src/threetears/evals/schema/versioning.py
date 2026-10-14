@@ -71,11 +71,9 @@ field, a new member of a closed vocabulary, any change to what a stored value me
   validated, never an attribute, never in ``model_dump`` or in any digest, and written back exactly as read. A
   value of an open vocabulary this build does not know is read, and every reader that branches on that
   vocabulary has a branch for it that names it rather than folding it into a value it knows.
-  The tolerance has a floor, the build that introduced the minor (``v0.66.0-evaladopt.22``): a build before it
-  declares no ``schema_minor`` (nor ``CampaignDesign.control_levers``) and forbids every field it does not
-  declare, so it refuses every core document a build from that one on writes, though the major is 14 for both.
-  A fleet rolls back no further than that build, and no further than ``v0.67.0-evaladopt.24`` once any document
-  carries ``stop_reason="truncated"``, which the v14 baseline gained before its release (``StopReason``, below).
+  The tolerance has a floor, the build that wrote the v15 baseline (``v0.67.0-evaladopt.25``): every build
+  before it writes and reads core v14 or older, so it refuses every v15 document as written by a newer build,
+  and that build refuses theirs as pre-release. A fleet rolls back no further than ``.25``.
 - *Its major is older:* upgraded through :data:`CORE_UPGRADERS` to this build's shape at this build's minor; a
   field the chain left behind is refused.
 - *Its major is newer, below* :data:`CORE_BASELINE_VERSION`*, or not an integer, or its minor is not a whole
@@ -142,10 +140,7 @@ the document, so extending one is a major. Each, and why:
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
-  cause it does not name (``truncated``), kept apart from a call that failed (``error``). ``truncated`` joined the
-  v14 baseline in ``v0.67.0-evaladopt.24``, with no new version since the baseline was unreleased: ``.22`` and
-  ``.23`` read and write v14.0 with four words and refuse an out-of-run spend document carrying it, so once any
-  document does, a fleet rolls back no further than ``.24``.
+  cause it does not name (``truncated``), kept apart from a call that failed (``error``).
 - Every ``doc_type`` — a new type is a new model, never a new value.
 
 **A minor's ledger entry asserts its additivity in words**, and review holds it there, because a schema diff
@@ -194,20 +189,25 @@ from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 
 #: The first core version a public release wrote, and the oldest this and every later build reads. Below it a
 #: document is pre-release, and is refused by name.
-CORE_BASELINE_VERSION: Final[int] = 14
+CORE_BASELINE_VERSION: Final[int] = 15
 
 #: The core version this build writes. Every bump appends one line here and one :class:`CoreUpgrader`.
 #:
-#: - **v14** — the baseline: the first public release's evidence core. Every field a writer always sets is
-#:   required; an optional field's ``None`` has one present-day meaning, stated on the field.
-CORE_SCHEMA_VERSION: int = 14
+#: - **v15** — the baseline: the first public release's evidence core. Every field a writer always sets is
+#:   required; an optional field's ``None`` has one present-day meaning, stated on the field. What a request was
+#:   asked for and what it was sent with are two facts under two names: a run's ``judge_asked_settings`` and
+#:   ``simulator_asked_settings``, and each call's ``RubricScore.judge_sent_settings``, ``RoleUsage.sent_settings``,
+#:   the first score's half of a repeated or second-judge pair and ``OutOfRunSpend.sent_settings``. It replaced the
+#:   pre-release v14 baseline in ``v0.67.0-evaladopt.25`` with no upgrader: a v14 document is refused by name as
+#:   pre-release, and the rollback floor is ``.25``.
+CORE_SCHEMA_VERSION: int = 15
 """The core major this build writes, and the newest a read of a core document accepts."""
 
 #: The core minor this build writes within :data:`CORE_SCHEMA_VERSION`. A minor is additive only (the module's
 #: rule), so a read accepts any minor of this build's major. Every minor appends one line here, ending with
 #: :data:`MINOR_ADDITIVITY_SENTENCE`; a major resets it to 0.
 #:
-#: - **v14.0** — the baseline minor.
+#: - **v15.0** — the baseline minor.
 CORE_SCHEMA_MINOR: int = 0
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
@@ -220,8 +220,12 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #: The version every regenerable document is written under, the cassette apart (:data:`CASSETTE_SCHEMA_VERSION`),
 #: and the only one a read of one accepts.
 #:
-#: - **v9** — the baseline: the first public release's regenerable shapes.
-REGENERABLE_SCHEMA_VERSION: int = 9
+#: - **v9** — the pre-release baseline (``.21`` to ``.24``); no release reads it.
+#: - **v10** — the first public release's regenerable shapes (from ``v0.67.0-evaladopt.25``): a judge's identity
+#:   includes the request settings its calls were sent with, so a stored judge profile carries
+#:   ``judge_sent_settings`` and its id derives from it, and an analysis's evidence tiers, agreements and bundle carry
+#:   it on every judge they name. Profiles and analyses regenerate from the core; nothing is upgraded.
+REGENERABLE_SCHEMA_VERSION: int = 10
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
 A bump is a drop: regenerable documents written under the old version are refused on read

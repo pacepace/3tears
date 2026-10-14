@@ -21,14 +21,16 @@ v<version>` prints a release's notes).
 
 - **Dependencies.** Python 3.14+ and `pydantic` only. The engine depends on no other 3tears package. Three extras:
   `[vega]` (`vl-convert-python`, for rendering charts to SVG and PNG), `[fastmcp]` (the FastMCP transport) and
-  `[models]` (`3tears-models`, for the shipped provider adapter). The live examples need the `anthropic` SDK, which
-  the package does not depend on.
+  `[models]` (`3tears-models`, for the shipped provider adapter). The examples that call a model need `[models]`.
 - **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
   `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`,
-  `providers`. A consumer
+  `negotiation`, `providers`. A consumer
   imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
-  itself exports the roots and `__version__`, the installed version, which a host records beside what it stores
-  since no stored document or analysis bundle carries it.
+  itself exports the roots, which of them fail to import without an extra (`ROOT_EXTRAS`: `transports.fastmcp` needs
+  `[fastmcp]` and `providers` `[models]`; `vega` imports on the base install and needs `[vega]` only to rasterise),
+  both host-contract so a host's import gate reads them rather than keep its own list, and `__version__`, the
+  installed version, which a host records beside what it stores since no stored document or analysis bundle carries
+  it.
 - **The quick path** (`threetears.evals.quick`). `run_eval(cases, candidate, expected=..., k=...)` grades any async
   function from a case to an answer. `summary.misses()` lists each miss with its reason. `compare` runs arms
   against a control and returns a typed verdict per measure: `improved`, `regressed`, `not_separated` or
@@ -37,8 +39,10 @@ v<version>` prints a release's notes).
   and served model), `stratum_key=` (results per kind of case), `factors=` and `Comparison.against` (grids),
   `guardrails=` (held, breached or undecided per arm, decided apart from capability), `tools=` with
   `cassette_mode=` (capture and replay tool results), and `world=`, `seed=` and `goal_checks=` (grade what an
-  agent did to a world). Ten examples under `packages/evals/examples/` climb that ladder. They run offline by
-  default and against Claude when given a key.
+  agent did to a world). Ten examples under `packages/evals/examples/` climb that ladder. Those that call a model
+  run live by default, against `claude-haiku-5-5` through the shipped adapter, and with no key replay a recording of
+  a live run kept beside them (`RecordedCompletions`; `RECORD=1` records it again), so they run offline on what
+  Claude said: no example has a scripted stand-in for a model, and the `_live.py` helper is gone.
 - **A command line.** `python -m threetears.evals` runs `run`, `ls`, `report`, `bundle`, `spend`, `gate`,
   `frontier` and `judge-temperature` against a host named as `--host module:factory`. `gate --fail-on
   regressed,breached` is a CI gate. A host adds its own subcommands (`HostCommand`). Exit codes are named:
@@ -54,20 +58,46 @@ v<version>` prints a release's notes).
   model 3tears-models builds for Anthropic, OpenAI or OpenRouter into the completion client, `models_clients` is
   the role factory a host hands `EvalHost` as `clients` (keys from `api_keys=` or each provider's environment
   variable, refused by name at first use), and `ModelsFailureDescriber` maps each SDK's errors onto the failure
-  port without repeating a payload. Every request is sent once, under a breaker of the adapter's own; a reply's
-  served model, stop reason, reasoning tokens and the temperature actually sent are read per provider, and which
-  members each provider exposes is pinned by a test, so a LangChain or models upgrade that moves one fails by
-  name. Anthropic and OpenAI calls are priced from models' price catalogue, OpenRouter calls by OpenRouter's own
-  figure, and an unpriced call is `None` with its reason. A reasoning setting a provider cannot carry, and the
-  Claude CLI route (whose completions read as finished whatever stopped them), are refused by name. The engine
+  port without repeating a payload. A setting a model does not take never fails the call: the adapter sends the
+  closest one it accepts (`closest_settings`, in `negotiation`: a word as the closest word, never more than asked; a budget as the
+  effort word its share of the cap maps to where only words are taken, and a word as that share where only budgets
+  are; an Anthropic effort word over adaptive thinking with no temperature beside it; a strict format a model cannot
+  take, unenforced), from what a provider refused, 3tears-models' capabilities and OpenRouter's catalogue, and each
+  completion reports what its request carried as `sent_settings`. Every request is sent once, under a breaker of
+  the adapter's own, except that a request the provider refused (unbilled) for a setting it carried is sent again
+  with the closest setting the model then takes, learned for every client of the factory; on OpenRouter, whose 404
+  under `require_parameters` names nothing, the temperature goes first and enforcement last (`strict_output=False`).
+  A reply's served model, stop reason, reasoning tokens and the temperature actually sent are read per provider,
+  and which members each provider exposes is pinned by a test, so a LangChain or models upgrade that moves one
+  fails by name. Anthropic and OpenAI calls are priced from models' price catalogue, OpenRouter calls by
+  OpenRouter's own figure, and an unpriced call is `None` with its reason. A reasoning setting that is the caller's
+  error (a word and a budget together, a budget not below the cap), and the Claude CLI route (whose completions
+  read as finished whatever stopped them), are refused by name. The engine
   never imports it. A stop the provider did not name (no finish reason, an unknown one, Anthropic's `pause_turn`)
   reads as `truncated`, output cut short for an unnamed cause, and only a provider-reported failure as `error`; a
   host mapping its own client onto `StopReason` follows the same split. The adapter logs each `truncated` reply's
   raw stop reason at WARNING. A host awaits `await clients.load_prices()` once at boot, so every client's
   synchronous `price_ceiling` can price an out-of-run call under an enforced cap. A pricing failure never costs a
   paid answer (it is logged and the completion returned unpriced), and a cached prompt's cost is marked approximate
-  (`;cache-approximate`). The `judge` role is built from `JUDGE_REQUEST_SETTINGS`, what a judged run records, and
-  refused where the provider cannot carry its reasoning budget unless the host passes the judge's settings itself.
+  (`;cache-approximate`). The `judge` role is built from `JUDGE_REQUEST_SETTINGS`, what a judged run records it asked:
+  an output cap and the effort word `high`, sent as the closest setting the judge model takes.
+- **One negotiation for every client** (`threetears.evals.negotiation`, on the base install: no SDK, no HTTP
+  client). Choosing the closest settings, reading a provider's refusal and resending are not the adapter's own:
+  `negotiate` takes a client's own `send` and refusal reader, resends in the fixed order (a temperature first,
+  keeping enforcement, then enforcement) at most once per setting and four times per call, learns into a shared
+  `LearnedSettings`, and returns what the served request carried (`Negotiated.sent_settings`, `.temperature`).
+  `read_router_refusal` (OpenRouter's 404 and the 400s it relays), `read_anthropic_refusal` and
+  `read_openai_refusal` read a refusal off a status and a JSON body, so a host's client of raw HTTP and the adapter
+  read the same. Only what a served request proved is learned, for the store's life (the process, or the factory):
+  never enforcement (each call starts enforced and drops it for itself alone, since a 404 can be an outage), a
+  router 404's temperature only when dropping it alone was served, and a temperature refused beside reasoning only
+  beside reasoning; an effort refusal steps at most once before sending no effort word, and an output cap the
+  provider names is resent and kept. `facts_from_router_catalogue` reads a catalogue's `supported_parameters` as
+  only what no endpoint takes, `wire_settings_for` builds a client's asked settings from the engine's, and
+  `models_clients` builds the simulator from `SIMULATOR_REQUEST_SETTINGS` as it builds the judge. The host guide
+  carries a minimal OpenRouter client built on it, and `testing.check_refusal_negotiation` scripts three routers (a
+  temperature refused under enforcement, no endpoint under enforcement, an upstream refusing the cap and the effort
+  word), naming each mistake a host's client makes in resending, reporting or remembering.
 - **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names
@@ -76,13 +106,13 @@ v<version>` prints a release's notes).
   minor of the evidence core, below.
 - **History is kept across releases.** The evidence core (cases, runs, results, traces, calibration ratings, the
   out-of-run spend ledger, templates, judge configs, rubric dims, campaigns and job records) is read forever from
-  this release's **core schema v14**, the baseline. A later release upgrades an older core document in memory, one
+  this release's **core schema v15**, the baseline. A later release upgrades an older core document in memory, one
   version at a time, and the stored bytes change only on the next write. Analyses, insights and judge profiles can
   be regenerated: one written by another build is refused, and the operator regenerates it. A cassette's format has
   a version of its own (`CASSETTE_SCHEMA_VERSION` 1), so a change to the analyses never refuses a recorded corpus;
   only a change to the cassette itself does, and the corpus is then re-captured. A major is deployed with no job
   running.
-- **An additive core change rolls with no stop.** The core version is a major (`schema_version`, 14) and a minor
+- **An additive core change rolls with no stop.** The core version is a major (`schema_version`, 15) and a minor
   (`schema_minor`, 0). A minor is additive only (a new optional field, a new optional sub-object, a new value of an
   open vocabulary, a new doc type) and carries a ledger sentence asserting that an older build that ignores it
   reads the document correctly and writes it true. This release reads any newer minor of its own major, keeps
@@ -133,7 +163,11 @@ v<version>` prints a release's notes).
 - **Judges and calibration.** Rubric dimensions carry their names and scales. A judge is a model plus its config,
   and a dimension judged by the built-in wording records which wording judged it. Every built-in prompt tells the
   judge that sourced facts outrank its recall. A candidate does not judge itself when an alternate is configured.
-  A judge completion that breaks the protocol fails the run. Judged readings carry an evidence tier decided by code.
+  A judge completion that breaks the protocol fails the run. Every judge call sends its reply's shape as a strict
+  `json_schema` in the portable subset, every enum in it a string enum (the one form every provider's strict mode
+  enforces; a Gemini model did not enforce an integer one): an ordinal score is asked for as `"1"` to `"5"` and read
+  back to its integer, a bare integer still read, and `strict_response_format` refuses a host schema enumerating
+  anything but strings, by name. Judged readings carry an evidence tier decided by code.
   People and agents rate results (`rate_result`), and `judge_agreement` reports exact agreement and Cohen's kappa,
   quadratic-weighted on 1–5 scales. The package also measures a judge's agreement with itself (repeat judging),
   a second judge, and the judge's temperature. A judge's recorded identity is a fingerprint of its wording (the
@@ -143,13 +177,13 @@ v<version>` prints a release's notes).
   own `judge_config_ids` holds bare config ids, so a wording change never re-keys a run's context.
 - **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
   given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
-  context bundle (shape 52, computed under cell model `CELL_MODEL_VERSION` 12, exported from `analysis`) holds the decision surface, comparisons with Holm correction for multiple comparisons
+  context bundle (shape 53, computed under cell model `CELL_MODEL_VERSION` 13, exported from `analysis`) holds the decision surface, comparisons with Holm correction for multiple comparisons
   per declared question, materiality, bars and proposed bars, mechanism checks on swept levers (a setting that
   never took effect does not read as one that changed nothing), strata, a time axis by build or by day, judge
   agreement, and every confound and disclosure. `generate_analysis` has a model write the analysis over the frozen
   bundle. Its headline and each summary bullet name the findings they rest on, and code shows each at the weakest
   of those findings.
-- **Reports and charts.** A campaign's report is one `Report` document (version 9, with a published JSON Schema).
+- **Reports and charts.** A campaign's report is one `Report` document (version 10, with a published JSON Schema).
   It is serialized to Markdown, JSON, or script-free standalone HTML (`report_markdown`, `report_html`). With no
   analysis, a code-only report lays out the evidence alone. Charts are stated as renderer-neutral `ChartIntent`s
   held to a chart policy, behind a `ChartRenderer` seam with a conformance check. The `vega` root is the Vega-Lite
@@ -162,14 +196,36 @@ v<version>` prints a release's notes).
   `stopped`, `failed`, `cancelled`, `timed_out` or `lost`, and each record keeps the refusal it ended on and its
   lease's faults. Every refusal names a remedy the caller can reach, and a stored run this build cannot read is
   named (`runs_unreadable`), never raised raw.
+- **Asked and sent are two facts.** A run records what the engine asked each role for (`judge_asked_settings`,
+  `simulator_asked_settings`), and the engine's own roles ask in effort words: the judge `high` (`max_tokens`
+  10240, strict), the simulated user `low` (strict) and the analysis generator `medium`
+  (`analysis_gen_request_settings_for(*, answer_budget_tokens, reasoning_effort="medium",
+  reasoning_headroom_tokens=8192)`, which replaced `reasoning_budget_tokens`: its cap the answer budget plus a
+  reasoning headroom of at least 1024 tokens, never sent). None carries a token budget, so a host's own client builder
+  sends the effort word (`wire_settings_for` builds the request from every field). What a request actually carried is the client's to
+  say: a completion may carry an optional `sent_settings` member (not a protocol property, so every completion that
+  conformed still does), read by `sent_settings_of`, and stored per judge score, per usage row (every distinct value
+  the row's calls were sent with) and per out-of-run call; `None` is unverified, recorded and never refused. Cells
+  pool only where the judge and the simulated user were both asked and sent alike (`judge_sent_settings` and
+  `simulator_sent_settings` join the apparatus), so unverified never pools with verified and a run sent two ways only
+  with the same mixture; a judge sent other settings is another judge for agreement, profiles, drift and evidence
+  tiers, a second judge included, and a repeat sent differently is unpaired (`settings_changed`). `run_get`, `run_summary`, the bundle and the
+  report say in one sentence (`request_settings_disclosure`) where a role was sent other than asked, sent more than
+  one way, sent without enforcement or not reported; never about the candidate. A host whose client reports it ships
+  that in the same deploy that adopts the release, and its client never fails a call for a setting, in the
+  adapter's order: a refused setting is dropped or moved first, the temperature before any other, keeping
+  enforcement, and only a call that still finds no endpoint is sent unenforced (`strict_output=False`).
 - **Conformance kits** (`testing`): the store, reader, jobs and completion kits, and the import-boundary check
-  (`nonpublic_evals_imports`) a host runs over its own code. Beside them, `RecordedCompletions` records the calls a
-  host's real completion client answers into a JSONL file once and replays them with no network, so a suite runs
-  offline on what a model actually said. A call is matched on its prompt and on the model, temperature and request
-  settings (`ClientRequestSettings`, a required `settings=` on `record`, `replay` and `check_covers`) it was made
-  with; a prompt the recording does not hold, or holds only under other settings, is refused by name with the
-  command that re-records it, never sent live. A recorder stands in for an analysis or out-of-run client too: it
-  names its model and prices a call (a replay at $0).
+  (`nonpublic_evals_imports`) a host runs over its own code. The completion kit checks the optional `sent_settings`
+  member's type when present, and requires it with `require_sent_settings=True`. Beside them, `RecordedCompletions`
+  records the calls a host's real completion client answers into a JSONL file once and replays them with no network,
+  so a suite runs offline on what a model actually said. A call is matched on its prompt and on the model,
+  temperature and request settings (`ClientRequestSettings`, a required `settings=` on `record`, `replay` and
+  `check_covers`) it was made with, and what each call was sent with is recorded and replayed beside them; a prompt
+  the recording does not hold, or holds only under other settings, is refused by name with the command that
+  re-records it, never sent live. A recording made before `v0.67.0-evaladopt.25` (recorder format 1, with no
+  `sent_settings`) is refused by name as older; format 2 records what each call was sent with, so re-record it. A recorder stands in for an analysis or out-of-run client too: it names its model
+  and prices a call (a replay at $0).
 - **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
@@ -181,15 +237,14 @@ v<version>` prints a release's notes).
   `feature/eval-adopt` for one adopter and never published. Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold
   that pre-release's notes and the names that moved. **A store written before `v0.66.0-evaladopt.21` is not read:**
   its core documents (schema v8 to v13) are refused by name as pre-release and its regenerable ones by version, so
-  such an adopter deletes its eval documents. From `.21` on, the store is the v14 baseline this release reads, and
-  every core shape change is a version, as it will be after release: a minor for an additive change, a major with an
-  upgrader for any other. Reading a newer minor arrived in `.22`: a `.21` build does not know `schema_minor` and
-  refuses every core document `.22` or this release writes, though both are v14, so roll back no further than `.22`.
-  **Once any document carries `stop_reason="truncated"`, roll back no further than `.24`:** that word joined the
-  unreleased v14 baseline in `.24` with no new version, and `.22` and `.23`, which read and write v14.0 too, know four
-  stop reasons and refuse every out-of-run spend document carrying it. Every pre-release, `.21` included, stamped its
-  cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so their corpora
-  are re-captured.
+  such an adopter deletes its eval documents. **Nor is a store written before `v0.67.0-evaladopt.25`:** `.21` to
+  `.24` wrote a pre-release v14 baseline, and `.25` reset the baseline to v15 with no upgrader, so a v14 document is
+  refused by name as pre-release and such an adopter deletes its eval documents again. From `.25` on, the store is
+  the v15 baseline this release reads, and every core shape change is a version, as it will be after release: a minor
+  for an additive change, a major with an upgrader for any other. Every build before `.25` refuses every core document
+  `.25` or this release writes, so roll back no further than `.25`. Every pre-release before `.22`, `.21` included,
+  stamped its cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so
+  their corpora are re-captured.
 
 ## v0.66.0 -- 2026-10-13
 

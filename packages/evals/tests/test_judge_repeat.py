@@ -316,7 +316,7 @@ async def _judged_run(
         **{
             "status": "completed",
             "effective_judges": built.effective_judges,
-            "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+            "judge_asked_settings": JUDGE_REQUEST_SETTINGS,
             **run_fields,
         },
     )
@@ -590,7 +590,7 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
 
     async def test_a_run_that_recorded_no_request_settings_is_refused(self):
         judge = _PricedJudge()
-        host, run_id = await _judged_run(judge, judge_request_settings=None)
+        host, run_id = await _judged_run(judge, judge_asked_settings=None)
         judge.calls.clear()
 
         with pytest.raises(ValidationFailedError, match="recorded no judge request settings"):

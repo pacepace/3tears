@@ -5,7 +5,7 @@ readout (:func:`~threetears.evals.analysis.judge_kind_readings`) says, per judge
 agreed with people's labels, with its own repeats, and how often its replies kept the protocol. That readout lives
 in the judge campaign alone. :class:`EvalJudgeProfile` is the record that outlives it: one stored document per
 (judge, criterion) — the judge as :class:`~threetears.evals.analysis.JudgeKey` keys one (dim, scale, served model,
-config, temperature), the criterion as the cases worded it — holding the measures, the cases they were measured on
+config, temperature, sent request settings), the criterion as the cases worded it — holding the measures, the cases they were measured on
 and when, so a campaign scored by that same judge reads its evidence tier from it where its own evidence decides
 none (:func:`~threetears.evals.analysis.tiers_with_judge_profiles`).
 
@@ -18,7 +18,8 @@ may be meant to replace it, and a run abandoned halfway should not overwrite a f
 so recording again over a newer campaign replaces the profile, and the record always says what it was measured on.
 
 **A profile of another judge is never read.** Every field of the judge is part of its key, so a changed model,
-config (a new prompt is a new versioned config) or temperature, or a reworded criterion, is a different judge whose
+config (a new prompt is a new versioned config), temperature or sent request settings (a client may send the closest
+setting a model accepts; unverified is its own value), or a reworded criterion, is a different judge whose
 profile does not exist — the old one is stale, and nothing reads it for the new judge. A judge whose served model or
 temperature was not recorded cannot be shown to be the judge in use anywhere else, so no profile is recorded for it.
 
@@ -43,6 +44,7 @@ from threetears.evals.kernel.evidence_tiers import (
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
+    ClientRequestSettings,
     DimName,
     JudgeTemperature,
     RubricScale,
@@ -66,6 +68,8 @@ def judge_profile_id(
     judge_config_id: str | None,
     judge_temperature: JudgeTemperature,
     criterion_digest: str,
+    *,
+    judge_sent_settings: ClientRequestSettings | None,
 ) -> str:
     """The id of the one profile of a judge on a criterion: derived from both, so recording again replaces it.
 
@@ -77,12 +81,15 @@ def judge_profile_id(
             wording.
         judge_temperature: What the judge's calls were sent at.
         criterion_digest: The criterion's wording (:func:`~threetears.evals.kernel.judge_criterion_digest`).
+        judge_sent_settings: What the judge's calls were sent with, as their scores recorded them; ``None`` =
+            unverified, its own judge.
 
     Returns:
-        ``judge-profile:`` and the digest of the six.
+        ``judge-profile:`` and the digest of the seven.
     """
+    sent = None if judge_sent_settings is None else judge_sent_settings.model_dump(mode="json")
     return "judge-profile:" + canonical_digest(
-        [rubric_dim, scale, judge_model, judge_config_id, judge_temperature, criterion_digest]
+        [rubric_dim, scale, judge_model, judge_config_id, judge_temperature, criterion_digest, sent]
     )
 
 
@@ -110,7 +117,7 @@ class EvalJudgeProfile(EvalDocumentModel):
     """What one judge was measured to be on one criterion, over frozen cases, by a judge campaign — stored for reuse.
 
     One per (``rubric_dim``, ``scale``, ``judge_model``, ``judge_config_id``, ``judge_temperature``,
-    ``criterion_digest``): the ``id`` derives from them, and a stored id that disagrees with its own fields is refused.
+    ``judge_sent_settings``, ``criterion_digest``): the ``id`` derives from them, and a stored id that disagrees with its own fields is refused.
     """
 
     doc_type: Literal["eval_judge_profile"] = "eval_judge_profile"
@@ -130,6 +137,13 @@ class EvalJudgeProfile(EvalDocumentModel):
     )
     judge_temperature: JudgeTemperature = Field(
         description="What the judge's calls were sent at ('model_default' = sent none, the model refusing one)."
+    )
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "What the judge's calls were sent with, as their scores recorded them; None = unverified (the client did "
+            "not report them), a judge of its own, never a match for a recorded one."
+        ),
     )
     criterion_digest: str = Field(min_length=1, description="The criterion as the cases worded it (its digest).")
     id: str = Field(
@@ -175,6 +189,7 @@ class EvalJudgeProfile(EvalDocumentModel):
             self.judge_config_id,
             self.judge_temperature,
             self.criterion_digest,
+            judge_sent_settings=self.judge_sent_settings,
         )
         if self.id != derived:
             raise ValueError(
@@ -222,6 +237,7 @@ def _derived_profile_id(data: dict[str, object]) -> str:
             data["judge_config_id"],  # type: ignore[arg-type]
             data["judge_temperature"],  # type: ignore[arg-type]
             str(data["criterion_digest"]),
+            judge_sent_settings=data.get("judge_sent_settings"),  # type: ignore[arg-type]
         )
     except KeyError:
         return ""

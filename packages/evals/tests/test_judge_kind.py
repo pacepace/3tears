@@ -141,7 +141,7 @@ async def _judged_source(host: EvalHost) -> list[EvalResult]:
                 update={
                     "effective_judges": {FAITHFULNESS_DIM: TOY_JUDGE_MODEL},
                     "judge_config_ids": {},
-                    "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+                    "judge_asked_settings": JUDGE_REQUEST_SETTINGS,
                     "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
                 }
             ),
@@ -547,7 +547,7 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
                 update={
                     "effective_judges": {FAITHFULNESS_DIM: TOY_JUDGE_MODEL},
                     "judge_config_ids": {},
-                    "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+                    "judge_asked_settings": JUDGE_REQUEST_SETTINGS,
                     "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
                 }
             ),

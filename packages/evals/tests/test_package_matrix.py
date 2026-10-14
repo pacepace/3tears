@@ -1,6 +1,6 @@
 """Structural gate: the engine's packages import only what the allowed-dependency matrix permits.
 
-``threetears.evals`` is thirteen physical subpackages, and one allowed-dependency matrix says which may
+``threetears.evals`` is fourteen physical subpackages, and one allowed-dependency matrix says which may
 import which:
 
 ============  ======  ======  =====  ========  ===  =======  =======  =====  ====  ============================================
@@ -47,7 +47,13 @@ two cannot disagree), and past the stdlib ``threetears.models`` and the provider
 ``anthropic``, ``openai``, ``openrouter``, ``httpx``) and pydantic.
 Like ``vega``, its column is empty but its own row: nothing in the engine, and nothing above it, imports it, which
 is what keeps the engine provider-neutral (``tests/test_providers_boundary.py`` holds the same from the adapter's
-side, name by name).
+side, name by name). It also imports ``negotiation``.
+
+``negotiation`` is how a completion client sends the closest request settings a model takes and answers a
+provider's refusal of one: the shipped adapter uses it, and so does a host's own client, which is why it is a base
+root rather than part of the adapter. It may import schema and itself, and nothing past the stdlib: no SDK, no HTTP
+client, no pydantic of its own (:func:`test_negotiation_imports_on_a_base_install_with_no_sdk` imports it with every
+provider package made unimportable). Only ``providers`` imports it; the engine never sends a request.
 
 ``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
 against its own adapter, and nothing in the engine may reach either. ``storage`` needs nothing but
@@ -115,7 +121,7 @@ TESTS_ROOT = Path(__file__).resolve().parent
 #: The repository root, which the probes run from.
 REPO_ROOT = TESTS_ROOT.parents[2]
 
-#: The matrix, for the thirteen packages.
+#: The matrix, for the fourteen packages.
 ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "schema": frozenset({"schema"}),
     "kernel": frozenset({"schema", "kernel"}),
@@ -129,7 +135,8 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
     "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
     "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
-    "providers": frozenset({"schema", "kernel", "run", "providers"}),
+    "providers": frozenset({"schema", "kernel", "run", "negotiation", "providers"}),
+    "negotiation": frozenset({"schema", "negotiation"}),
 }
 
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
@@ -152,6 +159,8 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "providers": frozenset(
         {"threetears.models", "langchain_core", "anthropic", "openai", "openrouter", "httpx", "pydantic"}
     ),
+    # The stdlib alone: what a host's own client of raw HTTP imports beside its own transport.
+    "negotiation": frozenset(),
 }
 
 #: The module-level third-party exceptions, one per extra: the Vega renderer's rasteriser and nothing
@@ -165,7 +174,8 @@ THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
 #: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
 #: of these. ``kernel.host`` and ``analysis.viz`` are roots of their own inside a package: the first
 #: is the contract a host implements, the second the chart intent and the renderer seam. ``vega`` is the
-#: optional Vega-Lite renderer, and ``providers`` the optional provider adapter.
+#: optional Vega-Lite renderer, ``negotiation`` what a completion client sends and resends, and ``providers`` the
+#: optional provider adapter.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "schema",
     "kernel",
@@ -181,6 +191,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "actions",
     "transports.fastmcp",
     "vega",
+    "negotiation",
     "providers",
 )
 
@@ -652,6 +663,46 @@ def test_the_core_runs_the_toy_analysis_without_the_renderer() -> None:
     assert proc.returncode == 0, f"the core needed the Vega renderer or its rasteriser:\n{proc.stderr}"
 
 
+#: Every package the ``[models]`` extra brings, made unimportable, then the negotiation root imported and run: a
+#: closest choice, and a negotiated call whose first request a router refuses (OpenRouter's production 404) and whose
+#: resend without the temperature is served. A host with its own client of raw HTTP installs the base package only,
+#: and is in exactly this state.
+_NEGOTIATION_WITHOUT_AN_SDK_PROBE = (
+    "import asyncio, sys\n"
+    "for barred in ('threetears.models', 'langchain_core', 'anthropic', 'openai', 'openrouter', 'httpx'):\n"
+    "    sys.modules[barred] = None\n"
+    "from threetears.evals.negotiation import (\n"
+    "    LearnedSettings, SettingFacts, WireSettings, closest_settings, negotiate, read_router_refusal)\n"
+    "sent, _ = closest_settings(WireSettings(max_tokens=10240, reasoning_max_tokens=8192), SettingFacts(), 'openai')\n"
+    "assert sent.reasoning_effort == 'high', sent\n"
+    "class Refused(Exception):\n"
+    "    pass\n"
+    "async def send(wire, facts):\n"
+    "    if wire.temperature is not None:\n"
+    "        raise Refused()\n"
+    "    return 'served'\n"
+    "body = {'error': {'code': 404, 'message': 'No endpoints found that can handle the requested parameters.'}}\n"
+    "done = asyncio.run(negotiate(\n"
+    "    WireSettings(max_tokens=100, temperature=0.0, strict_output=True), provider_family='router', model='m',\n"
+    "    send=send, read_refusal=lambda exc: read_router_refusal(404, body), learned=LearnedSettings()))\n"
+    "assert done.reply == 'served' and done.temperature is None and done.sent_settings.strict_output, done\n"
+    "assert not [n for n in sys.modules if n.startswith('threetears.evals.providers')]\n"
+)
+
+
+def test_negotiation_imports_on_a_base_install_with_no_sdk() -> None:
+    """The negotiation root imports and negotiates with no SDK, HTTP client, LangChain or 3tears-models installed."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _NEGOTIATION_WITHOUT_AN_SDK_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert proc.returncode == 0, f"the negotiation root needed a package the base install lacks:\n{proc.stderr}"
+
+
 # --- the checker fires: synthetic trees, one per forbidden and permitted shape ----------------------
 
 
@@ -689,6 +740,7 @@ _BASE_FILES = {
     "threetears/evals/vega/compiler.py": "",
     "threetears/evals/kernel/scoring.py": "",
     "threetears/evals/ops/lenses.py": "",
+    "threetears/evals/negotiation/loop.py": "",
 }
 
 
@@ -772,6 +824,19 @@ _BASE_FILES = {
             "threetears.evals.run.jobs",
             "run",
         ),
+        # The engine sends no request, so it never reaches the negotiation; and the negotiation reaches no engine.
+        (
+            "threetears/evals/run/loop.py",
+            "from threetears.evals.negotiation.loop import negotiate\n",
+            "threetears.evals.negotiation.loop",
+            "negotiation",
+        ),
+        (
+            "threetears/evals/negotiation/settings.py",
+            "from threetears.evals.kernel.scoring import S\n",
+            "threetears.evals.kernel.scoring",
+            "kernel",
+        ),
     ],
 )
 def test_the_matrix_refuses_each_forbidden_edge(
@@ -799,6 +864,12 @@ def test_the_matrix_refuses_each_forbidden_edge(
         ("threetears/evals/legacy.py", "import acme.config\n"),
         # The renderer reads the intent it draws.
         ("threetears/evals/vega/compiler.py", "from threetears.evals.analysis.stats import mean\nfrom . import arms\n"),
+        # The negotiation reads the settings shape it reports in; the adapter reads the negotiation.
+        (
+            "threetears/evals/negotiation/settings.py",
+            "from threetears.evals.schema.models import M\nfrom . import loop\n",
+        ),
+        ("threetears/evals/providers/adapter.py", "from threetears.evals.negotiation.loop import negotiate\n"),
     ],
 )
 def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, source: str) -> None:
@@ -817,6 +888,12 @@ def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, so
         ("threetears/evals/analysis/viz/render.py", "import vl_convert\n", ["vl_convert"]),
         ("threetears/evals/vega/render.py", "import vl_convert\n", []),
         ("threetears/evals/vega/compiler.py", "import vl_convert\n", ["vl_convert"]),
+        # The negotiation is the base install's: no HTTP client, no SDK.
+        (
+            "threetears/evals/negotiation/loop.py",
+            "import httpx\nimport anthropic\nimport json\n",
+            ["httpx", "anthropic"],
+        ),
         # The engine depends on no 3tears package, observe included: its loggers are its own.
         ("threetears/evals/run/loop.py", "from threetears.observe import get_logger\n", ["threetears.observe"]),
         # A sibling family package the manifest does not declare is a dependency like any other.

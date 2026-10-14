@@ -45,7 +45,9 @@ another part's, and a sibling cell sees all of it.
   the engine makes for it) is held against the cap while it is in flight, and settled to what it actually cost
   when it returns, or released if it raised. A call whose ceiling would take the run past its cap is refused
   before it is made. **A run whose paid calls are all reserved never spends past its cap**, however many cells
-  run at once. The engine reserves its own calls this way: every simulator call (a conversation's
+  run at once. The shipped adapter's resend of a request a provider refused for a setting it carried is not another
+  attempt: the refused request generated nothing and is taken to be unbilled (an assumption no provider documents),
+  so its `price_ceiling` prices one attempt per request. The engine reserves its own calls this way: every simulator call (a conversation's
   `drive_conversation`), every judge call in a cell's judge phase, the judge kind's call and the reporter kind's
   generator calls. A host's kind reserves its candidate's calls through `CellSink.reserve`, or wraps the client
   in `CappedCompletion`.
@@ -302,7 +304,7 @@ result's `cost_usd` is derived from the row, the summary prints `candidate spend
 Pass `served_model=` too, the model the provider's response named: without it the run records only the model
 asked for, and its summary says which model answered is unconfirmed
 ([Reading reports](reading-reports.md#which-model-answered)).
-`examples/compare_two_models.py` prices each call this way.
+`examples/compare_two_efforts.py` returns each call's spend this way.
 
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which

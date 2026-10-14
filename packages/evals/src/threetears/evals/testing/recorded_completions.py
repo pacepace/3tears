@@ -5,7 +5,8 @@ never the same answer twice), stand a scripted double in for it (free, but what 
 a model's), or call it once and keep what it said. :class:`RecordedCompletions` is the third.
 :meth:`RecordedCompletions.record` wraps the host's real client and appends every completion it returns to a JSONL
 file; :meth:`RecordedCompletions.replay` reads that file and hands the same completions back, in the order they were
-made, with no network.
+made, with no network. The package's examples run on it: live with a key, recorded with ``RECORD=1``, and otherwise
+replayed from ``examples/recordings/`` (``examples/README.md``).
 
 **What a call is matched on.** Each recorded line is keyed by the sha256 of the canonical JSON of the call's
 ``system``, ``user`` and ``response_format``, of the ``model`` and ``temperature`` the completion reported, and of the
@@ -38,8 +39,11 @@ under test, so a candidate that raises it has its cell excluded rather than scor
 how a test says by name that a prompt changed under its recording.
 
 **What is kept.** All ten :class:`~threetears.evals.schema.CompletionResult` members as the inner client returned
-them, and every other attribute its completion type declares (a dataclass field, a Pydantic field, an instance
-attribute: a ``served_provider``, say) under ``extra``. A computed property is not a declared attribute and is not
+them; the optional ``sent_settings`` member, what the request actually carried, as
+:func:`~threetears.evals.schema.sent_settings_of` reads it (``None`` when the completion has none), so a replayed
+completion reports what the recorded call was sent with, not what a replay is asked under; and every other
+attribute its completion type declares (a dataclass field, a Pydantic field, an instance attribute: a
+``served_provider``, say) under ``extra``. A computed property is not a declared attribute and is not
 kept. A value JSON cannot hold (a non-finite ``cost_usd`` or ``temperature`` included) is refused when it is recorded,
 as a :class:`~threetears.evals.testing.CompletionConformanceFailure`, not rendered as text. A replayed completion is a
 :class:`ReplayedCompletion`; ``cost_usd`` and ``price_source`` are replayed as recorded, so a replayed price is the
@@ -49,8 +53,9 @@ historical fact of what that call cost when it was made, not a quote at today's 
 the order calls returned. Recording onto a file that exists appends to it, the new calls numbered after the ones it
 holds; a fresh recording removes the file first, and only when asked (``record(..., replace=True)``), so no recording
 is ever overwritten by accident. Each line carries the recorder's format version (:attr:`RecordedCompletions.FORMAT_VERSION`)
-and the time it was written; a line from a newer format, or one that is not a line this recorder writes, refuses the
-whole file by its line number. One process records a file at a time.
+and the time it was written; a line from a newer format, one from an older format (format 1 kept no
+``sent_settings``, so its calls cannot say what they were sent with), or one that is not a line this recorder writes,
+refuses the whole file by its line number. One process records a file at a time.
 """
 
 from __future__ import annotations
@@ -69,9 +74,11 @@ from typing import Any, ClassVar, Literal, NamedTuple, Self, get_args
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.schema.completion import (
     COMPLETION_RESULT_ATTRIBUTES,
+    OPTIONAL_COMPLETION_ATTRIBUTES,
     CompletionClient,
     CompletionResult,
     StopReason,
+    sent_settings_of,
 )
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import ClientRequestSettings
@@ -82,15 +89,20 @@ from threetears.evals.testing.completion_conformance import (
 
 __all__ = ["RecordedCompletions", "RecordedPrompt", "RecordingRefused", "ReplayedCompletion"]
 
-#: The recording format this build writes and the newest it reads. A line's ``recorder_version`` above it is refused.
-_FORMAT_VERSION = 1
+#: The recording format this build writes, and the only one it reads: a line's ``recorder_version`` above it is refused
+#: as newer, and one below it as older.
+#:
+#: - **1** — the first format.
+#: - **2** — each line carries ``sent_settings``, what the recorded call's request actually carried. A format-1 line
+#:   kept none, so it cannot replay a completion that says what it was sent with, and is refused by name.
+_FORMAT_VERSION = 2
 
 #: How much of a prompt's ``user`` a refusal quotes, so the prompt is recognisable without the message carrying all of it.
 _PROMPT_HEAD = 80
 
 #: The top-level members every recorded line carries, and nothing else at this format version.
 _LINE_MEMBERS = frozenset(
-    {"recorder_version", "recorded_at", "key", "index", "user_head", "settings", "result", "extra"}
+    {"recorder_version", "recorded_at", "key", "index", "user_head", "settings", "sent_settings", "result", "extra"}
 )
 
 #: Serialises every append in this process, so two recording clients on one file never interleave a line or give two
@@ -144,8 +156,8 @@ class RecordedPrompt(NamedTuple):
 class ReplayedCompletion:
     """A completion as it was recorded, replayed: the ten :class:`~threetears.evals.schema.CompletionResult` members.
 
-    Satisfies :class:`~threetears.evals.schema.CompletionResult` structurally. Every member holds what the inner
-    client's completion held when it was recorded. ``cost_usd`` and ``price_source`` are a historical fact, what the
+    Satisfies :class:`~threetears.evals.schema.CompletionResult` structurally, and carries its optional
+    ``sent_settings`` member. Every member holds what the inner client's completion held when it was recorded. ``cost_usd`` and ``price_source`` are a historical fact, what the
     call cost when it was made and who priced it then, not a quote: a replay calls no price source, and a rate that
     moved since is not reflected.
 
@@ -160,6 +172,8 @@ class ReplayedCompletion:
         reasoning_tokens: The reasoning share of ``output_tokens``, or ``None``.
         temperature: The temperature the request was sent with, or ``None``.
         stop_reason: Why the completion stopped, in the engine's vocabulary.
+        sent_settings: What the recorded call's request actually carried, as its completion reported it, or ``None``
+            when it reported nothing: never the settings the replay was asked under.
         extra: Every other attribute the recorded completion's type declared, by name (a ``served_provider``, say),
             read-only.
     """
@@ -174,6 +188,7 @@ class ReplayedCompletion:
     reasoning_tokens: int | None
     temperature: float | None
     stop_reason: StopReason
+    sent_settings: ClientRequestSettings | None
     extra: Mapping[str, Any]
 
 
@@ -369,7 +384,7 @@ class RecordedCompletions:
         remedy = _rerecord_remedy(path, rerecord)
         recorded = _readable_replay(path, remedy)
         uncovered: list[str] = []
-        for prompt, asked in Counter(prompts).items():
+        for prompt, asked in _tally(prompts):
             held_under = _keys_for(recorded, prompt, model, temperature)
             keys = _under_settings(held_under, settings)
             if held_under and not keys:
@@ -536,6 +551,7 @@ class RecordedCompletions:
     ) -> None:
         check_completion_conformance(completion)
         members = _recordable_members(completion)
+        sent = sent_settings_of(completion)
         extra = _declared_extras(completion)
         key = _call_key(system, user, response_format, members["model"], members["temperature"], self._settings)
         with _APPEND_LOCK, self._lock:
@@ -549,12 +565,13 @@ class RecordedCompletions:
                 "index": len(calls),
                 "user_head": user[:_PROMPT_HEAD],
                 "settings": None if self._settings is None else self._settings.model_dump(mode="json"),
+                "sent_settings": None if sent is None else sent.model_dump(mode="json"),
                 "result": members,
                 "extra": extra,
             }
             with self.path.open("a", encoding="utf-8") as recording:
                 recording.write(json.dumps(line, ensure_ascii=False, allow_nan=False) + "\n")
-            calls.append(_completion_of(members, extra))
+            calls.append(_completion_of(members, sent, extra))
             self._size = _file_size(self.path)
 
     async def aclose(self) -> None:
@@ -575,6 +592,26 @@ def _rerecord_remedy(path: Path, rerecord: str | None) -> str:
     if rerecord:
         return f"re-record {path} with `{rerecord}`, the provider's key set"
     return f"re-record {path} with the client it stands in for (RecordedCompletions.record(..., replace=True))"
+
+
+def _tally(prompts: Iterable[RecordedPrompt]) -> list[tuple[RecordedPrompt, int]]:
+    """Each distinct prompt with how many times it is listed, in first-listed order.
+
+    Counted by the prompt's canonical JSON, not by hashing it: a ``response_format`` is a dict, which does not hash,
+    and two directives equal as JSON are the same call however their keys were ordered.
+
+    Args:
+        prompts: The prompts, each repeat listed once per repeat.
+
+    Returns:
+        ``(prompt, times listed)`` per distinct prompt.
+    """
+    tally: dict[str, tuple[RecordedPrompt, int]] = {}
+    for prompt in prompts:
+        identity = json.dumps([prompt.system, prompt.user, prompt.response_format], sort_keys=True)
+        first, listed = tally.get(identity, (prompt, 0))
+        tally[identity] = (first, listed + 1)
+    return list(tally.values())
 
 
 def _head(user: str) -> str:
@@ -733,7 +770,7 @@ def _recordable_members(completion: CompletionResult) -> dict[str, Any]:
 
 
 def _declared_extras(completion: object) -> dict[str, Any]:
-    """Every attribute ``completion``'s type declares beyond the protocol's ten, which JSON must be able to hold."""
+    """Every attribute ``completion``'s type declares beyond the protocol's ten and its optional members, JSON-safe."""
     if is_dataclass(completion) and not isinstance(completion, type):
         names = [f.name for f in fields(completion)]
     elif isinstance(declared := getattr(type(completion), "model_fields", None), Mapping):
@@ -743,7 +780,7 @@ def _declared_extras(completion: object) -> dict[str, Any]:
         names = [*getattr(completion, "__dict__", {}), *(name for name in slots if hasattr(completion, name))]
     extras: dict[str, Any] = {}
     for name in dict.fromkeys(names):
-        if name.startswith("_") or name in COMPLETION_RESULT_ATTRIBUTES:
+        if name.startswith("_") or name in COMPLETION_RESULT_ATTRIBUTES or name in OPTIONAL_COMPLETION_ATTRIBUTES:
             continue
         value = getattr(completion, name)
         try:
@@ -764,8 +801,10 @@ def _slot_names(klass: type) -> tuple[str, ...]:
     return (declared,) if isinstance(declared, str) else tuple(declared)
 
 
-def _completion_of(members: Mapping[str, Any], extra: Mapping[str, Any]) -> ReplayedCompletion:
-    return ReplayedCompletion(**members, extra=MappingProxyType(dict(extra)))
+def _completion_of(
+    members: Mapping[str, Any], sent: ClientRequestSettings | None, extra: Mapping[str, Any]
+) -> ReplayedCompletion:
+    return ReplayedCompletion(**members, sent_settings=sent, extra=MappingProxyType(dict(extra)))
 
 
 def _read_recording(path: Path, remedy: str) -> dict[str, _Recorded]:
@@ -813,13 +852,15 @@ def _malformed(path: Path, number: int, problem: str, remedy: str) -> RecordingR
     return RecordingRefused(path, f"line {number} is not a recorded call: {problem}", remedy)
 
 
-def _read_settings(path: Path, number: int, settings: Any, remedy: str) -> ClientRequestSettings | None:
-    """A line's ``settings``: ``null``, or request settings this build reads exactly, with no value coerced."""
+def _read_settings(
+    path: Path, number: int, settings: Any, remedy: str, member: str = "settings"
+) -> ClientRequestSettings | None:
+    """A line's ``settings`` or ``sent_settings``: ``null``, or request settings this build reads exactly, uncoerced."""
     if settings is None:
         return None
     if not isinstance(settings, dict):
         raise _malformed(
-            path, number, f"its settings are a JSON {type(settings).__name__}, not an object or null", remedy
+            path, number, f"its {member} are a JSON {type(settings).__name__}, not an object or null", remedy
         )
     try:
         return ClientRequestSettings.model_validate(settings, strict=True)
@@ -827,7 +868,7 @@ def _read_settings(path: Path, number: int, settings: Any, remedy: str) -> Clien
         raise _malformed(
             path,
             number,
-            f"its settings are not request settings this build reads ({' '.join(str(invalid).split())})",
+            f"its {member} are not request settings this build reads ({' '.join(str(invalid).split())})",
             remedy,
         ) from None
 
@@ -852,6 +893,13 @@ def _read_line(
             f"line {number} was written in recording format {version}, newer than this build's {_FORMAT_VERSION}",
             "upgrade 3tears-evals to the build that recorded it, or " + remedy,
         )
+    if version < _FORMAT_VERSION:
+        raise RecordingRefused(
+            path,
+            f"line {number} was written in recording format {version}, older than this build's {_FORMAT_VERSION}: it "
+            "kept no sent_settings, so its calls cannot say what their requests were sent with",
+            remedy,
+        )
     if mismatch := _mismatch(_LINE_MEMBERS, line.keys()):
         raise _malformed(path, number, f"it {mismatch}", remedy)
     key, index, recorded_at, result, extra = (line[name] for name in ("key", "index", "recorded_at", "result", "extra"))
@@ -868,6 +916,7 @@ def _read_line(
     if not isinstance(line["user_head"], str):
         raise _malformed(path, number, "its user_head is not text", remedy)
     settings = _read_settings(path, number, line["settings"], remedy)
+    sent = _read_settings(path, number, line["sent_settings"], remedy, "sent_settings")
     if not isinstance(extra, dict):
         raise _malformed(path, number, f"its extra is a JSON {type(extra).__name__}, not an object", remedy)
     if not isinstance(result, dict):
@@ -879,4 +928,4 @@ def _read_line(
     ]:
         raise _malformed(path, number, "its result's " + "; ".join(problems), remedy)
     members = {name: _normalised(name, result[name]) for name in COMPLETION_RESULT_ATTRIBUTES}
-    return key, index, settings, _completion_of(members, extra)
+    return key, index, settings, _completion_of(members, sent, extra)

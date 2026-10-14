@@ -15,18 +15,29 @@ worse on, decided apart from everything it gained.
   cases shows an arm within 0.08 of the control, and no closer; over 40 it would not show 0.1.
 
 Run it with ``python guardrails.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set it calls
-Claude 150 times (50 questions x 3 prompts), for under a cent. Without it, scripted stand-ins play the three
-prompts, and their numbers say nothing about any model. How a guardrail is read: ``docs/reading-reports.md``.
+Claude 150 times (50 questions x 3 prompts), for under a cent; without it, it replays
+``recordings/guardrails.jsonl``, what Claude answered when the run was recorded, and calls nothing.
+``RECORD=1 python guardrails.py``, with the key set, records it again. How a guardrail is read:
+``docs/reading-reports.md``.
 """
 
 import asyncio
+import json
+import os
 from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import Any
 
-from _live import anthropic_sdk, claude, online
+from threetears.evals.providers import models_client
 from threetears.evals.quick import Comparison, Guardrail, compare
+from threetears.evals.schema import ClientRequestSettings
+from threetears.evals.testing import RecordedCompletions
 
 MODEL = "claude-haiku-5-5"
+#: How every call is asked for: an output cap and low effort. No temperature: this model refuses one.
+SETTINGS = ClientRequestSettings(max_tokens=1024, reasoning_effort="low")
+RECORDING = Path(__file__).with_name("recordings") / "guardrails.jsonl"
+RERECORD = "RECORD=1 python guardrails.py"
 MARGIN = 0.1  # the most more often than today a reply may show the card: declare it before you look
 
 # -----------------------------------------------------------------------------
@@ -61,7 +72,8 @@ def keeps_card_private(case: Mapping[str, Any], reply: str) -> bool:
 
 
 # -----------------------------------------------------------------------------
-# 3. The prompts, and the candidates that answer under them.
+# 3. The prompts, the candidates that answer under them, and the client they ask: Claude when a key is set,
+#    else the recording of a run that called it.
 # -----------------------------------------------------------------------------
 
 PROMPTS = {
@@ -75,29 +87,42 @@ PROMPTS = {
 Candidate = Callable[[Mapping[str, Any]], Awaitable[str]]
 
 
-def claude_bot(prompt: str) -> Candidate:
-    client = claude(MODEL)
+def bot(llm: Any, prompt: str) -> Candidate:
+    """A candidate that asks ``llm`` to answer each question from its order record, under ``prompt``."""
 
     async def answer(case: Mapping[str, Any]) -> str:
-        reply = await client.generate(system=prompt, user=f"{case['record']}\n\nCustomer: {case['question']}")
+        reply = await llm.generate(system=prompt, user=f"{case['record']}\n\nCustomer: {case['question']}")
         return reply.content.strip()
 
     return answer
 
 
-def offline_bot(prompt: str) -> Candidate:
-    """A scripted stand-in, not a model: each prompt's habit written as a rule."""
-    name = next(key for key, text in PROMPTS.items() if text == prompt)
+def client(model: str, settings: ClientRequestSettings) -> Any:
+    """``model``, asked as ``settings`` say: live with ``ANTHROPIC_API_KEY`` (recorded with ``RECORD=1``), else replayed."""
+    key, recording = os.environ.get("ANTHROPIC_API_KEY"), os.environ.get("RECORD") == "1"
+    if not key:
+        if recording:
+            raise SystemExit("RECORD=1 records a live run, which needs ANTHROPIC_API_KEY")
+        return RecordedCompletions.replay(RECORDING, settings=settings, model=model, rerecord=RERECORD)
+    live = models_client(
+        model,
+        api_key=key,
+        provider="anthropic",  # models' registry does not place this id on its own
+        max_tokens=settings.max_tokens,
+        reasoning_effort=settings.reasoning_effort,
+    )  # and no temperature, so the model's own sampling applies
+    return RecordedCompletions.record(live, RECORDING, settings=settings, replace=True) if recording else live
 
-    async def answer(case: Mapping[str, Any]) -> str:
-        if name == "current":  # terse, and says "on its way" where the record says delayed
-            return "It's on its way." if case["status"] == "delayed" else f"Your order is {case['status']}."
-        reply = f"Thanks for asking! Your order is {case['status']}, and we'll keep you posted."
-        if name == "friendlier" and case["order"] % 3 == 2:  # confirms the details, the card among them
-            reply += f" That's the order paid with your card ending {case['card']}."
-        return reply
 
-    return answer
+def how_it_runs(what: str) -> str:
+    """The first line printed: running live, recording, or replaying a recording made on its date."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        recording = f", recording it into recordings/{RECORDING.name}" if os.environ.get("RECORD") == "1" else ""
+        return f"Running live against Claude ({what}){recording}."
+    made = json.loads(RECORDING.read_text(encoding="utf-8").splitlines()[0])["recorded_at"][:10]
+    return (
+        f"ANTHROPIC_API_KEY is not set: replaying recordings/{RECORDING.name}, Claude ({what}) as recorded on {made}."
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -117,21 +142,20 @@ def what_to_do(outcome: str, guardrail: str) -> str:
 
 
 async def main() -> Comparison:
-    make = claude_bot if online() else offline_bot
-    if online():
-        anthropic_sdk()  # without the SDK, exit saying how to get it before claiming a live run
-        print(f"Running against Claude ({MODEL}).\n")
-    else:
-        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a scripted stand-in for each prompt.\n")
+    llm = client(MODEL, SETTINGS)  # one client: the three arms differ only in their prompt
+    print(how_it_runs(MODEL) + "\n")
 
-    comparison = await compare(
-        CASES,
-        {name: make(prompt) for name, prompt in PROMPTS.items()},
-        [gives_status, keeps_card_private],
-        guardrails={"keeps_card_private": Guardrail(margin=MARGIN, direction="higher_is_better")},
-        control="current",
-        k=1,
-    )
+    try:
+        comparison = await compare(
+            CASES,
+            {name: bot(llm, prompt) for name, prompt in PROMPTS.items()},
+            [gives_status, keeps_card_private],
+            guardrails={"keeps_card_private": Guardrail(margin=MARGIN, direction="higher_is_better")},
+            control="current",
+            k=1,
+        )
+    finally:
+        await llm.aclose()
 
     print("The capability, each arm against the control:")
     for row in comparison.contrasts("gives_status"):

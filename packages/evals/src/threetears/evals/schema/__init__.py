@@ -37,6 +37,7 @@ from threetears.evals.schema.completion import (
     CompletionResult,
     JSON_OBJECT_RESPONSE_FORMAT,
     StopReason,
+    sent_settings_of,
 )
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, referenced_actions, ExtractedPaths
@@ -414,6 +415,7 @@ __all__ = [
     "judges_sharing_a_candidate_model",
     "keep_fields",
     "omit_paths",
+    "sent_settings_of",
     "referenced_actions",
     "refuse_on_event_loop",
     "utc_now_iso",

@@ -788,7 +788,7 @@ class TestATierBelongsToTheWholeJudge:
             judge_agreement([], []), judge_self_agreement([]), {_key(config="cfg-v1@aaaaaaaaaaaa")}
         )
         assert tier_sentence(tier).startswith(
-            f"{TONE} (judge-a, config cfg-v1@aaaaaaaaaaaa, temperature 0): undetermined"
+            f"{TONE} (judge-a, config cfg-v1@aaaaaaaaaaaa, temperature 0, request settings unconfirmed): undetermined"
         )
 
 
@@ -909,7 +909,8 @@ class TestTheReportStatesEachTier:
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         sentences = [text for text in texts if text.startswith("Judged evidence tier:")]
         assert sentences == [
-            f"Judged evidence tier: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge, temperature not recorded): calibrated "
+            f"Judged evidence tier: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge, temperature not recorded, request "
+            "settings unconfirmed): calibrated "
             "— agreement with people 1 "
             "(bounds 0.6904 to 1) over 20 pairs from 20 results, meets (bar 0.6 over at least 20 results); with its "
             "own repeats not measured (bar 0.8 over at least 120 results) — needs 120 results."
@@ -956,8 +957,9 @@ class TestTheStoredShapeMovedTheSchemaVersion:
         # Judged rows and readings carry a required tier, and a repeated score records its first config.
         from threetears.evals.schema import versioning
 
-        assert versioning.REGENERABLE_SCHEMA_VERSION == 9
+        assert versioning.REGENERABLE_SCHEMA_VERSION == 10
         assert "**v9**" in _schema_version_doc(), "the ledger names the baseline"
+        assert "**v10**" in _schema_version_doc(), "the ledger names the bump that put sent settings in a judge's key"
         assert RepeatedScore.model_fields["first_judge_config_id"].is_required()
 
 

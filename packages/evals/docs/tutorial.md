@@ -325,11 +325,13 @@ quality you care about, each scored 1 to 5 by default.
 
 Give `run_eval` a `Judge`: a completion client, the model it calls, the rubric, and the material each answer is
 judged against. The client below is an offline stand-in that looks for an apology. A real one calls your model
-provider; [`_live.py`](../examples/_live.py) is a small adapter for the `anthropic` SDK, which
-[`llm_judge.py`](../examples/llm_judge.py) hands to its judge. A stand-in of your own returns what a model would:
+provider: `models_client` from `threetears.evals.providers` (the `[models]` extra) is the shipped one, which
+[`llm_judge.py`](../examples/llm_judge.py) hands to its judge, replaying a recording of it when no key is set. A
+stand-in of your own returns what a model would:
 a JSON reply with a string `reasoning` and `criteria_scores`, an object whose one key is the dimension asked
 about as `<context>.<dimension>` (`answer.acknowledges` here, the key the engine's prompt names), mapped to a score
-of 1 to 5 (`"pass"` or `"fail"` on a pass/fail dimension).
+of 1 to 5 (`"pass"` or `"fail"` on a pass/fail dimension). The prompt and the strict schema sent beside it ask for the
+score as a string, `"1"` to `"5"`; the bare integer this stand-in returns is read too.
 
 ```python
 async def draft_reply(case: dict) -> str:
@@ -373,6 +375,7 @@ run 01a12446-2d38-77e1-8185-6b938c406abb completed: draft_reply over 10 case(s) 
   spend cap: uncapped — no spend ceiling was in force (cost enforcement was off)
   intent (from draft_reply's docstring): Draft the first reply to a support ticket.
   answer.acknowledges (judged 1-5): mean 4.7 (n=20, min 2, max 5)
+  Request settings not confirmed as asked: the judge's client did not report what it sent for 20 of 20 score(s), so those cannot say whether what was asked ({max_tokens=10240, reasoning_effort=high, strict}) was applied. A client may send the closest setting a model accepts, or resend a call without enforcement, and reports what each request carried (sent_settings); runs sent differently, or one reported and one not, are not pooled as one apparatus.
   judge spend: $0 over 20 call(s)
   total spend: $0, the results' cost
 hours: answer.acknowledges 2, because stand-in: looks for an apology
@@ -387,6 +390,10 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
 - **`served_model`** is the model the provider's response says answered. A real client reads it off the response;
   without it, the summary says it cannot confirm which model produced the scores, since a provider may answer a
   model id with a model of its choosing.
+- **Request settings** are what the judge was asked for: an output cap, `high` reasoning effort and a strict reply
+  format. A real client reports what each request actually carried (`sent_settings`), since it may send a model the
+  closest setting it accepts. The stand-in reports nothing, so the summary says it cannot confirm the asked settings
+  were applied. `models_client` reports it.
 - **The judge reads every field of the case** beside the material, `queue` included. Keep out of the case
   anything the judge should not see.
 - **Read the low scores the way you read misses.** The stand-in marked down `hours`, and a model reading this
@@ -527,8 +534,8 @@ Run the file twice. The second run reads the first run's results from the file, 
 |---|---|---|
 | run against a real model | [Running the examples](../examples/README.md#running-them) | [`llm_judge.py`](../examples/llm_judge.py) |
 | hold a guardrail across a real change, to held | [Reading the guardrails](reading-reports.md#reading-the-guardrails) | [`guardrails.py`](../examples/guardrails.py) |
-| weigh accuracy against cost | [Cost and budgets](cost-and-budgets.md) | [`compare_two_models.py`](../examples/compare_two_models.py) |
-| vary several things at once, such as prompt and model | [Choosing a campaign design](choosing-a-design.md) | [`prompt_x_model.py`](../examples/prompt_x_model.py) |
+| weigh accuracy against cost | [Cost and budgets](cost-and-budgets.md) | [`compare_two_efforts.py`](../examples/compare_two_efforts.py) |
+| vary several things at once, such as prompt and effort | [Choosing a campaign design](choosing-a-design.md) | [`prompt_x_effort.py`](../examples/prompt_x_effort.py) |
 | evaluate an agent by what it does, not what it says | [Evaluating a tool-using agent](evaluating-agents.md) | [`world.py`](../examples/world.py) |
 | write reports to files | [Reading reports](reading-reports.md) | [`reports.py`](../examples/reports.py) |
 | build a classifier set worth trusting | [Designing a classifier eval set](designing-classifier-evals.md) | |

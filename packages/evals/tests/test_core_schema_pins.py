@@ -29,8 +29,10 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
 - **The core's membership moved.** A type became core or stopped being core; that is a decision about
   what is kept, recorded in ``CORE_DOC_TYPES`` and here together.
 
-The v14 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
-v14 document yet, so while that is true a baseline change regenerates it in place rather than copying it. **A
+The v15 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
+v15 document yet, so while that is true a baseline change regenerates it in place rather than copying it. (The v14
+corpus it replaced was the pre-release baseline of ``.21`` to ``.24``, dropped with no upgrader when ``.25`` reset
+the baseline, since no release reads a pre-release store.) **A
 released version's corpus is never regenerated**: it is what an old store holds, and rewriting it would make the test
 that reads it vouch for the current build instead of for the stored past.
 
@@ -71,33 +73,33 @@ from threetears.evals.schema.versioning import (
 )
 
 #: The ``CORE_SCHEMA_VERSION`` every digest below was taken under.
-PINNED_CORE_SCHEMA_VERSION = 14
+PINNED_CORE_SCHEMA_VERSION = 15
 
 #: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
 PINNED_CORE_SCHEMA_MINOR = 0
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "eb82930180e483123fedb43115bcccc25072743a75b362ca36c6405a011ab840",
-    "case_set": "cd9240cfe0ba3d5bc47a5d1745e9550d5635c97dec673a07e369ecaaa0d4cd2d",
-    "eval_action_job": "1f0f57286049566dddc98121e1f93051c43192e9a591ff226b2bb1fd319ba001",
-    "eval_analysis_attempt": "b6818453c2c4909a9b9b8a38aa295e40b1001af589bdebf08b5e76c6b5bea436",
-    "eval_campaign": "c5ce64d3f7df447c436b5f1b0313cd2464d61d1b456e1f0cb0e5fb9ff3a04c2e",
-    "eval_generation_slot": "ca9d09bbe419cfa67397aa779301656c3c55e0a8d5ce682f961fa7afa9001a02",
-    "eval_judge_temperature_check": "7b7329ebdc0bcc86d1ed178dceb5b27d09e87463941470a4780af3d61411a673",
-    "eval_launch": "bea6ee7730e3cb901fae51173f0b9173e0c7760bd2044f61a006c1b8285d5ba8",
-    "eval_out_of_run_spend": "3cf459518ff63151dc79c217df2c854e638565150a4d7cf6ce791b97cfda2488",
-    "eval_result": "fcd0680de40e609fe022b711dfe654da4f4eed5d8c79d991a1f0af06cacd0fd0",
-    "eval_run": "fd706ef4ac538a9a0bf26d98a960c10d5763fbdda6ef8fa60e7bad0ecb70d1fd",
-    "eval_second_judge_pass": "0baec9aa24085cafa4d5c7956a9b81609262edc208069289d2cda7ad579c7436",
-    "eval_sweep": "c77dc40a100b1562acd662710c1aa62a430672367fe6545fabc40035f6872332",
-    "eval_template": "82c4f3b331d903623cff91168c442ecabbe99c5a35224b1ef26d914f93923611",
-    "eval_test_case": "8b8529be10e69772fbd20a86732730a9be3002bfe8c91e94cb0adb32f3cce414",
-    "eval_trace": "9a661ba216e98bf33eedaa7b1ec0677ba0c2d6de3eaa7fe50435a03338f8ba0b",
-    "judge_config": "2442bfc1477ef2dc08c1e0005a1be3111dc2618342eb8bb05c1773c867dae9c9",
-    "judge_config_tombstone": "9f2516ea3389b3e6d2821f30afc4c9d87281b6939bf9a6f29e4dcc5227f8d795",
-    "rubric_dim": "16426934e0e2310cc31657bf770bcd2be2e5468bfc1b8f68d4fc4751af1063f6",
-    "rubric_dim_tombstone": "78d56efa5301b61be7bd483a95bea43146e30492dbb5f3dcea68777064f0370f",
+    "calibration_rating": "6f9ad0190d746c34a262aba8b268182e6a2d7c3ed85e8da9597f9a8d7ed365d6",
+    "case_set": "10843b08827a93f835f70e91282354299b2ec81e1839609a6937fc9032473a2f",
+    "eval_action_job": "b960c0abac4d73afa5bf061df97ba59e39b58d684a4f0660d7eba634de7dc7e0",
+    "eval_analysis_attempt": "7f260bd77c125fe2484933c1deffac9ff6b41d5e399ae6edfb2064c4456d9d64",
+    "eval_campaign": "a937b4282b7ed15f993f2d2c4d7e2bf05f9449d26a0c03db151b41b2e4a8032e",
+    "eval_generation_slot": "4466adfa53f0c9b1e07f6ecfaf252e94a661eb084aa16414a849bc4a2da50f1f",
+    "eval_judge_temperature_check": "89e925705d7b407d7cf1d54f74fcace96a13cc58e214e7d25aa94b50518a4ae6",
+    "eval_launch": "768e476f137056c37a11383b7013d83a0b13bc4707cb5fc0ae758877201d64c2",
+    "eval_out_of_run_spend": "465be395fdcddc11acfc4891e2cc5ca46ddf944a5c72e27f15d38c7beebd7390",
+    "eval_result": "d1a7719eeaa2e48d0b8dbb43f285c12ebfaa85b0385da72749f7f7ad6d57dca0",
+    "eval_run": "f20d70a82d79130ba7bc0eb6c2896221cb0924f0940f89f5d0f44f87191dedc6",
+    "eval_second_judge_pass": "44b048a733c7914e6530aae030667d21ff6aa307a3935fc95d9aa484f8f2b4ba",
+    "eval_sweep": "0614390275057c6fc7362d69033f3cbc432203e2cb228f835349f5ba9af6a996",
+    "eval_template": "2f1c8793034194705e1e2889ebff5a77ce23a95c525083a7fe1b7738483c3c36",
+    "eval_test_case": "933059c8cac11160a6d8ecf42bb17ff2f2dc4314eb83724277d4fd34b019dcef",
+    "eval_trace": "e3fb36a574e5ca361ac0d48d886bcd835dae2f9789373c7367b3d649d0e7f073",
+    "judge_config": "b6856660cd3f04fe36c88b18ab9a8edf0d352b824b3bd54de272057345f4f4b8",
+    "judge_config_tombstone": "40345344b65208edcc863165a50cdd3098c8fab93b55ea38b230fd55dc072608",
+    "rubric_dim": "12276b6acbbe3184fe0cc4e51ec44b0c62b2fd58f35d43947f01c27e2482a179",
+    "rubric_dim_tombstone": "6c53b7851e2f75c6100899d70ef4c3067d67a3e790fad85073514801c26fde41",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
@@ -194,26 +196,26 @@ FIRST_STORED_AT: dict[str, int] = {}
 
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
-    "v14/calibration_rating.json": "13dd233fc1beb53c247fa7102caa5e548f718f09798595043981f1c3d2aafe6f",
-    "v14/case_set.json": "abde1efc6cf73cdf3dc314f89df7ffc164be73edf45edd7d8dc64d9eebc70e93",
-    "v14/eval_action_job.json": "11bf89d9afcf6076f0c8467ba215090183fa9949b0f9875e0a9241649b59cc3c",
-    "v14/eval_analysis_attempt.json": "1d0c1d050bf3008b35defe9840a63ea873d7cd9ea616c3a7a2d96ed793851c4d",
-    "v14/eval_campaign.json": "3c37ddd4d0a8568922a8a9ee28ffa642eeaa38581f9cd21ed96c6f7147b25f8c",
-    "v14/eval_generation_slot.json": "eeb763fca25e650c4acd906fe6834f386b7253c82ad7d164ba0ca8c1d83e9d38",
-    "v14/eval_judge_temperature_check.json": "378c623cd9cc8f9a8a2379d8d52c0c2f04a94562febe26809e4817c8016eb5cd",
-    "v14/eval_launch.json": "f6032b5407687592e28f516d78b37d0f3a320f120bd681225301ad7d93990e75",
-    "v14/eval_out_of_run_spend.json": "e5de0a9f9ca79c86ff094742c67b3091b58935be146f2bbd82127362dee506f0",
-    "v14/eval_result.json": "bf5f4ddd5d88ffe1002a44df055fcc57521f648cdb2d08a4c12b08420b7e650c",
-    "v14/eval_run.json": "38654e44816e956fc18ef6d1624df1b50ef5e6140968dc817d2b4644dd92d4bb",
-    "v14/eval_second_judge_pass.json": "39255c38aa05e44d0c87e4d21e7588cc6d608acc8164dd0e060e7d0bc1c972ca",
-    "v14/eval_sweep.json": "c8d9791fc3bd410fc9750696eec0a4f3c5dc6230ce08fd089f1155859dc52a68",
-    "v14/eval_template.json": "5b3e6253363148f247469e514fc2ebed2ef3b061cb4e242b6596ca97a54fdac2",
-    "v14/eval_test_case.json": "865b5b6209712f35c0e2df8d3c6a4e477a5bbc952c23404d3db1d0fded5b24f3",
-    "v14/eval_trace.json": "1447db5bf777035550f7f6695a838322b8d62dd45769732fd877ecdf7e73a08b",
-    "v14/judge_config.json": "b92e43af3ae07e90e0b184849a634e4db8a8ed503f23280e4483f9ba896ed244",
-    "v14/judge_config_tombstone.json": "f317e204ef8834e9181cf273a7f7d45140b8125af6e01ff6d7fa8a99fd5dd10c",
-    "v14/rubric_dim.json": "24fd1030e84b699a34f1162765159df07681e6c515e4588a72d79d528b210543",
-    "v14/rubric_dim_tombstone.json": "b167e3026a5562188c7972a95ad80ae6642f85bd1418e8c97cea99fb311c157d",
+    "v15/calibration_rating.json": "894f74e31dcdb42e26cb949b080cbcb2e76bb20d8361ed1c17bc74a9c7864e7e",
+    "v15/case_set.json": "1a30692918a1dcd4ff1702bf3c2095133e6652021e30961f29a8528a673cd082",
+    "v15/eval_action_job.json": "4b2ecc83cff78228a6e9ece65f1e94ea0141f4eac3423c8e63bf755759993e58",
+    "v15/eval_analysis_attempt.json": "51ac3116665931de45c028104a98d709c3a71a646c15e44c0851d2983425d237",
+    "v15/eval_campaign.json": "bc597f20b976172f4a75ee1cfee36727a010306ab6f97b973962415267081dbb",
+    "v15/eval_generation_slot.json": "6b1df8625f6871a39db2d4bf190ac52e5867455b1c9d1e3b3aec41d8fed30623",
+    "v15/eval_judge_temperature_check.json": "048bbaf27f60485f264269579b66acc7ef03a2571974bcb1053009cfce64ee19",
+    "v15/eval_launch.json": "bde5f0faacca127190c68fe186dd3091c6b0539ea720dccd9734bca7f7c9415c",
+    "v15/eval_out_of_run_spend.json": "962d53c87533583170a959f2319434f50b4b12a16163494e55c976c9727f6d19",
+    "v15/eval_result.json": "a99434ba322273da0edf48cd394747f8b5143c937423c118555518b27947450c",
+    "v15/eval_run.json": "a1f4126c13d91a07152b3ed92af863e22ef1fe84ad60cfd611f5debcdcd1190f",
+    "v15/eval_second_judge_pass.json": "64f0820224a76b57d589b04d521e813da0d73f977a26b6db53effcdc45d74e64",
+    "v15/eval_sweep.json": "cc15b2f7a0786064e581c29bf879251ec9b2bb23361568fa9dbbddc367e2f4de",
+    "v15/eval_template.json": "4cf70858e2c14deabf3af88055d8e31dcba1bbb0253ae953baa23998be8abebf",
+    "v15/eval_test_case.json": "504dcf34cff61440e782e30322cf9cc42cf681fbbb866faddff9aef48ee405cd",
+    "v15/eval_trace.json": "469a20e131c67cb5c00082463bd32a148a544be182301cc645f8ecedf581769c",
+    "v15/judge_config.json": "d3f29495b08a71effd16ad0b64b9f28ccff653aa2e21bf858a795099af4a1c96",
+    "v15/judge_config_tombstone.json": "b75f4d2f2597723a72655afe3cf852de1bcd21bc43c90c18c841e50264d33a4b",
+    "v15/rubric_dim.json": "b65c88b862dddf2723ea3972be8381cca002131d7d9ae524418602d1bc2f6378",
+    "v15/rubric_dim_tombstone.json": "da3fb751ac55bf182f339faf233fc65aeeb0d467044c78ee9709844761042cef",
 }
 
 #: Keys whose dict values are maps of names to schemas, not schema nodes: their own keys are field or

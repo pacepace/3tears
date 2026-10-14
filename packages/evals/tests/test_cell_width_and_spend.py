@@ -50,7 +50,7 @@ from threetears.evals.run.budget import BudgetStoppedError, CapBreach, EvalRunCo
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
-from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.schema import CompletionProtocolDefect, EvalResult, EvalRun
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     ConversationSpec,
@@ -575,7 +575,7 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
             "judge_model": TOY_JUDGE_MODEL,
             "effective_judges": run_judge.effective_judges,
             "judge_config_ids": {dim: config.id for dim, config in run_judge.configs.items()},
-            "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+            "judge_asked_settings": JUDGE_REQUEST_SETTINGS,
             "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
         }
     )
@@ -654,6 +654,62 @@ async def test_a_capped_client_releases_its_reservation_when_the_call_raises() -
         await client.generate(system="s", user="u")
 
     assert sink.held == [] and sink.spent == {}, "a call that raised holds nothing and counts nothing"
+
+
+@dataclass
+class _MistypedSentResponse(ScriptedResponse):
+    """A billed response whose ``sent_settings`` holds a word where request settings belong: the host's defect."""
+
+    sent_settings: Any = "low"
+
+
+@dataclass
+class _MistypedSentClient(_PricedClient):
+    """A priced client whose every completion fills ``sent_settings`` wrong."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        self.calls += 1
+        return _MistypedSentResponse(content="paid", model=RUN_MODELS[0], cost_usd=self.cost_usd)
+
+
+@pytest.mark.parametrize("source", ["candidate", "simulator"])
+async def test_a_capped_client_settles_a_billed_call_whatever_its_sent_settings_hold(source: Any) -> None:
+    """The cap reads the spend alone: a wrong-typed ``sent_settings`` neither leaves the ceiling held nor fails the
+    call, and a candidate's call is never read for what it was sent with."""
+    sink = FakeCellSink(cap_usd=1.0)
+    client = CappedCompletion(_MistypedSentClient(cost_usd=0.004, ceiling_usd=0.01), sink=sink, source=source)
+
+    returned = await client.generate(system="s", user="u")
+
+    assert returned.sent_settings == "low", "the completion is handed back unchanged"
+    assert sink.held == [] and sink.spent == {source: pytest.approx(0.004)}
+
+
+async def test_a_simulator_call_whose_sent_settings_is_refused_is_settled_and_recorded_before_the_defect_leaves() -> (
+    None
+):
+    """Through the conversation loop: the reservation is settled to the call's cost, the driver's calls hold it, and
+    the host's defect stops the driver ``simulator_error`` and propagates."""
+    sink = FakeCellSink(cap_usd=1.0)
+    driver = TurnDriver(conversation=ConversationSpec(actors=[actor("a")], max_turns=2), variation={})
+
+    async def answer(_turns: Sequence[SimulatorTurn]) -> CandidateTurn:
+        raise AssertionError("no round is answered: the first simulator call is refused")
+
+    async def post(_turn: SimulatorTurn) -> None:
+        return None
+
+    with pytest.raises(CompletionProtocolDefect, match="sent_settings"):
+        await drive_conversation(
+            driver, answer, post, llm=_MistypedSentClient(cost_usd=0.004, ceiling_usd=0.01), sink=sink
+        )
+
+    assert sink.held == [] and sink.spent == {"simulator": pytest.approx(0.004)}
+    assert driver.stop_cause is ConversationStopCause.SIMULATOR_ERROR
+    ledger = RoleUsageLedger(role="simulator")
+    driver.fold_usage(ledger)
+    (row,) = ledger.rows()
+    assert (row.call_count, row.cost_usd, row.sent_settings) == (1, pytest.approx(0.004), None)
 
 
 def test_a_ceiling_is_the_clients_own_times_the_attempts_and_unpriced_without_one() -> None:

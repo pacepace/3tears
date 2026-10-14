@@ -1,6 +1,6 @@
 """A role whose output must bind says so in its request settings, and the run records it (#686).
 
-The generator sends its contract as a strict ``response_format`` and the judge a reasoning bound, and a
+The generator sends its contract as a strict ``response_format`` and the judge a reasoning effort, and a
 router whose default routing reaches a provider that ignores either returns free text (a paid repair, or a
 lost generation) or an unbounded judge. ``ClientRequestSettings.strict_output`` is how the engine says
 "route only to a provider honouring every parameter sent"; a host's client builder reads it from the
@@ -20,7 +20,6 @@ import pytest
 
 from threetears.evals.analysis.generator import (
     DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS,
-    DEFAULT_ANALYSIS_GEN_REASONING_BUDGET_TOKENS,
     analysis_gen_request_settings_for,
 )
 from threetears.evals.schema.subject import SubjectSnapshot
@@ -32,13 +31,14 @@ _SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer,
 
 
 def _generator_settings() -> ClientRequestSettings:
-    return analysis_gen_request_settings_for(
-        answer_budget_tokens=DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS,
-        reasoning_budget_tokens=DEFAULT_ANALYSIS_GEN_REASONING_BUDGET_TOKENS,
-    )
+    return analysis_gen_request_settings_for(answer_budget_tokens=DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS)
 
 
 def _level(name: str, settings: ClientRequestSettings) -> Any:
+    field = {
+        "judge_request_settings": "judge_asked_settings",
+        "simulator_request_settings": "simulator_asked_settings",
+    }[name]
     run = EvalRun(
         apparatus_provenance="commissioned",
         id="run-1",
@@ -49,7 +49,7 @@ def _level(name: str, settings: ClientRequestSettings) -> Any:
         candidate_kind="test-kind",
         k_runs=1,
         rubric_scales={},
-        **{name: settings},
+        **{field: settings},
     )
     return SHARED_CORE.read_role_pins(run)[name]
 

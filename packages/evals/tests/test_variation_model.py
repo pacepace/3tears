@@ -305,7 +305,7 @@ async def test_a_launch_generates_with_the_named_writer_and_every_arm_records_it
         stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
         assert stored is not None and stored.status == "completed", stored
         assert stored.variation_counts == VariationCounts(requested=2, kept=2, reused=0, variation_model=WRITER)
-        assert stored.simulator_model is None and stored.simulator_request_settings is None
+        assert stored.simulator_model is None and stored.simulator_asked_settings is None
         assert "simulator" not in (stored.model_role_provenance or {})
 
 

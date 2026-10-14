@@ -41,6 +41,8 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
     builtin_judge_config_id,
     CaseSet,
+    ClientRequestSettings,
+    RoleUsage,
     CassetteKey,
     EvalCassette,
     JudgeConfigTombstone,
@@ -110,6 +112,10 @@ def _cassette() -> EvalCassette:
     return EvalCassette.build(key, scope_id="uni-1", seam="action", captured_model="m", response={"hits": []})
 
 
+#: What a sampled call's request carried, as its client reported it: the frozen corpus holds every sent-settings field.
+_SENT = ClientRequestSettings(max_tokens=10240, reasoning_effort="high", strict_output=True)
+
+
 def _out_of_run_spend() -> OutOfRunSpend:
     """One ledgered proposer call, as an out-of-run budget writes one."""
     return OutOfRunSpend(
@@ -122,6 +128,7 @@ def _out_of_run_spend() -> OutOfRunSpend:
         completion_tokens=40,
         cost_usd=0.002,
         price_source="provider",
+        sent_settings=_SENT,
         priced_ceiling_usd=0.01,
         cap_usd=1.0,
         subject_id="subj-1",
@@ -228,8 +235,9 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     ),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
-    # Judged as the judge service records it: the score's axis, temperature and label key, and the dim's judge
-    # identity, so the frozen corpus holds every field a judge phase writes.
+    # Judged as the judge service records it: the score's axis, temperature, sent settings and label key, the dim's
+    # judge identity, and the judge's usage row with what its calls were sent with, so the frozen corpus holds every
+    # field a judge phase writes.
     "EvalResult": lambda: make_eval_result(
         rubric_scores=[
             RubricScore(
@@ -240,8 +248,24 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                 criterion_fingerprint=_LABEL_KEY.criterion_fingerprint,
                 axis="capability",
                 judge_temperature=0.0,
+                judge_sent_settings=_SENT,
             )
         ],
+        usage=[
+            RoleUsage(
+                role="judge",
+                model="judge-a",
+                served_model="judge-a-2026",
+                prompt_tokens=900,
+                completion_tokens=300,
+                reasoning_tokens=200,
+                cost_usd=0.01,
+                price_source="provider",
+                call_count=1,
+                sent_settings=[_SENT],
+            )
+        ],
+        cost_usd=0.01,
         judge_config_ids={"conversation.tone": builtin_judge_config_id("Score the conversation's tone.")},
     ),
     # Judged, labelled, with goal-check proofs and a lease fault, so the frozen corpus holds each field a launch

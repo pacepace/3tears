@@ -4,7 +4,7 @@ This module holds the callable that code outside the rubric judge depends on:
 
 - :func:`run_judge_llm` — shared LLM-judge execution path: call the LLM,
   parse a criteria-based response (``{"reasoning": ..., "criteria_scores":
-  {name: 1..5, ...}}``), aggregate to a 0..1 normalized composite, log cost.
+  {name: "1".."5", ...}}``), aggregate to a 0..1 normalized composite, log cost.
   Called from :mod:`threetears.evals.run.judge_service`, whose narrow single-dim rubric
   judge is built on it, and open to a host's own scorers.
 
@@ -35,8 +35,14 @@ from threetears.evals.schema.models import (
     SCALES,
     ClientRequestSettings,
     JudgeTemperature,
+    KnownReasoningEffort,
 )
-from threetears.evals.schema.completion import CompletionProtocolDefect, CompletionResult, ProviderFailureDescriber
+from threetears.evals.schema.completion import (
+    CompletionProtocolDefect,
+    CompletionResult,
+    ProviderFailureDescriber,
+    sent_settings_of,
+)
 from threetears.evals.kernel.provider import (
     describe_and_log_failure,
     describe_incomplete_completion,
@@ -64,18 +70,29 @@ _JUDGE_PARSE_RETRIES = 1
 #: by this (:func:`threetears.evals.analysis.reporter_kind.judge_phase_ceiling_s`).
 JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 
-#: How many tokens the eval judge may spend on private reasoning before it answers.
+#: How hard the eval judge reasons before it answers: an effort word, sent natively.
 #:
-#: **Bounded, not disabled — the classifier's remedy is the wrong one here.** The
+#: **Asked for, not disabled — the classifier's remedy is the wrong one here.** The
 #: classifier asks for two words, reasoning buys it nothing, so it sends
 #: ``reasoning: {enabled: false}``. A judge's reply is short too (the JSON contract in
-#: ``judge_service`` asks for one paragraph and one integer), but the work behind the
-#: integer is not. ``reporter.groundedness`` checks every claim in a memo against its
+#: ``judge_service`` asks for one paragraph and one score), but the work behind the
+#: score is not. ``reporter.groundedness`` checks every claim in a memo against its
 #: evidence bundle, and that is what reasoning is for, so taking reasoning away would
 #: change the instrument, not just its cost. Disabling is also refused permanently by
 #: models whose reasoning is mandatory (``openai/gpt-5-mini`` answers HTTP 400), which
-#: would bar that whole class of models from judging. So reasoning stays on, with an
-#: explicit budget, and the cap is derived from that budget below.
+#: would bar that whole class of models from judging.
+#:
+#: **A word, not a token budget.** Current models take reasoning as an effort word: Claude's
+#: newest models take no thinking budget at all, only adaptive thinking and an effort, and
+#: OpenAI's reasoning series and OpenRouter take a word. So the judge asks ``high`` by name.
+#: A client serving a model that takes only a budget sends the closest budget it accepts, and
+#: reports what it sent (``RubricScore.judge_sent_settings``); nothing here converts one into
+#: the other.
+JUDGE_REASONING_EFFORT: KnownReasoningEffort = "high"
+
+#: Room the judge's output cap leaves for its private reasoning at :data:`JUDGE_REASONING_EFFORT`.
+#: Never sent — the request carries the effort, not a budget — so it bounds nothing; it is what the
+#: cap is sized from.
 #:
 #: **The value is a judgement, not a measurement.** A calibration run lost
 #: ``reporter.groundedness`` and ``reporter.calibration`` on every case at the old flat
@@ -84,49 +101,45 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 #: more, because every one of those calls was stopped. Twice the cap they overran is a
 #: bound, not a prediction. Re-derive it from a run's reported ``reasoning_tokens``
 #: (a cut judge call now reports its reasoning share in its error) before moving it.
-JUDGE_REASONING_BUDGET_TOKENS = 8192
+JUDGE_REASONING_HEADROOM_TOKENS = 8192
 
 #: Output room kept for the judge's visible answer: the JSON object with its one
-#: reasoning paragraph and one integer score. That is a few hundred tokens, so this is
+#: reasoning paragraph and one score. That is a few hundred tokens, so this is
 #: headroom, and unused output tokens are not billed.
 JUDGE_ANSWER_BUDGET_TOKENS = 2048
 
-#: The eval judge's output cap: the reasoning budget plus the answer budget, DERIVED
-#: rather than chosen, so it always sits above the ceiling it wraps. The old flat 4096
+#: The eval judge's output cap: the reasoning headroom plus the answer budget, DERIVED
+#: rather than chosen, so it always leaves room to think and then answer. The old flat 4096
 #: sat below what a reasoning judge spent. The cap is the sum by construction, so moving either
 #: part moves the cap with it.
 #:
-#: **What the reasoning bound does NOT guarantee.** It goes out as the router's
-#: ``reasoning.max_tokens``, and each provider honours it in its own way.
-#: Anthropic- and Gemini-style models take it as a budget. Effort-only models (OpenAI's
-#: reasoning series) have it mapped to an effort level, which bounds nothing in tokens.
-#: Models that do not reason ignore it. A router's default routing may also drop a parameter
-#: its chosen provider does not support, so the judge's settings ask for strict routing
-#: (``ClientRequestSettings.strict_output``), which a host's client builder applies as its
-#: router's ``require_parameters``; a host that cannot apply it leaves the bound advisory. The
-#: cap is therefore the only hard stop the engine can count on. When a judge still reaches it, :func:`run_judge_llm` reports the cut
-#: with its token counts and does not re-buy it.
+#: **The cap is the only hard stop.** An effort word bounds nothing in tokens on any model,
+#: and a model that does not reason ignores it. A router's default routing may also drop a
+#: parameter its chosen provider does not support, so the judge's settings ask for strict
+#: routing (``ClientRequestSettings.strict_output``), which a host's client applies as its
+#: router's ``require_parameters``; a client that resends a strict call without enforcement
+#: reports ``strict_output=False`` in what it sent. When a judge still reaches the cap,
+#: :func:`run_judge_llm` reports the cut with its token counts and does not re-buy it.
 #:
-#: **What the bound changes.** Naming a budget turns reasoning ON for a model that
-#: reasons only when asked. Such a judge now thinks before scoring, where it previously
-#: did not. The rule is the same for every eval judge (subject runs, reporter runs, and
-#: the per-dim ``JudgeConfig`` models alike), which is why these numbers live here and
-#: not at any one call site. A host's client builder applies them to its
-#: judge role.
-JUDGE_MAX_TOKENS = JUDGE_REASONING_BUDGET_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS
+#: **What the effort changes.** Naming an effort turns reasoning ON for a model that
+#: reasons only when asked. The rule is the same for every eval judge (subject runs, reporter
+#: runs, and the per-dim ``JudgeConfig`` models alike), which is why these numbers live here and
+#: not at any one call site. A host's client builder applies them to its judge role.
+JUDGE_MAX_TOKENS = JUDGE_REASONING_HEADROOM_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS
 
 #: The judge role's request settings as ONE value: what the host's client builder applies to every
-#: eval judge client, and what a run launched with a judge records as ``judge_request_settings``.
-#: One object read by both, so the stamp cannot say something the requests did not do.
+#: eval judge client, and what a run launched with a judge records as ``judge_asked_settings``.
+#: One object read by both, so the stamp cannot say something the engine did not ask.
 #:
-#: **Why it is recorded at all.** Moving either number regrades every later run without changing
+#: **Why it is recorded at all.** Moving any of it regrades every later run without changing
 #: ``judge_model``, so the stamp differs on either side of the move, and the ``judge_request_settings``
 #: apparatus dimension tells a campaign pooling runs from both sides that its judge may have moved. A run
-#: that carries no stamp reads as unrecorded.
+#: that carries no stamp reads as unrecorded. What each call was SENT with is the client's to report, on
+#: each score: a client may send the closest setting a model accepts.
 JUDGE_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=JUDGE_MAX_TOKENS,
-    reasoning_max_tokens=JUDGE_REASONING_BUDGET_TOKENS,
-    # The reasoning bound must bind, so only a provider honouring it may answer (#686).
+    reasoning_effort=JUDGE_REASONING_EFFORT,
+    # The effort must bind, so only a provider honouring it may answer (#686).
     strict_output=True,
 )
 
@@ -144,14 +157,27 @@ JUDGE_SCORE_MIN, JUDGE_SCORE_MAX = SCALES["ordinal"].scores
 #: accepts it; for any other it is a reply that broke the protocol.
 CANNOT_TELL = "cannot_tell"
 
+#: The answers an ordinal criterion is asked for, as the strict reply format enumerates them: each score on the scale
+#: written as a string, ``"1"`` to ``"5"``, read back to its integer by the parse.
+#:
+#: **Strings, because a string enum is the one enum form every provider's strict mode enforces.** An integer enum is
+#: not portable: ``google/gemini-3.5-flash-lite`` through OpenRouter, with ``require_parameters`` on, accepted a
+#: strict schema scoring a criterion as ``{"type": "integer", "enum": [1, 2, 3, 4, 5]}`` and did not enforce it,
+#: answering ``"criteria_scores": {}`` with the score in prose, so every ordinal call of a run failed its parse twice
+#: and was paid for twice; Gemini's structured output supports string enums only. The projection every package
+#: directive takes now refuses a non-string enum (:func:`~threetears.evals.kernel.authored.strict_schema`).
+ORDINAL_ANSWERS: tuple[str, ...] = tuple(str(score) for score in range(JUDGE_SCORE_MIN, JUDGE_SCORE_MAX + 1))
+
 
 def _ordinal_score(name: str, value: Any) -> int:
     """Read one criterion's score as the integer on the scale it was asked for, or refuse it.
 
-    The score is the judge's protocol answer, so it is taken as given or not at all: a
-    fraction, a number off the scale, a string or a boolean is a reply that broke the
-    protocol, and the caller's parse-failure path handles it. Nothing is truncated, rounded
-    or clamped into range — each of those would record a score the judge never gave.
+    The score is asked for as a string (:data:`ORDINAL_ANSWERS`, the strict reply format's enum) and read back to its
+    integer here; a bare integer is read too, since a provider that does not enforce the schema may still send one.
+    Either is the judge's protocol answer, so it is taken as given or not at all: a fraction, a number off the scale,
+    any other string or a boolean is a reply that broke the protocol, and the caller's parse-failure path handles it.
+    Nothing is truncated, rounded, stripped or clamped into range — each of those would record a score the judge
+    never gave.
 
     Args:
         name: The criterion, for the message.
@@ -161,8 +187,15 @@ def _ordinal_score(name: str, value: Any) -> int:
         The score.
 
     Raises:
-        ValueError: The value is not an integer on the scale.
+        ValueError: The value is neither one of :data:`ORDINAL_ANSWERS` nor an integer on the scale.
     """
+    if isinstance(value, str):
+        if value not in ORDINAL_ANSWERS:
+            raise ValueError(
+                f"Score for criterion '{name}' is not one of the {JUDGE_SCORE_MIN}-{JUDGE_SCORE_MAX} scale's answers "
+                f"{list(ORDINAL_ANSWERS)}: {value!r}"
+            )
+        return int(value)
     integral = isinstance(value, int) or (isinstance(value, float) and value.is_integer())
     if isinstance(value, bool) or not integral:
         raise ValueError(f"Score for criterion '{name}' is not an integer: {value!r}")
@@ -209,6 +242,12 @@ def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_off
     the parse refuses, and a judge's parse retry spends nothing on one. The reply is still read and refused as
     before, for a provider that cannot enforce a strict schema.
 
+    **Every answer is a string, an ordinal score included.** A criterion's answers are ONE string enum: a pass/fail
+    criterion's two words, an ordinal criterion's :data:`ORDINAL_ANSWERS` (``"1"`` to ``"5"``, read back to integers
+    by the parse), and :data:`CANNOT_TELL` beside either when it was offered, so no ``anyOf`` is needed. A string enum
+    is the one enum form every provider's strict mode enforces; an integer enum was sent and not enforced
+    (:data:`ORDINAL_ANSWERS` says where).
+
     Args:
         criteria: The criteria, as :func:`run_judge_llm` takes them: each with its ``name`` and, optionally, its
             ``scale`` (a key of :data:`SCALE_READERS`).
@@ -235,14 +274,14 @@ def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_off
 
 
 def _scale_answers(scale: str, cannot_tell_offered: bool) -> dict[str, Any]:
-    """One criterion's answers as a strict schema admits them: those :data:`SCALE_READERS` reads, and the offered one."""
+    """One criterion's answers as a strict schema admits them, as one string enum: those :data:`SCALE_READERS` reads in
+    the form the schema asks for them, and the offered one."""
     offered = [CANNOT_TELL] if cannot_tell_offered else []
     if scale == "pass_fail":
         return {"type": "string", "enum": [*PASS_FAIL_SCORES, *offered]}
     if scale != "ordinal":
         raise KeyError(f"no reader for scale {scale!r}")
-    on_scale = {"type": "integer", "enum": list(range(JUDGE_SCORE_MIN, JUDGE_SCORE_MAX + 1))}
-    return {"anyOf": [on_scale, {"type": "string", "enum": offered}]} if offered else on_scale
+    return {"type": "string", "enum": [*ORDINAL_ANSWERS, *offered]}
 
 
 def _parse_criteria_response(
@@ -255,7 +294,7 @@ def _parse_criteria_response(
 
     Expected format::
 
-        {"reasoning": "...", "criteria_scores": {"name": 1-5, ...}}
+        {"reasoning": "...", "criteria_scores": {"name": "1"-"5", ...}}
 
     ``reasoning`` is part of the protocol, not decoration: a stored score and a recorded "can't
     tell" both carry it, so a reply without one as a string — absent, ``null``, a number, an
@@ -264,7 +303,8 @@ def _parse_criteria_response(
     folded, and either lose that spend with the score or fail the result outright.
 
     A criterion dict carrying ``"scale": "pass_fail"`` is answered ``"pass"`` or ``"fail"`` and
-    returned as 1 or 0; one without a scale is ordinal. With ``cannot_tell_offered``, a criterion may carry :data:`CANNOT_TELL` in place of its
+    returned as 1 or 0; one without a scale is ordinal, answered as one of :data:`ORDINAL_ANSWERS` (or a bare
+    integer on the scale) and returned as its integer. With ``cannot_tell_offered``, a criterion may carry :data:`CANNOT_TELL` in place of its
     score; it is returned under ``cannot_tell`` and left out of ``criteria_scores``.
 
     Raises:
@@ -385,13 +425,16 @@ async def run_judge_llm(
         protocol, :func:`sent_temperature`) is not a failed reply but the host's defect: it raises
         :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, naming the conformance check, after
         one call. A finished reply that will not parse — including one
-        scoring a criterion with anything but an integer on the scale — fails with
+        scoring a criterion with anything but a score on the scale — fails with
         "Failed to parse" after the bounded retries. Each caller
         composites the per-dimension scores itself (``judge_service`` across its
         single-dim calls, a host's own scorer however it composites), so this path returns
         the raw normalized scores and no composite of its own.
 
-        ``judge_temperature`` is what that same attempt was sent at (:func:`sent_temperature`).
+        ``judge_temperature`` is what that same attempt was sent at (:func:`sent_temperature`), and
+        ``judge_sent_settings`` the request settings it was sent with, as its completion reported them
+        (:func:`~threetears.evals.schema.completion.sent_settings_of`; ``None`` = unverified). ``judge_usage`` names
+        sent settings only when every attempt reported the same value.
 
         ``judge_served_model`` is the model the provider's response named for the attempt whose
         scores are returned — that attempt, not the last one to report a model, because it is the
@@ -401,8 +444,9 @@ async def run_judge_llm(
         making two runs judged by different models compare equal.
 
     Raises:
-        CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`),
-            carrying the calls made and what they cost.
+        CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`), or
+            its optional ``sent_settings`` holds something other than request settings or ``None``, carrying the
+            calls made and what they cost.
     """
     # Retry on parse-failure so a single malformed judge response can't
     # silently drop a rubric dimension. We retry on any parse failure of a FINISHED
@@ -432,6 +476,10 @@ async def run_judge_llm(
     # usage record names a served model only when every attempt named the same one: one record
     # folding attempts answered by different models cannot name either.
     attempt_served: set[str | None] = set()
+    # What each attempt's request was sent with, as its completion reported it (``None`` = unverified). The usage
+    # record names one value only when every attempt reported the same one: a fold of unlike or unreported sends
+    # reads as unverified, never as one of them.
+    attempt_sent: list[ClientRequestSettings | None] = []
     attempts_made = 0
     max_attempts = JUDGE_CALL_ATTEMPTS
 
@@ -455,6 +503,32 @@ async def run_judge_llm(
             # Every attempt was a real provider call that spent real tokens, so the usage
             # row must count them all — not just the one that finally parsed.
             calls=attempts_made,
+            sent_settings=_agreed_sent_settings(attempt_sent),
+        )
+
+    def _thread_spend(defect: CompletionProtocolDefect) -> None:
+        """Thread the attempts' spend onto a protocol defect and log it, for the caller to re-raise.
+
+        Args:
+            defect: The defect a member read raised, given the calls made so far and what they cost.
+        """
+        spent = _cumulative_usage()
+        if spent is not None:
+            defect.calls = spent.calls
+            defect.model = spent.model
+            defect.served_model = spent.served_model
+            defect.input_tokens = spent.input_tokens
+            defect.output_tokens = spent.output_tokens
+            defect.reasoning_tokens = spent.reasoning_tokens
+            defect.cost_usd = spent.cost_usd
+            defect.price_source = spent.price_source
+        log.error(
+            "%s reply for case %s cannot be recorded, after %d attempt(s) costing %s: the completion breaks the "
+            "protocol",
+            label,
+            case_id,
+            attempts_made,
+            "unpriced" if total_cost is None else f"${total_cost:.6f}",
         )
 
     # Every attempt sends the reply's shape, derived from the criteria the parse reads it by.
@@ -502,6 +576,16 @@ async def run_judge_llm(
         judge_model = getattr(result, "model", "") or judge_model
         judge_price_source = getattr(result, "price_source", None) or judge_price_source
         attempt_served.add(getattr(result, "served_model", None) or None)
+        # What this attempt's request carried, as its client reports it. Absent is unverified and recorded so; a value
+        # of the wrong type is the host's defect, raised like a missing temperature, with the spend threaded on. Read
+        # here, before the reply is judged usable, so a cut-short or unparsable attempt's spend row says it too.
+        try:
+            sent = sent_settings_of(result)
+        except CompletionProtocolDefect as defect:
+            attempt_sent.append(None)
+            _thread_spend(defect)
+            raise
+        attempt_sent.append(sent)
         # Logged whenever the provider reported anything about the attempt's spend — a call with
         # unreported counts and a known cost still spent, and a truthiness test would drop it.
         if attempt_input is not None or attempt_output is not None or attempt_cost is not None:
@@ -546,24 +630,7 @@ async def run_judge_llm(
         try:
             temperature = sent_temperature(result)
         except CompletionProtocolDefect as defect:
-            spent = _cumulative_usage()
-            if spent is not None:
-                defect.calls = spent.calls
-                defect.model = spent.model
-                defect.served_model = spent.served_model
-                defect.input_tokens = spent.input_tokens
-                defect.output_tokens = spent.output_tokens
-                defect.reasoning_tokens = spent.reasoning_tokens
-                defect.cost_usd = spent.cost_usd
-                defect.price_source = spent.price_source
-            log.error(
-                "%s reply for case %s cannot be recorded, after %d attempt(s) costing %s: the completion breaks the "
-                "protocol",
-                label,
-                case_id,
-                attempts_made,
-                "unpriced" if total_cost is None else f"${total_cost:.6f}",
-            )
+            _thread_spend(defect)
             raise
 
         parsed = _process_criteria_response(result, criteria_dicts, cannot_tell_offered=cannot_tell_offered)
@@ -578,6 +645,10 @@ async def run_judge_llm(
             # And the temperature that attempt was sent at, as the client reports it — the rest of the
             # scorer's identity, since a model that refuses a temperature is sent none.
             parsed["judge_temperature"] = temperature
+            # And the request settings that attempt was sent with, as the client reports them (None = unverified):
+            # the rest of how the scorer was asked, which a client may have moved to the closest setting the model
+            # accepts.
+            parsed["judge_sent_settings"] = sent
             return parsed
 
         last_preview = (getattr(result, "content", "") or "")[:200]
@@ -616,6 +687,24 @@ def defect_usage(defect: CompletionProtocolDefect) -> CallUsage | None:
         price_source=defect.price_source,
         calls=defect.calls,
     )
+
+
+def _agreed_sent_settings(attempts: Sequence[ClientRequestSettings | None]) -> ClientRequestSettings | None:
+    """The one value every attempt's request was sent with, or ``None`` when they do not all report the same one.
+
+    What a usage record folding the attempts can name: one record cannot name two values, and an attempt that reported
+    none leaves the fold unverified, as one unpriced attempt leaves its dollars unknown.
+
+    Args:
+        attempts: What each attempt was sent with, in order (``None`` = that attempt's client did not say).
+
+    Returns:
+        The shared value, or ``None``.
+    """
+    if not attempts or attempts[0] is None:
+        return None
+    first = attempts[0]
+    return first if all(sent == first for sent in attempts[1:]) else None
 
 
 def sent_temperature(completion: CompletionResult) -> JudgeTemperature:
