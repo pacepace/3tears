@@ -173,8 +173,8 @@ with `replay(path, settings=..., model=...)`.
 
 Recording onto a file that exists appends to it, and only `replace=True` starts afresh. A replayed price
 (`cost_usd`, `price_source`) is what the call cost when it was recorded, not a quote at today's rates. Every
-attribute your completion type declares beyond the ten is kept under the replayed completion's `extra`, and one JSON
-cannot hold is refused when it is recorded.
+attribute your completion type declares beyond the ten and `sent_settings` is kept under the replayed completion's
+`extra`, and one JSON cannot hold is refused when it is recorded.
 
 The package's own examples run this way: each that calls a model calls Claude through `models_client` when
 `ANTHROPIC_API_KEY` is set, records the run when `RECORD=1` is set too, and otherwise replays the recording kept
@@ -274,6 +274,14 @@ failed when it produced output. Every word but `end_turn` is cut short: the judg
 parse or repair such a reply, and their message says why for each; for `truncated` the provider's raw value is what
 to look at, so log it.
 
+**Every enum a strict reply format sends is a string.** A provider's strict mode can accept an integer enum without
+enforcing it (a Gemini model through OpenRouter left every ordinal score out), so the engine's own directives
+enumerate strings only: the judge asks for an ordinal score as `"1"` to `"5"` and reads it back to its integer, a
+bare integer still read. `strict_response_format` (`threetears.evals.kernel`), which your own calls can project a
+reply type through, refuses a schema whose `enum` or `const` holds anything but strings with `UnportableSchema`,
+naming where it sits, rather than rewrite a type your parser expects: declare such values as strings (a `Literal` of
+strings, a `str` enum) and convert them on read.
+
 ### Reporting what each request was sent with
 
 **A completion may say what its request actually carried: `sent_settings`.** The run records what the engine ASKED
@@ -299,6 +307,16 @@ calls were sent with, the simulator's included) and on each out-of-run spend row
   so a completion without it still passes `check_completion_conformance`; a value of any other type is refused
   (`CompletionProtocolDefect`, from `sent_settings_of` in `threetears.evals.schema`, the engine's one reader of it).
   A client built with no output cap cannot report one, since `max_tokens` is required, and reports `None`.
+
+**Never fail a call for a setting, and drop enforcement last.** A client of your own keeps the rule the shipped
+adapter keeps: a model that lacks a setting still answers. When a provider refuses a request for a setting it
+carried, send it once more with the closest setting the model takes, or without it, and report what the resend
+carried. On a router that enforces parameters (OpenRouter's `require_parameters`, whose "no endpoint" answer names
+no parameter), drop the refused settings first, the temperature before any other, keeping enforcement; only when
+the request still finds no endpoint, send it without enforcement, and report `strict_output=False`. The engine's
+judge, simulated user and analysis generator all ask for `strict_output=True`, so a strict call your router cannot
+place is answered unenforced rather than failed: the call is recorded as sent unenforced, disclosed, and never
+pooled with an enforced one.
 
 Once your completion reports it, hold your suite to it:
 `check_completion_conformance(completion, require_sent_settings=True)` fails the day the member is dropped or
@@ -419,7 +437,7 @@ a judge temperature comparison (every answer, stored nowhere else) and a host ac
 `CORE_DOC_TYPES` lists them.
 
 **The first public release is the baseline.** It writes core v15.0 (major `CORE_BASELINE_VERSION`, equal to
-`CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 0), regenerable v9 (`REGENERABLE_SCHEMA_VERSION`) and
+`CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 0), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and
 cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is
 nothing older for it to read.
 
@@ -442,7 +460,7 @@ or the other, an added optional field included:
   **The tolerance follows the stored bytes, which are trusted:** a host that writes core documents straight into the
   store, with a `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has
   a floor, `.25` (`v0.67.0-evaladopt.25`):** it wrote the v15 baseline, and every build before it reads and writes
-  core v14 or older, so it refuses every document `.25` or a later build writes. Roll back no further than `.25`.
+  core v14 or older, so it refuses every core document `.25` or a later build writes. Roll back no further than `.25`.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
@@ -474,9 +492,9 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.0), regenerable documents (v9), cassettes
-(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 52), the cell model
-(`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
+**Each version space moves on its own.** Core documents (v15.0), regenerable documents (v10), cassettes
+(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 53), the cell model
+(`CELL_MODEL_VERSION`, 13), the report (`REPORT_VERSION`, 10) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or

@@ -375,6 +375,7 @@ run 01a12446-2d38-77e1-8185-6b938c406abb completed: draft_reply over 10 case(s) 
   spend cap: uncapped — no spend ceiling was in force (cost enforcement was off)
   intent (from draft_reply's docstring): Draft the first reply to a support ticket.
   answer.acknowledges (judged 1-5): mean 4.7 (n=20, min 2, max 5)
+  Request settings not confirmed as asked: the judge's client did not report what it sent for 20 of 20 score(s), so those cannot say whether what was asked ({max_tokens=10240, reasoning_effort=high, strict}) was applied. A client may send the closest setting a model accepts, or resend a call without enforcement, and reports what each request carried (sent_settings); runs sent differently, or one reported and one not, are not pooled as one apparatus.
   judge spend: $0 over 20 call(s)
   total spend: $0, the results' cost
 hours: answer.acknowledges 2, because stand-in: looks for an apology
@@ -389,6 +390,10 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
 - **`served_model`** is the model the provider's response says answered. A real client reads it off the response;
   without it, the summary says it cannot confirm which model produced the scores, since a provider may answer a
   model id with a model of its choosing.
+- **Request settings** are what the judge was asked for: an output cap, `high` reasoning effort and a strict reply
+  format. A real client reports what each request actually carried (`sent_settings`), since it may send a model the
+  closest setting it accepts. The stand-in reports nothing, so the summary says it cannot confirm the asked settings
+  were applied. `models_client` reports it.
 - **The judge reads every field of the case** beside the material, `queue` included. Keep out of the case
   anything the judge should not see.
 - **Read the low scores the way you read misses.** The stand-in marked down `hours`, and a model reading this

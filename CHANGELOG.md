@@ -189,7 +189,9 @@ v<version>` prints a release's notes).
   tiers, and a repeat sent differently is unpaired (`settings_changed`). `run_get`, `run_summary`, the bundle and the
   report say in one sentence (`request_settings_disclosure`) where a role was sent other than asked, sent more than
   one way, sent without enforcement or not reported; never about the candidate. A host whose client reports it ships
-  that in the same deploy that adopts the release.
+  that in the same deploy that adopts the release, and its client never fails a call for a setting, in the
+  adapter's order: a refused setting is dropped or moved first, the temperature before any other, keeping
+  enforcement, and only a call that still finds no endpoint is sent unenforced (`strict_output=False`).
 - **Conformance kits** (`testing`): the store, reader, jobs and completion kits, and the import-boundary check
   (`nonpublic_evals_imports`) a host runs over its own code. The completion kit checks the optional `sent_settings`
   member's type when present, and requires it with `require_sent_settings=True`. Beside them, `RecordedCompletions`
@@ -215,10 +217,10 @@ v<version>` prints a release's notes).
   `.24` wrote a pre-release v14 baseline, and `.25` reset the baseline to v15 with no upgrader, so a v14 document is
   refused by name as pre-release and such an adopter deletes its eval documents again. From `.25` on, the store is
   the v15 baseline this release reads, and every core shape change is a version, as it will be after release: a minor
-  for an additive change, a major with an upgrader for any other. Every build before `.25` refuses every document
-  `.25` or this release writes, so roll back no further than `.25`. Every pre-release, `.21` included, stamped its
-  cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so their corpora
-  are re-captured.
+  for an additive change, a major with an upgrader for any other. Every build before `.25` refuses every core document
+  `.25` or this release writes, so roll back no further than `.25`. Every pre-release before `.22`, `.21` included,
+  stamped its cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so
+  their corpora are re-captured.
 
 ## v0.66.0 -- 2026-10-13
 
