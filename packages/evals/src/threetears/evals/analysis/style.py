@@ -126,7 +126,10 @@ GLOSSARY: dict[str, str] = {
     "guardrail": "A reading an arm must not get worse on, whatever it gains elsewhere.",
     "bar": "A threshold a reading must clear on its own, without a control.",
     "exploratory": "No question was declared before the run, so the page offers leads, not decisions.",
-    "settled": "The rule's outcome cannot change, however the remaining cases turn out.",
+    "settled": (
+        "Settled keep: the run shows the candidate breaks the clause. Settled switch: its interval shows the clause "
+        "holds, on at least 5 cases per arm."
+    ),
     "judge": "The model that scores each trial's transcript against a rubric.",
     "calibrated": "A judge whose scores have been shown to agree with people's.",
     "marks": "✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.",

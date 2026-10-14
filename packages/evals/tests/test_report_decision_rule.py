@@ -3,9 +3,9 @@
 G2 (2026-10) declared: "switch Kairo's model only if no dimension drops by more than 10 points AND the cost per turn
 is lower; otherwise keep deepseek-v4.1-flash", and ran 4 cases × 3 repeats: production passed 10 of 12, the cheaper
 candidate 2 of 12, at a cost per reply of 0.003092 against 0.003301. Its memo called the question unanswerable,
-because four cases are under the floor for estimating a rate. Neither clause needs that floor: a measured cost is read
-as measured, and a pass rate is settled by a bound once the losing arm cannot close the gap with the trials left.
-Both clauses settle ``keep``.
+because four cases are under the floor for estimating a rate. Neither clause needs that floor to settle ``keep``: a
+cost observed higher, and a pass rate whose observed drop is past the margin, are enough not to switch. Settling
+``switch`` is another matter: it needs every arm at the case floor and an interval that bounds the clause.
 """
 
 from __future__ import annotations
@@ -34,21 +34,106 @@ def test_the_g2_rule_keeps_production_on_both_clauses() -> None:
     verdict = evaluate_rule(rule, readings)
     assert [clause.outcome for clause in verdict.clauses] == ["keep", "keep"]
     assert verdict.outcome == "keep"
-    # Four cases is under the floor for estimating a magnitude, never for a measured cost or a bounded rate.
-    assert verdict.clauses[0].reason == "the pass rate drops at least 67 points"
+    # Four cases is under the floor for estimating a magnitude, never for keeping on what the run observed. Nothing
+    # remains to run, so the drop is stated as observed, without "at least".
+    assert verdict.clauses[0].reason == "the pass rate drops 67 points"
+    assert verdict.clauses[0].rate is readings.rates[0]
 
 
 def test_a_rate_clause_the_remaining_trials_could_still_decide_is_unsettled() -> None:
     rule = parse_decision_rule(G2_QUESTION)
     assert rule is not None
     close = RuleReadings(
-        rates=(RateReading("the pass rate", 10, 12, 8, 10, 0, 2),), control_cost=2.0, candidate_cost=1.0
+        rates=(RateReading("the pass rate", 10, 12, 8, 10, 0, 2, interval=(-0.05, 0.02)),),
+        control_cost=2.0,
+        candidate_cost=1.0,
+        control_cases=6,
+        candidate_cases=6,
+        cost_interval=(-1.5, -0.5),
     )
     verdict = evaluate_rule(rule, close)
     assert [clause.outcome for clause in verdict.clauses] == ["unsettled", "switch"]
     assert verdict.outcome == "unsettled"
-    settled = RuleReadings(rates=(RateReading("the pass rate", 12, 12, 12, 12),), control_cost=2.0, candidate_cost=1.0)
+    assert verdict.clauses[0].reason == "the lost trials could still take the pass rate past the margin"
+    # Equal rates switch only on an interval over enough cases. The bare counts (no case count, no interval) once
+    # settled switch here: that was the defect.
+    settled = RuleReadings(
+        rates=(RateReading("the pass rate", 12, 12, 12, 12, interval=(-0.04, 0.04)),),
+        control_cost=2.0,
+        candidate_cost=1.0,
+        control_cases=6,
+        candidate_cases=6,
+        cost_interval=(-1.5, -0.5),
+    )
     assert evaluate_rule(rule, settled).outcome == "switch"
+    bare = RuleReadings(rates=(RateReading("the pass rate", 12, 12, 12, 12),), control_cost=2.0, candidate_cost=1.0)
+    assert evaluate_rule(rule, bare).outcome == "unsettled"
+
+
+def test_equal_rates_on_too_few_cases_are_unsettled_not_switch() -> None:
+    rule = parse_decision_rule(G2_QUESTION)
+    assert rule is not None
+    equal = RuleReadings(
+        rates=(RateReading("the pass rate", 10, 12, 10, 12, interval=(-0.02, 0.02)),),
+        control_cost=2.0,
+        candidate_cost=1.0,
+        control_cases=4,
+        candidate_cases=4,
+        cost_interval=(-1.5, -0.5),
+    )
+    verdict = evaluate_rule(rule, equal)
+    assert [clause.outcome for clause in verdict.clauses] == ["unsettled", "unsettled"]
+    assert verdict.outcome == "unsettled"
+    assert verdict.clauses[0].reason == "4 cases cannot show the drop stays within 10 points (a rate needs 5)"
+    assert verdict.clauses[1].reason == "4 cases cannot show the cost is lower (a difference needs 5)"
+
+
+def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
+    rule = parse_decision_rule(G2_QUESTION)
+    assert rule is not None
+    tight = RuleReadings(
+        rates=(RateReading("the pass rate", 50, 60, 49, 60, interval=(-0.08, 0.05)),),
+        control_cost=0.0031,
+        candidate_cost=0.0021,
+        control_cases=20,
+        candidate_cases=20,
+        cost_interval=(-0.0014, -0.0006),
+    )
+    verdict = evaluate_rule(rule, tight)
+    assert [clause.outcome for clause in verdict.clauses] == ["switch", "switch"]
+    assert verdict.outcome == "switch"
+    # The same run with an interval reaching past the margin is unsettled, and says how far it reaches.
+    wide = RuleReadings(
+        rates=(RateReading("the pass rate", 50, 60, 49, 60, interval=(-0.23, 0.2)),),
+        control_cost=0.0031,
+        candidate_cost=0.0021,
+        control_cases=20,
+        candidate_cases=20,
+        cost_interval=(-0.0014, -0.0006),
+    )
+    wide_verdict = evaluate_rule(rule, wide)
+    assert wide_verdict.outcome == "unsettled"
+    assert wide_verdict.clauses[0].reason == "the interval allows the pass rate to drop up to 23 points"
+
+
+def test_a_cost_lower_by_a_point_estimate_only_is_unsettled() -> None:
+    rule = parse_decision_rule(G2_QUESTION)
+    assert rule is not None
+    readings = RuleReadings(
+        rates=(RateReading("the pass rate", 50, 60, 50, 60, interval=(-0.05, 0.05)),),
+        control_cost=0.0031,
+        candidate_cost=0.0029,
+        control_cases=20,
+        candidate_cases=20,
+        cost_interval=(-0.0006, 0.0002),
+    )
+    verdict = evaluate_rule(rule, readings)
+    assert [clause.outcome for clause in verdict.clauses] == ["switch", "unsettled"]
+    assert verdict.clauses[1].reason == "the cost difference did not separate"
+    assert verdict.outcome == "unsettled"
+    # A cost observed higher still settles keep, on any number of cases.
+    dearer = RuleReadings(rates=readings.rates, control_cost=0.0029, candidate_cost=0.0031)
+    assert evaluate_rule(rule, dearer).clauses[1].outcome == "keep"
 
 
 async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled: tuple[Result, Report]) -> None:
