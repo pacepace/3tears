@@ -32,6 +32,7 @@ from threetears.evals.schema import JobLease
 from threetears.evals.ops import (
     analysis_estimate,
     analysis_generate,
+    format_number,
     generation_key,
     job_cancel,
     run_job_id,
@@ -175,8 +176,11 @@ async def test_the_estimate_action_renders_the_price_and_the_cap() -> None:
     )
 
     assert not outcome.is_error, outcome.text
-    assert f"first call priced at up to ${FIXTURED_CALL_CEILING_USD:.4f}" in outcome.text
-    assert f"out-of-run cap ${CAP:.2f}; would start" in outcome.text
+    assert {
+        f"first_call_ceiling_usd: {format_number(FIXTURED_CALL_CEILING_USD)}",
+        f"cap_usd: {format_number(CAP)}",
+        "would_start: True",
+    } <= set(outcome.text.splitlines())
 
 
 # =============================================================================

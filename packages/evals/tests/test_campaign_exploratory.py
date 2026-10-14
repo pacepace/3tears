@@ -152,8 +152,10 @@ async def test_the_create_action_takes_either_and_its_line_says_which(evals: Mou
     declared = await _call(evals, fixture, "campaign_create", **_definition(fixture), declared_design=_design())
 
     assert not exploratory.is_error and not declared.is_error, (exploratory.text, declared.text)
-    assert CampaignLine.model_validate(exploratory.structured).exploratory and "exploratory" in exploratory.text
-    assert not CampaignLine.model_validate(declared.structured).exploratory and "declared" in declared.text
+    assert CampaignLine.model_validate(exploratory.structured).exploratory
+    assert "exploratory: True" in exploratory.text.splitlines()
+    assert not CampaignLine.model_validate(declared.structured).exploratory
+    assert "exploratory: False" in declared.text.splitlines()
 
 
 # --- campaign_update moves a campaign between the two ---------------------------------------------------------------

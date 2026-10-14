@@ -55,7 +55,7 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
 
         listed, _, _ = await _text(client, "evals", {"action": "templates_list"})
-        assert listed.startswith("templates (1)") and toyhost_template().id in listed
+        assert "templates (1):" in listed.splitlines() and toyhost_template().id in listed
 
         launch = {
             "action": "run_launch",
@@ -145,7 +145,9 @@ async def test_the_caller_is_resolved_for_every_call_and_may_be_async() -> None:
         first, _, _ = await _text(client, "evals", {"action": "campaigns_list"})
         second, _, _ = await _text(client, "evals", {"action": "templates_list"})
     assert asked == ["asked", "asked"]
-    assert first == "campaigns (0)" and second == "templates (0)", "the resolved scope, not the toy host's, was read"
+    assert "campaigns: []" in first.splitlines() and "templates: []" in second.splitlines(), (
+        "the resolved scope, not the toy host's, was read"
+    )
 
 
 async def test_a_cap_above_the_hosts_is_refused_through_the_transport() -> None:

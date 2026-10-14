@@ -132,6 +132,15 @@ from threetears.evals.ops import (
     scope_out_of_run_spend,
     scope_pivot,
     templates_list,
+    bar_proposals_text,
+    estimate_text,
+    export_text,
+    frontier_text,
+    history_text,
+    out_of_run_spend_text,
+    pivot_text,
+    runs_bisected_text,
+    runs_compared_text,
 )
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
@@ -1349,7 +1358,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=NoParams,
             result=TemplateListing,
             handler=_templates_list,
-            render=render.render_templates,
+            render=render.render_model,
             example={},
         ),
         Action(
@@ -1360,7 +1369,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeConfigsListParams,
             result=JudgeConfigListing,
             handler=_judge_configs_list,
-            render=render.render_judge_configs,
+            render=render.render_model,
             example={"dim_filter": "helpfulness"},
             detail=(
                 "Each config asks a judge for one dimension, with its prompt, and may pin the judge model and "
@@ -1376,7 +1385,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunsListParams,
             result=RunListing,
             handler=_runs_list,
-            render=render.render_runs,
+            render=render.render_model,
             example={"status": "completed"},
             detail=(
                 "A stored run this build cannot read is left out and counted in unreadable rather than failing the "
@@ -1392,7 +1401,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunsUnreadableParams,
             result=UnreadableRunsListing,
             handler=_runs_unreadable,
-            render=render.render_unreadable_runs,
+            render=render.render_model,
             example={},
             detail=(
                 "Read from every stored run of the scope on each call, any status, archived included, never stored: "
@@ -1441,7 +1450,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CaseSetsListParams,
             result=CaseSetListing,
             handler=_case_sets_list,
-            render=render.render_case_sets,
+            render=render.render_model,
             example={},
         ),
         Action(
@@ -1452,7 +1461,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CaseSetMintParams,
             result=CaseSetLine,
             handler=_case_set_mint,
-            render=render.render_case_set,
+            render=render.render_model,
             example={"case_set": "smoke", "template_id": "tmpl-1", "test_case_ids": ["case-1", "case-2"]},
             detail=(
                 "Append-only: a new name starts at v1 and every change is the next version, so a launch naming "
@@ -1468,7 +1477,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CampaignsListParams,
             result=CampaignListing,
             handler=_campaigns_list,
-            render=render.render_campaigns,
+            render=render.render_model,
             example={},
         ),
         Action(
@@ -1502,7 +1511,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=LaunchEstimateParams,
             result=LaunchEstimate,
             handler=_launch_estimate,
-            render=render.render_estimate,
+            render=estimate_text,
             example={"template_id": "tmpl-1", "subject_id": "subject-1", "models": ["model-a", "model-b"], "k_runs": 3},
             detail=(
                 "Takes run_launch's own arguments and prices them by the launch's own rule: each arm planned by its "
@@ -1547,7 +1556,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunParams,
             result=EvalSummary,
             handler=_run_get,
-            render=render.render_summary,
+            render=EvalSummary.render,
             example={"run_id": run_id},
         ),
         Action(
@@ -1597,7 +1606,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CampaignCreateParams,
             result=CampaignLine,
             handler=_campaign_create,
-            render=render.render_campaign,
+            render=render.render_model,
             example={
                 "name": "model bake-off",
                 "subject_id": "subject-1",
@@ -1636,7 +1645,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CampaignUpdateParams,
             result=CampaignLine,
             handler=_campaign_update,
-            render=render.render_campaign,
+            render=render.render_model,
             example={
                 "campaign_id": campaign_id,
                 "declared_design": {
@@ -1676,7 +1685,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CampaignRunsParams,
             result=CampaignLine,
             handler=_campaign_runs_add,
-            render=render.render_campaign,
+            render=render.render_model,
             example={"campaign_id": campaign_id, "run_ids": [run_id]},
             detail=(
                 "A run the campaign already holds is not added twice. A run outside the caller's scope is refused, "
@@ -1691,7 +1700,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CampaignRunsParams,
             result=CampaignLine,
             handler=_campaign_runs_remove,
-            render=render.render_campaign,
+            render=render.render_model,
             example={"campaign_id": campaign_id, "run_ids": [run_id]},
             detail=(
                 "Membership only: nothing is deleted. A run the campaign does not hold is refused, and then none is "
@@ -1727,7 +1736,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=AnalysisGenerateParams,
             result=AnalysisGenerationEstimate,
             handler=_analysis_estimate,
-            render=render.render_analysis_estimate,
+            render=render.render_model,
             example={"campaign_id": campaign_id},
             detail=(
                 "The generation's own assembly and pricing rule, so would_start is analysis_generate's answer. "
@@ -1763,7 +1772,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeSecondParams,
             result=SecondJudgeEstimate,
             handler=_judge_second_estimate,
-            render=render.render_second_judge_estimate,
+            render=render.render_model,
             example={"run_id": run_id, "second_judge_model": "judge/other", "sample_fraction": 0.5},
             detail="The pass's own collection, sample and admission, so would_start is judge_second's answer.",
         ),
@@ -1818,7 +1827,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeTemperatureParams,
             result=JudgeTemperatureEstimate,
             handler=_judge_temperature_estimate,
-            render=render.render_judge_temperature_estimate,
+            render=JudgeTemperatureEstimate.render,
             example={"run_id": run_id, "repeats": 5},
             detail="The comparison's own collection, selection and admission, so would_start is its answer.",
         ),
@@ -1830,7 +1839,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CampaignParams,
             result=AnalysisListing,
             handler=_analyses_list,
-            render=render.render_analyses,
+            render=render.render_model,
             example={"campaign_id": campaign_id},
         ),
         Action(
@@ -1841,7 +1850,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=InsightsListParams,
             result=InsightListing,
             handler=_insights_list,
-            render=render.render_insights,
+            render=render.render_model,
             example={"campaign_filter": campaign_id},
             detail=(
                 "Each insight with where it stands: live (fed to every later analysis of its subject as prior "
@@ -1857,7 +1866,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=InsightParams,
             result=InsightDetail,
             handler=_insight_get,
-            render=render.render_insight,
+            render=render.render_model,
             example={"insight_id": insight_id},
         ),
         Action(
@@ -1868,7 +1877,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=AnalysesUndescribableParams,
             result=UndescribableArmsListing,
             handler=_analyses_undescribable,
-            render=render.render_undescribable_arms,
+            render=render.render_model,
             example={},
             detail=(
                 "Read from each stored analysis's variant index on every call, never stored: each such analysis "
@@ -1895,7 +1904,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CampaignParams,
             result=BarProposals,
             handler=_bars_propose,
-            render=render.render_bar_proposals,
+            render=bar_proposals_text,
             example={"campaign_id": campaign_id},
             detail=(
                 "Measures the baseline campaign's one cell and proposes a bar on each host-declared measure with a "
@@ -1913,7 +1922,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ReporterCaseFreezeParams,
             result=FrozenReporterCase,
             handler=_reporter_case_freeze,
-            render=render.render_reporter_case,
+            render=render.render_model,
             example={
                 "template_id": reporter_template_id,
                 "campaign_id": campaign_id,
@@ -1939,7 +1948,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ReporterCasesListParams,
             result=ReporterCaseListing,
             handler=_reporter_cases_list,
-            render=render.render_reporter_cases,
+            render=render.render_model,
             example={"template_id": reporter_template_id},
             detail=(
                 "Each case with whether a launch runs it and what superseded it. A case this build cannot read is "
@@ -1956,7 +1965,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeTemplateCreateParams,
             result=TemplateLine,
             handler=_judge_template_create,
-            render=render.render_template_line,
+            render=render.render_model,
             example={
                 "template_name": "faithfulness judge",
                 "intent": "Score how faithfully an extraction reproduces its invoice.",
@@ -1976,7 +1985,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeCasesFreezeParams,
             result=JudgeCaseFreezeReport,
             handler=_judge_cases_freeze,
-            render=render.render_judge_case_freeze,
+            render=render.render_model,
             example={"template_id": "tmpl-judge", "judged_run_ids": [run_id], "into_case_set": "faithfulness"},
             detail=(
                 "A judge campaign measures a judge configuration as its subject, and its cases are never generated: "
@@ -1996,7 +2005,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeCaseAuthorParams,
             result=JudgeCaseFreezeReport,
             handler=_judge_case_author,
-            render=render.render_judge_case_freeze,
+            render=render.render_model,
             example={
                 "template_id": "tmpl-judge",
                 "criterion_template_id": "tmpl-extraction",
@@ -2025,7 +2034,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeProfilesRecordParams,
             result=JudgeProfileRecording,
             handler=_judge_profiles_record,
-            render=render.render_judge_profile_recording,
+            render=render.render_model,
             example={"judge_run_ids": [run_id]},
             detail=(
                 "Reads the judge campaign's finished runs (judge_run_ids, every arm) as judge_kind_readings does, and "
@@ -2044,7 +2053,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeProfilesListParams,
             result=JudgeProfileListing,
             handler=_judge_profiles_list,
-            render=render.render_judge_profiles,
+            render=render.render_model,
             example={},
             detail=(
                 "A profile is read only for the very judge it measured: a changed model, prompt config or temperature, "
@@ -2059,7 +2068,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ScopePivotParams,
             result=PivotTable,
             handler=_scope_pivot,
-            render=render.render_pivot,
+            render=pivot_text,
             example={"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"},
             detail=(
                 "Every cell carries its denominators (observations and cases) and its spread, and the table names "
@@ -2076,7 +2085,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunsCompareParams,
             result=RunsCompared,
             handler=_runs_compare,
-            render=render.render_runs_compared,
+            render=runs_compared_text,
             example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
             detail=(
                 "pass^k is read on both arms at the shallower arm's depth, over the cases each averaged there, and "
@@ -2098,7 +2107,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunsBisectParams,
             result=RunsBisected,
             handler=_runs_bisect,
-            render=render.render_runs_bisected,
+            render=runs_bisected_text,
             example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
             detail=(
                 "The what-changed question behind a history step: every input the host declares as sweepable, each "
@@ -2118,7 +2127,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ScopeOutOfRunSpendParams,
             result=OutOfRunSpendReport,
             handler=_scope_out_of_run_spend,
-            render=render.render_out_of_run_spend,
+            render=out_of_run_spend_text,
             example={"purpose_filter": "variation"},
             detail=(
                 "Read off the out-of-run ledger, one row per call, returned or raised: the spend no run's results "
@@ -2137,7 +2146,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ScopeHistoryParams,
             result=HistoryResult,
             handler=_scope_history,
-            render=render.render_history,
+            render=history_text,
             example={"metric": "cost_usd", "min_relative_change": 0.1},
             detail=(
                 "A contestant is one resolved configuration within a subject, so a step is a re-run of the same "
@@ -2155,7 +2164,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ScopeFrontierParams,
             result=FrontierResult,
             handler=_scope_frontier,
-            render=render.render_frontier,
+            render=frontier_text,
             example={"bar": 0.8},
             detail=(
                 "A point is one variant of a subject: pass^k with its interval, mean composite, production-replicating "
@@ -2173,7 +2182,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ScopeExportParams,
             result=ScoreExport,
             handler=_scope_export,
-            render=render.render_export,
+            render=export_text,
             example={"export_format": "csv", "export_run_ids": [run_id]},
             detail=(
                 "One row per observation, every lever and host measure its own column. CSV holds the rows alone, "
@@ -2188,7 +2197,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunArchiveParams,
             result=RunLine,
             handler=_run_archive,
-            render=render.render_run_line,
+            render=render.render_model,
             example={"run_id": run_id, "archived": True},
         ),
         Action(
@@ -2199,7 +2208,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunLabelParams,
             result=RunLine,
             handler=_run_label,
-            render=render.render_run_line,
+            render=render.render_model,
             example={"run_id": run_id, "run_labels": ["baseline"]},
         ),
         Action(
@@ -2210,7 +2219,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=CampaignArchiveParams,
             result=CampaignLine,
             handler=_campaign_archive,
-            render=render.render_campaign,
+            render=render.render_model,
             example={"campaign_id": campaign_id, "archived": True},
         ),
         Action(
@@ -2221,7 +2230,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ResultRateParams,
             result=ResultRated,
             handler=_result_rate,
-            render=render.render_result_rated,
+            render=render.render_model,
             example={"result_id": "result-1", "rubric_dim": "chat.tone", "score": 4, "rating_reason": "warm, on point"},
             detail=(
                 "Recorded as the caller's identity with rater_kind agent, fixed here: an agent rating through a tool "
@@ -2237,7 +2246,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=AnalysisArchiveParams,
             result=AnalysisLine,
             handler=_analysis_archive,
-            render=render.render_analysis_line,
+            render=render.render_model,
             example={"analysis_id": analysis_id, "archived": True, "archive_reason": "superseded"},
         ),
         Action(
@@ -2248,7 +2257,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ReporterCaseArchiveParams,
             result=FrozenReporterCase,
             handler=_reporter_case_archive,
-            render=render.render_reporter_case,
+            render=render.render_model,
             example={
                 "reporter_case_id": reporter_case_id,
                 "archived": True,
@@ -2267,7 +2276,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunDeleteParams,
             result=RunDeleted,
             handler=_run_delete,
-            render=render.render_run_deleted,
+            render=render.render_model,
             example={"run_id": run_id, "confirm": run_id},
             detail=(
                 "Removes the run's results (each with its trace) and its campaign memberships, then the run; "
@@ -2286,7 +2295,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=AnalysisDeleteParams,
             result=AnalysisDeleted,
             handler=_analysis_delete,
-            render=render.render_analysis_deleted,
+            render=render.render_model,
             example={"analysis_id": analysis_id, "confirm": analysis_id},
         ),
         Action(
@@ -2297,7 +2306,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=InsightDeleteParams,
             result=InsightDeleted,
             handler=_insight_delete,
-            render=render.render_insight_deleted,
+            render=render.render_model,
             example={"insight_id": insight_id, "confirm": insight_id},
             detail=(
                 "An insight has no archive: a wrong one keeps steering every later analysis of its subject until it "

@@ -7,8 +7,10 @@ Every string a mounted tool returns is made here, so the conventions hold in one
   all read off the :class:`~threetears.evals.actions.catalogue.Action` and its models.
 - **A refusal names what was wrong and what would be right**: the valid actions, the parameters the
   action accepts with what each means, and an example call that validates.
-- **A result reads as the decision it supports.** A started job says how to poll it; a finished one
-  says what to read next.
+- **A result reads as every fact it carries.** One generic renderer prints any result model field by field
+  (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
+  what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
+  is its own text.
 
 This module reads the catalogue's types only for annotations, so the catalogue imports it freely.
 """
@@ -18,76 +20,29 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from threetears.evals.schema import GoalStateOutcome, is_builtin_judge_config_id
-from threetears.evals.schema.models import sent_settings_phrase
+from threetears.evals.schema import GoalStateOutcome
 from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
-    AnalysisDeleted,
-    JudgeProfileEntry,
-    JudgeConfigListing,
-    JudgeProfileListing,
-    JudgeProfileRecording,
-    CaseSetLine,
-    CaseSetListing,
-    AnalysisGenerationEstimate,
-    AnalysisLine,
-    AnalysisListing,
-    BarProposals,
-    CampaignLine,
-    CampaignListing,
-    LaunchEstimate,
-    EvalSummary,
-    FrozenReporterCase,
-    FrontierResult,
-    HistoryResult,
-    InsightDeleted,
-    InsightDetail,
-    InsightLine,
-    InsightListing,
     JobsStarted,
     JobStatus,
     JudgeTemperatureComparison,
-    OutOfRunSpendReport,
-    PivotTable,
     ReportDocument,
-    ReporterCaseEntry,
-    ReporterCaseListing,
     ResultDetail,
     ResultLine,
     ResultListing,
-    ResultRated,
-    RunDeleted,
-    RunLine,
-    RunListing,
-    RunsBisected,
-    RunsCompared,
-    ScoreExport,
     SecondJudgeRead,
-    TemplateLine,
-    TemplateListing,
-    bar_proposals_text,
-    UndescribableArmsListing,
-    UnreadableRunsListing,
     dollars_text,
-    estimate_text,
     format_number,
-    export_text,
-    frontier_text,
-    history_text,
-    out_of_run_spend_text,
-    pivot_text,
-    runs_bisected_text,
-    runs_compared_text,
 )
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
-    from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -256,72 +211,65 @@ _ACTION_TOKEN = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 # --- results -----------------------------------------------------------------------------------------
 
 
-def render_template_line(template: TemplateLine) -> str:
-    """One template, as written."""
-    return f"template {template.id}: {template.name} — kind {template.candidate_kind}; {template.intent}"
+def render_model(result: BaseModel) -> str:
+    """Any result as text: what it is, then every field it carries, one line each, in the model's own order.
+
+    The one renderer for every result without a bespoke one below, so a field added to a result model is read
+    back with no second edit here. A nested model's fields are indented under its name; a list of models is one
+    bullet per model, each field ``name=value``; an unset field reads ``none``. Nothing is summarised, rounded
+    past :func:`~threetears.evals.ops.format_number` or left out.
+    """
+    return "\n".join([_RESULT_WORDS.sub(r" \1", type(result).__name__).strip().lower(), *_field_lines(result, "")])
 
 
-def render_templates(listing: TemplateListing) -> str:
-    """A scope's templates."""
-    lines = [f"templates ({len(listing.templates)})"]
-    lines += [f"- {t.id}: {t.name} — kind {t.candidate_kind}; {t.intent}" for t in listing.templates]
-    return "\n".join(lines)
+#: A capital letter that starts a word in a model's name (``RunListing`` -> ``run listing``).
+_RESULT_WORDS = re.compile(r"(?<=[a-z0-9])([A-Z])")
 
 
-def render_judge_configs(listing: JudgeConfigListing) -> str:
-    """A scope's judge configs, one per line with the dimension each asks for."""
-    lines = [f"judge configs ({len(listing.judge_configs)})"]
-    for config in listing.judge_configs:
-        model = f", model {config.model}" if config.model else ""
-        lines.append(
-            f"- {config.id}: {config.name} — dimension {config.rubric_dim_id}{model}, temperature {config.temperature}"
-        )
-    return "\n".join(lines)
+def _field_lines(model: BaseModel, indent: str) -> list[str]:
+    lines: list[str] = []
+    for name in type(model).model_fields:
+        value = getattr(model, name)
+        if isinstance(value, BaseModel):
+            lines += [f"{indent}{name}:", *_field_lines(value, indent + "  ")]
+        elif isinstance(value, list | tuple) and value and all(isinstance(item, BaseModel) for item in value):
+            lines.append(f"{indent}{name} ({len(value)}):")
+            lines += [f"{indent}- " + _item_line(item) for item in value]
+        else:
+            lines.append(f"{indent}{name}: {_value(value)}")
+    return lines
 
 
-def render_run_line(run: RunLine) -> str:
-    """One run on one line."""
-    archived = ", archived" if run.archived else ""
-    labels = f", labels {', '.join(run.labels)}" if run.labels else ""
-    return f"- {run.id}: {run.status}, model {run.candidate_model}, template {run.template_id}{archived}{labels}"
+def _item_line(item: BaseModel) -> str:
+    """One model of a list on one line: each field ``name=value``."""
+    return "; ".join(f"{field}={_value(getattr(item, field))}" for field in type(item).model_fields)
 
 
-def render_runs(listing: RunListing) -> str:
-    """A scope's runs."""
-    scope = "including archived" if listing.include_archived else "archived runs left out"
-    if listing.label is not None:
-        scope += f", labelled {listing.label}"
-    lines = [f"runs ({len(listing.runs)}, {scope})", *(render_run_line(run) for run in listing.runs)]
-    if listing.unreadable:
-        lines.append(
-            f"not listed: {listing.unreadable} stored run(s) this build cannot read; runs_unreadable names each "
-            "with why"
-        )
-    return "\n".join(lines)
-
-
-def render_unreadable_runs(listing: UnreadableRunsListing) -> str:
-    """The scope's stored runs this build cannot read, stranded ones marked."""
-    lines = [
-        f"runs in scope {listing.scope_id} this build cannot read: {len(listing.runs)} of {listing.runs_read}, "
-        f"{listing.stranded} stranded (stored pending or running; the boot sweep can never settle them)"
-    ]
-    for line in listing.runs:
-        status = line.status if line.status is not None else "no status recorded"
-        stranded = ", stranded" if line.stranded else ""
-        run_id = line.run_id if line.run_id is not None else "(no id on the row)"
-        lines.append(f"- {run_id} ({status}{stranded}): {'; '.join(line.reasons)}")
-    return "\n".join(lines)
-
-
-def render_summary(summary: EvalSummary) -> str:
-    """One run's summary."""
-    return summary.render()
+def _value(value: Any) -> str:
+    """One field's value on one line: a number as :func:`format_number` writes it, a list joined, JSON otherwise."""
+    if value is None:
+        return "none"
+    if isinstance(value, Enum):
+        return str(value.value)
+    if isinstance(value, bool | str):
+        return str(value)
+    if isinstance(value, int | float):
+        return format_number(value)
+    if isinstance(value, BaseModel):
+        return _compact(value.model_dump(mode="json"))
+    if isinstance(value, list | tuple):
+        return f"[{', '.join(_value(item) for item in value)}]"
+    return _compact(value)
 
 
 def _compact(value: Any) -> str:
     """A stored JSON value on one line, keys sorted, as written — never re-typed or summarised."""
     return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def render_report(document: ReportDocument) -> str:
+    """The report itself, in the form asked for — which already says whether it is an analysis or code-only."""
+    return document.body
 
 
 def _result_line(line: ResultLine) -> str:
@@ -544,399 +492,13 @@ def render_job_status(status: JobStatus) -> str:
 
 
 def _render_result(status: JobStatus) -> str:
-    """A completed job's result as its own action renders it: a second judge's read, a comparison, or JSON."""
+    """A completed job's result as its own action renders it: a temperature comparison by its own words, else JSON."""
     assert status.result is not None  # only called with a result
-    if status.kind == "second_judge":
-        return render_second_judge(SecondJudgeRead.model_validate(status.result))
     if status.kind == "judge_temperature":
-        return render_judge_temperature(JudgeTemperatureComparison.model_validate(status.result))
+        return JudgeTemperatureComparison.model_validate(status.result).render()
+    if status.kind == "second_judge":
+        return render_model(SecondJudgeRead.model_validate(status.result))
     return "result: " + json.dumps(status.result, sort_keys=True)
-
-
-def render_campaign(campaign: CampaignLine) -> str:
-    """One campaign on one line, declared or exploratory."""
-    kind = "exploratory" if campaign.exploratory else "declared"
-    archived = ", archived" if campaign.archived else ""
-    return (
-        f"- {campaign.id}: {campaign.name} — subject {campaign.subject_id}, {campaign.behavior}; "
-        f"{campaign.run_count} run(s), {kind}{archived}"
-    )
-
-
-def render_case_set(case_set: CaseSetLine) -> str:
-    """One version of a case set on one line."""
-    tracked = "" if case_set.tracked else ", one-off"
-    return (
-        f"- {case_set.label}: template {case_set.template_id}, {len(case_set.test_case_ids)} case(s) "
-        f"({', '.join(case_set.test_case_ids)}){tracked}"
-    )
-
-
-def render_case_sets(listing: CaseSetListing) -> str:
-    """A scope's case sets, every version."""
-    return "\n".join([f"case sets ({len(listing.case_sets)})", *(render_case_set(c) for c in listing.case_sets)])
-
-
-def render_campaigns(listing: CampaignListing) -> str:
-    """A scope's campaigns."""
-    return "\n".join([f"campaigns ({len(listing.campaigns)})", *(render_campaign(c) for c in listing.campaigns)])
-
-
-def render_analysis_line(analysis: AnalysisLine) -> str:
-    """One stored analysis on one line."""
-    archived = ", archived" if analysis.archived else ""
-    return (
-        f"- {analysis.id}: {analysis.verdict} [{analysis.findings} finding(s), {analysis.recommendations} "
-        f"recommendation(s)] ({analysis.generator_model}, {analysis.generated_at}{archived})"
-    )
-
-
-def render_analyses(listing: AnalysisListing) -> str:
-    """A campaign's analyses."""
-    lines = [f"analyses of campaign {listing.campaign_id} ({len(listing.analyses)})"]
-    lines += [render_analysis_line(a) for a in listing.analyses]
-    return "\n".join(lines)
-
-
-def render_undescribable_arms(listing: UndescribableArmsListing) -> str:
-    """The scope's analyses holding an arm whose levels this build cannot describe."""
-    lines = [
-        f"analyses in scope {listing.scope_id} holding an arm this build cannot describe: "
-        f"{len(listing.analyses)} of {listing.analyses_read}"
-    ]
-    for line in listing.analyses:
-        why = "; ".join(line.reasons) or "no reason recorded"
-        archived = ", archived" if line.archived else ""
-        lines.append(
-            f"- {line.analysis_id} (campaign {line.campaign_id}{archived}): "
-            f"{line.undescribable_arms} of {line.arms} arm(s) — {why}"
-        )
-    return "\n".join(lines)
-
-
-def render_analysis_estimate(estimate: AnalysisGenerationEstimate) -> str:
-    """A generation's price before it starts: its first call's ceiling against the cap, and whether it would start."""
-    ceiling = (
-        f"${estimate.first_call_ceiling_usd:.4f}" if estimate.first_call_ceiling_usd is not None else "unpriceable"
-    )
-    cap = f"${estimate.cap_usd:.2f}" if estimate.cap_usd is not None else "none enforced"
-    verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
-    return (
-        f"estimate: analysis of campaign {estimate.campaign_id} on {estimate.generator_model} — first call priced at "
-        f"up to {ceiling}, out-of-run cap {cap}; {verdict}. A generation makes at most {estimate.max_calls} call(s): "
-        "a refused output buys one repair round-trip, priced against what is left of the cap before it is sent."
-    )
-
-
-def render_bar_proposals(proposals: BarProposals) -> str:
-    """Each proposed bar with its seed and any vacuity, then every reading nothing could be proposed on."""
-    return bar_proposals_text(proposals)
-
-
-def render_report(document: ReportDocument) -> str:
-    """The report itself, in the form asked for — which already says whether it is an analysis or code-only."""
-    return document.body
-
-
-def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
-    """A judge case freeze's receipt: each case, the set listing them, and every result it skipped."""
-    created = sum(1 for case in report.cases if case.created)
-    lines = [
-        f"{len(report.cases)} judge case(s) of template {report.template_id} ({created} new, "
-        f"{len(report.cases) - created} already stored)"
-        + (f"; case set {report.case_set.label}" if report.case_set is not None else ""),
-    ]
-    lines += [
-        f"- {case.test_case_id}: {case.dim} "
-        + (
-            f"authored by {case.authored_by}, its expected verdict its label"
-            if case.authored_by is not None
-            else f"on result {case.source_result_id} (run {case.source_run_id}), {case.labels} label(s)"
-        )
-        for case in report.cases
-    ]
-    if report.skipped:
-        lines.append(f"skipped ({len(report.skipped)})")
-        lines += [f"- {skip.result_id}: {skip.reason}" for skip in report.skipped]
-    return "\n".join(lines)
-
-
-def _judge_profile_line(entry: JudgeProfileEntry) -> str:
-    """One stored judge profile as a line: the judge, the criterion, what it was measured on and when, its tier."""
-    profile = entry.profile
-    config = profile.judge_config_id
-    what = "built-in prompt" if is_builtin_judge_config_id(config) else "config"
-    judge = profile.judge_model + (f", {what} {config}" if config else "")
-    temperature = profile.judge_temperature
-    judge += f", temperature {temperature if isinstance(temperature, str) else format_number(temperature)}"
-    judge += f", {sent_settings_phrase(profile.judge_sent_settings)}"
-    measures = []
-    for label, agreement in (("labels", profile.label_agreement), ("repeats", profile.self_agreement)):
-        if agreement is None:
-            measures.append(f"{label} not measured")
-        else:
-            measures.append(
-                f"{label} {format_number(agreement.agreement)} over {format_number(agreement.results)} cases"
-            )
-    measures.append(f"parse validity {format_number(profile.parse_validity)}")
-    line = (
-        f"- {profile.rubric_dim} ({judge}), criterion {profile.criterion_digest[:12]}: {entry.tier} — "
-        f"{'; '.join(measures)}; measured at {profile.measured_at} on {format_number(profile.cases)} cases "
-        f"(case set {profile.case_set_fingerprint[:12]}, runs {', '.join(profile.run_ids)})"
-    )
-    if entry.replaced_measured_at is not None:
-        line += f"; replaced the profile measured at {entry.replaced_measured_at}"
-    return line
-
-
-def render_judge_profile_recording(recording: JudgeProfileRecording) -> str:
-    """A judge profile recording's receipt: each profile written, then what was measured and not recorded."""
-    lines = [f"{len(recording.profiles)} judge profile(s) recorded"]
-    lines += [_judge_profile_line(entry) for entry in recording.profiles]
-    if recording.skipped:
-        lines.append(f"not recorded ({len(recording.skipped)})")
-        lines += [
-            f"- {skip.rubric_dim} ({skip.judge_model or 'unnamed judge'}): {skip.reason}" for skip in recording.skipped
-        ]
-    if recording.unread:
-        lines.append(f"results left out ({len(recording.unread)})")
-        lines += [f"- {unread.result_id}: {unread.reason}" for unread in recording.unread]
-    return "\n".join(lines)
-
-
-def render_judge_profiles(listing: JudgeProfileListing) -> str:
-    """The stored judge profiles, one line each."""
-    if not listing.profiles:
-        return "No judge profile is stored."
-    return "\n".join(
-        [f"{len(listing.profiles)} judge profile(s)"] + [_judge_profile_line(entry) for entry in listing.profiles]
-    )
-
-
-def render_reporter_case(case: FrozenReporterCase) -> str:
-    """A reporter case's receipt: what it froze, its fingerprint, its labels and every limit it recorded."""
-    memo = case.recorded_analysis_id or "none (only a generating candidate can run it)"
-    lines = [
-        f"reporter case {case.test_case_id} of template {case.template_id}: campaign {case.source_campaign_id}, "
-        f"recorded memo {memo}",
-        f"bundle fingerprint {case.bundle_fingerprint}, assembled {case.bundle_assembled_at}",
-    ]
-    if case.writer_message_check is not None:
-        lines.append(f"writer message: {case.writer_message_check}")
-    lines.append(f"labels ({len(case.labels)})")
-    lines += [f'- {label.dimension}: {label.direction} — "{label.quote}"' for label in case.labels]
-    lines.append(f"limits ({len(case.limits)}){'' if case.limits else ': none — the frozen evidence limits nothing'}")
-    lines += [f"- {limit}" for limit in case.limits]
-    if case.supersedes:
-        lines.append(f"supersedes: {', '.join(case.supersedes)}")
-    if case.archived:
-        lines.append(f"retired{': ' + case.archived_reason if case.archived_reason else ''} — no launch runs it")
-    return "\n".join(lines)
-
-
-def _reporter_case_state(entry: ReporterCaseEntry) -> str:
-    """Whether a launch runs the case, and if not, every reason it does not."""
-    if entry.live:
-        return "live"
-    reasons = []
-    if entry.superseded_by:
-        reasons.append(f"superseded by {', '.join(entry.superseded_by)}")
-    if entry.case.archived:
-        reasons.append(f"retired{': ' + entry.case.archived_reason if entry.case.archived_reason else ''}")
-    return "; ".join(reasons)
-
-
-def render_reporter_cases(listing: ReporterCaseListing) -> str:
-    """A reporter template's bank: each case and its state, then what cannot be read and what a launch refuses."""
-    scope = "including retired" if listing.include_archived else "retired cases left out"
-    lines = [f"reporter cases of template {listing.template_id} ({len(listing.cases)}, {scope})"]
-    for entry in listing.cases:
-        case = entry.case
-        lines.append(
-            f"- {case.test_case_id}: {_reporter_case_state(entry)} — campaign {case.source_campaign_id}, recorded memo "
-            f"{case.recorded_analysis_id or 'none'}; fingerprint {case.bundle_fingerprint}; {len(case.labels)} "
-            f"label(s), {len(case.limits)} limit(s)"
-        )
-    if listing.unreadable:
-        lines.append(
-            f"unreadable ({len(listing.unreadable)}) — which case is live cannot be decided until each is read with "
-            "the build that wrote it:"
-        )
-        lines += [f"- {unread.test_case_id}: {unread.reason}" for unread in listing.unreadable]
-    if listing.ambiguous:
-        lines.append(
-            f"pairs with more than one live case ({len(listing.ambiguous)}) — every launch of this template refuses "
-            "until one reporter_case_freeze names all of a pair's live cases in supersedes:"
-        )
-        lines += [
-            f"- campaign {pair.campaign_id}, recorded memo {pair.recorded_analysis_id or 'none'}: "
-            f"{', '.join(pair.live_case_ids)}"
-            for pair in listing.ambiguous
-        ]
-    return "\n".join(lines)
-
-
-def render_pivot(table: PivotTable) -> str:
-    """A pivot: each cell with its denominators, and every caveat the table carries."""
-    return pivot_text(table)
-
-
-def render_runs_compared(compared: RunsCompared) -> str:
-    """Two runs compared: the arms, each reading with its delta and test, and every disclosure."""
-    return runs_compared_text(compared)
-
-
-def render_runs_bisected(bisected: RunsBisected) -> str:
-    """Two runs' inputs split: each difference with both values, each undecided input, and every disclosure."""
-    return runs_bisected_text(bisected)
-
-
-def render_frontier(result: FrontierResult) -> str:
-    """Each subject's variants on quality, cost and latency, and the cheapest that clears the bar."""
-    return frontier_text(result)
-
-
-def render_history(result: HistoryResult) -> str:
-    """Each contestant's series, with each step's regression verdict and the test behind it."""
-    return history_text(result)
-
-
-def render_out_of_run_spend(report: OutOfRunSpendReport) -> str:
-    """The scope's out-of-run spend: totals overall, per purpose and per launch, then each call."""
-    return out_of_run_spend_text(report)
-
-
-def render_estimate(estimate: LaunchEstimate) -> str:
-    """A launch's price, arm by arm as the launch would judge it, and the total."""
-    return estimate_text(estimate)
-
-
-def render_export(export: ScoreExport) -> str:
-    """The export, after a line saying how many rows it holds and what it left out."""
-    return export_text(export)
-
-
-def render_result_rated(rated: ResultRated) -> str:
-    """What an agent's rating wrote, and that it is an agent's."""
-    return (
-        f"rated {rated.rubric_dim} of result {rated.result_id} at {rated.score} as {rated.rater} "
-        f"({rated.rater_kind}; kept beside people's ratings, never read as one)"
-    )
-
-
-def _bounds(interval: tuple[float, float] | None) -> str:
-    """An interval as ``[low, high]``, or a word saying there is none."""
-    return "no interval" if interval is None else f"[{interval[0]:.3g}, {interval[1]:.3g}]"
-
-
-def render_second_judge(read: SecondJudgeRead) -> str:
-    """A second judge's pass: what it asked and spent apart from the candidate, then agreement and drift per dim."""
-    report = read.report
-    cost = dollars_text(report.cost_usd)
-    lines = [
-        f"second judge {report.judge.model} on run {report.run_id} (pass {report.pass_id}): asked about "
-        f"{len(report.judged)} of {report.eligible} judgeable result(s) (fraction {report.sample_fraction:g}, seed "
-        f"{report.sample_seed}); {report.scores_paired} score(s) paired, {report.scores_unanswered} unanswered; "
-        f"{report.calls_made} call(s), {cost} — measurement cost, ledgered under second_judge, never the candidate's",
-    ]
-    if report.stopped:
-        lines.append(f"stopped: {report.stopped}")
-    lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in report.skipped]
-    lines += [f"unwritten {result_id}: paid for, record not stored" for result_id in report.unwritten]
-    lines.append("agreement between the judges")
-    for row in read.agreement.dimensions:
-        kappa = (
-            f"kappa ({row.kappa_weighting}) {row.kappa:.3g}, bounds {_bounds(row.agreement_interval)}"
-            if row.kappa is not None
-            else f"kappa {row.kappa_undefined}"
-        )
-        lines.append(f"- {row.rubric_dim}: n={row.n}, exact agreement {row.exact_agreement:.0%}, {kappa}")
-    lines.append(read.drift.disclosure)
-    for drift in read.drift.dimensions:
-        delta = "n/a" if drift.delta is None else f"{drift.delta:+.3g}"
-        lines.append(
-            f"- {drift.rubric_dim}: {drift.verdict}, movement {delta} over {drift.n_cases} case(s), "
-            f"{_bounds(drift.interval)}"
-        )
-    return "\n".join(lines)
-
-
-def render_second_judge_estimate(estimate: SecondJudgeEstimate) -> str:
-    """A second judge's price before it starts, against the cap, and whether it would start."""
-    ceiling = dollars_text(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
-    cap = dollars_text(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
-    verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
-    return (
-        f"estimate: second judge {estimate.judge.model} on run {estimate.run_id} — {len(estimate.sampled)} of "
-        f"{estimate.eligible} judgeable result(s), {estimate.dims} dim(s), at most {estimate.max_calls} call(s) priced "
-        f"at up to {ceiling}; out-of-run cap {cap}; {verdict}."
-    )
-
-
-def render_judge_temperature(comparison: JudgeTemperatureComparison) -> str:
-    """A judge temperature comparison: what it re-judged and spent, then each dimension's two settings side by side."""
-    return comparison.render()
-
-
-def render_judge_temperature_estimate(estimate: JudgeTemperatureEstimate) -> str:
-    """A judge temperature comparison's price before it starts, against the cap, and whether it would start."""
-    return estimate.render()
-
-
-def render_run_deleted(deleted: RunDeleted) -> str:
-    """What deleting a run removed."""
-    detached = ", ".join(deleted.campaigns_detached) or "none"
-    return f"deleted run {deleted.run_id}, its {deleted.results_deleted} result(s); detached from campaigns: {detached}"
-
-
-def _insight_line(insight: InsightLine) -> str:
-    standing = "" if insight.standing == "live" else f", {insight.standing}"
-    return (
-        f"- {insight.id}: {insight.statement} ({insight.confidence}{standing}; subject {insight.subject_id}, "
-        f"campaign {insight.source_campaign_id or '-'}, analysis {insight.source_analysis_id or '-'})"
-    )
-
-
-def render_insights(listing: InsightListing) -> str:
-    """The scope's insights, saying what narrowed the read — an empty filtered read names what it searched."""
-    narrowed = f" ({listing.filters})" if listing.filters else ""
-    if not listing.insights:
-        return f"no insights{narrowed}"
-    lines = [f"insights{narrowed} ({len(listing.insights)})"]
-    lines += [_insight_line(insight) for insight in listing.insights]
-    return "\n".join(lines)
-
-
-def render_insight(detail: InsightDetail) -> str:
-    """One insight in full."""
-    insight = detail.insight
-    runs = ", ".join(insight.evidence_run_ids) or "none"
-    results = ", ".join(insight.evidence_result_ids) or "none"
-    models = ", ".join(f"{role}={model}" for role, model in sorted(insight.model_versions.items())) or "none"
-    lines = [
-        f"insight {insight.id} ({detail.standing}, {insight.confidence})",
-        f"statement: {insight.statement}",
-        f"subject: {insight.subject_id} ({insight.subject_kind or 'no kind'})",
-        f"scope: {insight.scope or '-'}",
-        f"evidence runs: {runs}",
-        f"evidence results: {results}",
-        f"model versions: {models}",
-        f"observed at: {insight.observed_at}",
-        f"minted by: analysis {insight.source_analysis_id or '-'} of campaign {insight.source_campaign_id or '-'}",
-        f"retired when: {insight.invalidation_trigger or '-'}",
-    ]
-    return "\n".join(lines)
-
-
-def render_insight_deleted(deleted: InsightDeleted) -> str:
-    """What deleting an insight removed."""
-    campaign = deleted.source_campaign_id or "no campaign"
-    return f"deleted insight {deleted.insight_id} (minted from {campaign}); no later analysis reads it"
-
-
-def render_analysis_deleted(deleted: AnalysisDeleted) -> str:
-    """What deleting an analysis removed."""
-    return f"deleted analysis {deleted.analysis_id} of campaign {deleted.campaign_id}; the insights it minted remain"
 
 
 __all__ = [
@@ -949,36 +511,12 @@ __all__ = [
     "refuse_no_action",
     "refuse_undeclared",
     "refuse_unknown_action",
-    "render_analyses",
-    "render_analysis_deleted",
-    "render_analysis_estimate",
-    "render_analysis_line",
-    "render_result",
-    "render_result_rated",
-    "render_results",
-    "render_campaign",
-    "render_campaigns",
-    "render_bar_proposals",
-    "render_estimate",
-    "render_export",
     "render_help_index",
     "render_help_page",
-    "render_frontier",
-    "render_history",
-    "render_insight",
-    "render_insight_deleted",
-    "render_insights",
     "render_job_status",
-    "render_judge_configs",
     "render_jobs_started",
-    "render_pivot",
+    "render_model",
     "render_report",
-    "render_reporter_case",
-    "render_reporter_cases",
-    "render_run_deleted",
-    "render_run_line",
-    "render_runs",
-    "render_unreadable_runs",
-    "render_summary",
-    "render_templates",
+    "render_result",
+    "render_results",
 ]

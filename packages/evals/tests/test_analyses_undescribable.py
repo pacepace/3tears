@@ -60,7 +60,8 @@ async def test_the_action_reads_the_same_and_says_it() -> None:
     assert not outcome.is_error, outcome.text
     listing = UndescribableArmsListing.model_validate(outcome.structured)
     assert [line.analysis_id for line in listing.analyses] == [undescribable.id]
-    assert f"{undescribable.id} (campaign {fixture.campaign.id}): 1 of" in outcome.text
+    (line,) = [line for line in outcome.text.splitlines() if undescribable.id in line]
+    assert f"campaign_id={fixture.campaign.id}" in line and "undescribable_arms=1" in line
     assert REASON in outcome.text and described.id not in outcome.text
 
 

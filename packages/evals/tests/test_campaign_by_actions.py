@@ -253,7 +253,8 @@ async def test_judge_configs_list_names_the_configs_a_second_judge_can_map_a_dim
         other.id,
     }
     assert [line.id for line in JudgeConfigListing.model_validate(one_dim.structured).judge_configs] == [config.id]
-    assert f"{config.id}: strict accuracy — dimension toy.accuracy" in one_dim.text
+    (line,) = [line for line in one_dim.text.splitlines() if f"id={config.id};" in line]
+    assert "name=strict accuracy" in line and "rubric_dim_id=toy.accuracy" in line
     assert "judge_configs_list" in FIND_JUDGE_CONFIG and "run.list_judge_configs" not in FIND_JUDGE_CONFIG
 
 

@@ -67,14 +67,14 @@ class TestARunIsLabelledListedAndCleared:
             tools, fixture, {"action": "run_label", "run_id": run_id, "run_labels": [" production ", "baseline"]}
         )
         assert RunLine.model_validate(labelled.structured).labels == ["baseline", "production"]
-        assert labelled.text.endswith(", labels baseline, production")
+        assert "labels: [baseline, production]" in labelled.text.splitlines()
         assert off_loop(_stored, fixture, run_id).labels == ["baseline", "production"]
 
         listed = await _call(tools, fixture, {"action": "runs_list", "label": "baseline"})
         listing = RunListing.model_validate(listed.structured)
         assert [line.id for line in listing.runs] == [run_id]
         assert listing.label == "baseline"
-        assert "labelled baseline" in listed.text
+        assert "label: baseline" in listed.text.splitlines()
         everything = RunListing.model_validate((await _call(tools, fixture, {"action": "runs_list"})).structured)
         assert {run_id, other_id} <= {line.id for line in everything.runs}, "no label lists every run"
 

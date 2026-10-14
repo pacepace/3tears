@@ -211,9 +211,12 @@ async def test_an_agent_freezes_a_case_through_the_action_and_reads_its_receipt(
     receipt = FrozenReporterCase.model_validate(outcome.structured)
     (stored,) = off_loop(_stored_cases, fixture, _reporter_template().id)
     assert receipt.test_case_id == stored.id
-    assert outcome.text.startswith(f"reporter case {stored.id} of template {_reporter_template().id}")
-    assert f"bundle fingerprint {receipt.bundle_fingerprint}" in outcome.text
-    assert f"limits ({len(receipt.limits)})" in outcome.text
+    assert {
+        f"test_case_id: {stored.id}",
+        f"template_id: {_reporter_template().id}",
+        f"bundle_fingerprint: {receipt.bundle_fingerprint}",
+        f"limits: [{', '.join(receipt.limits)}]",
+    } <= set(outcome.text.splitlines()), "the receipt's text carries its facts"
 
 
 async def test_the_actions_refusals_teach() -> None:
@@ -348,7 +351,8 @@ async def test_an_agent_lists_retires_and_restores_through_the_actions() -> None
     assert [entry.case.test_case_id for entry in ReporterCaseListing.model_validate(listed.structured).cases] == [
         case_id
     ]
-    assert f"- {case_id}: live — campaign {fixture.campaign.id}" in listed.text
+    (line,) = [line for line in listed.text.splitlines() if case_id in line]
+    assert "live=True" in line and fixture.campaign.id in line
 
     retired = await tools["evals"].call(
         {"action": "reporter_case_archive", "reporter_case_id": case_id, "archive_reason": "orphaned"},
@@ -357,14 +361,15 @@ async def test_an_agent_lists_retires_and_restores_through_the_actions() -> None
     )
     assert not retired.is_error, retired.text
     assert FrozenReporterCase.model_validate(retired.structured).archived
-    assert "retired: orphaned — no launch runs it" in retired.text
+    assert {"archived: True", "archived_reason: orphaned"} <= set(retired.text.splitlines())
 
     listed = await tools["evals"].call(
         {"action": "reporter_cases_list", "template_id": _reporter_template().id, "include_archived": True},
         host=fixture.host,
         caller=CALLER,
     )
-    assert f"- {case_id}: retired: orphaned — campaign" in listed.text
+    (line,) = [line for line in listed.text.splitlines() if case_id in line]
+    assert "live=False" in line and '"archived": true' in line and '"archived_reason": "orphaned"' in line
 
 
 # =============================================================================
