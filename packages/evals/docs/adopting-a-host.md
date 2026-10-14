@@ -255,7 +255,8 @@ billed, so the price ceiling is one request's, but each refused send can take up
 
 **Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
-without the upstream figure is unpriced. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
+without the upstream figure is unpriced. A reply that carries no `is_byok` is unpriced too (`cost_usd` and
+`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
 for the matching `vendor/model` row, its `price_source` ending `;cache-approximate` when a prompt cache was read or
 written (the catalogue carries no cache rates). The `price_source` words are `PriceSource`'s (host contract, from
 `threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`

@@ -24,7 +24,8 @@ What a completion carries, member by member:
 * ``temperature`` and ``sent_settings`` are what the served request carried: the closest settings the model takes
   (:mod:`threetears.evals.negotiation` chooses them, reads a refusal and resends; nothing else is retried).
 * ``cost_usd``: on OpenRouter its own reported figure, and under bring-your-own-key that figure plus
-  ``cost_details.upstream_inference_cost`` (a BYOK reply without it is unpriced); on Anthropic and OpenAI, tokens
+  ``cost_details.upstream_inference_cost`` (a BYOK reply without it is unpriced, as is a reply carrying no
+  ``is_byok``); on Anthropic and OpenAI, tokens
   times OpenRouter's catalogue rates for the matching ``vendor/model`` row. ``price_source`` names which, in
   :class:`PriceSource`'s words (``openrouter:reported``, ``openrouter:reported+upstream``,
   ``openrouter-catalogue:<id>``). Unpriced is ``None`` with

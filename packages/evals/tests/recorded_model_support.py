@@ -38,7 +38,7 @@ def _scripted(model: str, answer: Callable[[str], str]) -> httpx.AsyncClient:
             "choices": [
                 {"index": 0, "message": {"role": "assistant", "content": answer(user)}, "finish_reason": "stop"}
             ],
-            "usage": {"prompt_tokens": 40, "completion_tokens": 12, "cost": CALL_COST_USD},
+            "usage": {"prompt_tokens": 40, "completion_tokens": 12, "cost": CALL_COST_USD, "is_byok": False},
         }
         return httpx.Response(200, json=reply)
 
