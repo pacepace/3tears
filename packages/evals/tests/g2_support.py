@@ -8,6 +8,11 @@ test setup — and no question was declared. The bundle is then assembled again 
 ``differential_exclusions``, ``scoreboard`` and ``trials`` are the assembler's own, each trial classified by
 ``trial_exclusion``. Its judge was new, with no human labels yet, as every judge on a first campaign is. Shared by
 the golden test and the vocabulary test.
+
+:func:`g2_ruled_report` is the later G2 run instead: its own numbers (production passed 10 of 12, the cheaper
+candidate 2 of 12, at 0.003092 and 0.003301 per reply), its arms named as the host names them
+(``deepseek-v4.1-flash (production)``), and its decision rule declared before the run. Shared by the decision-rule
+and presentation tests.
 """
 
 from __future__ import annotations
@@ -30,12 +35,26 @@ from threetears.evals.kernel.evidence_tiers import (
     JudgeEvidenceTier,
     TierCriterion,
 )
-from threetears.evals import Eval, Result
+from threetears.evals import Answer, Eval, Result
+from threetears.evals.kernel.declaration import Question
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.evals.schema import EvalResult, JudgeCutShort
 from packages.evals.tests.off_loop import off_loop
 
-__all__ = ["CASES", "JUDGE", "LOSSES", "g2_bundle", "g2_report"]
+__all__ = [
+    "CANDIDATE",
+    "CASES",
+    "G2_QUESTION",
+    "JUDGE",
+    "LOSSES",
+    "PRODUCTION",
+    "answering",
+    "declaring",
+    "g2_bundle",
+    "g2_numbers",
+    "g2_report",
+    "g2_ruled_report",
+]
 
 
 #: Four cases, each run three times on each arm.
@@ -132,3 +151,58 @@ async def g2_report() -> Report:
     comparison = await ev.run(store=":memory:", scope="quick")
     bundle = off_loop(g2_bundle, comparison)
     return build_code_only_report(bundle, assembled_at="2026-10-14T01:31:58+00:00", campaign_name=comparison.name)
+
+
+# --- the G2 numbers, replayed with arms named as a host names them, and its decision rule declared -------
+
+#: The G2 campaign's declared question, decision rule included, as its operator wrote it.
+G2_QUESTION = (
+    "On Kairo's queue-discipline regression set, does deepseek-v4-flash hold every pass/fail queue-discipline "
+    "dimension within 10 points of deepseek-v4.1-flash's pass rate, at lower cost per turn? Decision rule: switch "
+    "Kairo's model only if no dimension drops by more than 10 points AND the cost per turn is lower; otherwise keep "
+    "deepseek-v4.1-flash."
+)
+
+PRODUCTION = "deepseek-v4.1-flash (production)"
+CANDIDATE = "deepseek-v4-flash (cheaper candidate)"
+
+
+def answering(passes: int, cost: float) -> Any:
+    """A runner whose first ``passes`` calls answer right and the rest wrong, each costing ``cost``."""
+    calls = 0
+
+    async def run(case: Mapping[str, Any]) -> Answer:
+        nonlocal calls
+        calls += 1
+        label = case["label"] if calls <= passes else "skipped"
+        return Answer(label, model="deepseek", input_tokens=100, output_tokens=10, cost_usd=cost)
+
+    return run
+
+
+async def g2_numbers() -> Result:
+    arms = {PRODUCTION: answering(10, 0.003092), CANDIDATE: answering(2, 0.003301)}
+    return await Eval(CASES, arms, ["label"], k=3, name="Kairo queue discipline").run(store=":memory:")
+
+
+def declaring(bundle: AnalysisContextBundle, text: str) -> AnalysisContextBundle:
+    """The bundle with ``text`` declared before the run, as the campaign's one live question."""
+    design = bundle.declared_design
+    assert design is not None, "a quick comparison declares its design"
+    asked = Question(id="q-g2", text=text, asked_at="2026-10-14T00:00:00+00:00")
+    return bundle.model_copy(
+        update={
+            "declared_design": design.model_copy(update={"questions": [asked]}),
+            "reading_scope": bundle.reading_scope.model_copy(update={"questions_declared": True}),
+            "design_frozen_at": "2026-10-14T01:00:00+00:00",
+        }
+    )
+
+
+async def g2_ruled_report() -> tuple[Result, Report]:
+    """The G2 numbers through the quick path, with the G2 decision rule declared before the run."""
+    comparison = await g2_numbers()
+    bundle = declaring(comparison.report.bundle, G2_QUESTION)
+    return comparison, build_code_only_report(
+        bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name="G2: can the cheaper model replace production?"
+    )
