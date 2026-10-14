@@ -198,7 +198,7 @@
     },
     "threetears.evals.schema.ControlEndState": {
       "kind": "model",
-      "signature": "ControlEndState(describes: str, world: dict[str, dict[str, Any]] = dict(), calls: list[RecordedCall] = list(), variation: dict[str, Any] = dict(), fired: list[str] = list(), fired_armed: list[str] = list())",
+      "signature": "ControlEndState(describes: str, world: dict[str, dict[str, Any]] = dict(), calls: list[RecordedCall] = list(), refused: list[RefusedCall] = list(), variation: dict[str, Any] = dict(), fired: list[str] = list(), fired_armed: list[str] = list())",
       "tier": "closure"
     },
     "threetears.evals.schema.ConversationSpec": {

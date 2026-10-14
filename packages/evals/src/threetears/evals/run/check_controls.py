@@ -328,9 +328,8 @@ def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, wor
     """
     idle = do_nothing_end_state(template, world=world)
     named = {**idle.end_state, **_named(world, end_state.world)}
-    # A control states the calls its candidate made and none refused (``ControlEndState`` has no refusals to state),
-    # so its refusal record is empty rather than not kept.
-    ledger = CallLedger(refused=[])
+    # A control states its refusals as a ledger keeps them, so its refusal record is kept: empty when it states none.
+    ledger = CallLedger(refused=[refusal.model_copy(deep=True) for refusal in end_state.refused])
     for call in end_state.calls:
         ledger.record(call.tool, call.action, call.params)
     armed = idle.fired.armed | frozenset(end_state.fired_armed)
@@ -538,9 +537,9 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
     A control is evidence only if it is a state a run could leave: a key no dimension declares, a
     value its dimension's schema refuses, a fired dimension that is not a triggered one the host
     declares (:func:`~threetears.evals.kernel.dsl.undefined_fired_dimension`), a seed-armed firing
-    under a template whose seed arms no event at all, or a call to an
-    action the host does not define would let a check pass or fail its control for a reason no run
-    reproduces. Asked of the host's profile,
+    under a template whose seed arms no event at all, a call (or a refused call) to an
+    action the host does not define, or a refusal placed after more calls than the control states
+    would let a check pass or fail its control for a reason no run reproduces. Asked of the host's profile,
     as the world gate asks of a goal check. A key names its dimension through the host's addressing
     (:meth:`~threetears.evals.kernel.host.world.WorldRegistry.address`), as a seed key does. A host
     that declares no world refuses any world state a control states, since a goal check can only
@@ -607,6 +606,16 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
         for name, value in end_state.variation.items()
         if not isinstance(value, str)
     )
+    # A refused call is held to the action rule a call is, never to the action's parameter schema: what a tool
+    # refuses may well be parameters its schema does not admit. Its position must be one a run could record.
+    for refusal in end_state.refused:
+        if (undefined := undefined_action(refusal.tool, refusal.action, profile.tool_actions)) is not None:
+            defects.append(f"a refused call: {undefined}")
+        if refusal.position > len(end_state.calls):
+            defects.append(
+                f"it states {refusal.tool}.{refusal.action} refused at position {refusal.position}, after only "
+                f"{len(end_state.calls)} call(s) succeeded — a refusal falls among the calls the control states"
+            )
     for call in end_state.calls:
         if (undefined := undefined_action(call.tool, call.action, profile.tool_actions)) is not None:
             defects.append(undefined)
