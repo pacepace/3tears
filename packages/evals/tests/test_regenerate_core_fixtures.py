@@ -21,7 +21,7 @@ def test_a_corpus_a_tagged_tree_holds_is_refused_by_name() -> None:
 
     assert refusal is not None
     assert "v0.66.0-evaladopt.22 shipped" in refusal and "core_documents/v14/" in refusal
-    assert "v15/" in refusal and "CORE_SCHEMA_VERSION to 15" in refusal
+    assert "v15/" in refusal and "CORE_SCHEMA_VERSION and CORE_BASELINE_VERSION to 15" in refusal
 
 
 def test_a_release_that_shipped_no_corpus_lets_it_be_written() -> None:
