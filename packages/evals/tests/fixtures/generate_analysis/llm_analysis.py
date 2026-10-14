@@ -12,9 +12,10 @@ The writer's first draft is canned, not written: ``llm_analysis_first_draft.json
 A model's own first draft may well pass, and then there is no refusal to show. The model writes the repair, from the
 refusal and the bundle.
 
-Run it with ``python llm_analysis.py`` (``README.md`` beside it says how); it writes ``./eval-analysis/bundle.json``.
+It is the ``generate_analysis`` fixture, which ``tests/test_generate_analysis_fixture.py`` runs; from this
+directory, ``python llm_analysis.py`` runs it too, and writes ``./eval-analysis/bundle.json``.
 The campaign's two classifiers are keyword rules, so the campaign always runs offline and free. With
-``ANTHROPIC_API_KEY`` set, Claude writes the repair, one call for under a cent. Without it, the example replays
+``ANTHROPIC_API_KEY`` set, Claude writes the repair, one call for under a cent. Without it, it replays
 ``recordings/llm_analysis.jsonl``, what Claude wrote when the run was recorded, and calls nothing. A recording
 answers only the prompt it was made for, and the prompt is the bundle, which names this run's ids and times: so a
 replay hands the writer the bundle the recording was made from, ``recordings/llm_analysis.bundle.json``, not this

@@ -2,7 +2,7 @@
 
 The ladder comes first: one directory per rung, each in its own domain and recorded on cheap models through
 OpenRouter, so every rung runs offline and free from the recordings beside it. Climb it in order; each rung adds one
-idea to the one before. The single-file examples after it come from before the ladder, and rungs 3 and 4 fold them in.
+idea to the one before.
 
 ## The ladder
 
@@ -11,8 +11,8 @@ idea to the one before. The single-file examples after it come from before the l
 | 0 | [`1-triage/triage.toml`](1-triage/triage.toml), after [Building an inventory](../docs/building-an-inventory.md) | Write down what your app must never get wrong, then run it with one TOML file. |
 | 1 | [`1-triage/triage.py`](1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
 | 2 | [`2-replies/replies.py`](2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
-| 3 | `3-invoices/` (being written) | |
-| 4 | `4-booking/` (being written) | |
+| 3 | [`3-invoices/extract.py`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer. |
+| 4 | [`4-booking/agent.py`](4-booking/agent.py), then [`serve.py`](4-booking/serve.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals to the team. |
 
 Each rung runs from inside its own directory, so the paths it names are read beside it; the store
 (`.evals/evals.sqlite`) and the report (`.evals/reports/<name>/report.html`) are written under the directory you run
@@ -23,6 +23,8 @@ cd packages/evals/examples/1-triage
 uv run python -m threetears.evals triage.toml   # rung 0
 uv run python -m threetears.evals triage.py     # rung 1
 cd ../2-replies && uv run python -m threetears.evals replies.py   # rung 2
+cd ../3-invoices && uv run python extract.py                      # rung 3
+cd ../4-booking && uv run python -m threetears.evals agent.py     # rung 4
 ```
 
 A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
@@ -87,42 +89,33 @@ Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 120 judge
 `google/gemini-2.5-flash-lite` ($0.0151), the runner's and the judge's in recordings of their own
 (`recordings/replies.jsonl`, `recordings/judge.jsonl`).
 
+### Rung 3: two prompts compared, `3-invoices/`
+
+[`extract.py`](3-invoices/extract.py) reads 30 invoices ([`invoices.jsonl`](3-invoices/invoices.jsonl)) in three
+strata (clean, multi-currency, noisy OCR) with two prompts, as `runner={"v1": model.prompt(V1, Invoice), "v2": ...}`;
+the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict. A field
+grader per field, `grader(margin=0.05)` on `total` for equivalence, and `@grader(guard=0.02) no_invented_total`, a
+guardrail decided apart from the rest. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
+fails the run in CI on a regression or a guardrail not shown held. Its closing comment names arms as `k=v` pairs for a
+grid of factors, read against another control with `result.against()`.
+
+Recorded on `deepseek/deepseek-v4-flash`: 180 calls, $0.0103 (`recordings/invoices.jsonl`).
+
+### Rung 4: an agent graded on the world it leaves, `4-booking/`
+
+[`agent.py`](4-booking/agent.py) books meetings: each request ([`requests.jsonl`](4-booking/requests.jsonl)) seeds one
+day's calendar, `World(Day, tools=[find_free, book])` hands the agent two tools in a JSON tool loop over
+`model.json`, and the graders are goal checks on the day it left, beside the did-nothing control that only the first
+check beats. [`serve.py`](4-booking/serve.py) serves the eval's runs to the team: `as_host`, an MCP server
+(`mount_fastmcp`, the `[fastmcp]` extra; [Driving it from an agent](../docs/agents-and-mcp.md)) and
+[the command line](../docs/command-line.md) (`python -m threetears.evals ls --host serve:host --scope booking`).
+
+Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.jsonl`).
+
 ## Running them
 
-The single-file examples below the ladder that call a model run **live by default**: with `ANTHROPIC_API_KEY` set
-they call Claude (`claude-haiku-5-5`, the only model they use) through the package's own completion client,
-[`threetears.evals.providers`](../src/threetears/evals/providers/__init__.py). Without a key they replay
-`recordings/<example>.jsonl`, what Claude answered when the run was last recorded, so they call nothing and cost
-nothing, and their output is a real model's, as of that recording. There is no scripted stand-in for a model
-anywhere in them. Each prints which way it ran, first:
-
-- `Running live against Claude (<model>).` means it is calling the API (`..., recording it into recordings/...`
-  when `RECORD=1` is set too).
-- `ANTHROPIC_API_KEY is not set: replaying recordings/<example>.jsonl, Claude (<model>) as recorded on <date>.`
-  means no model is called: every answer is the recorded one. A prompt the recording does not hold is refused by
-  name with the command that records it again, never sent live.
-- `No model is called: ...` means the example never calls one, live or not (`cassettes.py`, `reports.py`).
-
-The examples need nothing beyond the base install: the client speaks Anthropic's API over `httpx`, which the
-package depends on.
-
-**In a checkout of this repo**, from the repo root, after `uv sync`:
-
-```bash
-uv run python packages/evals/examples/compare_two_prompts.py
-```
-
-To run live, put an Anthropic API key in `packages/evals/examples/.env`:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-Git ignores `.env` files, so the key stays out of commits. Then pass the file to `uv run`:
-
-```bash
-uv run --env-file packages/evals/examples/.env python packages/evals/examples/compare_two_prompts.py
-```
+Every rung replays the recordings beside it when it runs with no key, so it calls nothing and costs nothing, and its
+output is a real model's, as of that recording. There is no scripted stand-in for a model anywhere in them.
 
 **Outside a checkout** (once 0.68.0 is on PyPI and you installed `3tears-evals` with pip): the examples are
 not part of the installed package, so fetch this whole directory from the repository, at the tag you installed (the
@@ -133,17 +126,9 @@ git clone --depth 1 --branch <tag> --filter=blob:none --sparse https://github.co
 cd 3tears && git sparse-checkout set packages/evals/examples && cd packages/evals/examples
 ```
 
-Keep all of it together: the examples replay `recordings/` and read `tickets.jsonl` and
-`llm_analysis_first_draft.json` from beside themselves. Then, from inside it, `cd 1-triage && python -m
-threetears.evals triage.py`, or with `export ANTHROPIC_API_KEY=sk-ant-...` first, any single-file example live.
-
-**How an example builds its client.** Each model-calling example has the same few lines, so read any one: with the
-key, `Model("claude-haiku-5-5", api_key=..., provider="anthropic", max_tokens=..., effort=...)` from
-`threetears.evals.providers`, built from the `ClientRequestSettings` the example declares (`SETTINGS`, or one
-per arm); without it, `RecordedCompletions.replay(recording, settings=...)` from
-`threetears.evals.testing`, given the same settings, since a recording serves only a client built the way it was.
-No temperature is sent: `claude-haiku-5-5` takes none, so the model's own sampling applies. The candidates ask for
-`low` effort; `compare_two_efforts.py` and `prompt_x_effort.py` compare `low` with `medium`.
+Keep each rung's directory together: a rung reads its cases and replays its `recordings/` from beside itself. Then,
+from inside it, `cd 1-triage && python -m threetears.evals triage.py`, or with `export OPENROUTER_API_KEY=...` and
+`RECORD=1` first, any rung live.
 
 **Your own client.** A client of your own, for another provider or a gateway, is anything with an async
 `generate(*, system, user, response_format=None)` that returns an object carrying ten attributes: `content`,
@@ -156,65 +141,32 @@ missing and a `stop_reason` the engine does not know (`end_turn`, `max_tokens`, 
 a provider that reported a failure in place of a completion. When to keep your own rather than the shipped client:
 [Adopting the engine](../docs/adopting-a-host.md#bringing-a-provider).
 
-Live runs call `claude-haiku-5-5` over 5 to 14 cases (50 for `guardrails.py`), so each costs cents. Each file's
-docstring gives its call count and rough live cost. A replayed run reports the dollars each call cost when it was
-recorded. `reports.py` and `llm_analysis.py` write their files under the directory you run from (`./eval-report/`
-and `./eval-analysis/`).
-
 ## Recording
 
-A recording is made once, live, with the key set, and replaces the example's file in `recordings/`
+A recording is made once, live, with `OPENROUTER_API_KEY` set, and replaces the rung's file in its `recordings/`
 (`RECORD=1` records afresh; it never appends to an old recording). From this directory:
 
 ```bash
-RECORD=1 python compare_two_prompts.py  # recordings/compare_two_prompts.jsonl
-RECORD=1 python compare_two_efforts.py  # recordings/compare_two_efforts.jsonl
-RECORD=1 python prompt_x_effort.py      # recordings/prompt_x_effort.jsonl
-RECORD=1 python world.py                # recordings/world.jsonl
-RECORD=1 python llm_analysis.py         # recordings/llm_analysis.jsonl and recordings/llm_analysis.bundle.json
-RECORD=1 python guardrails.py           # recordings/guardrails.jsonl
+(cd 1-triage && RECORD=1 python -m threetears.evals triage.toml)  # 1-triage/recordings/triage-toml.jsonl
+(cd 1-triage && RECORD=1 python -m threetears.evals triage.py)    # 1-triage/recordings/triage.jsonl
+(cd 2-replies && RECORD=1 python -m threetears.evals replies.py)  # 2-replies/recordings/replies.jsonl and judge.jsonl
+(cd 3-invoices && RECORD=1 python extract.py)                     # 3-invoices/recordings/invoices.jsonl
+(cd 4-booking && RECORD=1 python -m threetears.evals agent.py)    # 4-booking/recordings/agent.jsonl
 ```
 
-Every single-file example, in a checkout, from the repo root:
+`RECORD=1` with no key is refused: a recording is of a live run. Record again whenever a rung's prompt, cases or
+request settings change: the rung's test checks the recording still covers every prompt the rung sends before it
+replays, and names each one that changed.
 
-```bash
-cd packages/evals/examples && for example in compare_two_prompts compare_two_efforts prompt_x_effort world \
-  llm_analysis guardrails; do RECORD=1 uv run --env-file .env python "$example.py" || break; done
-```
-
-`RECORD=1` with no key is refused: a recording is of a live run. Record again whenever an example's prompt, cases or
-request settings change: the example's test (`tests/test_<example>_example.py`) checks the recording still covers
-every prompt the example sends before it replays, and names each one that changed. `llm_analysis.py` also keeps the
-bundle its recording was made from: a recording answers only the prompt it was made for, the bundle is the prompt,
-and a fresh campaign mints fresh run ids and times, so a replay hands the writer the recorded bundle.
-
-Every example that grades ends by reading what it measured, not only the rate: `summary.misses()` (each miss and
-why), or, in a comparison, where the arms disagree (`comparison.results(arm)`). Read them before you trust the
-numbers. `cassettes.py`, `reports.py` and `llm_analysis.py` grade nothing new: they show what to do with a run.
-
-## The single-file examples
-
-| # | File | The question it answers | What's new |
-|---|---|---|---|
-| 2 | [`compare_two_prompts.py`](compare_two_prompts.py) | What does the new prompt change, and is the difference real or noise? | a mapping of runners: arms, the first the control, delta, its interval, a verdict; each arm per kind of case (each case's `stratum`, `comparison.strata()`); the cases kept as a file, [`tickets.jsonl`](tickets.jsonl), that every prompt version runs against |
-| 3 | [`compare_two_efforts.py`](compare_two_efforts.py) | Is less effort good enough for this prompt, given what it saves? Two arms that differ in one setting, `low` against `medium` reasoning effort | `Answer` (each arm's spend), `grader("label", margin=...)`: only `equivalent` says "good enough"; typed verdicts |
-| 4 | [`prompt_x_effort.py`](prompt_x_effort.py) | What does changing the prompt do at each effort? | arms named by `k=v` factors, and `Result.against` for a second control |
-| 5 | [`cassettes.py`](cassettes.py) | How do I compare candidates fairly when the tool they call answers differently every time? | `World(tools=[...], recording=...)`: recording and replaying tool results |
-| 6 | [`world.py`](world.py) | Does the model turn the light on when the room is dark? | `World(State, tools=[...])`, each case's `world`, goal checks as graders: grade what the model did to a world |
-| 7 | [`reports.py`](reports.py) | How do I turn a finished campaign into files people read? | `Result.write`, `Result.gate` |
-| 8 | [`llm_analysis.py`](llm_analysis.py) | Can a model write the analysis from a frozen copy of the evidence? | `generate_analysis` over a fingerprinted bundle; a canned first draft the check refuses, and the model's repair |
-| 9 | [`guardrails.py`](guardrails.py) | The new prompt answers more questions. Does it still keep the customer's card private? | `grader(..., guard=...)`: a guardrail with its margin, held / breached / undecided per arm, apart from the contrasts |
-
-The [tutorial](../docs/tutorial.md) covers what ladder rungs 1 and 2 teach, `compare_two_prompts.py`,
-`compare_two_efforts.py` and `guardrails.py` (in its own order, the judge after the comparison), and keeping your runs
-in a file. The other examples are here alone.
+The [tutorial](../docs/tutorial.md) covers what rungs 1 to 3 teach (in its own order, the judge after the
+comparison), and keeping your runs in a file.
 
 ## Not covered by an example yet
 
 These are documented in the guides:
 
 - Judge reliability and evidence tiers: [Reading reports](../docs/reading-reports.md). Results by kind of case
-  (strata) are read in [`compare_two_prompts.py`](compare_two_prompts.py), and explained in
+  (strata) are read in [`3-invoices/`](3-invoices/extract.py), and explained in
   [Reading reports](../docs/reading-reports.md#results-by-kind-of-case-strata).
 - Declaring a campaign's design (axes, question, bar), and when exploring without one is the right call:
   [Choosing a design](../docs/choosing-a-design.md).
@@ -223,5 +175,3 @@ These are documented in the guides:
   [Adopting the engine](../docs/adopting-a-host.md).
 - How a bar is decided: [Reading reports](../docs/reading-reports.md#methods) and
   [Measuring soundly](../docs/measuring-soundly.md#variance-k-and-how-many-cases).
-- The command line: [The command line](../docs/command-line.md).
-- Driving evals from an agent over MCP: [Driving it from an agent](../docs/agents-and-mcp.md).
