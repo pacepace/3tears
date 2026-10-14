@@ -1,10 +1,11 @@
 """The guides' code blocks run as their pages say: in order, in one async context, each page in a namespace of its own.
 
-A guide past the tutorial is a page of fenced blocks that use top-level ``await`` and lean on the names the blocks
+A guide past the ladder is a page of fenced blocks that use top-level ``await`` and lean on the names the blocks
 above them defined, and each page says so at its top. A reader runs them in ``python -m asyncio`` or inside
 ``async def main()``, which puts every block on a running event loop. That is where a synchronous store call is
 refused (``StoreCalledOnEventLoop``), so a block that makes one bare raises for the reader exactly as it raises
-here. The tutorial, a file a reader builds step by step, is held by ``test_quick_store.py`` instead.
+here. The ladder runs nothing of its own: each of its blocks is a verbatim excerpt of an example, which the rung's
+own test runs, so the page is held to the files it quotes.
 
 Each block is compiled as a reader's REPL compiles it (``PyCF_ALLOW_TOP_LEVEL_AWAIT``) and awaited on the test's own
 loop. A block the page presents as a fragment, or one that needs more than the page builds, is named below with
@@ -31,6 +32,9 @@ import pytest
 
 #: The guides directory.
 DOCS = Path(__file__).resolve().parents[1] / "docs"
+
+#: The examples the ladder quotes.
+EXAMPLES = DOCS.parent / "examples"
 
 #: A fenced Python block on a page.
 _BLOCK = re.compile(r"```python\n(.*?)```", re.S)
@@ -72,6 +76,24 @@ async def run_in_order(blocks: list[str], namespace: dict[str, Any], *, page: st
 
 def printed_lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
     return capsys.readouterr().out.splitlines()
+
+
+def _quotes(block: str, source: str) -> bool:
+    """Whether ``block`` is a run of whole, consecutive lines of ``source``."""
+    quoted, lines = block.splitlines(), source.splitlines()
+    return any(lines[start : start + len(quoted)] == quoted for start in range(len(lines) - len(quoted) + 1))
+
+
+def test_every_ladder_block_is_a_verbatim_excerpt_of_an_example() -> None:
+    """``ladder.md`` walks the four examples by quoting them, so an edited example cannot leave the page behind."""
+    sources = {path: path.read_text(encoding="utf-8") for path in sorted(EXAMPLES.glob("*/*.py"))}
+    blocks = page_blocks("ladder.md")
+    assert len(blocks) >= 4, "the ladder quotes at least one block per rung"
+    for block in blocks:
+        holding = [path.relative_to(EXAMPLES).as_posix() for path, text in sources.items() if _quotes(block, text)]
+        assert holding, f"this ladder block is in no example, line for line:\n{block}"
+    quoted = {path.parent.name for path, text in sources.items() for block in blocks if _quotes(block, text)}
+    assert quoted == {"1-triage", "2-replies", "3-invoices", "4-booking"}, f"rungs quoted: {sorted(quoted)}"
 
 
 async def test_evaluating_agents_runs_top_to_bottom(capsys: pytest.CaptureFixture[str]) -> None:

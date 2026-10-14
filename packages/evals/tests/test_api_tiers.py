@@ -40,6 +40,7 @@ HOST_GUIDES: tuple[Path, ...] = (
     PACKAGE / "README.md",
     PACKAGE / "docs" / "adopting-a-host.md",
     PACKAGE / "docs" / "tutorial.md",
+    PACKAGE / "docs" / "ladder.md",
     *sorted(p for p in (PACKAGE / "examples").rglob("*") if p.suffix in (".py", ".md")),
 )
 
