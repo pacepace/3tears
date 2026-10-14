@@ -39,7 +39,7 @@ A model grading on a rubric, the examples it must grade a known way, and the rep
 
 Two or more arms as a campaign, its bundle, report and frontier, the classifier measures, and the gate a pipeline fails on.
 
-- `schema`: `EvalCaseStratum`, `LatencyMetrics`, `omit_paths`
+- `schema`: `EvalCaseStratum`, `LatencyMetrics`
 - `kernel`: `BarOverride`, `CampaignDesign`, `confusion_cell`, `CONFUSION_CELL_MEASURE`, `ControlDeclaration`, `EvalAnalysis`, `EvalInsight`, `MATCH_MEASURE`, `Question`, `resolve_variant_identity`, `SweptAxis`
 - `run`: `get_result_trace`, `get_run`, `list_results`, `list_runs`
 - `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateOutcome`, `GateResult`, `GateToken`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`, `variant_key_of_run`
@@ -51,7 +51,7 @@ An agent acting on declared state, an app's own logged outputs, the host a produ
 
 - `threetears.evals`: `Log`, `World`
 - `schema`: `BoundCompletionClient`, `CallLedger`, `CellIdentity`, `CellTrace`, `ControlEndState`, `GoalCheckControl`, `GoalCheckControls`, `GoalStateOutcome`, `JudgeEvidence`, `Precondition`, `RecordedCall`, `WorldPlacement`
-- `kernel`: `DEFAULT_JOB_LEASE_S`, `MeasureFamily`
+- `kernel`: `MeasureFamily`
 - `kernel.host`: `ActsOn`, `ApparatusError`, `CANDIDATE_MODEL_LEVER`, `check_world_conformance`, `Interval`, `Ordinal`, `RolePins`, `StyleProfile`, `Triggered`, `WorldConformanceError`, `WorldConformanceReport`
 - `run`: `ArmPlan`, `ArmPrice`, `ArmQuote`, `CellExecutor`, `create_template`, `FidelityContract`, `GoalCheckUnevaluable`, `grade_goal_checks`, `require_candidate_model`
 - `quick`: `as_host`, `WorldOutcome`, `WorldRunner`
@@ -63,7 +63,7 @@ An agent acting on declared state, an app's own logged outputs, the host a produ
 
 What a host writes against beyond the rungs: the host and profile, registries, the kind seam, launching, stored documents, the store port and its kits, refusals, versions, vocabularies and negotiation.
 
-- `threetears.evals`: `__version__`, `PUBLIC_ROOTS`, `ROOT_EXTRAS`, `RootExtra`
+- `threetears.evals`: `__version__`, `declared_names`, `PUBLIC_ROOTS`, `ROOT_EXTRAS`, `RootExtra`, `surface_tier`
 - `schema`: `AsyncDocumentStore`, `AsyncStoreClock`, `CASSETTE_SCHEMA_VERSION`, `CELL_TIMEOUT_ORIGINS`, `ClientRequestSettings`, `CompletionClient`, `CompletionProtocolDefect`, `CompletionResult`, `CORE_BASELINE_VERSION`, `CORE_SCHEMA_MINOR`, `CORE_SCHEMA_VERSION`, `COST_CAP_ORIGINS`, `DocumentStore`, `DURABLE_BASELINE_VERSION`, `DURABLE_SCHEMA_MINOR`, `DURABLE_SCHEMA_VERSION`, `EvalResult`, `EvalRun`, `EvalTemplate`, `EvalTestCase`, `EvalTrace`, `IntervalScale`, `JudgedArtifact`, `KnownCellTimeoutOrigin`, `KnownCostCapOrigin`, `KnownMeteredCallOrigin`, `KnownModelRoleOrigin`, `KnownOutOfRunPurpose`, `KnownReasoningEffort`, `KnownRefusalKind`, `KnownRoleModelOrigin`, `KnownSimulatorPurpose`, `KnownUsageRole`, `METERED_CALL_ORIGINS`, `MODEL_ROLE_ORIGINS`, `OUT_OF_RUN_PURPOSES`, `ProviderFailureDescriber`, `REASONING_EFFORTS`, `REFUSAL_KINDS`, `RefusalKind`, `REGENERABLE_SCHEMA_VERSION`, `ROLE_MODEL_ORIGINS`, `RoleUsage`, `sent_settings_of`, `SIMULATOR_PURPOSES`, `StopReason`, `StoreClock`, `StoreConflict`, `SubjectSnapshot`, `SweepableValue`, `TraceSink`, `USAGE_ROLES`, `WorldSeed`
 - `kernel`: `AdmissionRefusedError`, `CandidateKind`, `CandidateKindDefect`, `CandidateOutput`, `CandidatePreparationFailed`, `CandidateTelemetry`, `CellCassettes`, `CellSink`, `CellSpanWindow`, `ConflictError`, `default_job_timeout`, `EvalCampaign`, `EvalServiceError`, `EvalStorage`, `IDENTITY_VERSION`, `MetricDescriptor`, `NotFoundError`, `ProviderRefusedError`, `StorageError`, `UnreadableRunError`, `ValidationFailedError`, `VariantConfig`, `withhold_failure_detail`, `WorldSession`
 - `kernel.host`: `Bar`, `BarRegistry`, `CompletionClients`, `CompletionRole`, `default_cell_timeout`, `EvalHost`, `HostProfile`, `KindContract`, `load_bar_registry`, `MeasureRegistry`, `PassThreshold`, `SeedRefused`, `SHARED_CORE`, `Sweepable`, `SweepableRegistry`, `WorldDimension`, `WorldRegistry`

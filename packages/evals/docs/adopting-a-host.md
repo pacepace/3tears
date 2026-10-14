@@ -42,7 +42,9 @@ nothing but the public roots and itself:
    product supplies, in the order it is written. Start here.
 2. **[`tests/fixtures/toyhost/README.md`](../tests/fixtures/toyhost/README.md)** — a host that exercises
    every shape of the host contract (invoice field extraction), with a map of which file holds which step.
-   Read it once you have the courier host's outline and want to see a particular piece in full.
+   Read it once you have the courier host's outline and want to see a particular piece in full. It exercises the
+   engine past the declared surface, so a few of its imports are `provisional` (a variant's identity, a lease's
+   default); the courier host imports declared names only.
 
 Both run on `InMemoryDocumentStore` (`threetears.evals.storage`), the engine's in-memory reference
 `DocumentStore`: scoped, with conditional writes, and the shape to compare your own adapter against. Its
@@ -854,7 +856,7 @@ release, on:
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
   old name, recorded as any removal is.
-- **`stable`** is the rest of the declared surface: what a topic guide, the agent and MCP guides or an example host
+- **`stable`** is the rest of the declared surface: what a topic guide, the agent and MCP guides or the courier host
   imports, the quick path's whole root, and what the one production host binds beyond the contract. Such a name may
   move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
 - **`provisional`** is every other name a root exports, most of them because a declared signature reaches them (a
@@ -868,6 +870,17 @@ signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_s
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
 and marks each host-contract one *host contract*. If your host binds to a provisional name, ask for it to be
 promoted: promoting a name costs nothing, and demoting one is a break.
+
+**The installed build ships its tiers**, so your suite can gate its own imports against the version it runs
+(`surface_tier` raises `KeyError` for a name no root exports, so a reach below a root fails too):
+
+```python
+from threetears.evals import surface_tier
+
+def test_we_bind_only_declared_names() -> None:
+    ours = ["threetears.evals.kernel.host.EvalHost", "threetears.evals.run.start_run"]  # every name we import
+    assert [name for name in ours if surface_tier(name) == "provisional"] == []
+```
 
 ## Upgrading: names that move
 

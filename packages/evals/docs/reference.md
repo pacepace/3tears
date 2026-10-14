@@ -42,8 +42,12 @@ The eval engine: templates, cases, runs and results; the trial loop, its judge a
 
 **Functions**
 
+- **`declared_names`** · *host contract* · function · Every declared public name of the installed build (`host-contract` and `stable`), by `root.name`.
+  <br>`declared_names() -> frozenset[str]`
 - **`grader`** · *host contract* · function · Declare what a reading needs beside its grade: `@grader(guard=0.02)`, `grader("total", margin=0.05)`.
   <br>`grader(target: Callable[[Mapping[str, Any], Any], float | bool] | str | None = None, /, *, margin: float | None = None, guard: float | None = None, range: tuple[float, float] | None = None) -> Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]`
+- **`surface_tier`** · *host contract* · function · A public name's stability tier in the installed build, by `root.name`.
+  <br>`surface_tier(qualified_name: str) -> Literal['host-contract', 'stable', 'provisional']`
 
 **Classes**
 
@@ -74,8 +78,6 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
 - **`nested_schemas`** · function · Every schema written directly inside `schema`, in declaration order.
   <br>`nested_schemas(schema: Mapping[str, Any]) -> Iterator[NestedSchema]`
-- **`omit_paths`** · function · Return `document` without each dotted path in `paths` — the meaning of `exclude`.
-  <br>`omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]`
 - **`sent_settings_of`** · *host contract* · function · What the request that produced `completion` actually carried, as its client reports it, or `None`.
   <br>`sent_settings_of(completion: object) -> ClientRequestSettings | None`
 
@@ -302,8 +304,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 - **`CONFUSION_CELL_MEASURE`** · constant (str) · The core measure a classification's confusion-matrix cell is reported under.
   <br>`= 'confusion_cell'`
-- **`DEFAULT_JOB_LEASE_S`** · constant (float) · How long a lease lasts unless renewed, in seconds: the engine's default.
-  <br>`= 60.0`
 - **`FIND_TEMPLATE`** · constant (str) · How a caller finds a template's id.
   <br>`= "templates_list names this scope's templates"`
 - **`IDENTITY_VERSION`** · *host contract* · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.

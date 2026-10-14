@@ -11,6 +11,11 @@
       "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None, served_model: str | None = None)",
       "tier": "host-contract"
     },
+    "threetears.evals.declared_names": {
+      "kind": "function",
+      "signature": "declared_names() -> frozenset[str]",
+      "tier": "host-contract"
+    },
     "threetears.evals.Eval": {
       "kind": "class",
       "signature": "Eval(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str], runner: Any, grader: Any, *, k: int = 3, name: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> None",
@@ -59,6 +64,11 @@
     "threetears.evals.RootExtra": {
       "kind": "dataclass",
       "signature": "RootExtra(extra: str, modules: tuple[str, ...])",
+      "tier": "host-contract"
+    },
+    "threetears.evals.surface_tier": {
+      "kind": "function",
+      "signature": "surface_tier(qualified_name: str) -> Literal['host-contract', 'stable', 'provisional']",
       "tier": "host-contract"
     },
     "threetears.evals.World": {
@@ -773,8 +783,8 @@
     },
     "threetears.evals.schema.omit_paths": {
       "kind": "function",
-      "signature": "omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.OrdinalScale": {
       "kind": "model",
@@ -1609,7 +1619,7 @@
     "threetears.evals.kernel.DEFAULT_JOB_LEASE_S": {
       "kind": "constant (float)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.kernel.default_job_timeout": {
       "kind": "function",

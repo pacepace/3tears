@@ -19,8 +19,9 @@ import threetears.evals
 #: The quick path's names at the package root, the ladder a newcomer climbs.
 LADDER = ("Answer", "Eval", "Example", "Judge", "Log", "Model", "Result", "World", "grader")
 
-#: The names the root held before the ladder: the package's own metadata, not rungs of it.
-PACKAGE_METADATA = ("PUBLIC_ROOTS", "ROOT_EXTRAS", "RootExtra", "__version__")
+#: The names the root holds beside the ladder: the package's own metadata (its roots, extras, version and tiers), not
+#: rungs of it.
+PACKAGE_METADATA = ("PUBLIC_ROOTS", "ROOT_EXTRAS", "RootExtra", "__version__", "declared_names", "surface_tier")
 
 _PROBE = """\
 import sys
