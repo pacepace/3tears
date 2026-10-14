@@ -13,10 +13,10 @@ call, not a person.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, date, datetime, time, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-__all__ = ["render_local_time", "resolve_zone"]
+__all__ = ["parse_date_bound", "render_local_time", "resolve_zone"]
 
 
 def resolve_zone(tz: tzinfo | str | None) -> tzinfo | None:
@@ -62,3 +62,38 @@ def render_local_time(value: datetime, tz: tzinfo | str | None = None) -> str:
     half = "AM" if local.hour < 12 else "PM"
     name = local.tzname() or local.strftime("%z")
     return f"{local:%b} {local.day}, {local.year} at {hour}:{local.minute:02d} {half} {name}"
+
+
+def parse_date_bound(label: str, raw: str | None, zone: tzinfo | None) -> tuple[datetime | None, str | None]:
+    """Read a date filter. A date alone is the whole day in the reader's zone; a time with no zone is in it too.
+
+    ``date_before`` given as a bare date runs to the end of that day, so the day
+    named is included. With no zone named the day is UTC's.
+
+    :param label: ``date_after`` or ``date_before``
+    :ptype label: str
+    :param raw: what the caller passed
+    :ptype raw: str | None
+    :param zone: the reader's zone, when the caller named one
+    :ptype zone: tzinfo | None
+    :return: the moment, or an error to show
+    :rtype: tuple[datetime | None, str | None]
+    """
+    if not raw or not raw.strip():
+        return None, None
+    text = raw.strip()
+    home = zone or UTC
+    try:
+        day = date.fromisoformat(text) if len(text) <= 10 else None
+    except ValueError:
+        day = None
+    if day is not None:
+        edge = time.max if label == "date_before" else time.min
+        return datetime.combine(day, edge, tzinfo=home), None
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None, f"Invalid {label} '{raw}'. Use ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)."
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=home)
+    return value, None

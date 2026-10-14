@@ -296,6 +296,21 @@ the lines marked Changed.**
 
 No migration: no column is added.
 
+### Tools: a date filter's day is public, and a fence a cut left open can be closed
+
+- **Added, `threetears.core.utils.parse_date_bound(label, raw, zone)`** (also in
+  `threetears.core.utils.local_time`): reads a `date_after` / `date_before` filter. A date alone is
+  the whole day in the reader's zone, so a bare `date_before` runs to the end of the day it names; a
+  time with no zone is in the reader's zone; with no zone the day is UTC's. Returns the moment, or
+  the error to show. It is the function the memory tools already used, moved out of
+  `threetears.agent.memory.tools` (where it was the private `_parse_bound`) so a consumer's own tools
+  read a date the same way. No behaviour change in the memory tools.
+- **Added, `threetears.langgraph.fence.closed_fences(text)`:** closes every fence `text` opens and
+  does not close. A result that fences parts of itself can be cut afterwards, to a window or a head;
+  a cut inside a fence takes its closing tag, and everything after it in the prompt then reads as
+  inside. Whoever shows such text after a cut passes it through here. Text whose fences are closed,
+  or that has none, comes back unchanged.
+
 ### Wake and scheduled jobs: a fire whose dispatcher is known to be gone is reaped by name
 
 A fire left `'dispatching'` by a process that died is reaped by age (15 minutes by default), because

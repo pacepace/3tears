@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from threetears.core.utils import render_local_time, resolve_zone
+from threetears.core.utils import parse_date_bound, render_local_time, resolve_zone
 
 _LA = "America/Los_Angeles"
 
@@ -55,3 +55,36 @@ class TestTheZoneACallerNames:
             resolve_zone(name)
         with pytest.raises(ValueError, match="is not a time zone this system knows"):
             render_local_time(datetime(2026, 6, 1, tzinfo=UTC), name)
+
+
+class TestADateFilterIsTheReadersDay:
+    def test_a_bare_date_before_runs_to_the_end_of_that_day_in_the_readers_zone(self) -> None:
+        moment, error = parse_date_bound("date_before", "2026-10-09", ZoneInfo(_LA))
+        assert error is None
+        assert moment == datetime(2026, 10, 9, 23, 59, 59, 999999, tzinfo=ZoneInfo(_LA))
+        # an evening on the Pacific coast is the next day in UTC, and is still inside the day asked for
+        assert datetime(2026, 10, 10, 4, 11, tzinfo=UTC) <= moment
+
+    def test_a_bare_date_after_starts_at_the_days_first_minute(self) -> None:
+        moment, error = parse_date_bound("date_after", "2026-10-09", ZoneInfo(_LA))
+        assert (moment, error) == (datetime(2026, 10, 9, 0, 0, tzinfo=ZoneInfo(_LA)), None)
+
+    def test_a_time_with_no_zone_is_in_the_readers_zone_and_is_not_moved_to_the_days_end(self) -> None:
+        moment, _ = parse_date_bound("date_before", "2026-10-09T08:30:00", ZoneInfo(_LA))
+        assert moment == datetime(2026, 10, 9, 8, 30, tzinfo=ZoneInfo(_LA))
+
+    def test_a_time_that_names_its_zone_keeps_it(self) -> None:
+        moment, _ = parse_date_bound("date_before", "2026-10-09T08:30:00+00:00", ZoneInfo(_LA))
+        assert moment == datetime(2026, 10, 9, 8, 30, tzinfo=UTC)
+
+    def test_with_no_zone_the_day_is_utcs(self) -> None:
+        moment, _ = parse_date_bound("date_before", "2026-10-09", None)
+        assert moment == datetime(2026, 10, 9, 23, 59, 59, 999999, tzinfo=UTC)
+
+    @pytest.mark.parametrize("blank", [None, "", "   "])
+    def test_nothing_given_is_no_bound(self, blank: str | None) -> None:
+        assert parse_date_bound("date_after", blank, None) == (None, None)
+
+    def test_what_is_not_a_date_is_said(self) -> None:
+        moment, error = parse_date_bound("date_before", "next tuesday", None)
+        assert moment is None and error is not None and "date_before" in error and "next tuesday" in error

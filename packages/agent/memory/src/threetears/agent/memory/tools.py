@@ -37,7 +37,7 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, date, datetime, time, tzinfo
+from datetime import UTC, datetime, tzinfo
 from typing import Any, Literal
 from uuid import UUID
 
@@ -76,7 +76,7 @@ from langchain_core.embeddings import Embeddings
 
 from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.types import MemoryType
-from threetears.core.utils.local_time import render_local_time, resolve_zone
+from threetears.core.utils.local_time import parse_date_bound, render_local_time, resolve_zone
 from threetears.observe import get_logger
 
 __all__ = [
@@ -334,41 +334,6 @@ def _cut(text: str, limit: int, rest: str) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit].rstrip()}... (cut: the first {limit:,} of {len(text):,} characters; {rest})"
-
-
-def _parse_bound(label: str, raw: str | None, zone: tzinfo | None) -> tuple[datetime | None, str | None]:
-    """Read a date filter. A date alone is the whole day in the reader's zone; a time with no zone is in it too.
-
-    ``date_before`` given as a bare date runs to the end of that day, so the day
-    named is included. With no zone named the day is UTC's.
-
-    :param label: ``date_after`` or ``date_before``
-    :ptype label: str
-    :param raw: what the caller passed
-    :ptype raw: str | None
-    :param zone: the reader's zone, when the caller named one
-    :ptype zone: tzinfo | None
-    :return: the moment, or an error to show
-    :rtype: tuple[datetime | None, str | None]
-    """
-    if not raw or not raw.strip():
-        return None, None
-    text = raw.strip()
-    home = zone or UTC
-    try:
-        day = date.fromisoformat(text) if len(text) <= 10 else None
-    except ValueError:
-        day = None
-    if day is not None:
-        edge = time.max if label == "date_before" else time.min
-        return datetime.combine(day, edge, tzinfo=home), None
-    try:
-        value = datetime.fromisoformat(text)
-    except ValueError:
-        return None, f"Invalid {label} '{raw}'. Use ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)."
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=home)
-    return value, None
 
 
 def _parse_memory_id(raw: str) -> UUID | None:
@@ -864,10 +829,10 @@ async def load_memory_search_tool(
             return "[TOOL ERROR] Provide one of 'query', 'ids', or 'alias'."
 
         # Either bound may stand alone. A bare date is the reader's whole day.
-        date_after_dt, err_a = _parse_bound("date_after", date_after, zone)
+        date_after_dt, err_a = parse_date_bound("date_after", date_after, zone)
         if err_a:
             return _tool_error("memory_search", "filter", err_a)
-        date_before_dt, err_b = _parse_bound("date_before", date_before, zone)
+        date_before_dt, err_b = parse_date_bound("date_before", date_before, zone)
         if err_b:
             return _tool_error("memory_search", "filter", err_b)
 
@@ -1539,10 +1504,10 @@ def load_memory_list_tool(
             return _tool_error(
                 "memory_list", "filter", f"Invalid memory_type '{memory_type}'. Must be one of: {_TYPES_LISTED}"
             )
-        after, err_a = _parse_bound("date_after", date_after, zone)
+        after, err_a = parse_date_bound("date_after", date_after, zone)
         if err_a:
             return _tool_error("memory_list", "filter", err_a)
-        before, err_b = _parse_bound("date_before", date_before, zone)
+        before, err_b = parse_date_bound("date_before", date_before, zone)
         if err_b:
             return _tool_error("memory_list", "filter", err_b)
         page = max(1, min(limit, _MAX_LIMIT))
