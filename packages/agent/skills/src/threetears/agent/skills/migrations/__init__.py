@@ -33,6 +33,9 @@ Version history:
   keep a row one kind: never both a body and a tool, arguments only with a
   tool and only as a JSON object, and a payload check that accepts a
   tool-only row.
+- v005 adds ``outcome_notes`` (TEXT) to ``agent_skill_invocations``: the
+  agent's line on how a use went, kept apart from ``notes``, which holds the
+  reason it gave when it invoked the skill.
 """
 
 from __future__ import annotations
@@ -48,6 +51,9 @@ from threetears.agent.skills.migrations.v003_drop_gin_indexes import (
 )
 from threetears.agent.skills.migrations.v004_add_tool_call_columns import (
     add_tool_call_columns,
+)
+from threetears.agent.skills.migrations.v005_add_outcome_notes import (
+    add_outcome_notes,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -80,12 +86,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(2)(create_agent_skill_invocations)
     pkg.version(3)(drop_gin_indexes)
     pkg.version(4)(add_tool_call_columns)
+    pkg.version(5)(add_outcome_notes)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_outcome_notes",
     "add_tool_call_columns",
     "create_agent_skill_invocations",
     "create_agent_skills",

@@ -170,7 +170,7 @@ class TestInvocationInsertParams:
     """an invocation write binds every column at its placeholder."""
 
     async def test_full_row_round_trip(self) -> None:
-        """All eleven invocation columns map positionally."""
+        """All twelve invocation columns map positionally, v005's ``outcome_notes`` last."""
         agent_id = _new_uuid()
         invocation_id = _new_uuid()
         skill_id = _new_uuid()
@@ -190,6 +190,7 @@ class TestInvocationInsertParams:
             "outcome": "success",
             "outcome_source": "agent_marker",
             "notes": "n",
+            "outcome_notes": "o",
         }
         pool = _RecordingPool(status="INSERT 0 1")
         coll = object.__new__(AgentSkillInvocationCollection)
@@ -198,7 +199,7 @@ class TestInvocationInsertParams:
         [(sql, params)] = pool.calls
         upsert = _upsert(sql, params)
         assert upsert.table == "agent_skill_invocations"
-        assert len(upsert.columns) == 11
+        assert len(upsert.columns) == 12
         assert len(params) == len(upsert.columns)
         assert upsert.bound == data
 
