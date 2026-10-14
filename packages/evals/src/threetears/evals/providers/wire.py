@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Final, Literal
 
 from threetears.evals.negotiation import ProviderFamily, SettingFacts, WireSettings, anthropic_thinking
@@ -30,6 +31,7 @@ from threetears.evals.schema import StopReason
 
 __all__ = [
     "BASE_URLS",
+    "PriceSource",
     "FAMILIES",
     "KEY_VARIABLES",
     "Directive",
@@ -40,6 +42,27 @@ __all__ = [
     "reported_cost",
     "request_body",
 ]
+
+
+class PriceSource(StrEnum):
+    """The words the shipped client writes as a completion's ``price_source``: who priced the call.
+
+    Each member is the string itself (a ``StrEnum``), so a stored ``price_source`` compares equal to it. A host reading
+    spend back compares against these rather than spelling the words.
+
+    Attributes:
+        OPENROUTER_REPORTED: OpenRouter's own figure for the call (``usage.cost``).
+        OPENROUTER_REPORTED_UPSTREAM: Under bring-your-own-key, OpenRouter's fee plus the upstream's charge
+            (``usage.cost`` plus ``cost_details.upstream_inference_cost``).
+        OPENROUTER_CATALOGUE: A direct call's tokens times OpenRouter's catalogue rates. Written as a prefix: the
+            source is ``openrouter-catalogue:<catalogue id>``, ending ``;cache-approximate`` when a prompt cache was
+            read or written, which the catalogue has no rates for.
+    """
+
+    OPENROUTER_REPORTED = "openrouter:reported"
+    OPENROUTER_REPORTED_UPSTREAM = "openrouter:reported+upstream"
+    OPENROUTER_CATALOGUE = "openrouter-catalogue"
+
 
 #: The request shape each provider speaks, as the shared negotiation names it.
 FAMILIES: Final[Mapping[Provider, ProviderFamily]] = {
@@ -412,7 +435,7 @@ def reported_cost(usage: Mapping[str, Any]) -> tuple[float | None, str | None, s
     if not isinstance(cost, int | float) or isinstance(cost, bool):
         return None, None, "OpenRouter's reply carried no cost"
     if usage.get("is_byok") is not True:
-        return float(cost), "openrouter:reported", None
+        return float(cost), PriceSource.OPENROUTER_REPORTED, None
     upstream = _mapping(usage.get("cost_details")).get("upstream_inference_cost")
     if not isinstance(upstream, int | float) or isinstance(upstream, bool):
         return (
@@ -423,4 +446,4 @@ def reported_cost(usage: Mapping[str, Any]) -> tuple[float | None, str | None, s
                 "fee alone would understate it"
             ),
         )
-    return float(cost) + float(upstream), "openrouter:reported+upstream", None
+    return float(cost) + float(upstream), PriceSource.OPENROUTER_REPORTED_UPSTREAM, None

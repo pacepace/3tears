@@ -223,6 +223,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/ratings.py": {},
     "run/reads.py": {},
     "run/rejudge.py": {},
+    "run/regrade.py": {},
     "run/judge_repeat.py": {},
     "run/run_document.py": {},
     "run/runner.py": {},
@@ -233,11 +234,11 @@ CEILINGS: dict[str, dict[str, int]] = {
     # there, where naming providers is the tree's purpose, and a host noun everywhere else (the shared-contract
     # canary's _PROVIDER_NAMES says the same). These counts are exact, so a doc edit that adds or drops a mention
     # moves them; no other host term is allowed in the tree.
-    "providers/__init__.py": {"openrouter": 2},
+    "providers/__init__.py": {"openrouter": 5},
     "providers/catalogue.py": {"openrouter": 4},
     "providers/failures.py": {"openrouter": 3},
     "providers/model.py": {"openrouter": 12},
-    "providers/wire.py": {"openrouter": 14},
+    "providers/wire.py": {"openrouter": 24},
     # The negotiation every completion client shares names no provider in its mapping, loop or store: OpenRouter's
     # request shape is the `router` family there. Only its readers name the provider whose answers they read.
     "negotiation/__init__.py": {},

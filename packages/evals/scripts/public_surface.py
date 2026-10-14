@@ -608,6 +608,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.run.RunnerOptions",
         "threetears.evals.run.price_subject_call_floor",
         "threetears.evals.run.run_blocking",
+        # An authored judge case in a host's boot seed, which a production seed builds in memory
+        # (`SeedCorpus(judge_cases=...)`) as well as reads from `judge_cases/*.json`.
+        "threetears.evals.run.SeedJudgeCase",
         "threetears.evals.kernel.default_job_timeout",
         "threetears.evals.kernel.EvalCampaign",
         # The stored documents a host's kind and launcher build and its own code reads back.
@@ -670,6 +673,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.PUBLIC_ROOTS",
         "threetears.evals.ROOT_EXTRAS",
         "threetears.evals.RootExtra",
+        # And each public name's tier in the installed build, which a host's test gates its imports by.
+        "threetears.evals.surface_tier",
+        "threetears.evals.declared_names",
         "threetears.evals.schema.CORE_SCHEMA_VERSION",
         "threetears.evals.schema.CORE_SCHEMA_MINOR",
         "threetears.evals.schema.CORE_BASELINE_VERSION",
@@ -776,6 +782,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.Catalogue",
         "threetears.evals.providers.describe_failure",
         "threetears.evals.providers.ProviderError",
+        # The words the client writes as a completion's `price_source`, which a host reading spend back compares with.
+        "threetears.evals.providers.PriceSource",
     }
 )
 
@@ -784,11 +792,13 @@ HOST_CONTRACT: frozenset[str] = frozenset(
 #: ``root.name``. Each moves only with a ``MIGRATIONS.toml`` record, never shimmed. With the host contract it is what
 #: ``docs/reference.md`` documents and ``docs/surface.md`` maps by rung, and it is held under :data:`DECLARED_CEILING`.
 #:
-#: The ruling is what someone is shown or already binds: every name a topic guide, the README, an example or an
-#: example host (``tests/fixtures/toyhost/``, ``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py``
-#: holds it), the quick path's whole root, and what Discodon's production code imports, the one production host. A
-#: name a declared signature reaches but nobody imports is ``provisional``: still exported, so the surface stays
-#: closed (``tests/test_public_surface_is_closed.py``), and promoted here when someone binds to it.
+#: The ruling is what someone is shown or already binds: every name a topic guide, the README, an example or the
+#: courier host (``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py`` holds it), the quick path's whole
+#: root, and what Discodon's production code imports, the one production host. The toy host
+#: (``tests/fixtures/toyhost/``) exercises the whole contract and reaches past it, so a name it alone imports is listed
+#: here by choice, not held here: ``tests/test_api_tiers.py`` holds its imports to the public roots only. A name a
+#: declared signature reaches but nobody imports is ``provisional``: still exported, so the surface stays closed
+#: (``tests/test_public_surface_is_closed.py``), and promoted here when someone binds to it.
 STABLE: frozenset[str] = frozenset(
     {
         # Rungs 0 and 1: the command line a TOML file or a host's own entry runs through, its exit codes, and the
@@ -838,6 +848,9 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.run.judge_repeat_work",
         "threetears.evals.run.judge_temperature_work",
         "threetears.evals.run.rate_result",
+        # The one door a stored verdict is graded again through: check dims from the trace, failed judged dims asked
+        # again (the successor of the re-check `.27` removed; a production host's ruling binds it).
+        "threetears.evals.run.regrade",
         "threetears.evals.run.run_job_work",
         "threetears.evals.run.second_judge_work",
         "threetears.evals.schema.CalibrationRating",
@@ -856,7 +869,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.analysis.create_campaign",
         "threetears.evals.analysis.frontier",
         "threetears.evals.analysis.gate_verdicts",
-        "threetears.evals.analysis.variant_key_of_run",
         "threetears.evals.kernel.BarOverride",
         "threetears.evals.kernel.CONFUSION_CELL_MEASURE",
         "threetears.evals.kernel.CampaignDesign",
@@ -866,19 +878,15 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.Question",
         "threetears.evals.kernel.SweptAxis",
         "threetears.evals.kernel.confusion_cell",
-        "threetears.evals.kernel.resolve_variant_identity",
         "threetears.evals.run.get_run",
         "threetears.evals.run.list_runs",
         "threetears.evals.schema.EvalCaseStratum",
         "threetears.evals.schema.LatencyMetrics",
-        "threetears.evals.schema.omit_paths",
         # Rung 4: a world, a log and a host of one's own. What a kind, a launcher and a world are built from beyond
         # the host contract, as the agent guide and the example hosts under `tests/fixtures/` build them.
-        "threetears.evals.kernel.DEFAULT_JOB_LEASE_S",
         "threetears.evals.kernel.MeasureFamily",
         "threetears.evals.kernel.host.ActsOn",
         "threetears.evals.kernel.host.ApparatusError",
-        "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER",
         "threetears.evals.kernel.host.Interval",
         "threetears.evals.kernel.host.Ordinal",
         "threetears.evals.kernel.host.RolePins",
@@ -1148,6 +1156,11 @@ def home_root(root: str, name: str) -> str:
 #: The checked-in snapshot of the public surface. Generated; never edited by hand.
 SNAPSHOT_PATH = PACKAGE_ROOT / "api" / "surface.json"
 
+#: The tier map the wheel ships (``threetears.evals.surface_tier`` reads it): every public name and its tier, the
+#: snapshot's tiers alone. Generated beside the snapshot, since ``api/`` is not installed and a host gates its imports
+#: against the build it runs.
+TIER_MAP_PATH = PACKAGE_ROOT / "src" / "threetears" / "evals" / "surface_tiers.json"
+
 #: The hand-written record of every name that left a public root: per release, its new home or ``removed``, and why.
 MIGRATIONS_PATH = PACKAGE_ROOT / "MIGRATIONS.toml"
 
@@ -1350,6 +1363,12 @@ def render_snapshot(surface: dict[str, SurfaceEntry]) -> str:
     """The snapshot file: one entry per ``root.name``, in walk order, so a change is a small, readable diff."""
     names = {name: {"kind": e.kind, "signature": e.signature, "tier": e.tier} for name, e in surface.items()}
     return json.dumps({"format": SNAPSHOT_FORMAT, "names": names}, indent=2, ensure_ascii=False) + "\n"
+
+
+def render_tier_map(surface: dict[str, SurfaceEntry]) -> str:
+    """The shipped tier map: each ``root.name`` and its tier, in the snapshot's order, one name a line."""
+    tiers = {name: entry.tier for name, entry in surface.items()}
+    return json.dumps({"format": 1, "tiers": tiers}, indent=0, ensure_ascii=False) + "\n"
 
 
 # --- findings ----------------------------------------------------------------------------------------------------

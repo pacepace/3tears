@@ -25,8 +25,11 @@ What a completion carries, member by member:
   (:mod:`threetears.evals.negotiation` chooses them, reads a refusal and resends; nothing else is retried).
 * ``cost_usd``: on OpenRouter its own reported figure, and under bring-your-own-key that figure plus
   ``cost_details.upstream_inference_cost`` (a BYOK reply without it is unpriced); on Anthropic and OpenAI, tokens
-  times OpenRouter's catalogue rates for the matching ``vendor/model`` row. Unpriced is ``None`` with
-  ``pricing_failure`` saying why, never ``0``.
+  times OpenRouter's catalogue rates for the matching ``vendor/model`` row. ``price_source`` names which, in
+  :class:`PriceSource`'s words (``openrouter:reported``, ``openrouter:reported+upstream``,
+  ``openrouter-catalogue:<id>``). Unpriced is ``None`` with
+  ``pricing_failure`` saying why, never ``0``. The catalogue refreshes every ``refresh_after`` (six hours by
+  default); a catalogue-priced cost whose refresh failed carries ``pricing_stale_since``, when its rates expired.
 
 **This module is the package's public root** for the client. A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -37,5 +40,15 @@ from __future__ import annotations
 from threetears.evals.providers.catalogue import Catalogue
 from threetears.evals.providers.failures import Provider, ProviderError, describe_failure
 from threetears.evals.providers.model import Clients, Completion, Model
+from threetears.evals.providers.wire import PriceSource
 
-__all__ = ["Catalogue", "Clients", "Completion", "Model", "Provider", "ProviderError", "describe_failure"]
+__all__ = [
+    "Catalogue",
+    "Clients",
+    "Completion",
+    "Model",
+    "PriceSource",
+    "Provider",
+    "ProviderError",
+    "describe_failure",
+]

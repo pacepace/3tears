@@ -13,6 +13,7 @@ import string
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, Self, get_args
 
 import httpx
@@ -34,6 +35,7 @@ from threetears.evals.providers.wire import (
     BASE_URLS,
     FAMILIES,
     KEY_VARIABLES,
+    PriceSource,
     Reply,
     declared_facts,
     directive_of,
@@ -82,7 +84,7 @@ _ASKED: Final[Mapping[str, ClientRequestSettings]] = {
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Completion:
-    """One reply: the completion port's ten members, and four of the client's own.
+    """One reply: the completion port's ten members, and five of the client's own.
 
     Implements :class:`~threetears.evals.schema.CompletionResult`. Every count and the cost are ``None`` where the
     provider reported nothing, never ``0``.
@@ -93,9 +95,10 @@ class Completion:
         output_tokens: Completion tokens, reasoning included.
         reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when unsplit.
         cost_usd: What the call cost, or ``None`` when unpriced (``pricing_failure`` says why).
-        price_source: ``openrouter:reported`` (OpenRouter's figure), ``openrouter:reported+upstream`` (its fee and a
-            bring-your-own-key upstream's charge), or ``openrouter-catalogue:<id>`` (tokens times the catalogue's
-            rates, ending ``;cache-approximate`` when a cache was read or written).
+        price_source: Who priced it, in :class:`~threetears.evals.providers.PriceSource`'s words: ``openrouter:reported``
+            (OpenRouter's figure), ``openrouter:reported+upstream`` (its fee and a bring-your-own-key upstream's
+            charge), or ``openrouter-catalogue:<id>`` (tokens times the catalogue's rates, ending
+            ``;cache-approximate`` when a cache was read or written).
         model: The model id the client was built for.
         served_model: The model the reply named; ``None`` when it named none, or named a requested alias back.
         temperature: The temperature the served request carried, or ``None``.
@@ -105,6 +108,9 @@ class Completion:
         provider_stop_reason: The stop reason as the provider named it, or ``None``.
         served_provider: The upstream OpenRouter routed the call to; ``None`` on a direct provider.
         pricing_failure: Why ``cost_usd`` is ``None``; ``None`` when priced.
+        pricing_stale_since: When the catalogue rates that priced the call expired with every refresh since failing
+            (UTC): the cost is the last rates read, kept rather than failing the call. ``None`` when the rates were
+            fresh, and for a cost the provider reported (OpenRouter's), which no catalogue priced.
     """
 
     content: str
@@ -121,6 +127,7 @@ class Completion:
     provider_stop_reason: str | None
     served_provider: str | None
     pricing_failure: str | None
+    pricing_stale_since: datetime | None
 
 
 def _provider_of(model_id: str, provider: Provider | None, base_url: str | None) -> Provider:
@@ -198,9 +205,9 @@ class _Live:
         return self._owned
 
     async def _load_catalogue(self) -> None:
-        """Read the catalogue once; a failure is logged, kept as the reason calls go unpriced, and tried again."""
-        if self._catalogue.loaded:
-            return
+        """Read the catalogue, or refresh it once its rows expired; a first read that fails is logged, kept as the
+        reason calls go unpriced, and tried again. A refresh that fails keeps the rows, marked stale, without raising.
+        """
         try:
             await self._catalogue.load()
         except (httpx.HTTPError, ValueError) as failed:
@@ -301,7 +308,7 @@ class _Live:
         self._log_moves(negotiated.notes)
         status, body = negotiated.reply
         reply = read_reply(self.provider, self.model_name, status, body)
-        cost, source, unpriced = self._price(reply)
+        cost, source, unpriced, stale_since = self._price(reply)
         if reply.stop_reason == "truncated":
             log.warning(
                 "eval.providers reply read as truncated provider=%s model=%s provider_stop_reason=%s",
@@ -324,22 +331,25 @@ class _Live:
             provider_stop_reason=reply.provider_stop_reason,
             served_provider=reply.served_provider,
             pricing_failure=unpriced,
+            pricing_stale_since=stale_since,
         )
 
-    def _price(self, reply: Reply) -> tuple[float | None, str | None, str | None]:
+    def _price(self, reply: Reply) -> tuple[float | None, str | None, str | None, datetime | None]:
+        """The call's cost, its source, why it is unpriced, and when the catalogue rates pricing it went stale."""
         if self.provider == "openrouter":
-            return reported_cost(reply.usage)
+            return (*reported_cost(reply.usage), None)
         if self._catalogue_failure is not None:
-            return None, None, self._catalogue_failure
+            return None, None, self._catalogue_failure, None
         matched = self._catalogue_id()
         rates = self._catalogue.rates(matched) if matched is not None else None
         if matched is None or rates is None:
-            return None, None, f"no single priced row of OpenRouter's catalogue matches {self.model_name!r}"
+            return None, None, f"no single priced row of OpenRouter's catalogue matches {self.model_name!r}", None
         if reply.input_tokens is None or reply.output_tokens is None:
-            return None, None, "the reply reported no input or output token count, so there is nothing to price"
+            return None, None, "the reply reported no input or output token count, so there is nothing to price", None
         dollars = reply.input_tokens * rates[0] + reply.output_tokens * rates[1]
         marker = _CACHE_APPROXIMATE if reply.cache_tokens else ""
-        return float(dollars), f"openrouter-catalogue:{matched}{marker}", None
+        source = f"{PriceSource.OPENROUTER_CATALOGUE}:{matched}{marker}"
+        return float(dollars), source, None, self._catalogue.stale_since
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         matched = self._catalogue_id()

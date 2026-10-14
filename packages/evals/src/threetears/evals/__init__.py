@@ -26,7 +26,9 @@ is loaded on first use, so importing this package loads none of the engine.
 
 **Import only from a public root**, and only the names its ``__all__`` declares. The roots are
 :data:`PUBLIC_ROOTS`, which a consumer can read to check its own imports rather than keep a copy;
-``tests/test_package_matrix.py`` holds the tuple equal to the roots it enforces.
+``tests/test_package_matrix.py`` holds the tuple equal to the roots it enforces. What a release promises about each
+of those names is its tier, which the build ships: :func:`surface_tier` reads one name's, and :func:`declared_names`
+lists every name promised anything, so a host's test gates its imports against the version it runs.
 
 **There is no installed host.** A product adopts the engine by building one
 :class:`~threetears.evals.kernel.host.EvalHost` — its vocabulary, its storage and its services —
@@ -42,12 +44,15 @@ stored document carries it (each carries its own schema version), so a host that
 what records it beside what it stores.
 """
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from importlib import import_module
 from importlib.metadata import version as _distribution_version
+from importlib.resources import files
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from threetears.evals.providers import Model
@@ -166,6 +171,61 @@ ROOT_EXTRAS: Mapping[str, RootExtra] = MappingProxyType(
     }
 )
 
+#: The tier map this build ships beside its code: every public ``root.name`` and its stability tier, as
+#: ``packages/evals/api/surface.json`` records them. Written by the snapshot generator with the snapshot, and held equal
+#: to it by ``tests/test_api_tiers.py``.
+_TIER_MAP = "surface_tiers.json"
+
+#: The tiers, in the order the promise weakens: what :func:`surface_tier` answers.
+_TIERS = ("host-contract", "stable", "provisional")
+
+
+@cache
+def _tier_map() -> Mapping[str, str]:
+    """The shipped tier map, read once: ``root.name`` to its tier.
+
+    Raises:
+        ValueError: The shipped file is not the tier map this reader knows (a damaged install).
+    """
+    document = json.loads(files(__name__).joinpath(_TIER_MAP).read_text(encoding="utf-8"))
+    tiers = document.get("tiers") if isinstance(document, dict) and document.get("format") == 1 else None
+    if not isinstance(tiers, dict) or not all(tier in _TIERS for tier in tiers.values()):
+        raise ValueError(f"{__name__}/{_TIER_MAP} is not a format-1 tier map: the install is damaged")
+    return MappingProxyType(tiers)
+
+
+def surface_tier(qualified_name: str) -> Literal["host-contract", "stable", "provisional"]:
+    """A public name's stability tier in the installed build, by ``root.name``.
+
+    ``host-contract`` moves only with a ``MIGRATIONS.toml`` record and a deprecation cycle; ``stable`` may move in any
+    release, recorded and never shimmed; ``provisional`` is exported and promised nothing. What a host's own test
+    reads to gate its imports by tier against the version it runs, rather than a copy of the repository's snapshot.
+
+    Args:
+        qualified_name: The name as its root exports it: ``threetears.evals.kernel.host.EvalHost``, or
+            ``threetears.evals.Eval`` for the package's own.
+
+    Returns:
+        Its tier.
+
+    Raises:
+        KeyError: No public root of this build exports that name: it is below a root, misspelled, or gone.
+    """
+    tier = _tier_map().get(qualified_name)
+    if tier is None:
+        raise KeyError(f"{qualified_name!r} is not a public name of this build: no root in PUBLIC_ROOTS exports it")
+    return cast(Literal["host-contract", "stable", "provisional"], tier)
+
+
+def declared_names() -> frozenset[str]:
+    """Every declared public name of the installed build (``host-contract`` and ``stable``), by ``root.name``.
+
+    Returns:
+        The names a release promises something about; every other public name is ``provisional``.
+    """
+    return frozenset(name for name, tier in _tier_map().items() if tier != "provisional")
+
+
 __all__ = [
     "PUBLIC_ROOTS",
     "ROOT_EXTRAS",
@@ -179,5 +239,7 @@ __all__ = [
     "RootExtra",
     "World",
     "__version__",
+    "declared_names",
     "grader",
+    "surface_tier",
 ]

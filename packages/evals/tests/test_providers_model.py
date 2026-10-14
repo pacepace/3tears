@@ -11,6 +11,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,6 +25,7 @@ from threetears.evals.providers import (
     Clients,
     Completion,
     Model,
+    PriceSource,
     ProviderError,
     describe_failure,
 )
@@ -435,6 +437,27 @@ async def test_openrouter_is_priced_by_its_own_figure_and_absent_is_unpriced_nev
     assert (completion.pricing_failure is None) if why is None else why in (completion.pricing_failure or "")
 
 
+async def test_the_client_writes_exactly_the_price_source_words_a_host_compares_with() -> None:
+    byok = {"cost": 0.0001, "is_byok": True, "cost_details": {"upstream_inference_cost": 0.002}}
+    upstream = await model("deepseek/deepseek-v4-flash", Scripted(chat(usage=byok))).generate(system="", user="x")
+    reported = await model("deepseek/deepseek-v4-flash", Scripted(chat(usage={"cost": 0.1}))).generate(
+        system="", user="x"
+    )
+    direct = await model("claude-haiku-5-5", Scripted(message()), provider="anthropic").generate(system="", user="x")
+
+    assert upstream.price_source is PriceSource.OPENROUTER_REPORTED_UPSTREAM
+    assert PriceSource.OPENROUTER_REPORTED_UPSTREAM == "openrouter:reported+upstream", "the stored word is stable"
+    assert reported.price_source is PriceSource.OPENROUTER_REPORTED
+    assert PriceSource.OPENROUTER_REPORTED == "openrouter:reported"
+    assert direct.price_source == f"{PriceSource.OPENROUTER_CATALOGUE}:anthropic/claude-haiku-5.5"
+    assert PriceSource.OPENROUTER_CATALOGUE == "openrouter-catalogue"
+    assert {source.value for source in PriceSource} == {
+        "openrouter:reported",
+        "openrouter:reported+upstream",
+        "openrouter-catalogue",
+    }
+
+
 async def test_a_direct_call_is_priced_by_the_matching_catalogue_row() -> None:
     plain = await model("claude-haiku-5-5", Scripted(message()), provider="anthropic").generate(system="", user="x")
     assert plain.cost_usd == pytest.approx(10 * 0.000001 + 4 * 0.000005)
@@ -457,6 +480,82 @@ async def test_a_direct_call_the_catalogue_cannot_price_is_returned_unpriced_say
     )
     assert answered.content == "hello" and answered.cost_usd is None
     assert "could not be read (HTTPStatusError" in (answered.pricing_failure or "")
+
+
+class CatalogueServer:
+    """A catalogue endpoint answering each fetch in turn (the last answer repeating), counting the fetches."""
+
+    def __init__(self, *answers: tuple[int, Mapping[str, Any]]) -> None:
+        self._answers = list(answers)
+        self.fetches = 0
+
+    def __call__(self, _: httpx.Request) -> httpx.Response:
+        self.fetches += 1
+        status, payload = self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+        return httpx.Response(status, json=payload)
+
+    def catalogue(self, refresh_after: timedelta) -> Catalogue:
+        return Catalogue(http=httpx.AsyncClient(transport=httpx.MockTransport(self)), refresh_after=refresh_after)
+
+
+def _repriced(rate: str) -> dict[str, Any]:
+    """:data:`CATALOGUE` with the Haiku row's input rate moved to ``rate``."""
+    rows = [
+        {**row, "pricing": {**row["pricing"], "prompt": rate}} if row["id"] == "anthropic/claude-haiku-5.5" else row
+        for row in CATALOGUE["data"]
+    ]
+    return {"data": rows}
+
+
+async def test_the_catalogue_refreshes_on_the_first_call_after_it_expires_and_not_before() -> None:
+    kept = CatalogueServer((200, CATALOGUE), (200, _repriced("0.000002")))
+    haiku = model(
+        "claude-haiku-5-5", Scripted(message()), provider="anthropic", catalogue=kept.catalogue(timedelta(hours=6))
+    )
+    first = await haiku.generate(system="", user="x")
+    second = await haiku.generate(system="", user="x")
+    assert kept.fetches == 1 and first.cost_usd == second.cost_usd == pytest.approx(10 * 0.000001 + 4 * 0.000005)
+
+    expiring = CatalogueServer((200, CATALOGUE), (200, _repriced("0.000002")))
+    shared = expiring.catalogue(timedelta(0))
+    haiku = model("claude-haiku-5-5", Scripted(message()), provider="anthropic", catalogue=shared)
+    before = await haiku.generate(system="", user="x")
+    after = await haiku.generate(system="", user="x")
+    assert expiring.fetches == 2, "an expired catalogue is fetched again on the next call"
+    assert before.cost_usd == pytest.approx(10 * 0.000001 + 4 * 0.000005)
+    assert after.cost_usd == pytest.approx(10 * 0.000002 + 4 * 0.000005), "the refreshed rates price the call"
+    assert before.pricing_stale_since is None and after.pricing_stale_since is None and shared.stale_since is None
+
+
+async def test_a_failed_refresh_keeps_the_last_rates_and_marks_the_pricing_stale_never_failing_the_call() -> None:
+    down = (503, {"error": "down"})
+    server = CatalogueServer((200, CATALOGUE), down, down, (200, _repriced("0.000002")))
+    shared = server.catalogue(timedelta(0))
+    haiku = model("claude-haiku-5-5", Scripted(message()), provider="anthropic", catalogue=shared)
+    fresh = await haiku.generate(system="", user="x")
+    read_by = datetime.now(UTC)
+
+    stale = await haiku.generate(system="", user="x")
+
+    assert stale.content == "hello" and stale.cost_usd == fresh.cost_usd, "the last rates price it"
+    assert stale.pricing_stale_since is not None and stale.pricing_stale_since <= read_by
+    assert stale.pricing_stale_since == shared.stale_since
+    assert "could not be refreshed (HTTPStatusError" in (shared.refresh_failure or "")
+    router = await model(
+        "deepseek/deepseek-v4-flash", Scripted(chat(usage={"cost": 0.001})), catalogue=shared
+    ).generate(system="", user="x")
+    assert shared.stale_since is not None, "the second refresh failed too"
+    assert router.pricing_stale_since is None, "OpenRouter's own figure priced it, not the stale rates"
+
+    recovered = await haiku.generate(system="", user="x")
+    assert server.fetches == 4 and recovered.pricing_stale_since is None and shared.stale_since is None
+    assert shared.refresh_failure is None
+    assert recovered.cost_usd == pytest.approx(10 * 0.000002 + 4 * 0.000005)
+
+
+def test_a_negative_refresh_interval_is_refused() -> None:
+    with pytest.raises(ValueError, match="refresh_after .* is negative"):
+        Catalogue(refresh_after=timedelta(seconds=-1))
 
 
 async def test_the_price_ceiling_answers_once_the_catalogue_is_loaded() -> None:

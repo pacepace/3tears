@@ -35,6 +35,7 @@ from public_surface import (
     MIGRATIONS_PATH,
     REEXPORTS_PATH,
     SNAPSHOT_PATH,
+    TIER_MAP_PATH,
     Finding,
     SurfaceEntry,
     all_findings,
@@ -43,6 +44,7 @@ from public_surface import (
     load_reexports,
     load_snapshot,
     render_snapshot,
+    render_tier_map,
 )
 
 
@@ -50,21 +52,25 @@ def write_snapshot(
     installed: dict[str, SurfaceEntry],
     findings: list[Finding],
     path: Path = SNAPSHOT_PATH,
+    tier_map_path: Path = TIER_MAP_PATH,
 ) -> bool:
-    """Write ``installed`` as the snapshot unless a finding needs more than a regeneration.
+    """Write ``installed`` as the snapshot, and its tiers as the shipped tier map, unless a finding needs more than a
+    regeneration.
 
     Args:
         installed: The surface to record.
         findings: Every finding over it (:func:`public_surface.all_findings`).
         path: Where the snapshot is written.
+        tier_map_path: Where the tier map the wheel ships is written.
 
     Returns:
-        Whether it was written: ``False`` while any finding is one regenerating does not fix.
+        Whether they were written: ``False`` while any finding is one regenerating does not fix.
     """
     if any(not f.regenerating_fixes for f in findings):
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_snapshot(installed), encoding="utf-8")
+    tier_map_path.write_text(render_tier_map(installed), encoding="utf-8")
     return True
 
 
@@ -80,7 +86,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         for finding in findings:
             print(finding.problem, file=sys.stderr)
-        return 1 if findings else 0
+        stale_tier_map = not TIER_MAP_PATH.exists() or TIER_MAP_PATH.read_text(encoding="utf-8") != render_tier_map(
+            installed
+        )
+        if stale_tier_map:
+            print(f"{TIER_MAP_PATH} is not the installed surface's tiers: regenerate it", file=sys.stderr)
+        return 1 if findings or stale_tier_map else 0
     if not write_snapshot(installed, findings):
         for finding in findings:
             if not finding.regenerating_fixes:

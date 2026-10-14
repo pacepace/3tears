@@ -144,7 +144,14 @@ from threetears.evals.ops import (
 )
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
-from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate, run_blocking
+from threetears.evals.run import (
+    JudgeCaseFreezeReport,
+    JudgeTemperatureEstimate,
+    Regrade,
+    SecondJudgeEstimate,
+    regrade,
+    run_blocking,
+)
 
 # --- the parameters, each declared once ---------------------------------------------------------------
 
@@ -626,6 +633,19 @@ class ResultRateParams(EvalBaseModel):
     ]
     score: Annotated[int, Field(description="The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail).")]
     rating_reason: Annotated[str, Field(min_length=1, description="Why that score, in the rater's own words.")]
+
+
+class ResultRegradeParams(EvalBaseModel):
+    """``result_regrade``."""
+
+    result_id: ResultId
+    checks: Annotated[bool, Field(description="Re-grade the result's check dims (goal checks) from its trace.")] = True
+    judges: Annotated[
+        bool, Field(description="Name its judged dims whose judging failed; this action never asks a judge.")
+    ] = True
+    apply: Annotated[
+        bool, Field(description="Store the re-graded check verdicts; false (the default) reports and writes nothing.")
+    ] = False
 
 
 SecondJudgeModel = Annotated[
@@ -1160,6 +1180,22 @@ async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimate
         caller.scope_id,
         n_test_cases=params.n_test_cases,
     )
+
+
+async def _result_regrade(host: OpsHost, caller: Caller, params: ResultRegradeParams) -> Regrade:
+    eval_host = host.eval_host
+    options = {"checks": params.checks, "judges": params.judges}
+    reported = await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=False)
+    if not params.apply:
+        return reported
+    if reported.judge_dims:
+        raise ValidationFailedError(
+            f"result '{params.result_id}' has judged dims whose judging failed ({', '.join(reported.judge_dims)}); "
+            "asking its judge again spends, and this action makes no model call",
+            remedy="apply with judges=false to store the re-graded checks; the host asks the judged dims again "
+            "through regrade(..., apply=True)",
+        )
+    return await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=True)
 
 
 async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) -> ResultRated:
@@ -2221,6 +2257,25 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_campaign_archive,
             render=render.render_model,
             example={"campaign_id": campaign_id, "archived": True},
+        ),
+        Action(
+            name="result_regrade",
+            summary="Grade one stored result again from its trace: report every verdict that moves, store on apply.",
+            workflow=CURATE,
+            permission="write",
+            params=ResultRegradeParams,
+            result=Regrade,
+            handler=_result_regrade,
+            render=render.render_model,
+            example={"result_id": "result-1", "apply": False},
+            detail=(
+                "Check dims (goal checks) are re-graded from what the cell stored (its call ledger, end state and "
+                "world events) through the function the cell was graded with; an outcome it cannot re-grade from "
+                "what was stored is kept as stored, with why. Judged dims whose judging failed are named, never "
+                "asked: asking a judge spends, so applying while any is named is refused, and the host asks them "
+                "through regrade. Without apply nothing is written; with it the moved check verdicts are stored, "
+                "refused if the result changed since it was read. A run still being written is refused."
+            ),
         ),
         Action(
             name="result_rate",

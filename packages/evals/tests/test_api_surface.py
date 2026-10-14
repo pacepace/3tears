@@ -20,6 +20,7 @@ even while the real surface happens to be clean.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from types import ModuleType
@@ -153,13 +154,14 @@ def test_a_removal_recorded_only_in_an_older_section_does_not_count() -> None:
 
 
 def test_the_generator_refuses_to_write_while_a_removal_is_unrecorded(tmp_path: Path) -> None:
-    path = tmp_path / "surface.json"
+    path, tiers = tmp_path / "surface.json", tmp_path / "surface_tiers.json"
     blocked = [surface.Finding("x left the public surface", False), surface.Finding("y is new", True)]
-    assert generator.write_snapshot({}, blocked, path) is False
-    assert not path.exists()
-    installed = {f"{A}.y": Entry("function", "y()")}
-    assert generator.write_snapshot(installed, [surface.Finding("y is new", True)], path) is True
+    assert generator.write_snapshot({}, blocked, path, tiers) is False
+    assert not path.exists() and not tiers.exists()
+    installed = {f"{A}.y": Entry("function", "y()", "stable")}
+    assert generator.write_snapshot(installed, [surface.Finding("y is new", True)], path, tiers) is True
     assert surface.load_snapshot(path) == installed
+    assert json.loads(tiers.read_text(encoding="utf-8")) == {"format": 1, "tiers": {f"{A}.y": "stable"}}
 
 
 def test_a_snapshot_of_another_format_is_refused(tmp_path: Path) -> None:

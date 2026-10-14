@@ -160,6 +160,7 @@ from threetears.evals.run.job_work import (
     start_job_work,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
+from threetears.evals.run.regrade import Regrade, RegradedDim, regrade
 from threetears.evals.run.judge_kind import (
     FrozenJudgeCase,
     JudgeCaseFreezeReport,
@@ -210,7 +211,7 @@ from threetears.evals.run.ceilings import (
     resolve_effective_ceiling,
 )
 from threetears.evals.run.curation import CurationStore, UnreadableRunDeleteStore
-from threetears.evals.run.definition_seed import SeedCorpus, SeedJudgeCase, SeedOutcome
+from threetears.evals.run.definition_seed import SeedCaseSet, SeedCorpus, SeedJudgeCase, SeedOutcome
 from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
@@ -287,12 +288,15 @@ __all__ = [
     "MeteredCallLedger",
     "MeteredCallTally",
     "RatingStore",
+    "Regrade",
+    "RegradedDim",
     "ReproducibleJudgeInputs",
     "RequestSettingsPolicy",
     "RunCallbacks",
     "PlannedJudge",
     "RunJudge",
     "RunnerOptions",
+    "SeedCaseSet",
     "SeedCorpus",
     "SeedJudgeCase",
     "SeedOutcome",
@@ -354,6 +358,7 @@ __all__ = [
     "settable_apparatus",
     "precondition_failure_text",
     "rate_result",
+    "regrade",
     "record_witnessed_cell",
     "stamp_witnessed_judge",
     "refuse_stale_presumptions",

@@ -42,8 +42,12 @@ The eval engine: templates, cases, runs and results; the trial loop, its judge a
 
 **Functions**
 
+- **`declared_names`** · *host contract* · function · Every declared public name of the installed build (`host-contract` and `stable`), by `root.name`.
+  <br>`declared_names() -> frozenset[str]`
 - **`grader`** · *host contract* · function · Declare what a reading needs beside its grade: `@grader(guard=0.02)`, `grader("total", margin=0.05)`.
   <br>`grader(target: Callable[[Mapping[str, Any], Any], float | bool] | str | None = None, /, *, margin: float | None = None, guard: float | None = None, range: tuple[float, float] | None = None) -> Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]`
+- **`surface_tier`** · *host contract* · function · A public name's stability tier in the installed build, by `root.name`.
+  <br>`surface_tier(qualified_name: str) -> Literal['host-contract', 'stable', 'provisional']`
 
 **Classes**
 
@@ -74,8 +78,6 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
 - **`nested_schemas`** · function · Every schema written directly inside `schema`, in declaration order.
   <br>`nested_schemas(schema: Mapping[str, Any]) -> Iterator[NestedSchema]`
-- **`omit_paths`** · function · Return `document` without each dotted path in `paths` — the meaning of `exclude`.
-  <br>`omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]`
 - **`sent_settings_of`** · *host contract* · function · What the request that produced `completion` actually carried, as its client reports it, or `None`.
   <br>`sent_settings_of(completion: object) -> ClientRequestSettings | None`
 
@@ -228,8 +230,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
-- **`resolve_variant_identity`** · function · Return the variant identity a reader should show for `run`'s observations.
-  <br>`resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVariantIdentity`
 - **`seed_digest`** · function · The canonical digest of a seed's content: what a host records when it seeds a slot from it.
   <br>`seed_digest(seed: SeedTemplate | str) -> str`
 - **`withhold_failure_detail`** · *host contract* · function · Describe a failure by its class and nothing else — the safe default.
@@ -302,8 +302,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 - **`CONFUSION_CELL_MEASURE`** · constant (str) · The core measure a classification's confusion-matrix cell is reported under.
   <br>`= 'confusion_cell'`
-- **`DEFAULT_JOB_LEASE_S`** · constant (float) · How long a lease lasts unless renewed, in seconds: the engine's default.
-  <br>`= 60.0`
 - **`FIND_TEMPLATE`** · constant (str) · How a caller finds a template's id.
   <br>`= "templates_list names this scope's templates"`
 - **`IDENTITY_VERSION`** · *host contract* · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.
@@ -372,8 +370,6 @@ The host contract — what a consuming product declares, and what the engine nev
 
 **Constants**
 
-- **`CANDIDATE_MODEL_LEVER`** · constant (str) · The one name the candidate model answers to, everywhere — a DECLARED COORDINATE of every observation (`ScoreRecord.model`) as well as the core lever below, which is why it is the only lever a reporting lens resolves off the observation rather than off the run.
-  <br>`= 'model'`
 - **`SHARED_CORE`** · *host contract* · constant (SweepableRegistry) · The registry a host extends. Nothing here names a product.
 
 <a id="api-run"></a>
@@ -431,6 +427,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str) -> CalibrationRating`
 - **`refuse_ignored_template_fields`** · function · Refuse a template stating a field its kind never acts on (`LaunchableKind.ignored_template_fields`).
   <br>`refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None`
+- **`regrade`** · async function · Grade one stored result again from what its cell stored, and report every verdict that moved.
+  <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade`
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
 - **`resolve_judge_pin`** · function · The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
@@ -474,6 +472,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`MeteredCallTally`** · dataclass · What a run (or one cell's slice of it) metered, kept per provider.
 - **`RunnerOptions`** · *host contract* · dataclass · The run's own knobs that don't fit on the run document — per-run values, never host wiring.
 - **`SeedCorpus`** · dataclass · A host's authored definitions for one scope, already constructed through their production models.
+- **`SeedJudgeCase`** · *host contract* · model · One authored judge case a seed corpus writes: `judge_case_author`'s arguments, its templates named by name.
 - **`SeedOutcome`** · dataclass · What one seeding pass did, per doc type.
 - **`SimulatorTurn`** · dataclass · One user-side utterance produced by the simulator.
 - **`TurnDriver`** · dataclass · Multi-actor round scheduler and utterance generator.
@@ -564,8 +563,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract`
 - **`tier_sentence`** · function · One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
   <br>`tier_sentence(tier: JudgeEvidenceTier) -> str`
-- **`variant_key_of_run`** · function · Which variant a run's observations carried — the authoring side of the control.
-  <br>`variant_key_of_run(results: Sequence[EvalResult]) -> str | None`
 
 **Classes**
 
@@ -902,9 +899,11 @@ The completion client: a model id in, the engine's completion port out, over eac
 
 **Classes**
 
-- **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, fetched at most once, and what providers refused, for every model that reads it.
+- **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, refreshed every `refresh_after`, and what providers refused, for every model that reads it.
 - **`Clients`** · *host contract* · class · A host's role factory (`EvalHost.clients`): one `Model` per role, model id and temperature.
-- **`Completion`** · dataclass · One reply: the completion port's ten members, and four of the client's own.
+- **`Completion`** · dataclass · One reply: the completion port's ten members, and five of the client's own.
+- **`PriceSource`** · *host contract* · enum · The words the shipped client writes as a completion's `price_source`: who priced the call.
+  <br>values: `'openrouter:reported'`, `'openrouter:reported+upstream'`, `'openrouter-catalogue'`
 - **`ProviderError`** · *host contract* · exception · A request the provider refused or failed: who, the HTTP status, and the provider's own message.
 
 **Types**
@@ -1459,6 +1458,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `run_archive` | `write` | `run_id`, `archived?` | Archive a run (or restore it): out of every cohort, nothing destroyed. |
 | `run_label` | `write` | `run_id`, `run_labels` | Name a run with labels (or clear them): runs_list lists runs by one, no key moves. |
 | `campaign_archive` | `write` | `campaign_id`, `archived?` | Archive a campaign (or restore it): out of listings, nothing destroyed. |
+| `result_regrade` | `write` | `result_id`, `checks?`, `judges?`, `apply?` | Grade one stored result again from its trace: report every verdict that moves, store on apply. |
 | `result_rate` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason` | Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled. |
 | `analysis_archive` | `write` | `analysis_id`, `archived`, `archive_reason?` | Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed. |
 | `reporter_case_archive` | `write` | `reporter_case_id`, `archived?`, `archive_reason?` | Retire a reporter case (or restore it): no launch runs it again, nothing destroyed. |
@@ -1473,6 +1473,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 |---|---|---|
 | `analysis_id` | `string` | A stored analysis's id, as analyses_list names it. |
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
+| `apply` | `boolean` | Store the re-graded check verdicts; false (the default) reports and writes nothing. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
 | `arms` | array of `object` | The arms, launched in this order: each {model, label?, overlays?, apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its siblings. |
@@ -1491,6 +1492,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `case_set_name` | `string` or `null` | A named case set of the template to run, as case_sets_list names it; every arm runs exactly its cases and records it. Named with case_set_version, and refused beside n_variations. |
 | `case_set_version` | `integer` or `null` | The version of case_set_name to run; required with it. |
 | `cell_timeout_s` | `number` or `null` | The deadline each cell runs under, in seconds, in place of the kind's own; at or below the host's ceiling (a host declaring none allows only lowering the kind's deadline). Recorded on every run. |
+| `checks` | `boolean` | Re-grade the result's check dims (goal checks) from its trace. |
 | `column_factor` | `string` | The coordinate the columns are; a pooled ranking across the rows is checked for reversal on it. |
 | `condition_filter` | `'ok'` \| `'candidate_fail'` \| `'infra_exclude'` or `null` | List only results in this condition: ok (delivered, scored), candidate_fail (scored as a hard fail) or infra_exclude (a harness fault, in no aggregate). |
 | `confirm` | `string` | Must echo the id of what is destroyed, exactly. |
@@ -1519,6 +1521,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judged_artifact` | `'document'` \| `'transcript'` | 'document' (judged against its material) or 'transcript' (a conversation's). |
 | `judged_result_ids` | array of `string` or `null` | The results to freeze; omitted freezes every result of the runs. |
 | `judged_run_ids` | array of `string` | The judged runs whose stored results to freeze, as runs_list names them; omitted with from_labels, and required without it. |
+| `judges` | `boolean` | Name its judged dims whose judging failed; this action never asks a judge. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
 | `label` | `string` or `null` | List only runs carrying this label (run_label sets them); every run if unset. |
 | `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction, quote, note?}: a dimension the template scores, a direction of low\|low_mid\|mid\|mid_high\|high, and the reader's words verbatim. They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. |

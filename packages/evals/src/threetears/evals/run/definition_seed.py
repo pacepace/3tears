@@ -69,6 +69,16 @@ writes. Every case is built before anything is written, and a case authoring wou
 naming each. No operation deletes a judge case, so, as for a template, a case deleted straight from the store
 empties its slot.
 
+**A case set over authored cases seeds too.** A template carries no list of its cases, and an authored case's stored
+id is derived from its judge template's generated id, so a set a launch targets (``hard_negatives v1``) cannot be
+implied by a template or written as stored ids. A ``case_sets`` slot holds :class:`SeedCaseSet` values instead: a
+name, the judge template by name, and the corpus judge cases it lists by their corpus names, in order. Every list is
+checked against the corpus when the :class:`SeedCorpus` is built (each name carried, once, and frozen into the set's
+template), so a bad set refuses the whole corpus; its cases are built with the rest before anything is written. Once
+they are frozen, each set is minted over their stored ids through
+:func:`~threetears.evals.run.case_sets.mint_case_set`, the path ``case_set_mint`` takes. Its slot is its name: a scope
+holding any version of it is already seeded, and the next version is ``case_set_mint``'s to mint.
+
 The seeder creates. It never updates and never deletes.
 
 Corpus files are the same create-ready shape the authoring paths accept — server-owned
@@ -109,13 +119,17 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.kernel.errors import StorageError, ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, AuthoredVerdict
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import CatalogRubricDim, EvalTemplate, JudgeConfig, JudgedArtifact
 from threetears.evals.run.authoring import active_judge_config_in, admit_template
+from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.judge_kind import author_judge_case, freeze_judge_cases
+from threetears.evals.schema.logs import get_logger
+
+log = get_logger(__name__)
 
 
 class SeedJudgeCase(EvalBaseModel):
@@ -124,7 +138,9 @@ class SeedJudgeCase(EvalBaseModel):
     A corpus file holds this shape (``judge_cases/*.json``). The templates are named by ``name``, since a corpus
     cannot know the id a seeded template is given; the criterion is named, never restated, for the reason
     ``judge_case_author`` names it (its wording is what a judge profile is keyed by). The seed builds it into a
-    :class:`~threetears.evals.kernel.AuthoredJudgeCase` through the same door (``author_judge_case``).
+    :class:`~threetears.evals.kernel.AuthoredJudgeCase` through the same door (``author_judge_case``). Its own
+    ``name`` is the corpus's handle on it, which a :class:`SeedCaseSet` lists; it is not part of the case, so two
+    cases that differ only by name are one case.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -150,6 +166,12 @@ class SeedJudgeCase(EvalBaseModel):
     judged_artifact: Literal["document", "transcript"] = Field(
         default="document", description="'document' (judged against its material) or 'transcript'."
     )
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The case's name in its corpus, which a seeded case set lists it by: a corpus file's name without "
+        "`.json` when the file names none. None for a case no case set lists. Not part of the case.",
+    )
 
     def authored(self, criterion_template: EvalTemplate) -> AuthoredJudgeCase:
         """The case, built against the template that words its criterion, as ``judge_case_author`` builds one.
@@ -171,6 +193,31 @@ class SeedJudgeCase(EvalBaseModel):
         )
 
 
+class SeedCaseSet(EvalBaseModel):
+    """One named case set a seed corpus mints: a judge template's authored cases, listed by name, in order.
+
+    A corpus file holds this shape (``case_sets/*.json``). A template carries no list of its cases, and an authored
+    case's stored id is derived from its judge template's id, which a corpus cannot know, so a set over authored cases
+    names them by their corpus names (:attr:`SeedJudgeCase.name`). The seed mints it through
+    :func:`~threetears.evals.run.case_sets.mint_case_set`, the path ``case_set_mint`` takes, once its cases are frozen,
+    so a fresh scope boots with ``<name> v1`` listing exactly them. Its slot is its ``name``: a scope holding any
+    version of the set is already seeded, and a corpus whose list changed mints nothing over it (the store is master;
+    ``case_set_mint`` mints the next version).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1, description="The set's name, as a launch targets it (`<name> v<version>`).")
+    template: str = Field(min_length=1, description="The judge template whose cases it lists, by name.")
+    judge_cases: tuple[str, ...] = Field(
+        min_length=1,
+        description="The corpus judge cases it lists, by their names, in order; each a case of `template`.",
+    )
+    tracked: bool = Field(
+        default=True, description="Whether the set is a standing suite followed over time, or made for one launch."
+    )
+
+
 @dataclass(frozen=True)
 class SeedCorpus:
     """A host's authored definitions for one scope, already constructed through their production models.
@@ -184,7 +231,9 @@ class SeedCorpus:
             and read the second as occupied by it; and two non-archived judge configs for one
             ``rubric_dim_id``, a state no authoring path can produce — archive all but the one a
             run should inherit, and name the others by id in a launch's ``judge_config_ids``. And two
-            identical judge cases, which would freeze into one stored case.
+            identical judge cases, which would freeze into one stored case. And two judge cases under one name, two
+            case sets under one name, and a case set listing a case twice, naming a case the corpus does not carry,
+            or naming one of another judge template than its own.
     """
 
     scope_id: str
@@ -192,6 +241,7 @@ class SeedCorpus:
     rubric_dims: tuple[CatalogRubricDim, ...] = ()
     judge_configs: tuple[JudgeConfig, ...] = ()
     judge_cases: tuple[SeedJudgeCase, ...] = ()
+    case_sets: tuple[SeedCaseSet, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a definition built for another scope, and a corpus that cannot be seeded as written."""
@@ -219,13 +269,33 @@ class SeedCorpus:
             *(
                 f"two identical judge cases for {case.criterion!r} of {case.criterion_template!r} in judge template "
                 f"{case.judge_template!r}"
-                for case in _repeated(self.judge_cases)
+                for case in _repeated(case.model_copy(update={"name": None}) for case in self.judge_cases)
             ),
+            *(f"two judge cases named {k!r}" for k in _repeated(c.name for c in self.judge_cases if c.name)),
+            *(f"two case sets named {k!r}" for k in _repeated(s.name for s in self.case_sets)),
+            *(defect for case_set in self.case_sets for defect in self._case_set_defects(case_set)),
         ]
         if defects:
             raise ValueError(
                 f"seed corpus for scope {self.scope_id!r} cannot be seeded as written: {'; '.join(defects)}"
             )
+
+    def _case_set_defects(self, case_set: SeedCaseSet) -> list[str]:
+        """Why a case set cannot be minted over this corpus's judge cases: each, or none."""
+        named = {case.name: case for case in self.judge_cases if case.name}
+        what = f"case set {case_set.name!r}"
+        defects = [f"{what} lists judge case {k!r} twice" for k in _repeated(case_set.judge_cases)]
+        defects += [
+            f"{what} names judge case {k!r}, which the corpus does not carry"
+            for k in case_set.judge_cases
+            if k not in named
+        ]
+        defects += [
+            f"{what} is template {case_set.template!r}'s, and judge case {k!r} is frozen into {named[k].judge_template!r}"
+            for k in case_set.judge_cases
+            if k in named and named[k].judge_template != case_set.template
+        ]
+        return defects
 
 
 def _repeated[K: Hashable](keys: Iterable[K]) -> list[K]:
@@ -341,11 +411,14 @@ class SeedOutcome:
         return "; ".join(parts)
 
 
-def _load_dir[M: BaseModel](directory: Path, model: type[M], scoped: Mapping[str, str]) -> tuple[M, ...]:
+def _load_dir[M: BaseModel](
+    directory: Path, model: type[M], scoped: Mapping[str, str], *, named_by_file: bool = False
+) -> tuple[M, ...]:
     """Construct every ``*.json`` in ``directory`` through ``model``, with ``scoped``'s fields added to each.
 
     ``scoped`` is ``{"scope_id": ...}`` for a shape that carries a scope and empty for one that carries none: the
-    caller knows the shape, so the scope is passed through as an opaque value and never inspected here.
+    caller knows the shape, so the scope is passed through as an opaque value and never inspected here. With
+    ``named_by_file``, a document that names itself no ``name`` is named by its file, without ``.json``.
 
     Sorted so a corpus loads in a stable order and a seeding log is diffable between boots.
 
@@ -359,7 +432,10 @@ def _load_dir[M: BaseModel](directory: Path, model: type[M], scoped: Mapping[str
     loaded: list[M] = []
     for path in sorted(directory.glob("*.json")):
         try:
-            loaded.append(model(**json.loads(path.read_text(encoding="utf-8")), **scoped))
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if named_by_file and isinstance(document, dict) and document.get("name") is None:
+                document = {**document, "name": path.stem}
+            loaded.append(model(**document, **scoped))
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             raise ValueError(f"seed definition {path} is not a valid {model.__name__}: {e}") from e
     return tuple(loaded)
@@ -373,9 +449,10 @@ def load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus:
     their directory here.
 
     Args:
-        seed_dir: A directory holding ``templates/``, ``rubric_dims/``, ``judge_configs/`` and
-            ``judge_cases/`` subdirectories of ``*.json`` documents (a judge case as :class:`SeedJudgeCase`,
-            which carries no scope). A missing subdirectory loads as empty.
+        seed_dir: A directory holding ``templates/``, ``rubric_dims/``, ``judge_configs/``, ``judge_cases/`` and
+            ``case_sets/`` subdirectories of ``*.json`` documents (a judge case as :class:`SeedJudgeCase`, named
+            by its file unless it names itself, and a case set as :class:`SeedCaseSet`; neither carries a scope).
+            A missing subdirectory loads as empty.
         scope_id: The scope the definitions are built in. A file that names a ``scope_id`` of
             its own does not construct — the field is passed twice — because the scope is the
             host's to choose at load, not the file's.
@@ -398,7 +475,8 @@ def load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus:
         templates=_load_dir(seed_dir / "templates", EvalTemplate, scoped),
         rubric_dims=_load_dir(seed_dir / "rubric_dims", CatalogRubricDim, scoped),
         judge_configs=_load_dir(seed_dir / "judge_configs", JudgeConfig, scoped),
-        judge_cases=_load_dir(seed_dir / "judge_cases", SeedJudgeCase, {}),
+        judge_cases=_load_dir(seed_dir / "judge_cases", SeedJudgeCase, {}, named_by_file=True),
+        case_sets=_load_dir(seed_dir / "case_sets", SeedCaseSet, {}),
     )
 
 
@@ -433,7 +511,10 @@ def seed_eval_definitions(
     Authored judge cases (``corpus.judge_cases``) are built through ``author_judge_case`` with
     the templates, before anything is written, and frozen into their judge templates after the
     templates are written; each is reported under ``judge_case``, keyed
-    ``<judge template>/<test case id>``.
+    ``<judge template>/<test case id>``. Then each case set (``corpus.case_sets``) whose name the scope
+    holds no version of is minted over its cases' stored ids through ``mint_case_set``, the path
+    ``case_set_mint`` takes, reported under ``case_set`` keyed by its label (``<name> v1``); one whose
+    cases did not all land (a write the store refused) is counted failed and minted on the next boot.
 
     Args:
         host: The host: the store being seeded, and the profile a template is held to.
@@ -527,8 +608,9 @@ def seed_eval_definitions(
         conflicts=lambda c: not c.archived and c.rubric_dim_id in dims_with_an_active_config,
         deleted={(t.rubric_dim_id, t.name) for t in storage.query_judge_config_tombstones(corpus.scope_id)},
     )
-    if cases:
-        _seed_judge_cases(outcome, host, corpus.scope_id, cases)
+    frozen = _seed_judge_cases(outcome, host, corpus.scope_id, cases) if cases else {}
+    if corpus.case_sets:
+        _seed_case_sets(outcome, host, corpus, frozen)
 
     return outcome
 
@@ -578,12 +660,17 @@ def _authored_cases(
 
 def _seed_judge_cases(
     outcome: SeedOutcome, host: EvalHost, scope_id: str, cases: Sequence[tuple[SeedJudgeCase, AuthoredJudgeCase]]
-) -> None:
+) -> dict[str, str]:
     """Freeze each authored case into its judge template as ``judge_case_author`` does, recording it under
     ``judge_case``: created, already present (the same case is stored), or failed (the store refused it, or its
-    judge template, written by this seed, is not stored)."""
+    judge template, written by this seed, is not stored).
+
+    Returns:
+        Each named case that is stored now, created or already present, by its corpus name: its test case id.
+    """
     storage = host.storage
     created_keys: list[str] = []
+    stored: dict[str, str] = {}
     skipped = failed = 0
     for case, authored in cases:
         judge = storage.load_template_by_name(case.judge_template, scope_id)
@@ -596,6 +683,8 @@ def _seed_judge_cases(
         except StorageError:
             failed += 1
             continue
+        if case.name is not None:
+            stored[case.name] = frozen.test_case_id
         if frozen.created:
             created_keys.append(f"{case.judge_template}/{frozen.test_case_id}")
         else:
@@ -604,6 +693,47 @@ def _seed_judge_cases(
     outcome.created_keys["judge_case"] = created_keys
     outcome.skipped["judge_case"] = skipped
     outcome.failed["judge_case"] = failed
+    return stored
+
+
+def _seed_case_sets(outcome: SeedOutcome, host: EvalHost, corpus: SeedCorpus, frozen: Mapping[str, str]) -> None:
+    """Mint each corpus case set whose name the scope holds no version of, recording it under ``case_set``: created
+    (as ``<name> v<version>``), already present (some version is stored), or failed (a case of it, or its judge
+    template, did not land, or the store refused the set; the next boot retries it).
+
+    Every case a set lists was refused at build unless the corpus carries it, frozen into the set's template, so a
+    set reaching here names only cases this seed froze, or failed to.
+    """
+    storage = host.storage
+    created_keys: list[str] = []
+    skipped = failed = 0
+    for case_set in corpus.case_sets:
+        if storage.query_case_sets(corpus.scope_id, name=case_set.name):
+            skipped += 1
+            continue
+        judge = storage.load_template_by_name(case_set.template, corpus.scope_id)
+        if judge is None or any(name not in frozen for name in case_set.judge_cases):
+            failed += 1
+            continue
+        try:
+            minted = mint_case_set(
+                storage,
+                scope_id=corpus.scope_id,
+                name=case_set.name,
+                template_id=judge.id,
+                test_case_ids=[frozen[name] for name in case_set.judge_cases],
+                tracked=case_set.tracked,
+            )
+        except (StorageError, ConflictError) as refused:
+            # NOSILENT: logged and counted failed, which the seed's summary names; the next boot retries an empty slot.
+            log.warning("eval.seed case_set=%s scope=%s not minted: %s", case_set.name, corpus.scope_id, refused)
+            failed += 1
+            continue
+        created_keys.append(minted.ref.label)
+    outcome.created["case_set"] = len(created_keys)
+    outcome.created_keys["case_set"] = created_keys
+    outcome.skipped["case_set"] = skipped
+    outcome.failed["case_set"] = failed
 
 
 def _seed_doc_type[D](
@@ -667,6 +797,7 @@ def _seed_doc_type[D](
 
 
 __all__ = [
+    "SeedCaseSet",
     "SeedCorpus",
     "SeedJudgeCase",
     "SeedOutcome",

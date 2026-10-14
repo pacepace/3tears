@@ -11,6 +11,11 @@
       "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None, served_model: str | None = None)",
       "tier": "host-contract"
     },
+    "threetears.evals.declared_names": {
+      "kind": "function",
+      "signature": "declared_names() -> frozenset[str]",
+      "tier": "host-contract"
+    },
     "threetears.evals.Eval": {
       "kind": "class",
       "signature": "Eval(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str], runner: Any, grader: Any, *, k: int = 3, name: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> None",
@@ -59,6 +64,11 @@
     "threetears.evals.RootExtra": {
       "kind": "dataclass",
       "signature": "RootExtra(extra: str, modules: tuple[str, ...])",
+      "tier": "host-contract"
+    },
+    "threetears.evals.surface_tier": {
+      "kind": "function",
+      "signature": "surface_tier(qualified_name: str) -> Literal['host-contract', 'stable', 'provisional']",
       "tier": "host-contract"
     },
     "threetears.evals.World": {
@@ -773,8 +783,8 @@
     },
     "threetears.evals.schema.omit_paths": {
       "kind": "function",
-      "signature": "omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.OrdinalScale": {
       "kind": "model",
@@ -1609,7 +1619,7 @@
     "threetears.evals.kernel.DEFAULT_JOB_LEASE_S": {
       "kind": "constant (float)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.kernel.default_job_timeout": {
       "kind": "function",
@@ -2493,8 +2503,8 @@
     },
     "threetears.evals.kernel.resolve_variant_identity": {
       "kind": "function",
-      "signature": "resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVariantIdentity",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.ResolvedControl": {
       "kind": "model",
@@ -2914,7 +2924,7 @@
     "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.kernel.host.CellTimeoutFactory": {
       "kind": "protocol",
@@ -3956,6 +3966,21 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.run.Regrade": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.run.regrade": {
+      "kind": "async function",
+      "signature": "regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade",
+      "tier": "stable"
+    },
+    "threetears.evals.run.RegradedDim": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.run.rejudge_result": {
       "kind": "async function",
       "signature": "",
@@ -4096,15 +4121,20 @@
       "signature": "seed_eval_definitions(host: EvalHost, corpus: SeedCorpus, *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> SeedOutcome",
       "tier": "stable"
     },
+    "threetears.evals.run.SeedCaseSet": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.run.SeedCorpus": {
       "kind": "dataclass",
-      "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = ())",
+      "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = (), case_sets: tuple[SeedCaseSet, ...] = ())",
       "tier": "stable"
     },
     "threetears.evals.run.SeedJudgeCase": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "SeedJudgeCase(judge_template: str, criterion_template: str, criterion: str, output: str, case_material: str, expected: AuthoredVerdict, note: str, author: str, scenario: str | None = None, subject: str | None = None, judged_artifact: Literal['document', 'transcript'] = 'document', name: str | None = None)",
+      "tier": "host-contract"
     },
     "threetears.evals.run.SeedOutcome": {
       "kind": "dataclass",
@@ -5858,8 +5888,8 @@
     },
     "threetears.evals.analysis.variant_key_of_run": {
       "kind": "function",
-      "signature": "variant_key_of_run(results: Sequence[EvalResult]) -> str | None",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.analysis.Verdict": {
       "kind": "model",
@@ -7423,7 +7453,7 @@
     },
     "threetears.evals.providers.Catalogue": {
       "kind": "class",
-      "signature": "Catalogue(*, url: str = 'https://openrouter.ai/api/v1/models', http: httpx.AsyncClient | None = None) -> None",
+      "signature": "Catalogue(*, url: str = 'https://openrouter.ai/api/v1/models', http: httpx.AsyncClient | None = None, refresh_after: timedelta = datetime.timedelta(seconds=21600)) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.providers.Clients": {
@@ -7433,7 +7463,7 @@
     },
     "threetears.evals.providers.Completion": {
       "kind": "dataclass",
-      "signature": "Completion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, sent_settings: ClientRequestSettings | None, provider_stop_reason: str | None, served_provider: str | None, pricing_failure: str | None)",
+      "signature": "Completion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, sent_settings: ClientRequestSettings | None, provider_stop_reason: str | None, served_provider: str | None, pricing_failure: str | None, pricing_stale_since: datetime | None)",
       "tier": "stable"
     },
     "threetears.evals.providers.describe_failure": {
@@ -7444,6 +7474,11 @@
     "threetears.evals.providers.Model": {
       "kind": "class",
       "signature": "Model(id: str, *, provider: Provider | None = None, api_key: str | None = None, base_url: str | None = None, max_tokens: int | None = None, effort: str | int | None = None, temperature: float | None = None, recording: str | os.PathLike[str] | None = None, catalogue: Catalogue | None = None, http: httpx.AsyncClient | None = None) -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.providers.PriceSource": {
+      "kind": "enum",
+      "signature": "values: `'openrouter:reported'`, `'openrouter:reported+upstream'`, `'openrouter-catalogue'`",
       "tier": "host-contract"
     },
     "threetears.evals.providers.Provider": {

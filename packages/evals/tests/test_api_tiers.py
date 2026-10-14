@@ -20,9 +20,12 @@ import ast
 import json
 import re
 import textwrap
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
+
+import threetears.evals
 
 from packages.evals.tests.script_loader import load_script
 
@@ -43,13 +46,19 @@ HOST_GUIDES: tuple[Path, ...] = (
     *sorted(p for p in (PACKAGE / "examples").rglob("*") if p.suffix in (".py", ".md")),
 )
 
-#: Every page and example host a reader is shown, beyond the host guides: each topic guide and the example hosts under
-#: ``tests/fixtures/``, which the package matrix holds to the roots' ``__all__`` as an adopter's own code.
+#: Every page and example host a reader is shown, beyond the host guides: each topic guide and the courier host, the
+#: least a product writes (``tests/fixtures/courierhost/``), which the package matrix holds to the roots' ``__all__``
+#: as an adopter's own code.
 SHOWN: tuple[Path, ...] = (
     *sorted(p for p in (PACKAGE / "docs").glob("*.md") if p.name != "reference.md"),
-    *sorted((PACKAGE / "tests" / "fixtures" / "toyhost").rglob("*.py")),
     *sorted((PACKAGE / "tests" / "fixtures" / "courierhost").rglob("*.py")),
 )
+
+#: The toy host (``tests/fixtures/toyhost/``): a host that exercises every shape of the contract, read after the
+#: courier host. It reaches past the declared surface on purpose (a variant's identity, a lease's default, a payload
+#: elision), so its imports are held to the public roots, not to the declared tiers: a name it alone imports is
+#: ``provisional`` unless something a reader is taught to write imports it too.
+EXERCISER: tuple[Path, ...] = tuple(sorted((PACKAGE / "tests" / "fixtures" / "toyhost").rglob("*.py")))
 
 #: One ``from threetears.evals… import …`` statement in prose or a fenced block, parenthesised across lines or not.
 _DOC_IMPORT = re.compile(r"^[ \t]*from threetears\.evals(?:\.\w+)* import (?:\([^)]*\)|[^\n]*)", re.M)
@@ -114,6 +123,15 @@ def test_every_name_a_page_or_an_example_host_imports_is_declared() -> None:
         f"packages/evals/scripts/public_surface.py and run `{surface.REGENERATE_SNAPSHOT}`:\n  "
         + "\n  ".join(f"{name} <- {where}" for name, where in provisional.items())
     )
+
+
+def test_every_name_the_toy_host_imports_is_public() -> None:
+    """Exported by a root, any tier: the toy host is reference code an adopter reads, so it never reaches below one."""
+    recorded = surface.load_snapshot()
+    imported = {name: path for path in EXERCISER for name in sorted(imported_names(path))}
+    assert "threetears.evals.kernel.host.EvalHost" in imported, "the import reader found nothing, so this says nothing"
+    below = {name: str(path.relative_to(PACKAGE)) for name, path in sorted(imported.items()) if name not in recorded}
+    assert not below, f"the toy host imports names no public root exports: {below}"
 
 
 def test_the_declared_surface_is_one_sitting() -> None:
@@ -187,6 +205,28 @@ def test_a_tier_comes_from_the_declared_list() -> None:
     assert installed["threetears.evals.kernel.AttemptOutcome"].tier == "provisional"
     assert {name for name, entry in installed.items() if entry.tier == "host-contract"} == surface.HOST_CONTRACT
     assert {name for name, entry in installed.items() if entry.tier == "stable"} == surface.STABLE
+
+
+def test_the_installed_tier_map_is_the_repository_snapshot() -> None:
+    """The wheel ships the tiers (``api/`` is not installed), and what it ships is exactly what the snapshot records."""
+    recorded = json.loads(surface.SNAPSHOT_PATH.read_text(encoding="utf-8"))["names"]
+    installed = files("threetears.evals").joinpath("surface_tiers.json").read_text(encoding="utf-8")
+    assert installed == surface.render_tier_map(surface.load_snapshot()), (
+        f"the shipped surface_tiers.json is not the snapshot's tiers: run `{surface.REGENERATE_SNAPSHOT}`"
+    )
+    assert {name: threetears.evals.surface_tier(name) for name in recorded} == {
+        name: entry["tier"] for name, entry in recorded.items()
+    }
+    assert threetears.evals.declared_names() == surface.HOST_CONTRACT | surface.STABLE
+
+
+def test_a_host_gates_its_imports_by_tier_against_the_installed_build() -> None:
+    assert threetears.evals.surface_tier("threetears.evals.kernel.host.EvalHost") == "host-contract"
+    assert threetears.evals.surface_tier("threetears.evals.quick.EXIT_FAILED") == "stable"
+    assert threetears.evals.surface_tier("threetears.evals.kernel.AttemptOutcome") == "provisional"
+    assert "threetears.evals.surface_tier" in threetears.evals.declared_names()
+    with pytest.raises(KeyError, match="not a public name of this build"):
+        threetears.evals.surface_tier("threetears.evals.run.runner.grade_goal_checks")
 
 
 def test_a_provisional_name_records_no_signature() -> None:

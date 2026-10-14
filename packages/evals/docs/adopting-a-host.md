@@ -42,7 +42,9 @@ nothing but the public roots and itself:
    product supplies, in the order it is written. Start here.
 2. **[`tests/fixtures/toyhost/README.md`](../tests/fixtures/toyhost/README.md)** — a host that exercises
    every shape of the host contract (invoice field extraction), with a map of which file holds which step.
-   Read it once you have the courier host's outline and want to see a particular piece in full.
+   Read it once you have the courier host's outline and want to see a particular piece in full. It exercises the
+   engine past the declared surface, so a few of its imports are `provisional` (a variant's identity, a lease's
+   default); the courier host imports declared names only.
 
 Both run on `InMemoryDocumentStore` (`threetears.evals.storage`), the engine's in-memory reference
 `DocumentStore`: scoped, with conditional writes, and the shape to compare your own adapter against. Its
@@ -255,10 +257,17 @@ billed, so the price ceiling is one request's, but each refused send can take up
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
 without the upstream figure is unpriced. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
 for the matching `vendor/model` row, its `price_source` ending `;cache-approximate` when a prompt cache was read or
-written (the catalogue carries no cache rates). Unpriced is `None` with `pricing_failure` saying why, never `0`. A
+written (the catalogue carries no cache rates). The `price_source` words are `PriceSource`'s (host contract, from
+`threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
+(the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
+`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
 model's `price_ceiling` answers once its catalogue is loaded: `await clients.load_prices()` at boot, or
 `await catalogue.load()` on one you hand your models, and until then the engine refuses an out-of-run call under an
-enforced `out_of_run_cap_usd` rather than send one it cannot bound.
+enforced `out_of_run_cap_usd` rather than send one it cannot bound. A long-lived process is not priced from its first
+fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
+six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
+completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
+OpenRouter call, which its own figure prices), and `Catalogue.stale_since` and `refresh_failure` say the same.
 
 **An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
 class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`
@@ -854,7 +863,7 @@ release, on:
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
   old name, recorded as any removal is.
-- **`stable`** is the rest of the declared surface: what a topic guide, the agent and MCP guides or an example host
+- **`stable`** is the rest of the declared surface: what a topic guide, the agent and MCP guides or the courier host
   imports, the quick path's whole root, and what the one production host binds beyond the contract. Such a name may
   move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
 - **`provisional`** is every other name a root exports, most of them because a declared signature reaches them (a
@@ -868,6 +877,17 @@ signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_s
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
 and marks each host-contract one *host contract*. If your host binds to a provisional name, ask for it to be
 promoted: promoting a name costs nothing, and demoting one is a break.
+
+**The installed build ships its tiers**, so your suite can gate its own imports against the version it runs
+(`surface_tier` raises `KeyError` for a name no root exports, so a reach below a root fails too):
+
+```python
+from threetears.evals import surface_tier
+
+def test_we_bind_only_declared_names() -> None:
+    ours = ["threetears.evals.kernel.host.EvalHost", "threetears.evals.run.start_run"]  # every name we import
+    assert [name for name in ours if surface_tier(name) == "provisional"] == []
+```
 
 ## Upgrading: names that move
 
@@ -1326,7 +1346,7 @@ engine's prompt. A quick-path `Judge` declares its own dimensions, so an `Eval` 
 nothing.
 
 **Your boot seed corpus carries authored judge cases too.** Beside `templates/`, `rubric_dims/` and `judge_configs/`,
-`load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (`threetears.evals.run.definition_seed`;
+`load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (host contract, from `threetears.evals.run`;
 in memory, `SeedCorpus(judge_cases=...)`): `judge_case_author`'s arguments with its two templates named by `name`
 (`judge_template`, `criterion_template`, since a corpus cannot know a seeded template's id), the `criterion`, the
 `output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`. `seed_eval_definitions`
@@ -1337,6 +1357,26 @@ case authoring would refuse, then freezes it into its judge template after the t
 `judge_case`, and one whose words or verdict changed is a new case beside it, never an update. A launch naming no
 case set runs every live case of the judge template, so a host boots with its hard negatives in place and no
 authoring tool of its own over `judge_case_author`.
+
+**A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
+case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
+implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (in
+memory, `SeedCorpus(case_sets=...)`) with the set's `name`, its judge `template` by name and its `judge_cases` by
+their corpus names, in order. A judge case's corpus name is its file's name without `.json` (or its own `name`, which
+an in-memory case must set to be listed). A set naming a case twice, a case the corpus does not carry or a case of
+another judge template refuses the whole corpus when it is built. Once the cases are frozen, each set whose name the
+scope holds no version of is minted over their stored ids through `mint_case_set`, the path `case_set_mint` takes,
+and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
+`case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
+
+**A stored verdict is graded again through one door: `regrade`** (`threetears.evals.run`, and the `result_regrade`
+action). `await regrade(host, result_id, scope_id)` re-grades the result's check dims (its goal checks) from what its
+cell stored (the trace's call ledger and end state, and the result's world events) through the function the cell was
+graded with, and names its judged dims whose judging failed; it returns every verdict that moved, old beside new,
+and each check outcome it left as stored, with why. It writes nothing until `apply=True`, which stores the moved
+check verdicts (refused if the result changed since it was read) and asks the failed judged dims again through the
+re-judge, which spends. `checks=False` or `judges=False` leaves either half out. The action never asks a judge:
+applying over it while a judged dim would be asked is refused, so a host re-asks those from its own code.
 
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
