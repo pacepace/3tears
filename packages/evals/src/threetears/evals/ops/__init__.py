@@ -156,8 +156,10 @@ from threetears.evals.analysis.out_of_run_spend import (
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
 from threetears.evals.ops.judge_cases import (
+    JudgeCaseAuthor,
     JudgeCasesFreeze,
     JudgeTemplateCreate,
+    judge_case_author,
     judge_cases_freeze,
     judge_template_create,
 )
@@ -308,6 +310,7 @@ __all__ = [
     "RegressionAlert",
     "RegressionSink",
     "RegressionWatch",
+    "JudgeCaseAuthor",
     "JudgeCasesFreeze",
     "JudgeConfigLine",
     "JudgeConfigListing",
@@ -374,6 +377,7 @@ __all__ = [
     "insight_get",
     "insights_list",
     "job_cancel",
+    "judge_case_author",
     "judge_cases_freeze",
     "judge_configs_list",
     "judge_template_create",

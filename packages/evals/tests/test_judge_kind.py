@@ -936,3 +936,56 @@ def test_a_freeze_naming_no_run_no_labels_and_no_authored_case_is_refused() -> N
     host = toyhost_host()
     with pytest.raises(ValidationFailedError, match="no judged run, no labels and no authored case"):
         freeze_judge_cases(host.storage, template=_judge_template(), scope_id=TOYHOST_SCOPE)
+
+
+async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_the_caller() -> None:
+    from threetears.evals.actions import engine_actions
+    from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
+
+    host = toyhost_host()
+    subject = toyhost_judged_template()
+    off_loop(host.storage.save_template, subject)
+    template = _judge_template()
+    off_loop(host.storage.save_template, template)
+    hard = JudgeCaseAuthor(
+        template_id=template.id,
+        criterion_template_id=subject.id,
+        criterion=FAITHFULNESS_DIM,
+        output=json.dumps({"invoice_number": "INV-0042"}),
+        case_material=_AUTHORED_INVOICE,
+        expected=1,
+        note="three of four fields missing is not faithful",
+    )
+
+    report = off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR)
+
+    (frozen,) = report.cases
+    stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
+    assert stored is not None and stored.template_id == template.id
+    case = judge_case_of(stored)
+    assert case is not None and case.criterion == subject.rubric[0] and case.intent == subject.intent
+    assert case.labels[0].rater == _AUTHOR and frozen.authored_by == _AUTHOR
+    action = next(action for action in engine_actions() if action.name == "judge_case_author")
+    assert action.permission == "write"
+    assert f"{FAITHFULNESS_DIM} authored by {_AUTHOR}, its expected verdict its label" in action.render(report)
+    # Authoring it again names the stored case.
+    assert off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR).cases[0].created is False
+    # A dimension the template does not have, and a verdict its scale cannot hold, are each refused by name.
+    with pytest.raises(ValidationFailedError, match="has no rubric dimension 'extraction.tone'"):
+        off_loop(
+            judge_case_author,
+            host,
+            hard.model_copy(update={"criterion": "extraction.tone"}),
+            TOYHOST_SCOPE,
+            author=_AUTHOR,
+        )
+    with pytest.raises(
+        ValidationFailedError, match=rf"criterion '{FAITHFULNESS_DIM}' .* cannot hold the verdict 'fail'"
+    ):
+        off_loop(
+            judge_case_author,
+            host,
+            JudgeCaseAuthor.model_validate({**hard.model_dump(), "expected": "fail"}),
+            TOYHOST_SCOPE,
+            author=_AUTHOR,
+        )

@@ -6876,6 +6876,11 @@
       "signature": "JobStatus(job_id: str, kind: JobKind, state: JobState, status: str, done: bool, progress: dict[str, Any] = dict(), run_id: str | None = None, run_ids: list[str] = list(), campaign_id: str | None = None, analysis_id: str | None = None, sweep_id: str | None = None, detail: str | None = None, faults: list[str] = list(), refusal: JobRefusal | None = None, result: dict[str, Any] | None = None)",
       "tier": "closure"
     },
+    "threetears.evals.ops.judge_case_author": {
+      "kind": "function",
+      "signature": "judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, author: str) -> JudgeCaseFreezeReport",
+      "tier": "closure"
+    },
     "threetears.evals.ops.judge_cases_freeze": {
       "kind": "function",
       "signature": "judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport",
@@ -6944,6 +6949,11 @@
     "threetears.evals.ops.judge_template_create": {
       "kind": "function",
       "signature": "judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: str) -> TemplateLine",
+      "tier": "closure"
+    },
+    "threetears.evals.ops.JudgeCaseAuthor": {
+      "kind": "model",
+      "signature": "JudgeCaseAuthor(template_id: Annotated[str, LaunchArguments.model_fields['template_id']], criterion_template_id: str, criterion: str, output: str, case_material: str, expected: AuthoredVerdict, note: str, scenario: str | None = None, subject: str | None = None, judged_artifact: Literal['document', 'transcript'] = 'document')",
       "tier": "closure"
     },
     "threetears.evals.ops.JudgeCasesFreeze": {
