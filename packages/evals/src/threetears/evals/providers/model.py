@@ -357,6 +357,12 @@ class _Live:
             owned, self._owned = self._owned, None
             await owned.aclose()
 
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.aclose()
+
 
 class Model:
     """One model, as the engine's completion client and as three helpers for a runner of your own.
