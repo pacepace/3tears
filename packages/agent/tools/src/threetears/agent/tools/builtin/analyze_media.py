@@ -44,11 +44,12 @@ from threetears.agent.tools.protocols import (
     TranscriptionProvider,
     VisionProvider,
 )
-from threetears.agent.tools.text_window import window_text
+from threetears.agent.tools.text_window import find_in_text, window_text
 from threetears.langgraph.fence import explained_fence, mint_nonce
 from threetears.observe import get_logger
 
 __all__ = [
+    "DESCRIBE_PROMPT",
     "MAX_DOCUMENT_BYTES",
     "MAX_TRANSCRIPTION_BYTES",
     "MAX_VISION_IMAGE_BYTES",
@@ -68,6 +69,15 @@ _DEFAULT_RESPONSE_SUFFIX = "Respond using markdown formatting."
 _PLAIN_RESPONSE_SUFFIX = "Answer in plain sentences."
 _DEFAULT_DOC_MAX_CHARS = 12_000
 _DEFAULT_TRANSCRIPT_MAX_CHARS = 10_000
+
+#: What the analyser is asked when the caller asks nothing: the describe ask. Only its
+#: answer is the item's description -- served from the store when one is kept, and
+#: kept when one is made. An answer to any question the caller wrote is that
+#: question's alone: kept as the description, "what colour is the car?" came back
+#: as the answer to the next caller's "describe this", and to every later one.
+DESCRIBE_PROMPT = (
+    "Describe this in full: what it shows or says, any text in it word for word, and anything notable about it."
+)
 
 #: The largest document this tool downloads to read its text: 20 MiB. A
 #: document with no cached extraction is read from its own bytes, and every
@@ -129,6 +139,21 @@ OnAnalysisCallback = Callable[[str, str, str], Awaitable[None]]
 
 def _tool_error(step: str, detail: str) -> str:
     return f"[analyze_media/{step}] Error: {detail}"
+
+
+def _is_uuid(value: str) -> bool:
+    """whether a model-written media id parses as one.
+
+    :param value: the id as the model wrote it
+    :ptype value: str
+    :return: ``True`` when it is a UUID
+    :rtype: bool
+    """
+    try:
+        UUID(str(value))
+    except ValueError:
+        return False
+    return True
 
 
 def _too_large(kind: str, size_bytes: int | None, limit_bytes: int, ask: str) -> str:
@@ -312,14 +337,26 @@ class AnalyzeMediaTool(TearsTool):
             },
             "question": {
                 "type": "string",
-                "description": "what to ask about media (e.g. 'Describe this image')",
+                "description": (
+                    "What to ask, e.g. 'what colour is the car?'. A question gets a new look and its answer is "
+                    "not kept. Leave out for the item's description."
+                ),
             },
             "analyzer": {
                 "type": "string",
                 "description": "analysis model to use; omit it to use the first one that reads this media",
             },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Document only: where to start reading, in characters.",
+            },
+            "find": {
+                "type": "string",
+                "description": "Document only: a word or phrase; the reading opens just before its first match.",
+            },
         },
-        "required": ["media_ids", "question"],
+        "required": ["media_ids"],
     }
 
     def __init__(
@@ -373,6 +410,9 @@ class AnalyzeMediaTool(TearsTool):
         media_ids: list[str],
         question: str,
         analyzer: str | None,
+        *,
+        offset: int = 0,
+        find: str | None = None,
     ) -> str:
         """resolve analyzer and route media items through the per-category handlers.
 
@@ -384,30 +424,47 @@ class AnalyzeMediaTool(TearsTool):
 
         document items go through :meth:`_handle_document`,
         audio/video items through :meth:`_handle_audio_video`, and
-        images through :meth:`_handle_vision`. single-media calls
-        consult the cached description first to avoid redundant
-        provider hits.
+        images through :meth:`_handle_vision`.
+
+        a blank ``question`` is the describe ask: a single item's kept description is
+        served, and a new one is kept. a question is always a new look, and its
+        answer is never kept as the description (:data:`DESCRIBE_PROMPT`).
 
         :param media_ids: list of media UUID strings to analyze
         :ptype media_ids: list[str]
-        :param question: prompt to send to the resolved analyzer
+        :param question: what the caller asked, or ``""`` for the describe ask
         :ptype question: str
         :param analyzer: display name of the analyzer to invoke, or ``None`` for
             the first one that reads the media
         :ptype analyzer: str | None
+        :param offset: for a document, where to start reading, in characters
+        :ptype offset: int
+        :param find: for a document, a word or phrase whose first match the read opens at
+        :ptype find: str | None
         :return: analysis text or formatted error string
         :rtype: str
         """
+        asked = question.strip()
         _log.debug(
             "analyze_media invoked",
             extra={
                 "extra_data": {
                     "media_ids": media_ids,
-                    "question": question[:100],
+                    "question": asked[:100],
+                    "describe": not asked,
                     "analyzer": analyzer,
                 }
             },
         )
+        if not media_ids:
+            return _tool_error("load media", "No media ids were given: pass the id of each item to look at.")
+        unread = [m for m in media_ids if not _is_uuid(m)]
+        if unread:
+            return _tool_error(
+                "load media",
+                f"Not media ids: {', '.join(repr(m) for m in unread[:5])}. A media id is the id in a [media:<id>] "
+                "line or the ID of an item in the media list.",
+            )
 
         if analyzer is not None and analyzer not in self._analyzers:
             available = ", ".join(self._analyzers.keys())
@@ -443,7 +500,9 @@ class AnalyzeMediaTool(TearsTool):
                     mid_str,
                     info,
                     acfg,
-                    question,
+                    asked,
+                    offset=offset,
+                    find=find,
                 )
 
         # --- Capability check ---
@@ -467,11 +526,14 @@ class AnalyzeMediaTool(TearsTool):
                         mid_str,
                         info,
                         acfg,
-                        question,
+                        asked,
                     )
 
-        # --- Cached description check (single-media) ---
-        if len(media_ids) == 1:
+        # --- The kept description: the describe ask on one item, and only that ---
+        # A question is never answered from it: the description answers "what is
+        # this?", and served for "what colour is the car?" it reads as a new look
+        # that never happened.
+        if not asked and len(media_ids) == 1 and media_ids[0] in media_info:
             cached = await self._storage.get_content(
                 UUID(media_ids[0]),
                 "description",
@@ -487,7 +549,7 @@ class AnalyzeMediaTool(TearsTool):
                         }
                     },
                 )
-                return cached
+                return f"The kept description of {media_ids[0]} (no new look; ask a question for one).\n\n{cached}"
 
         # --- Vision analysis ---
         if not acfg.vision:
@@ -496,7 +558,7 @@ class AnalyzeMediaTool(TearsTool):
                 f"Analyzer '{analyzer}' has no vision capability.",
             )
 
-        return await self._handle_vision(media_ids, media_info, acfg, question, analyzer)
+        return await self._handle_vision(media_ids, media_info, acfg, asked, analyzer)
 
     @staticmethod
     def _reads(acfg: AnalyzerConfig, category: str) -> bool:
@@ -644,6 +706,9 @@ class AnalyzeMediaTool(TearsTool):
         info: MediaInfo,
         acfg: AnalyzerConfig,
         question: str,
+        *,
+        offset: int = 0,
+        find: str | None = None,
     ) -> str:
         """route a document item through extracted-text question answering.
 
@@ -655,6 +720,12 @@ class AnalyzeMediaTool(TearsTool):
         any other type, and a document whose recorded size is over the limit,
         is answered from its metadata without downloading it.
 
+        the part read starts at ``offset``, or just before the first match of
+        ``find`` at or after it. which part was read, and every match, are said
+        before the answer: a reader that keeps only the head of the result keeps
+        that it covers a part. only the describe ask of the whole document's
+        first part is kept as its description.
+
         :param mid: media UUID
         :ptype mid: UUID
         :param mid_str: media UUID string for logging/callbacks
@@ -663,8 +734,12 @@ class AnalyzeMediaTool(TearsTool):
         :ptype info: MediaInfo
         :param acfg: resolved AnalyzerConfig (must carry a text provider)
         :ptype acfg: AnalyzerConfig
-        :param question: prompt to send to the text provider
+        :param question: what the caller asked, or ``""`` for the describe ask
         :ptype question: str
+        :param offset: where to start reading, in characters
+        :ptype offset: int
+        :param find: a word or phrase to open the read at
+        :ptype find: str | None
         :return: provider response or formatted error string
         :rtype: str
         """
@@ -715,16 +790,37 @@ class AnalyzeMediaTool(TearsTool):
                 f"Analyzer '{acfg.name}' has no text QA capability.",
             )
 
+        # Where to read: from offset, or from just before the first match of find.
+        found_note = ""
+        start = max(offset, 0)
+        if find is not None and find.strip():
+            found = find_in_text(extracted, find, after=start)
+            found_note = found.note()
+            if found.start is None:
+                # Nothing to read about: the document holds no such word from there on.
+                # Not a failure -- the answer to "where does it say X" is "it does not".
+                return (
+                    f"Looked through {mid_str} from character {start:,} of {len(extracted):,} for {find.strip()!r}: "
+                    "no match, so no part was read.\n"
+                    f"{found_note}"
+                )
+            start = found.start
+
         # The analyser reads a window of the document, and the answer says which
         # part it read: an analysis of the first pages, presented as an analysis
         # of the whole document, is the failure this note exists to prevent.
-        window = window_text(extracted, max_chars=self._doc_max_chars)
+        window = window_text(extracted, offset=start, max_chars=self._doc_max_chars)
         suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
-        window_note = window.note(how="this analysis covers that part of the document only")
+        window_note = window.note(
+            how=f"this analysis covers that part only; call again with offset={window.next_offset} for the next"
+            if window.next_offset is not None
+            else "this analysis covers that part only"
+        )
+        describe = not question
         # The document's words are material; a document can carry an instruction.
         # One call reads it, so nothing is cached and the nonce is minted for it.
         doc_prompt = (
-            f"{question}\n\nThe document:\n{explained_fence(window.text, nonce=mint_nonce())}"
+            f"{question or DESCRIBE_PROMPT}\n\nThe document:\n{explained_fence(window.text, nonce=mint_nonce())}"
             f"{chr(10) + window_note if window_note else ''}{suffix}"
         )
 
@@ -742,7 +838,11 @@ class AnalyzeMediaTool(TearsTool):
             )
             return _tool_error("document analysis", str(exc))
 
-        if result_text and self._user_id:
+        # Kept as the document's description only when it is one: the describe ask
+        # of the document from its start. An answer to a question, or a reading of
+        # a later part, kept there would be served as what the whole document is.
+        kept = describe and window.offset == 0 and bool(result_text) and self._user_id is not None
+        if kept and self._user_id:
             try:
                 await self._storage.store_content(
                     mid,
@@ -766,7 +866,24 @@ class AnalyzeMediaTool(TearsTool):
 
         if not result_text:
             return _tool_error("document analysis", "Model returned empty response.")
-        return f"{result_text}\n\n{window_note}" if window_note else result_text
+        end = window.offset + len(window.text)
+        what = "Described" if describe else "Answered from"
+        keep = (
+            "; kept as its description"
+            if kept
+            else (
+                "; not kept as its description"
+                if not describe or self._user_id is None
+                else "; not kept, since it covers a later part"
+            )
+        )
+        statement = (
+            f"{what} {mid_str}, characters {window.offset:,}-{end:,} of {len(extracted):,}, with {acfg.name}{keep}."
+        )
+        # The statement first, then what the reading covered and where find landed,
+        # then the answer: the note was after the answer, where a cut drops it.
+        head = "\n".join(line for line in (statement, window_note, found_note) if line)
+        return f"{head}\n\n{result_text}"
 
     async def _handle_audio_video(
         self,
@@ -969,7 +1086,7 @@ class AnalyzeMediaTool(TearsTool):
             )
 
         suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
-        prompt = f"{question}{suffix}"
+        prompt = f"{question or DESCRIBE_PROMPT}{suffix}"
 
         try:
             if len(image_parts) == 1:
@@ -998,7 +1115,7 @@ class AnalyzeMediaTool(TearsTool):
             return _tool_error("vision model invocation", str(exc))
 
         # Persist description for single-media analysis
-        return await self._finalize_vision(media_ids, result_text, analyzer_name)
+        return await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
 
     async def _handle_vision_by_reference(
         self,
@@ -1027,7 +1144,7 @@ class AnalyzeMediaTool(TearsTool):
         :rtype: str
         """
         suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
-        prompt = f"{question}{suffix}"
+        prompt = f"{question or DESCRIBE_PROMPT}{suffix}"
         object_ids = [UUID(mid) for mid in media_ids]
         try:
             result_text = await vision.analyze_ref(object_ids, prompt)
@@ -1037,18 +1154,22 @@ class AnalyzeMediaTool(TearsTool):
                 extra={"extra_data": {"analyzer": analyzer_name, "error": str(exc)}},
             )
             return _tool_error("vision model invocation", str(exc))
-        return await self._finalize_vision(media_ids, result_text, analyzer_name)
+        return await self._finalize_vision(media_ids, result_text, analyzer_name, describe=not question)
 
     async def _finalize_vision(
         self,
         media_ids: list[str],
         result_text: str,
         analyzer_name: str,
+        *,
+        describe: bool,
     ) -> str:
         """persist a single-image description and append a display-url hint.
 
         shared close-out for both vision paths (bytes and reference) so the
-        persistence + display-hint behaviour has one implementation.
+        persistence + display-hint behaviour has one implementation. only the
+        describe ask's answer is kept as the description; the answer to a
+        question is returned and kept nowhere.
 
         :param media_ids: the analysed media UUID strings
         :ptype media_ids: list[str]
@@ -1056,10 +1177,13 @@ class AnalyzeMediaTool(TearsTool):
         :ptype result_text: str
         :param analyzer_name: display name of the analyzer, stored as model_name
         :ptype analyzer_name: str
-        :return: the answer, with a markdown display hint when a URL builder exists
+        :param describe: whether this was the describe ask rather than a question
+        :ptype describe: bool
+        :return: the statement line, the answer, and a display hint when a URL builder exists
         :rtype: str
         """
-        if result_text and len(media_ids) == 1 and self._user_id:
+        kept = describe and bool(result_text) and len(media_ids) == 1 and self._user_id is not None
+        if kept and self._user_id:
             try:
                 await self._storage.store_content(
                     UUID(media_ids[0]),
@@ -1076,26 +1200,37 @@ class AnalyzeMediaTool(TearsTool):
 
             await self._fire_callback(media_ids[0], "description", result_text)
 
-        result = result_text
+        items = media_ids[0] if len(media_ids) == 1 else f"{len(media_ids)} images"
+        if describe:
+            keep = "; kept as its description" if kept else ""
+            statement = f"Described {items} with {analyzer_name}, a new look{keep}."
+        else:
+            statement = (
+                f"Looked at {items} with {analyzer_name} for this question; the answer is not kept as a description."
+            )
+        result = f"{statement}\n\n{result_text}"
         if len(media_ids) == 1 and self._media_url_fn:
             url = self._media_url_fn(media_ids[0])
             if url:
-                result = f"{result_text}\n\nTo show this image in your reply, write ![description]({url})"
+                result = f"{result}\n\nTo show this image in your reply, write ![description]({url})"
         return result
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """analyze media items using configured providers.
 
-        :param kwargs: must include 'media_ids' and 'question'; 'analyzer' is optional,
-            and absent or empty means the first analyzer that reads the media
+        :param kwargs: must include 'media_ids'; 'question' absent or blank is the
+            describe ask; 'analyzer' absent or empty means the first analyzer that
+            reads the media; 'offset' and 'find' place the read in a document
         :ptype kwargs: Any
         :return: result containing analysis text or error
         :rtype: ToolResult
         """
-        media_ids = kwargs.get("media_ids", [])
-        question = kwargs.get("question", "")
+        media_ids = kwargs.get("media_ids") or []
+        question = kwargs.get("question") or ""
         analyzer = kwargs.get("analyzer") or None
-        content = await self._analyze(media_ids, question, analyzer)
+        offset = int(kwargs.get("offset") or 0)
+        find = kwargs.get("find") or None
+        content = await self._analyze(media_ids, question, analyzer, offset=offset, find=find)
         success = not content.startswith("[analyze_media/")
         result = ToolResult(
             success=success,

@@ -207,11 +207,11 @@ class TestWhatComesBack:
 
     def test_a_plain_invoke_answers_with_the_text(self) -> None:
         calculator = to_langchain_tool(CalculatorTool())
-        assert calculator.invoke({"expression": "1 + 1"}) == "2"
+        assert calculator.invoke({"expression": "1 + 1"}) == "1 + 1 = 2"
         assert "[TOOL ERROR]" in calculator.invoke({"expression": "invalid!!!"})
 
     async def test_a_sync_invoke_from_inside_a_running_loop_completes(self) -> None:
-        assert to_langchain_tool(CalculatorTool()).invoke({"expression": "6 * 7"}) == "42"
+        assert to_langchain_tool(CalculatorTool()).invoke({"expression": "6 * 7"}) == "6 * 7 = 42"
 
 
 class TestRunAndArunAnswerAsInvokeDoes:
@@ -234,7 +234,7 @@ class TestRunAndArunAnswerAsInvokeDoes:
         assert message.artifact == {"failure": "down"}
 
     async def test_bare_arguments_with_no_config_answer_with_the_text(self) -> None:
-        assert await to_langchain_tool(CalculatorTool()).arun({"expression": "6 * 7"}) == "42"
+        assert await to_langchain_tool(CalculatorTool()).arun({"expression": "6 * 7"}) == "6 * 7 = 42"
 
 
 class _GatedStoryboard(_Storyboard):
@@ -373,7 +373,7 @@ class TestAToolInAGraphRunsInTheCallsScope:
             {"type": "tool_call", "id": "c9", "name": "threetears.calculator", "args": {"expression": "2 + 2"}}
         )
         assert message.status == "success"
-        assert message.content == "4"
+        assert message.content == "2 + 2 = 4"
 
     async def test_a_call_context_of_the_wrong_type_is_refused_by_name(self) -> None:
         """a dict where a CallContext belongs is a host bug, said so rather than run as no scope.

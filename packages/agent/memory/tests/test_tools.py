@@ -226,8 +226,27 @@ class TestDatesAreInTheZoneTheCallerNames:
             f"- [memory:{memory['memory_id']}] [fact] [Oct 9, 2026 at 9:11 PM PDT] [match 0.90] lives in Leeds"
             in result
         )
-        assert f"- [media:{media['content_id']}] a photo of the house (created: Oct 9, 2026 at 9:11 PM PDT)" in result
+        # the file by its media id, the id the media tools take, as stored
+        assert f"- [media:{media['media_id']}] a photo of the house (created: Oct 9, 2026 at 9:11 PM PDT)" in result
+        assert str(media["content_id"]) not in result
         assert "Oct 10" not in result, "no date is left in UTC beside the zoned ones"
+
+    async def test_a_file_found_twice_is_listed_once_by_its_media_id(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        """a file's description and its text are two rows; the agent is handed one id for the file."""
+        description = _media_row("a lease, two pages")
+        text = {**_media_row("The tenant shall pay rent monthly."), "media_id": description["media_id"]}
+        other = _media_row("a photo of the house")
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(),
+            media=_FakeSearchRows(semantic=[description, text, other]),
+            chunks=_FakeSearchRows(),
+        )
+        assert "Found 2 files:" in result
+        assert result.count(f"[media:{description['media_id']}]") == 1
+        assert f"[media:{other['media_id']}]" in result
 
     async def test_with_no_zone_named_a_date_reads_as_it_did(
         self, permissive_memory_authorizer: MemoryAuthorizerDependencies

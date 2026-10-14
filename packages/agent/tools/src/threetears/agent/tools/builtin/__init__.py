@@ -57,6 +57,17 @@ def _build_current_date() -> TearsTool:
     return CurrentDateTool()
 
 
+def _build_date_math() -> TearsTool:
+    """zero-config date_math TearsTool factory.
+
+    "today" is read per call from the :class:`ToolCallScope`'s user timezone,
+    as :func:`_build_current_date` does.
+    """
+    from threetears.agent.tools.builtin.date_math import DateMathTool
+
+    return DateMathTool()
+
+
 def _build_dictionary() -> TearsTool:
     """zero-config dictionary TearsTool factory (defaults to ``en``)."""
     from threetears.agent.tools.builtin.dictionary import DictionaryTool
@@ -88,6 +99,7 @@ STANDARD_BUILTIN_FACTORIES: dict[str, Callable[[], TearsTool]] = {
     "threetears.calculator": _build_calculator,
     "threetears.context_recall": _build_context_recall,
     "threetears.current_date": _build_current_date,
+    "threetears.date_math": _build_date_math,
     "threetears.dictionary": _build_dictionary,
     "threetears.timezone_converter": _build_timezone_converter,
     "threetears.unit_converter": _build_unit_converter,
@@ -157,6 +169,7 @@ def register_builtins(registry: ToolRegistry) -> None:
         ("timezone_converter", "threetears.agent.tools.builtin.timezone_converter", "create_timezone_converter_tool"),
         ("dictionary", "threetears.agent.tools.builtin.dictionary", "create_dictionary_tool"),
         ("current_date", "threetears.agent.tools.builtin.current_date", "create_current_date_tool"),
+        ("date_math", "threetears.agent.tools.builtin.date_math", "create_date_math_tool"),
         ("web_search", "threetears.agent.tools.builtin.web_search", "create_web_search_tool"),
         ("web_fetch", "threetears.agent.tools.builtin.web_fetch", "create_web_fetch_tool"),
         ("analyze_media", "threetears.agent.tools.builtin.analyze_media", "create_analyze_media_tool"),

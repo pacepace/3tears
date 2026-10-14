@@ -680,7 +680,11 @@ async def _search_by_ids(
             content = _cut(row["content"], _FILE_PREVIEW_CHARS, whole)
             when = _fmt_dt(row.get("date_created"), zone)
             stamp = f" [{when}]" if when else ""
-            parts.append(f"- [media:{cid}] [{label}]{stamp} {content}")
+            kind = row.get("content_type")
+            kind_tag = f" [{kind}]" if kind else ""
+            # The media id, which every media tool takes; the content row's own id
+            # opened nothing but this lookup ("Media not found or access denied").
+            parts.append(f"- [media:{media_id if media_id is not None else cid}] [{label}]{kind_tag}{stamp} {content}")
             if ledger_callback:
                 await ledger_callback(cid, "media", label or content)
 
@@ -985,6 +989,17 @@ async def load_memory_search_tool(
                 "memory_search media branch failed",
                 extra={"extra_data": {"user_id": user_id, "agent_id": agent_id}},
             )
+        # One line per file: a file's description and its text are two content rows,
+        # and both would print the same [media:<id>].
+        seen_media: set[Any] = set()
+        one_per_file: list[dict[str, Any]] = []
+        for mr in media_results:
+            file_id = mr.get("media_id")
+            if file_id is not None and file_id in seen_media:
+                continue
+            seen_media.add(file_id)
+            one_per_file.append(mr)
+        media_results = one_per_file
         more_files = len(media_results) > _SIDE_RESULTS
         media_results = media_results[:_SIDE_RESULTS]
 
@@ -1063,7 +1078,9 @@ async def load_memory_search_tool(
             for mr in media_results:
                 ts = _fmt_dt(mr.get("date_created"), zone)
                 ts_suffix = f" (created: {ts})" if ts else ""
-                tag = f"[media:{mr['content_id']}]"
+                # The media id, which every media tool takes (media_analyze, the
+                # text reader, an image edit's source), not the content row's id.
+                tag = f"[media:{mr.get('media_id') or mr['content_id']}]"
                 if mr.get("media_category") == "image":
                     parts.append(f"- {tag} {mr['content']}{ts_suffix}")
                 else:
@@ -1099,7 +1116,7 @@ async def load_memory_search_tool(
     memory_search.description = (
         "Search your memories, the files you have seen and your past conversations. "
         "Use it first when a topic comes back. Returns [memory:<id>], [media:<id>] "
-        "and [chunk:<id>] lines; a line says when a memory is permanent or was replaced, "
+        "and [chunk:<id>] lines; a [media:<id>] is the id the media tools take. A line says when a memory is permanent or was replaced, "
         "and a retired memory is not found. Pass ids to open items you already have, "
         "alias to open a named memory, date_after or date_before to limit by date, and "
         "limit and offset to read further. memory_list browses without a query."

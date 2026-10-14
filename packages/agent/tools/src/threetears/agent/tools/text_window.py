@@ -36,7 +36,7 @@ from typing import Final
 
 from pydantic import BaseModel, Field
 
-__all__ = ["TextWindow", "WindowedInput", "window_text"]
+__all__ = ["Found", "TextWindow", "WindowedInput", "find_in_text", "window_text"]
 
 #: Longest note a window can append, so a caller sizing a budget can allow for it.
 NOTE_ALLOWANCE: Final[int] = 200
@@ -150,6 +150,84 @@ def window_text(text: str, *, offset: int = 0, max_chars: int) -> TextWindow:
     size = max(max_chars, 1)
     end = min(start + size, total)
     return TextWindow(text=text[start:end], offset=start, total=total, next_offset=end if end < total else None)
+
+
+#: How much text before a match a window opens with, so the match is read in its sentence.
+FIND_LEAD_CHARS: Final[int] = 300
+
+#: The most match offsets a find names; the count says how many there are in all.
+FIND_LISTED: Final[int] = 20
+
+
+@dataclass(frozen=True)
+class Found:
+    """Where a word or phrase appears in a text, from a starting offset on.
+
+    :ivar term: what was looked for, as asked
+    :ivar after: the offset the search started at
+    :ivar offsets: where the first :data:`FIND_LISTED` matches start, in characters
+    :ivar total: how many matches there are from ``after`` on
+    """
+
+    term: str
+    after: int
+    offsets: tuple[int, ...]
+    total: int
+
+    @property
+    def start(self) -> int | None:
+        """Where a window showing the first match opens, or ``None`` when nothing matched."""
+        if not self.offsets:
+            return None
+        return max(self.after, self.offsets[0] - FIND_LEAD_CHARS)
+
+    def note(self) -> str:
+        """The line the model reads: how many matches, and the offset of each it can read next.
+
+        :return: one line
+        :rtype: str
+        """
+        where = f" from character {self.after:,}" if self.after else ""
+        if not self.offsets:
+            return f"[find {self.term!r}: no match{where}.]"
+        listed = ", ".join(f"{o:,}" for o in self.offsets)
+        more = f" (the first {len(self.offsets)} shown)" if self.total > len(self.offsets) else ""
+        word = "match" if self.total == 1 else "matches"
+        return (
+            f"[find {self.term!r}: {self.total} {word}{where}, at characters {listed}{more}. "
+            "The text below opens just before the first; pass offset to read at another.]"
+        )
+
+
+def find_in_text(text: str, term: str, *, after: int = 0) -> Found:
+    """Every place ``term`` appears in ``text`` at or after ``after``, ignoring case.
+
+    :param text: the whole text
+    :ptype text: str
+    :param term: the word or phrase to look for; surrounding spaces are ignored
+    :ptype term: str
+    :param after: where to start looking, clamped to the text
+    :ptype after: int
+    :return: the matches
+    :rtype: Found
+    :raises ValueError: when ``term`` is blank
+    """
+    # lower(), not casefold(): casefold can change a string's length (the German sharp
+    # s), which would move every offset after it away from the text the model reads.
+    needle = term.strip().lower()
+    if not needle:
+        raise ValueError("find needs a word or phrase to look for")
+    start = min(max(after, 0), len(text))
+    haystack = text.lower()
+    offsets: list[int] = []
+    total = 0
+    at = haystack.find(needle, start)
+    while at != -1:
+        total += 1
+        if len(offsets) < FIND_LISTED:
+            offsets.append(at)
+        at = haystack.find(needle, at + len(needle))
+    return Found(term=term.strip(), after=start, offsets=tuple(offsets), total=total)
 
 
 class WindowedInput(BaseModel):

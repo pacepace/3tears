@@ -3006,12 +3006,15 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         *,
         agent_id: UUID,
     ) -> list[dict[str, Any]]:
-        """batch lookup of media_content rows by primary key.
+        """batch lookup of media_content rows by their own id or their media's id.
 
         joins to the parent :class:`MediaEntity` for ``media_category``
-        + ``metadata_json``, scoped to ``(agent_id, user_id)``.
+        + ``metadata_json``, scoped to ``(agent_id, user_id)``. a search
+        prints a file by its media id (the id the media tools take), so an id
+        handed back is matched against both columns: a media id opens every
+        content row of that file, newest first.
 
-        :param content_ids: primary-key values to fetch
+        :param content_ids: content ids or media ids to fetch
         :ptype content_ids: list[UUID]
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
@@ -3033,8 +3036,9 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
               ON mc.agent_id = med.agent_id
              AND mc.media_id = med.media_id
             WHERE mc.agent_id = $1
-              AND mc.content_id = ANY($2::uuid[])
+              AND (mc.content_id = ANY($2::uuid[]) OR mc.media_id = ANY($2::uuid[]))
               AND mc.user_id = $3
+            ORDER BY mc.media_id, mc.date_created DESC
             """,
             agent_id,
             content_ids,

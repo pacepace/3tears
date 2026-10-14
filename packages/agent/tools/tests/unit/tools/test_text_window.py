@@ -106,3 +106,42 @@ class TestTheSharedArgument:
     def test_its_description_tells_the_model_what_to_do_with_it(self) -> None:
         description = WindowedInput.model_fields["offset"].description or ""
         assert "call again with the offset it names" in description
+
+
+class TestFindInText:
+    """find_in_text: every match from an offset on, ignoring case, and where a window opens."""
+
+    def test_every_match_is_counted_and_the_window_opens_before_the_first(self) -> None:
+        from threetears.agent.tools.text_window import FIND_LEAD_CHARS, find_in_text
+
+        text = "a" * 1_000 + "Rent is due" + "b" * 50 + "rent again"
+        found = find_in_text(text, "RENT")
+
+        assert found.offsets == (1_000, 1_061)
+        assert found.total == 2
+        assert found.start == 1_000 - FIND_LEAD_CHARS
+        assert "2 matches, at characters 1,000, 1,061" in found.note()
+
+    def test_matches_before_the_offset_are_not_counted(self) -> None:
+        from threetears.agent.tools.text_window import find_in_text
+
+        found = find_in_text("rent rent rent", "rent", after=1)
+
+        assert found.offsets == (5, 10)
+        assert found.start == 1, "the window never opens before the offset asked for"
+
+    def test_no_match_has_no_window(self) -> None:
+        from threetears.agent.tools.text_window import find_in_text
+
+        found = find_in_text("nothing here", "rent")
+
+        assert found.start is None
+        assert "no match" in found.note()
+
+    def test_a_blank_term_is_refused(self) -> None:
+        import pytest
+
+        from threetears.agent.tools.text_window import find_in_text
+
+        with pytest.raises(ValueError):
+            find_in_text("text", "  ")

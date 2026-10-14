@@ -208,6 +208,13 @@ def _make_tool(
     )
 
 
+def _body(result: str) -> str:
+    """what the analyser said: the result below its statement line and notes, past the blank line."""
+    head, sep, body = result.partition("\n\n")
+    assert sep, f"no statement above the answer: {result!r}"
+    return body
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -398,15 +405,11 @@ class TestCachedDescription:
         storage.add_content(mid, "description", "Cached result", model_name="TestVision")
 
         tool = _make_tool(storage, vision=vision)
-        result = await tool.ainvoke(
-            {
-                "media_ids": [str(mid)],
-                "question": "Describe",
-                "analyzer": "TestVision",
-            }
-        )
+        # the describe ask: no question
+        result = await tool.ainvoke({"media_ids": [str(mid)], "analyzer": "TestVision"})
 
-        assert result == "Cached result"
+        assert _body(result) == "Cached result"
+        assert result.startswith(f"The kept description of {mid}")
         assert len(vision.analyze_calls) == 0
 
 
@@ -568,7 +571,7 @@ class TestDocumentSizeLimit:
 
         result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Revenue?", "analyzer": "TestVision"})
 
-        assert result == "42."
+        assert _body(result) == "42."
         assert storage.download_limits == [MAX_DOCUMENT_BYTES]
 
     @pytest.mark.asyncio
@@ -837,13 +840,8 @@ class TestDescriptionPersistence:
         storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
 
         tool = _make_tool(storage, vision=vision, user_id=uid)
-        await tool.ainvoke(
-            {
-                "media_ids": [str(mid)],
-                "question": "Describe",
-                "analyzer": "TestVision",
-            }
-        )
+        # the describe ask: no question
+        await tool.ainvoke({"media_ids": [str(mid)], "analyzer": "TestVision"})
 
         assert len(storage.store_calls) == 1
         call = storage.store_calls[0]
@@ -866,13 +864,8 @@ class TestDescriptionPersistence:
             callback_calls.append((media_id_str, content_type, text))
 
         tool = _make_tool(storage, user_id=uid, on_analysis=_cb)
-        await tool.ainvoke(
-            {
-                "media_ids": [str(mid)],
-                "question": "Describe",
-                "analyzer": "TestVision",
-            }
-        )
+        # the describe ask: no question
+        await tool.ainvoke({"media_ids": [str(mid)], "analyzer": "TestVision"})
 
         assert len(callback_calls) == 1
         assert callback_calls[0][0] == str(mid)
@@ -935,13 +928,8 @@ class TestDescriptionPersistence:
             callback_calls.append((media_id_str, content_type, text))
 
         tool = _make_tool(storage, text=text_prov, user_id=uid, on_analysis=_cb)
-        await tool.ainvoke(
-            {
-                "media_ids": [str(mid)],
-                "question": "Summarize",
-                "analyzer": "TestVision",
-            }
-        )
+        # the describe ask: no question
+        await tool.ainvoke({"media_ids": [str(mid)], "analyzer": "TestVision"})
 
         assert len(callback_calls) == 1
         assert callback_calls[0][1] == "description"
@@ -1072,7 +1060,7 @@ class TestTheModelNeedsNoGuessForTheAnalyzer:
         assert parameters["properties"]["analyzer"]["enum"] == ["anthropic/claude-sonnet-4-5", "whisper"]
 
     def test_the_analyzer_is_not_required(self) -> None:
-        """the model may leave the analyzer out; media and question remain required."""
+        """the model may leave the analyzer out; media remain required, and a left-out question is the describe ask."""
         storage = FakeMediaStorage()
         tool = _make_tool(storage)
 
@@ -1080,7 +1068,7 @@ class TestTheModelNeedsNoGuessForTheAnalyzer:
 
         assert "analyzer" in parameters["properties"]
         assert "analyzer" not in parameters.get("required", [])
-        assert set(parameters["required"]) == {"media_ids", "question"}
+        assert set(parameters["required"]) == {"media_ids"}
 
     def test_the_published_mcp_schema_carries_the_same_choices(self) -> None:
         """the definition a ToolServer registers -- what a remote agent binds -- has the enum too."""
@@ -1128,7 +1116,7 @@ class TestTheModelNeedsNoGuessForTheAnalyzer:
 
         result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe"})
 
-        assert result.startswith("A red square.")
+        assert _body(result).startswith("A red square.")
         assert len(vision.analyze_calls) == 1
 
     @pytest.mark.asyncio
@@ -1151,7 +1139,7 @@ class TestTheModelNeedsNoGuessForTheAnalyzer:
 
         result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe"})
 
-        assert result.startswith("Seen.")
+        assert _body(result).startswith("Seen.")
         assert len(vision.analyze_calls) == 1
         assert transcription.calls == []
 
@@ -1193,7 +1181,7 @@ class TestTheModelNeedsNoGuessForTheAnalyzer:
 
         result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Summarize"})
 
-        assert result.startswith("Revenue rose.")
+        assert _body(result).startswith("Revenue rose.")
         assert len(text.answer_calls) == 1
 
     @pytest.mark.asyncio
@@ -1257,4 +1245,178 @@ class TestTheModelNeedsNoGuessForTheAnalyzer:
         result = await tool.execute(media_ids=[str(mid)], question="Describe")
 
         assert result.success is True
-        assert result.content.startswith("A red square.")
+        assert _body(result.content).startswith("A red square.")
+
+
+# parity-with: threetears.agent.tools.protocols.VisionProvider
+class EchoVisionProvider:
+    """Answers with the first line of what it was asked, so two questions give two answers."""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def analyze(self, image_data: bytes, mime_type: str, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return f"Answer to: {prompt.splitlines()[0]}"
+
+
+class TestAQuestionGetsANewLook:
+    """A question is answered by looking again, and only the describe ask is the item's description."""
+
+    @pytest.mark.asyncio
+    async def test_two_questions_on_one_image_give_two_answers_and_leave_the_description_unchanged(self):
+        storage = FakeMediaStorage()
+        vision = EchoVisionProvider()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        storage.add_content(mid, "description", "A red car on a street.", model_name="TestVision")
+        fired: list[tuple[str, str, str]] = []
+
+        async def _cb(media_id_str: str, content_type: str, text: str) -> None:
+            fired.append((media_id_str, content_type, text))
+
+        tool = _make_tool(storage, vision=vision, user_id=uuid4(), on_analysis=_cb)
+
+        first = await tool.ainvoke({"media_ids": [str(mid)], "question": "What colour is the car?"})
+        second = await tool.ainvoke({"media_ids": [str(mid)], "question": "How many wheels can you see?"})
+
+        assert _body(first) == "Answer to: What colour is the car?"
+        assert _body(second) == "Answer to: How many wheels can you see?"
+        assert len(vision.prompts) == 2
+        assert await storage.get_content(mid, "description", model_name="TestVision") == "A red car on a street."
+        assert storage.store_calls == []
+        assert fired == []
+        assert "not kept" in first.split("\n", 1)[0]
+
+    @pytest.mark.asyncio
+    async def test_the_describe_ask_is_kept_once_and_then_served_without_a_new_look(self):
+        """the good traffic the rule must let through: describe, kept, then served from the store."""
+        storage = FakeMediaStorage()
+        vision = EchoVisionProvider()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        made = await tool.ainvoke({"media_ids": [str(mid)]})
+        served = await tool.ainvoke({"media_ids": [str(mid)], "question": "   "})
+
+        assert len(vision.prompts) == 1
+        assert vision.prompts[0].startswith("Describe this in full")
+        assert [c["content_type"] for c in storage.store_calls] == ["description"]
+        assert _body(made) == _body(served)
+        assert served.startswith(f"The kept description of {mid}")
+
+    @pytest.mark.asyncio
+    async def test_a_question_about_a_document_is_not_kept_as_its_description(self):
+        storage = FakeMediaStorage()
+        text = FakeTextProvider("42 widgets.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", "application/pdf", extraction_status="complete"))
+        storage.add_content(mid, "extracted_text", "Revenue was 42 widgets.")
+        tool = _make_tool(storage, text=text, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "How many widgets?"})
+
+        assert _body(result) == "42 widgets."
+        assert storage.store_calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_item_the_storage_refused_is_never_answered_from_its_kept_description(self):
+        """another person's media: the storage resolves nothing, so the kept description is not served either."""
+        storage = FakeMediaStorage()
+        vision = EchoVisionProvider()
+        mid = uuid4()
+        # content exists, but get_media does not resolve the id for this caller
+        storage.add_content(mid, "description", "Someone else's photo.", model_name="TestVision")
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "analyzer": "TestVision"})
+
+        assert "Someone else's photo." not in result
+        assert result.startswith("[analyze_media/load media] Error")
+
+    @pytest.mark.asyncio
+    async def test_an_id_that_is_not_one_is_named(self):
+        tool = _make_tool(FakeMediaStorage())
+
+        result = await tool.ainvoke({"media_ids": ["content-row-7"], "question": "What is it?"})
+
+        assert result.startswith("[analyze_media/load media] Error")
+        assert "'content-row-7'" in result
+
+
+class TestFindAndOffsetInADocument:
+    """A document is read from an offset, or from just before what was looked for."""
+
+    @staticmethod
+    def _document(storage: FakeMediaStorage, text: str) -> UUID:
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", "application/pdf", extraction_status="complete"))
+        storage.add_content(mid, "extracted_text", text)
+        return mid
+
+    @pytest.mark.asyncio
+    async def test_find_opens_the_reading_just_before_the_first_match_and_lists_every_match(self):
+        from threetears.agent.tools.text_window import FIND_LEAD_CHARS
+
+        storage = FakeMediaStorage()
+        text = FakeTextProvider("The clause says thirty days.")
+        body = "x" * 5_000 + " termination clause " + "y" * 3_000 + " termination again " + "z" * 9_000
+        mid = self._document(storage, body)
+        tool_with_small_window = create_analyze_media_tool(
+            {
+                "storage": storage,
+                "analyzers": {"TestVision": AnalyzerConfig(name="TestVision", text=text)},
+                "doc_max_chars": 1_000,
+            },
+            "Analyze",
+        )
+
+        result = await tool_with_small_window.ainvoke(
+            {"media_ids": [str(mid)], "question": "What does it say about termination?", "find": "TERMINATION"}
+        )
+
+        first = body.lower().find("termination")
+        second = body.lower().find("termination", first + 1)
+        assert f"characters {first - FIND_LEAD_CHARS:,}-" in result.split("\n", 1)[0]
+        assert f"2 matches, at characters {first:,}, {second:,}" in result
+        sent = text.answer_calls[0]
+        assert "termination clause" in sent
+        assert "x" * (FIND_LEAD_CHARS + 1) not in sent
+        assert storage.store_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_find_with_no_match_reads_nothing_and_says_so(self):
+        storage = FakeMediaStorage()
+        text = FakeTextProvider("unused")
+        mid = self._document(storage, "Revenue was 42 widgets.")
+        tool = _make_tool(storage, text=text, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Penalties?", "find": "penalty"})
+
+        assert not result.startswith("[analyze_media/")
+        assert "no match" in result
+        assert text.answer_calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_offset_reads_on_from_there_and_a_later_part_is_not_kept(self):
+        storage = FakeMediaStorage()
+        text = FakeTextProvider("Part two.")
+        body = "a" * 100 + "b" * 100
+        mid = self._document(storage, body)
+        tool = create_analyze_media_tool(
+            {
+                "storage": storage,
+                "analyzers": {"TestVision": AnalyzerConfig(name="TestVision", text=text)},
+                "doc_max_chars": 100,
+                "user_id": uuid4(),
+            },
+            "Analyze",
+        )
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "offset": 100})
+
+        assert "b" * 100 in text.answer_calls[0]
+        assert "a" * 100 not in text.answer_calls[0]
+        assert "characters 100-200 of 200" in result.split("\n", 1)[0]
+        assert storage.store_calls == []

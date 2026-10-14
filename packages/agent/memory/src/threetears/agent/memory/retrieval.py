@@ -316,8 +316,9 @@ def _format_memory_context(
         for mc in media_content:
             text, detailed = _get_display_text(mc, detail_threshold)
             marker = " (in full)" if detailed else ""
-            content_id = str(mc["content_id"])
-            items.append(f"- [media:{content_id}] {text}{marker}")
+            # the media id, which the media tools take; the content row's id opens nothing
+            shown_id = str(mc.get("media_id") or mc["content_id"])
+            items.append(f"- [media:{shown_id}] {text}{marker}")
         fenced.append((len(lines), items))
         lines.append("")
 

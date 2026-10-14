@@ -8,6 +8,84 @@ packages (bumped in lock-step).
 
 ## v0.67.0 -- 2026-10-13
 
+### Media and the small tools: a question gets a new look, an image can be changed by its id, and the converters read what people write
+
+`media_analyze` answered every question about an image with its stored description, and stored any
+answer as the description, so "what colour is the car?" became what the image was. `memory_search`
+printed `[media:<content id>]`, which no media tool takes. The image tool changed only the newest
+upload, made no size or seed, and said it edited a photo when the model had used none. The time-zone
+converter stamped a time with no date with the server's UTC day, so 3:00 PM in Chicago at 03:21 UTC
+read as Saturday while it was Friday there; it took no "3pm", "PST" or "chicago". The unit converter
+read "F" to "C" as farad to coulomb and took no "Miles"; the calculator returned a bare number, read
+`sin` in radians and `log` as natural without saying so, and answered errors with its evaluator's
+internals.
+
+**Changed (agent-tools, `media_analyze`):**
+
+- **`question` is optional.** Left out (or blank) it is the describe ask: one item's kept description
+  is served, said to be the kept one, and a new one is kept. Any question is a new look, and its
+  answer is never kept as the description, nor passed to `on_analysis` as one. A document's reading is
+  kept only for the describe ask of its first part. New `DESCRIBE_PROMPT`.
+- **An item the storage did not resolve is never answered from its kept description**, so a storage
+  that refuses another person's media refuses the cache too.
+- **Documents take `offset` and `find`.** The reading opens at the offset, or just before the first
+  match of `find`; every match's offset is listed; no match reads nothing and says so.
+- **Every answer opens with the tool's statement** (what was looked at, by which analyzer, what part,
+  whether it was kept), then the window and find notes, a blank line, and the answer. The "covers only
+  part" note was after the answer.
+- **An id that is not one is refused by name** rather than raising.
+
+**Added (agent-tools):**
+
+- **`text_window.find_in_text(text, term, *, after=0) -> Found`**, `Found` (`offsets`, `total`,
+  `start`, `note()`), `FIND_LEAD_CHARS`, `FIND_LISTED`.
+- **`object_media_storage.read_bounded_stream(media_id, stream, *, max_bytes)`**: the bounded read a
+  host's `MediaStorage.download_media(max_bytes=...)` hands its own stream to.
+- **Image generation:** `source_media_id`, `size`, `aspect`, `seed` arguments; `SourceImage`,
+  `SourceImageRefused`, the `SourceImageContext` protocol (`load_source_image(media_id)`), and
+  `GENERATION_SOURCE_LABEL`. A backend with `takes_source_image = False` is refused an edit before it
+  is paid for, naming the models that can. An option the backend's `generate` does not take is not
+  sent. What was not done is said on the line after the host's statement: "No source was used",
+  "Not applied: seed (...)". `load_attached_image` may return a `SourceImage` to name the file.
+- **`date_math`** (`threetears.date_math`, in `STANDARD_TOOLS`, `STANDARD_BUILTIN_FACTORIES`,
+  `register_builtins` and the tool pod): the weekday of a date, a date plus or minus days, weeks,
+  months or years (a month past the 31st lands on the month's last day and says so), and days
+  between. "Today" is today in the person's zone.
+- **`builtin.time_words`**: `read_zone`, `parse_when`, `parse_date`, `describe_zone`,
+  `ZONE_ABBREVIATIONS` (one stated zone per abbreviation: IST is India), `Clock`, `system_clock`.
+
+**Changed (agent-tools, the small tools):**
+
+- **`timezone_converter`:** a time with no date is on the source zone's day, from the clock there.
+  Takes "3pm", "noon", "tomorrow 9:00", "Oct 9 3pm", ISO with an offset, any-case IANA names, cities,
+  abbreviations and UTC offsets. A left-out zone is the person's (call scope, else
+  `config["_user_timezone"]`); only `time_str` is required. The result names both zones with their
+  abbreviation and offset, says "the next day" or "the day before", and has a `Read:` line saying how
+  each loosely written thing was read. A clock time that summer time skips is refused; one that
+  happens twice says the first was used. `TimezoneConverterTool(timezone=, *, clock=)`.
+- **`unit_converter`:** a unit is read as written, then in lower case; F, C and K are degrees when the
+  other side is a temperature, and F to uF stays farads, either way said; `quantity` (or a
+  `from_unit` with numbers) adds up "5 feet 10 inches"; `value` is optional. Money is a `[NO CHANGE]`
+  ("no exchange rates here"). The result says it is rounded to 6 significant figures and that
+  "gallon", "pint", "cup", "quart" and "ton" are the US measures.
+- **`calculator`:** the result is "84.50*0.15 = 12.675", shown to 12 significant figures (0.1+0.2 is
+  0.3). Reads "15% of 84.50", "84.50*15%", "$22.50*3.5" and "1,000*2"; `10 % 3` is still the
+  remainder and a comma between arguments stays one. New functions: `sind`, `cosd`, `tand`, `asind`,
+  `acosd`, `atand`, `radians`, `degrees`, `ln`, `cbrt`, `atan2`, `hypot`, `trunc`, `gcd`, `lcm`,
+  `sum`, `mean`, `median`. A result that used `sin`-family trig or `log` says radians and natural log.
+  A non-number is refused, and every error says what to write instead.
+
+**Changed (media-contracts):** `ImageGenerationBackend.generate` takes keyword `size`, `aspect` and
+`seed`; result-metadata keys `GENERATION_SOURCE_USED`, `GENERATION_IGNORED`, `GENERATION_SIZE`,
+`GENERATION_SEED`.
+
+**Changed (agent-memory):** `memory_search` prints a file as `[media:<media id>]`, the id the media
+tools take, once per file, with its content kind when opened by id; `MediaContentCollection.search_by_ids`
+matches a media id as well as a content id. The ambient "Files you have seen" block prints the media id.
+
+**Breaking:** a caller that relied on a bare calculator number, a question being served the cached
+description, or `question` being required, now gets the forms above.
+
 ### Web tools: search by kind, date, page and site; robots that cannot be read are not a refusal; PDFs, thin pages and charsets read; every failure says why and what next
 
 `web_search` took a query and nothing else and showed no dates; `web_fetch` refused a whole site whose
