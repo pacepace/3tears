@@ -877,12 +877,10 @@ def _host_module_imports(source: str, path: Path) -> set[str]:
 #: yet spell. That is a real category and not a loophole — a stub holds no code to name anything,
 #: and a driver of host-shaped work can name none of it directly — but it is the category a paid
 #: debt decays into, so each entry says which it is and an entry with no reason fails.
-_HOST_COUPLED_BY_ROLE: dict[str, str] = {
-    "__init__.py": (
-        "the package's front door. It exports the eval surface and describes it, so what "
-        "makes it host-coupled is the inventory it publishes rather than any name in it"
-    ),
-}
+#:
+#: EMPTY today. ``__init__.py`` sat here as the package's front door until ``ROOT_EXTRAS`` began naming
+#: the ``openrouter`` module the ``providers`` root imports; the scan now sees its coupling directly.
+_HOST_COUPLED_BY_ROLE: dict[str, str] = {}
 
 
 def test_every_host_coupled_module_still_exhibits_host_coupling() -> None:
