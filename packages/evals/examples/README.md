@@ -107,8 +107,8 @@ Recorded on `deepseek/deepseek-v4-flash`: 180 calls, $0.0103 (`recordings/invoic
 day's calendar, `World(Day, tools=[find_free, book])` hands the agent two tools in a JSON tool loop over
 `model.json`, and the graders are goal checks on the day it left, beside the did-nothing control that only the first
 check beats. [`serve.py`](4-booking/serve.py) serves the eval's runs to the team: `as_host`, an MCP server
-(`mount_fastmcp`, the `[fastmcp]` extra; [Driving it from an agent](../docs/agents-and-mcp.md)) and
-[the command line](../docs/command-line.md) (`python -m threetears.evals ls --host serve:host --scope booking`).
+(`mount_fastmcp`, the `[fastmcp]` extra; [Serving](../docs/serving.md#serving-the-runs-to-the-team)) and
+[the command line](../docs/serving.md#the-host-commands) (`python -m threetears.evals ls --host serve:host --scope booking`).
 
 Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.jsonl`).
 
@@ -119,7 +119,7 @@ output is a real model's, as of that recording. There is no scripted stand-in fo
 
 **Outside a checkout** (once 0.68.0 is on PyPI and you installed `3tears-evals` with pip): the examples are
 not part of the installed package, so fetch this whole directory from the repository, at the tag you installed (the
-[README's install step](../README.md#first-result-in-10-minutes) names it). This fetches only the examples:
+[README's install step](../README.md#install) names it). This fetches only the examples:
 
 ```bash
 git clone --depth 1 --branch <tag> --filter=blob:none --sparse https://github.com/pacepace/3tears
@@ -158,8 +158,8 @@ A recording is made once, live, with `OPENROUTER_API_KEY` set, and replaces the 
 request settings change: the rung's test checks the recording still covers every prompt the rung sends before it
 replays, and names each one that changed.
 
-The [tutorial](../docs/tutorial.md) covers what rungs 1 to 3 teach (in its own order, the judge after the
-comparison), and keeping your runs in a file.
+[The ladder](../docs/ladder.md) walks every rung through its code, with what each report said and its lesson;
+[Serving](../docs/serving.md#keep-your-runs-and-read-them-back) covers keeping your runs in a file of your own.
 
 ## Not covered by an example yet
 
@@ -169,7 +169,7 @@ These are documented in the guides:
   (strata) are read in [`3-invoices/`](3-invoices/extract.py), and explained in
   [Reading reports](../docs/reading-reports.md#results-by-kind-of-case-strata).
 - Declaring a campaign's design (axes, question, bar), and when exploring without one is the right call:
-  [Choosing a design](../docs/choosing-a-design.md).
+  [Measuring soundly](../docs/measuring-soundly.md#start-from-the-question).
 - Budgets and spend caps: [Cost and budgets](../docs/cost-and-budgets.md).
 - Conversations with a simulated user, generating cases, storage, and writing your own host:
   [Adopting the engine](../docs/adopting-a-host.md).

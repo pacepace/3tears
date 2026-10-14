@@ -7,7 +7,7 @@ A public name is ``host-contract`` (it moves only with a ``MIGRATIONS.toml`` rec
 and ``STABLE`` in ``scripts/public_surface.py`` are the one place the first two are declared, and the snapshot
 (``api/surface.json``) records each entry's tier as the generator derives it.
 
-This holds the lists' completeness, not their taste: a name the host guide, the tutorial, the README or an example
+This holds the lists' completeness, not their taste: a name the host guide, the ladder, the README or an example
 imports is one a host was told to write against, so a release moving it without the deprecation cycle would break
 a host that did exactly what the docs said; and a name a topic guide or an example host imports is one a reader was
 shown, so it may not be provisional. What else belongs in either list is a judgement their comments record, and
@@ -34,12 +34,11 @@ Entry = surface.SurfaceEntry
 PACKAGE = Path(__file__).resolve().parents[1]
 
 #: What a host author is told to write against, in reading order: the README's first result, the host guide, the
-#: tutorial and every example. A topic guide's imports are not here (they are :data:`SHOWN`): a name only it imports
+#: ladder and every example. A topic guide's imports are not here (they are :data:`SHOWN`): a name only it imports
 #: is ``stable`` until promoted, which is free, where demoting a name from the contract is a break.
 HOST_GUIDES: tuple[Path, ...] = (
     PACKAGE / "README.md",
     PACKAGE / "docs" / "adopting-a-host.md",
-    PACKAGE / "docs" / "tutorial.md",
     PACKAGE / "docs" / "ladder.md",
     *sorted(p for p in (PACKAGE / "examples").rglob("*") if p.suffix in (".py", ".md")),
 )

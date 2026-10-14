@@ -225,7 +225,7 @@ either way.
 action starts is split where its spending starts. The action's call makes the refusals, prices every call against
 the cap and admits them — a launch also prices every arm and takes its room under the admission ceiling — and
 refuses there, with nothing spent. The work that spends runs as a job (see
-[Driving it from an agent](agents-and-mcp.md#operations-and-jobs)): a launch's case generation runs in the
+[Operations and jobs](serving.md#operations-and-jobs)): a launch's case generation runs in the
 launch's job, before its runs start; a second judge's and a temperature comparison's calls in theirs. A job refused
 part-way — a kind's launcher refusing an arm, a provider refusing the account — ends `failed` on its record, and
 what it had spent is in the ledger as it went.

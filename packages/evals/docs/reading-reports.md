@@ -186,7 +186,7 @@ Every verdict here is also a typed value (`report.verdicts`, `Result.verdicts()`
 `Result.contrasts()`): its outcome, a reason code, the margin it read and where that came from
 (`margin_source`: `measure`, `run` or, for a judged guardrail, `campaign`), its materiality, and whether it is a
 guardrail. The printed verdict is rendered from it, so code branches on the outcome, never on the words. The
-same values drive the CI gate ([The command line](command-line.md#gate)).
+same values drive the CI gate ([`gate`](serving.md#gate)).
 
 `equivalent` needs a margin and a paired test. A host declares a measure's margin
 (`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on
@@ -223,7 +223,7 @@ No report states a change as a percent of the control: a Δ is in the reading's 
 A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
 measure the host declared `guardrail`. On the quick path, `grader(fn, guard=margin)` declares one on a grader and
 `Judge(guard={dimension: margin})` one on a judged dimension, every grade higher-is-better
-([tutorial](tutorial.md#7-hold-a-guardrail)). The "Guardrails against the control" table
+([rung 3](ladder.md#rung-3-two-prompts-compared)). The "Guardrails against the control" table
 (`guardrails` in the bundle, under the contrasts on every report, `Result.guardrails()` in code) decides each one
 for each arm, on its own 95% interval on `arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
 cannot hide a loss here.
@@ -269,7 +269,7 @@ every finding is exploratory: line 2 of the report says so, every finding carrie
 writer may adopt nothing. A campaign
 that declared no design at all is an exploratory campaign, and that sentence says so: its readings confirm
 nothing, and the design its comparisons read was inferred from the runs, not declared
-([when to declare one](choosing-a-design.md)). A guardrail is never exploratory.
+([when to declare one](measuring-soundly.md#start-from-the-question)). A guardrail is never exploratory.
 
 **A question counts only if it was asked before the evidence.** A question confirms nothing when it was declared
 after the campaign's first member run was created, since it may have been asked of results that already existed.

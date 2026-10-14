@@ -547,7 +547,7 @@ def render() -> str:
         "**For:** people who already know the engine and agents that need exact names. It answers: what does "
         "this root export, what does this setting or field mean, what can a goal check say, which actions and "
         "commands exist, and what does each measure measure. To learn the engine, start with the "
-        "[tutorial](tutorial.md) instead.",
+        "[ladder](ladder.md) instead.",
         "",
         f"**Generated** from the package by `packages/evals/scripts/generate_reference.py`. Do not edit it by "
         f"hand: change the docstring, field description or definition it came from, then run `{REGENERATE}`. "

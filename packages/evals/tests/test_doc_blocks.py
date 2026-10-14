@@ -104,13 +104,13 @@ async def test_evaluating_agents_runs_top_to_bottom(capsys: pytest.CaptureFixtur
     assert placed in page and printed_lines(capsys)[-1] == placed
 
 
-async def test_choosing_a_design_runs_after_the_world_it_names(capsys: pytest.CaptureFixture[str]) -> None:
+async def test_measuring_soundly_runs_after_the_world_it_names(capsys: pytest.CaptureFixture[str]) -> None:
     """The page's three blocks after the one block of another page it names (``ROOM``), printing what it shows."""
     namespace: dict[str, Any] = {}
     await run_in_order(page_blocks("evaluating-agents.md")[:1], namespace, page="evaluating-agents.md")
     assert "ROOM" in namespace, "the first block of evaluating-agents.md no longer declares ROOM"
-    await run_in_order(page_blocks("choosing-a-design.md"), namespace, page="choosing-a-design.md")
-    page = (DOCS / "choosing-a-design.md").read_text(encoding="utf-8")
+    await run_in_order(page_blocks("measuring-soundly.md"), namespace, page="measuring-soundly.md")
+    page = (DOCS / "measuring-soundly.md").read_text(encoding="utf-8")
     # What the page's comments say the blocks print: the design's shape, each frontier point, the cost decision.
     shown = [
         "one_factor_at_a_time [{'candidate': 'v2'}]",

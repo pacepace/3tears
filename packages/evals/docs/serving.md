@@ -1,11 +1,239 @@
-# Driving it from an agent: operations, actions and MCP
+# Serving: the command line, the actions and MCP
 
-**For** anyone wiring an agent, a REST route or their own CLI to launch runs, poll them and read reports.
-**Answers:** how operations, the action catalogue and the FastMCP transport fit together, and how to read one
-result. It assumes you already have a `LaunchHost` (see [Adopting the engine](adopting-a-host.md)) and uses
-the terms in [Concepts](concepts.md).
+**For** anyone at rung 4 who wants the team to read an eval's runs, run evals from CI, or let an agent launch and
+read them, and anyone mounting the same commands under their own app. **Answers:** how a file runs from the command
+line, how runs are kept and read back, how [`examples/4-booking/serve.py`](../examples/4-booking/serve.py) serves
+them, what each host command does and exits with, and how operations, the action catalogue and the FastMCP
+transport fit together. Evals are administrative: these surfaces are for the people and agents who build and judge
+your app, never its end users. The terms are those of [Concepts](concepts.md).
 
-## Three layers, in plain words
+## Running a file
+
+`python -m threetears.evals FILE` runs every eval a `.py` or `.toml` file declares:
+
+- **A TOML file** declares one eval ([rung 0](building-an-inventory.md#7-write-it-down-and-run-it-15-min)).
+- **A Python file** is imported, and every `Eval` it defines at module level runs, in the order it defines them. No
+  `asyncio.run` is needed in it ([the ladder](ladder.md)).
+
+Each eval runs into its default store (`.evals/evals.sqlite` under the directory you run from, in a scope named after
+the eval), prints its result quietly (`--verbose` prints it whole), and writes its report to `.evals/reports/<name>/`.
+The exit code is the worst of the evals' (the [table below](#exit-codes)): `4` when a comparison's gate failed, so a
+CI step that runs a comparison file fails on a regression, a breach, or a guardrail not shown held. Any other first
+argument is a host command ([below](#the-host-commands)).
+
+## Keep your runs, and read them back
+
+A kept run is found again by its scope (`scope=`, the eval's name when you name none), and kept runs have a history:
+how a reading moved from one run to the next. This script keeps its runs in a file of its own and reads that history:
+
+```python
+import asyncio
+
+from threetears.evals import Eval
+from threetears.evals.ops import scope_history
+from threetears.evals.quick import as_host
+from threetears.evals.run import run_blocking
+from threetears.evals.storage import SqliteDocumentStore
+
+CASES = [
+    {"id": "double-charge", "ticket": "I was charged twice for March.", "queue": "billing"},
+    {"id": "export", "ticket": "The export button does nothing.", "queue": "bug"},
+    {"id": "locked", "ticket": "I'm locked out after too many login attempts.", "queue": "account"},
+]
+
+
+async def route(case: dict) -> str:
+    """Route a support ticket to billing, bug or account."""
+    text = case["ticket"].lower()  # your prompt and model call go here; a keyword script stands in
+    return "billing" if "charged" in text else "bug" if "button" in text else "account"
+
+
+def correct(case: dict, answer: str) -> bool:
+    """Whether the ticket went to its queue."""
+    return answer == case["queue"]
+
+
+async def main() -> None:
+    store = SqliteDocumentStore("triage.sqlite")
+    ev = Eval(CASES, route, [correct], k=2)
+    await ev.run(store=store, scope="tickets")
+    host = as_host([ev], store=store)
+    history = await run_blocking(host.blocking_executor, scope_history, host, "tickets", metric="correct")
+    for series in history.series:
+        for point in series.points:
+            step = f", {point.regression.label} from the run before" if point.regression else ""
+            print(f"{point.created_at} {series.model}: correct {point.value:.2f} over {point.n} result(s){step}")
+
+
+asyncio.run(main())
+```
+
+Run it twice. The second run reads the first run's results from the file, because they are stored there:
+
+```
+2026-10-14T18:28:17.246834+00:00 route: correct 1.00 over 6 result(s)
+2026-10-14T18:28:19.915241+00:00 route: correct 1.00 over 6 result(s), not_separated from the run before
+```
+
+- **`as_host([ev], store=store)`** is the host the eval built for its run. Any later program reads the runs through
+  it: the same graders, over a store opened on the same file.
+- **`scope_history`** follows one reading over time, one series per runner, oldest run first; name a grader as
+  `metric=`. It reads the store, which blocks, so async code calls it through `run_blocking` on the host's executor:
+  no store call is ever made on the event loop. Each run is tested against the run before it, over the cases both
+  ran. `regressed` is the step to act on; `not_separated`, as here, means the two runs could not be told apart, never
+  that nothing changed.
+- **A comparison's `run(store=store)`** keeps its arms and their campaign the same way, and a later program reads the
+  comparison on the margins, ranges and guardrails it ran under, whatever its own host declares.
+- **Keep the file across releases.** Runs, results and cases are the evidence core: a later release reads them as
+  stored. A comparison's campaign and analysis are not kept that way: when their format changes, a release refuses
+  them, and you make them again over the kept runs ([what is kept](adopting-a-host.md#stored-data-what-is-kept)).
+
+## Serving the runs to the team
+
+[`serve.py`](../examples/4-booking/serve.py), beside rung 4's agent, is the whole server. Its `host()` is
+`as_host([booking], store=".evals/evals.sqlite")`, the store every run of `agent.py` fills; hand `as_host` any
+`DocumentStore` instead (your own database) to share the runs. It serves them two ways:
+
+- **Over MCP** (`python serve.py`, the `[fastmcp]` extra): `mount_fastmcp` is handed that host, builds the operations
+  host with its defaults, and mounts the read-only tools, so an agent can list the runs, read them and gate a
+  comparison. Nothing is launched over it.
+- **On the command line**, the same host by name: `python -m threetears.evals ls --host serve:host --scope booking`,
+  and `report`, `bundle` and `gate` beside it ([the host commands](#the-host-commands)).
+
+A REST transport is not built yet. A host of your own serves the same catalogue with your own launch path and tenancy
+([FastMCP](#fastmcp), [Adopting the engine](adopting-a-host.md)).
+
+## The host commands
+
+Past a file, the command line works in a host you name as `module:factory`: a zero-argument callable returning an
+`EvalHost`, or a `LaunchHost` for `run`.
+
+```
+python -m threetears.evals run    --host myapp.evals:build_host --scope dev --template T --subject S [--model M ...]
+                                  [--k N] [--max-cost-usd DOLLARS] [--judge-model MODEL] [--simulator-model MODEL]
+                                  [--n-variations N] [--variation-model MODEL] [--apparatus-settings JSON]
+                                  [--measure-latency]
+python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
+python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out DIR]
+python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
+python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--purpose P] [--launch-group ID] [--template ID]
+python -m threetears.evals frontier --host myapp.evals:build_host --scope dev [--bar B] [--subject S] [--json]
+python -m threetears.evals gate   CAMPAIGN --host myapp.evals:build_host --scope dev [--fail-on OUTCOMES] [--reading MEASURE ...]
+python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev (--max-cost-usd DOLLARS | --no-cap)
+                                  [--repeats N] [--all] [--result ID ...] [--estimate] [--json]
+```
+
+**Runs you made with an `Eval`** are read the same way: the factory returns the host the evals run in, over the
+store you kept them in ([Keep your runs](#keep-your-runs-and-read-them-back)), with the same graders:
+
+```python
+# myapp/evals.py
+from threetears.evals import Eval
+from threetears.evals.quick import as_host
+from threetears.evals.storage import SqliteDocumentStore
+
+from myapp.triage import CASES, correct, triage
+
+TRIAGE = Eval(CASES, triage, [correct])
+
+
+def build_host():
+    return as_host([TRIAGE], store=SqliteDocumentStore("triage.sqlite"))
+```
+
+`ls`, `report`, `bundle`, `spend`, `frontier` and `gate` then read those runs. `run` needs a launch host, and
+`judge-temperature` a host with completion clients (`as_host(..., clients=...)`).
+
+### `run`
+
+`run` launches, waits and prints each run's summary.
+
+- Each `--model` is one arm and one run; with no `--model` the kind runs one arm on its own default
+  model, and a kind with no default refuses the launch.
+- `--k` is the repeats per case (the launch default, 3, when omitted).
+- `--max-cost-usd` caps each run at or below the host's ceiling (a launch may only lower that ceiling; a
+  value above it is refused).
+- `--judge-model` and `--simulator-model` pin the judge and the simulated user (omitted, the kind's
+  defaults apply).
+- `--n-variations` and `--variation-model` generate that many cases first (priced against the host's
+  out-of-run cap, outside the runs' caps; see [Cost and budgets](cost-and-budgets.md#spend-outside-any-run)).
+- `--apparatus-settings` sets host-declared apparatus values as a JSON object.
+- `--measure-latency` says latency is under test, so each run's cells run one at a time.
+
+Each flag passes to one `start_run` argument: `--model` to `models`, `--k` to `k_runs`, `--template` to
+`template_id`, `--subject` to `subject_id`, `--scope` to `scope_id`, and the rest to the argument of the same name.
+
+### `report` and `bundle`
+
+`report` prints the campaign's report (see [Reading reports](reading-reports.md#the-report-one-page-verdict-first)) —
+its analysis, or, when it has none, a code-only report of its evidence. `bundle` prints, as JSON, the analysis
+bundle a generation would read inside a wrapper (`BundleInspection`) that adds its campaign, scope and
+fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command calls a model.
+
+### `spend`
+
+`spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals,
+analysis generations, judge repeats and judge temperature comparisons
+(`--purpose variation|proposer|analysis|judge|second_judge`) — narrowed by its flags.
+
+### `frontier`
+
+`frontier` prints each subject's variants ranked on pass^k, cost and latency, and, with `--bar`, the cheapest
+that clears it ([The frontier](measuring-soundly.md#the-frontier-passk-against-cost)). `--subject` narrows it to
+one subject, and `--json` prints the `FrontierResult` the `scope_frontier` action returns.
+
+### `judge-temperature`
+
+`judge-temperature` measures what temperature does to a run's judge: it re-judges the run's borderline cases
+`--repeats` times (default 5) at the pinned judge temperature and as many times at the provider's default, and
+prints each dimension's score variance, unstable cases and self-agreement at the two side by side
+([Step 10](judges-and-calibration.md#step-10-measure-what-temperature-does-to-the-judge)). It is the one command
+here besides `run` that spends: name the out-of-run cap with `--max-cost-usd`, or waive it with `--no-cap`. Every
+call is priced against it before the first is sent and ledgered under purpose `judge`. `--estimate` prices it and
+calls nothing. `--all` re-judges every scored dimension, `--result` narrows it to those results, and `--json` prints
+the `JudgeTemperatureComparison` (or estimate). Nothing is written to the results; every answer is kept on the
+comparison's own record (`EvalJudgeTemperatureCheck`) in the host's store, which the command writes and holds as the
+`judge_temperature` action's job does, awaiting it in the foreground. A comparison
+whose client did not send the temperature a side names prints `NOT COMPARABLE` with the reason and still exits `0`.
+
+### `gate`
+
+`gate` is the CI gate. It reads the campaign's typed verdicts as code reaches them on its evidence now (never an
+analysis's words), prints the outcome and every verdict that failed or was not decided, and exits `4` when an
+outcome `--fail-on` names occurred:
+
+| Outcome | Fails on |
+|---|---|
+| `regressed` | a contrast shown worse than the control |
+| `not-separated`, `untested` | a contrast the evidence could not decide |
+| `breached` | a guardrail shown worse than the control by more than its margin |
+| `undecided-guardrail` | a guardrail neither shown held nor breached |
+| `missed`, `undecided-bar` | a bar a cell is shown to miss, or not shown to clear or miss |
+
+The default is `--fail-on regressed,breached,undecided-guardrail`: a regression and a breach must not ship, and a
+guardrail not shown held is not known to be safe. A verdict left undecided that `--fail-on` does not name exits
+`0`, and the gate prints it as undecided, never as passed. To require every arm be shown improved or equivalent,
+add `not-separated,untested`. `--reading` gates only the readings it names. A campaign with no verdict at all
+(no control, no bar, no guardrail) is refused. In code, `Result.gate()` and `gate_verdicts()` do the same.
+
+## Exit codes
+
+| Code | Name | Meaning |
+|---|---|---|
+| `0` | `EXIT_OK` | done |
+| `1` | `EXIT_RUN_DID_NOT_COMPLETE` | a launched run did not complete |
+| `2` | `EXIT_REFUSED` | refused: a host that cannot be loaded, a template that is not there, a launch the engine refuses, a malformed command line |
+| `3` | `EXIT_FAILED` | failed on an error nothing anticipated — a host factory, launcher or host command raising — with its traceback on stderr |
+| `4` | `EXIT_GATE_FAILED` | `gate` read an outcome `--fail-on` names |
+
+The names are in `threetears.evals.quick`.
+
+## Mounting it under your own CLI
+
+Mount the same commands under your own CLI with `run_cli(argv, host_factory=build_host, prog="myapp
+evals")`; your users then never name the host.
+
+## Operations, actions and transports: three layers
 
 - An **operation** is one Python function per thing an operator does (launch a run, read a report, poll a
   job). Every surface calls the same ones, so the CLI, an MCP tool and a REST route cannot disagree.
@@ -220,7 +448,7 @@ pip install "3tears-evals[fastmcp]"
 ```
 
 That is the form once 0.68.0 is on PyPI. Until then, install the extra from the repository at the tag
-[the README names](../README.md#first-result-in-10-minutes):
+[the README names](../README.md#install):
 `pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
 
 A result carries its text and the result model's JSON as structured content. A refused call is an MCP

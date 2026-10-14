@@ -539,7 +539,7 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 #: release), from 0.68.0 on. :data:`STABLE` holds the rest of the declared surface; every other public name is
 #: ``provisional``.
 #:
-#: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/tutorial.md``, the
+#: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/ladder.md``, the
 #: README and ``examples/`` (every name they import is here, which ``tests/test_api_tiers.py`` holds), and the
 #: courier host (``tests/fixtures/courierhost/``), the least a product writes to be a host. A name a topic guide
 #: alone imports, a field type a contract name's signature reaches, and a name a later section of the host guide
@@ -723,7 +723,7 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.SentSettingsState",
         "threetears.evals.analysis.SentSettingsShare",
         "threetears.evals.quick.measure",
-        # Reading runs back, as the tutorial and the examples do.
+        # Reading runs back, as the serving guide and the examples do.
         "threetears.evals.ops.scope_history",
         "threetears.evals.run.list_results",
         "threetears.evals.run.get_result_trace",
@@ -844,7 +844,7 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.schema.SecondJudge",
         "threetears.evals.schema.label_key_of",
         # Rung 3: comparing arms and reading the outcome. A campaign's design, its report bundle and frontier, the gate
-        # a CI step reads, and the classifier measures `docs/designing-classifier-evals.md` builds on.
+        # a CI step reads, and the classifier measures `docs/building-an-inventory.md` builds on.
         "threetears.evals.analysis.GATE_TOKENS",
         "threetears.evals.analysis.GateOutcome",
         "threetears.evals.analysis.GateResult",

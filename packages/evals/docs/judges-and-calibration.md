@@ -1,13 +1,44 @@
 # Judges and calibration
 
 **For** someone grading output that no code can check (is the answer grounded, is the tone right, did it refuse
-what it should) who wants to know whether to trust the grades. **Answers:** how to write a rubric dimension, run
-an LLM judge, collect person ratings, and read whether the judge agrees with people and with itself, how many
-ratings that takes, and how the ratings correct the judge's mean. Grade with code wherever code can decide; a judge is for judgment
-([principles](principles.md)).
+what it should) who wants to know whether to trust the grades. **Answers:** first, what rung 2 needs: a judge on the
+quick path and the labels that check it. Then the engine's judge in full: rubric dimensions, person ratings,
+agreement with people and with itself, how many ratings that takes, how ratings correct the judge's mean, and how to
+measure a judge as a subject of its own. Grade with code wherever code can decide; a judge is for judgment
+([principles](design.md#principles)).
 
-The snippets run top to bottom as one script, in one async context (`python -m asyncio`, or inside
-`async def main()`). A store call blocks, so a snippet makes it off the event loop with
+## At rung 2: a judge you can check
+
+[Rung 2](ladder.md#rung-2-a-judge-checked-against-a-person) (`examples/2-replies/replies.py`) is the whole quick
+path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, guard=None)`, listed among the graders.
+
+- **`model`** is the judge's model: an id (`"google/gemini-2.5-flash-lite"`, through OpenRouter), a `Model` (to
+  share its `recording=`), or any completion client that names its model. Use another family than the runner's. Every surface that lists judges says so when a judge's model also
+  produced the answers, since a model tends to rate its own output higher: the runner's calls through `Model` name
+  the model they used (a runner on a client of its own is caught only when its arm is named by that model).
+- **`rubric`** maps a name to one written question, each scored pass/fail in a call of its own
+  (`{"grounded": "..."}` becomes the dimension `answer.grounded`). Pass/fail is the scale people label most
+  reliably; a dimension on 1 to 5 is a `RubricDim` stating its scale ([Step 1](#step-1-choose-a-scale-and-prefer-passfail)).
+- **`case_material`** renders what the judge reads beside each answer: what the runner answered from. With none, the
+  judge reads the case as JSON, with a classifier's answer key left out.
+- **`examples`** are hard negatives: answers that must be graded a known way, in pairs that look alike. They are
+  stored as cases a judge campaign calibrates on, calling no model ([Seeding hard negatives](#seeding-hard-negatives)).
+- **`labels`** names a person's labels, a CSV. Every judged run's report writes `to_label.csv`: each judged answer on
+  each dimension, the judge's verdict withheld. A person fills in `label` and `rater` for about 20 rows of a
+  dimension, without looking at the judge's scores, and saves it as the file `labels=` names. The next run pairs
+  each label with the judge's score of the same answer (by a fingerprint of what was read and of the criterion's
+  wording, so a replayed run pairs, and a reworded dimension does not) and prints, per dimension, the pairs, κ with
+  its lower bound, and the [evidence tier](#step-7-evidence-tiers-and-how-many-ratings-they-take) it earns.
+- **`guard`** puts dimensions on the boundary axis with their margins: `guard={"safe": 0.02}`
+  ([Step 3](#step-3-guardrails-are-not-capabilities)).
+
+Until labels exist, the printed result says `judge: 0 labels: judge uncalibrated` and the next step, a line no quiet
+print drops. The package provides the mechanism (the file to label, the pairing, κ, the tiers); collecting the labels
+is each app's own work, and no label is ever authored for you. The calibrated tier's floor is 20 person-rated
+results; about 50 is a realistic plan for a good judge.
+
+**The rest of this page is the judge in full,** on the engine's own terms. The snippets run top to bottom as one
+script, in one async context (`python -m asyncio`, or inside `async def main()`). A store call blocks, so a snippet makes it off the event loop with
 `await run_blocking(host.blocking_executor, fn, ...)`. `client` is any `CompletionClient` (an async
 `generate(system=, user=, response_format=)` and an `aclose()`); `Model` from `threetears.evals.providers` is the
 shipped one, which `examples/2-replies/replies.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
@@ -113,10 +144,10 @@ host, summary = result.host, result.summary  # kept: the host's in-memory store 
 print(summary.render())
 ```
 
-**Use a different model from the candidate's.** A model grading its own output tends to favour it. The quick path
-does not flag this. On a full host, when a launch names no judge and the default judge is one of its candidates,
-`LaunchSettings.judge_alternate_model` scores instead, and a run judged on a candidate's model says so wherever its
-judges are listed.
+**Use a different model from the candidate's.** A model grading its own output tends to favour it. A run judged on a
+candidate's model says so wherever its judges are listed, on the quick path as on a host. On a full host, when a
+launch names no judge and the default judge is one of its candidates, `LaunchSettings.judge_alternate_model` scores
+instead.
 
 **Temperature.** Every judge call is requested at `DEFAULT_JUDGE_TEMPERATURE` (0) unless a `JudgeConfig` for the
 dimension states another. Each score records what its call was actually sent at (`RubricScore.judge_temperature`;
@@ -537,74 +568,35 @@ calls to one endpoint keeps a mix of providers from adding spread to both sides.
 
 ### The 2026-10-10 run is void
 
-A run on 2026-10-10 in a private host application (#633) re-judged 50 borderline cases from seven finished runs on
-`openai/gpt-6-luna` via OpenRouter, 5 times at 0 and 5 times at the default: 500 calls, $0.19. It reported mean
-score variance 0.202 at 0 and 0.180 at the default, and was first recorded here as showing that 0 did not steady
-the judge. It shows nothing about temperature. That model accepts no temperature, OpenRouter dropped it silently,
-and the host's adapter reported each request's own temperature as the one sent. Both sides were the provider
-default, and the near-identical variances are what two identical settings produce.
-
-What its figures are is a same-setting baseline: two sets of 5 repeats of luna at its provider default on the same
-50 cases (1-5 scales). Mean score variance was 0.202 and 0.180, 34 and 31 cases were unstable, and agreement with
-each case's first answer was 56% and 69%. Two runs of one setting differing that much is the noise floor any real
-comparison on such a judge has to clear. Paired case by case, the variance difference between the two was +0.02
-(95% interval -0.03 to +0.08), 11 cases lower, 12 higher and 27 tied.
+A first run in a private host application (#633) re-judged 50 borderline cases from seven finished runs on
+`openai/gpt-6-luna` via OpenRouter, 5 times at 0 and 5 times at the default (500 calls, $0.19), and read mean score
+variance 0.202 at 0 against 0.180 at the default. It shows nothing about temperature: that model accepts none,
+OpenRouter dropped it silently, and the host's adapter reported each request's own temperature as the one sent, so
+both sides were the provider default. What it is, is a same-setting noise floor: two runs of one setting differing by
++0.02 (95% interval -0.03 to +0.08), paired case by case.
 
 ### The 2026-10-10 measurement on a judge that honours temperature
 
-The same host re-ran the measurement the same day, on the same seven runs and the same 50 borderline cases (19
-`__outcome__`, 23 `__transcript__`, 8 across four host dimensions, all on 1-5), 5 repeats at each setting.
+The same host re-ran it the same day, on the same 50 borderline cases (all on 1-5), with `openai/gpt-oss-120b`, a
+reasoning judge whose catalogue entry and pinned endpoint list `temperature`, every request carrying
+`provider: {"require_parameters": true}` so an endpoint that cannot apply a parameter refuses the call. A first
+endpoint's default turned out to be effectively greedy (12 identical answers of 12 with no temperature), which made
+that sweep a second same-setting control (-0.01, -0.05 to +0.03); a second corrupted the judge's JSON and was stopped.
+The measurement is the third, pinned to an endpoint whose default samples and whose 0 does not:
 
-**The judge.** `openai/gpt-oss-120b`, a reasoning model in the same price class as the runs' own judge. Its
-OpenRouter catalogue entry lists `temperature` in `supported_parameters`, and so does the endpoint the calls were
-pinned to. Every request carried `provider: {"require_parameters": true}`, so a provider that cannot apply a
-parameter refuses the call rather than dropping it. A probe confirmed that it does: `openai/gpt-6-luna` at
-temperature 0 was refused with "No endpoints found that can handle the requested parameters", where the void run
-had been silently served. The client reported the temperature on the wire: 0 on every pinned call, and none on
-every default call, whose requests carried no `temperature` field at all. All 500 calls were served by the pinned
-endpoint and named `openai/gpt-oss-120b` in the response. Each kept the judge's request settings of the time (the
-8192-token reasoning budget, JSON replies).
+| Dimension | Cases | Variance at 0 | Variance at default | Agreement with first answer at 0 / default |
+|---|---|---|---|---|
+| `__outcome__` | 19 | 0.12 | 0.30 | 91% / 76% |
+| `__transcript__` | 23 | 0.45 | 0.88 | 64% / 58% |
+| host dimensions | 8 | 0.10 | 0.19 | 94% / 91% |
+| all | 50 | 0.27 | 0.55 | 79% / 70% |
 
-**The provider's default is the endpoint's, so check that it samples.** The first sweep was pinned to DeepInfra.
-Its default turned out to be effectively greedy: an open-ended prompt answered identically 12 times out of 12 with
-no temperature, as at 0, but 8 different ways out of 12 at temperature 1. Over the 50 cases that sweep read
-variance 0.047 at 0 and 0.055 at the default, paired difference -0.01 (-0.05 to +0.03). That is a comparison of 0
-with something close to 0, a second same-setting control and no evidence about temperature. A second endpoint
-(CoreWeave, fp4) sampled at its default but corrupted the judge's JSON (criterion names such as `__outoutcome__`)
-on most calls at both settings, so it was stopped after one run and its answers are not used. The measurement
-is the third sweep, pinned to AkashML (bf16), whose default samples (7 different answers out of 8 on the probe
-prompt) and whose temperature 0 does not (8 of 8 the same). It had no failed answers.
-
-| Dimension | Cases | Variance at 0 | Variance at default | Unstable at 0 / default | Agreement with first answer at 0 / default |
-|---|---|---|---|---|---|
-| `__outcome__` | 19 | 0.12 | 0.30 | 5 / 7 | 91% / 76% |
-| `__transcript__` | 23 | 0.45 | 0.88 | 14 / 16 | 64% / 58% |
-| host dimensions | 8 | 0.10 | 0.19 | 1 / 1 | 94% / 91% |
-| all | 50 | 0.27 | 0.55 | 20 / 24 | 79% / 70% |
-
-Paired case by case, variance at 0 minus variance at the default was -0.28 (95% bootstrap interval -0.45 to
--0.12). 0 was lower on 21 cases, higher on 5 and tied on 24, a sign-test p of 0.002. On `__transcript__` alone it
-was -0.43 (-0.68 to -0.17). On `__outcome__` (-0.17, -0.51 to +0.06) and on the host dimensions (-0.09, -0.26
-to 0) the intervals touch 0. The mean score moved by -0.10 between the settings, so temperature changed how much
-the scores scatter, not where they sit. Against the noise floor, two settings that are the same differed by
-+0.02 (-0.03 to +0.08) on luna and -0.01 (-0.05 to +0.03) on the greedy endpoint. The difference here is about
-five times either one, and its interval clears both.
-
-**What it says.** Pinning the judge at 0 halves the spread of its scores on borderline cases. That is what
-the policy is for, so the policy stays. It does not make a reasoning judge repeatable: at 0, 20 of the 50 cases
-still gave more than one score in five tries, and on `__transcript__` only 64% of later answers matched the first.
-Run judge repeats (Step 8) to see how much of that a given judge has. It also means a default is not one setting:
-the same model sampled greedily by default on one endpoint and freely on another.
-
-**Limits.** The cases were chosen as borderline by the runs' original luna scores. They are the cases luna found
-hard, not the ones gpt-oss-120b finds hard, and gpt-oss-120b's scores sat on average more than a point from luna's.
-The judge was swapped in the host's adapter: the harness replays each run's recorded judge pin, so the comparison
-JSON still names luna as `judge_model`, while the ledger rows and every response name `openai/gpt-oss-120b`. One
-model on one endpoint: another judge or provider can move differently, and these runs' JSON is the record of this
-one.
-
-**Cost.** 500 calls, $0.09 for the measurement. Everything that day on this judge, the two other sweeps, the
-diagnostics and the probes included, cost $0.30, against a $5 budget sized so the out-of-run caps could never pass it.
+Paired case by case, variance at 0 minus variance at the default was -0.28 (95% bootstrap interval -0.45 to -0.12),
+about five times either noise floor; the mean score moved by only -0.10, so temperature changed how much the scores
+scatter, not where they sit. **Pinning the judge at 0 halves its spread on borderline cases, so the policy stays. It
+does not make a reasoning judge repeatable**: at 0, 20 of the 50 cases still gave more than one score in five tries.
+Limits: the cases were borderline for the runs' original judge, not this one; one model on one endpoint. 500 calls
+cost $0.09.
 
 ## Evaluating a judge as a subject
 
@@ -802,7 +794,7 @@ template was edited after the run was created, has an unknown criterion and read
 - [Evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers): the bounds, the
   simulations behind the planning numbers, and how temperature enters a judge's identity.
 - [Reading the guardrails](reading-reports.md#reading-the-guardrails): held, breached and undecided in a report.
-- [Principles](principles.md): code checks facts, a judge assesses judgment, people check the judge.
+- [Principles](design.md#principles): code checks facts, a judge assesses judgment, people check the judge.
 - [Evaluating a tool-using agent](evaluating-agents.md): grading what an agent *did*, with no judge.
 - `examples/2-replies/replies.py`: a judged run on a judge of another family, recorded with no person's labels,
   and how a person's labels calibrate it.

@@ -34,8 +34,8 @@ from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore
 from packages.evals.tests.off_loop import off_loop
 
-#: The tutorial, whose last step keeps its runs in a file.
-TUTORIAL = Path(__file__).resolve().parents[1] / "docs" / "tutorial.md"
+#: The serving guide, whose "Keep your runs" section keeps its runs in a file and reads their history back.
+SERVING = Path(__file__).resolve().parents[1] / "docs" / "serving.md"
 
 #: Enough cases for two arms that agree on every one to be shown within 0.1 of each other.
 CASES = [{"n": index} for index in range(48)]
@@ -183,14 +183,13 @@ async def test_a_store_beside_a_host_is_refused() -> None:
             )
 
 
-def test_the_tutorial_s_keep_your_runs_step_runs_as_written(tmp_path: Path) -> None:
-    """The tutorial's file as a reader builds it, run twice: the second run lists both, as the step prints."""
-    page = TUTORIAL.read_text(encoding="utf-8")
-    # Every block the reader adds, in order; each step's ``main()`` replaces the last, so only the final one runs.
-    blocks = re.findall(r"```python\n(.*?)```", page, re.S)
-    script = "\n\n".join(block.replace("asyncio.run(main())", "") for block in blocks) + "\nasyncio.run(main())\n"
+def test_the_serving_guide_s_keep_your_runs_script_runs_as_written(tmp_path: Path) -> None:
+    """The section's script as a reader saves it, run twice: the second run lists both, as the section prints."""
+    page = SERVING.read_text(encoding="utf-8")
+    step = page[page.index("## Keep your runs, and read them back") :]
+    step = step[: step.index("\n## ")]
+    (script,) = re.findall(r"```python\n(.*?)```", step, re.S)
     (tmp_path / "triage.py").write_text(script, encoding="utf-8")
-    step = page[page.index("## 8. Keep your runs") : page.index("## 9. Where next")]
     # The printed lines, each a run's timestamp and what it read; a timestamp is when the reader ran it.
     printed = re.findall(r"^\d{4}-\d\d-\d\dT\S+ (.*)$", step, re.M)
 

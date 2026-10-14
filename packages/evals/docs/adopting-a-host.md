@@ -2,8 +2,9 @@
 
 **For** the developer wiring 3tears-evals into an app for real: your own storage, your own launch path, runs
 you can compare over weeks. **Answers:** what you write (a host, a store, a kind, a launcher) and what the engine
-does with each. If you only want to grade a function, and keep its runs in a file, an `Eval` (as in the
-[tutorial](tutorial.md#8-keep-your-runs)) builds all of this for you. Read
+does with each. If you only want to grade a function, and keep its runs in a file, an `Eval` (as on
+[the ladder](ladder.md), and [kept and read back](serving.md#keep-your-runs-and-read-them-back)) builds all of this
+for you. Read
 [Concepts](concepts.md) first: this guide uses its terms (host, kind, lever, apparatus, scope, cell)
 without stopping to define them.
 
@@ -200,10 +201,10 @@ Recording onto a file that exists appends to it, and only `replace=True` starts 
 attribute your completion type declares beyond the ten and `sent_settings` is kept under the replayed completion's
 `extra`, and one JSON cannot hold is refused when it is recorded.
 
-The package's own examples run this way: each that calls a model calls Claude through `Model` when
-`ANTHROPIC_API_KEY` is set, records the run when `RECORD=1` is set too, and otherwise replays the recording kept
-beside it, so it runs offline on what Claude said rather than on a stand-in's text, and its test checks the
-recording still covers its prompts ([the examples' README](../examples/README.md#recording)).
+The package's own examples run this way: each calls a cheap model through `Model` (DeepSeek's flash model runs,
+Gemini's flash-lite judges, both through OpenRouter), records the run when `RECORD=1` is set with `OPENROUTER_API_KEY`,
+and otherwise replays the recording kept beside it, so it runs offline on what a real model said rather than on a
+stand-in's text, and its test checks the recording still covers its prompts ([the examples' README](../examples/README.md#recording)).
 
 ## Bringing a provider
 
@@ -848,7 +849,7 @@ release, on:
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
   launching, the stored documents a kind builds, the store port with its conformance kits and the engine's own
   stores, the refusals, the version constants, the `Known*` vocabularies and their value tuples (`USAGE_ROLES`, …),
-  the quick path and what it returns, and every name this guide, the [tutorial](tutorial.md), the README or an
+  the quick path and what it returns, and every name this guide, the [ladder](ladder.md), the README or an
   example imports. Such a name moves only with
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
@@ -901,7 +902,7 @@ snapshot:
 - **A name added, or a kind, signature or tier changed.** The test fails until you regenerate the snapshot, so the
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
   callers, add it to the newest section's `notes`. A tier changes only by editing `HOST_CONTRACT`, and every name
-  the README, this guide, the tutorial or an example imports must be on it (`tests/test_api_tiers.py`).
+  the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
   prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
@@ -1222,7 +1223,7 @@ check.
 ### Launching the analysis reporter
 
 The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
-bundles (see [Agents and MCP](agents-and-mcp.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
+bundles (see [Serving](serving.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
 candidate is a preset of the `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
 which replays the memo each campaign got.
 

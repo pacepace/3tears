@@ -1,6 +1,6 @@
 # Reference
 
-**For:** people who already know the engine and agents that need exact names. It answers: what does this root export, what does this setting or field mean, what can a goal check say, which actions and commands exist, and what does each measure measure. To learn the engine, start with the [tutorial](tutorial.md) instead.
+**For:** people who already know the engine and agents that need exact names. It answers: what does this root export, what does this setting or field mean, what can a goal check say, which actions and commands exist, and what does each measure measure. To learn the engine, start with the [ladder](ladder.md) instead.
 
 **Generated** from the package by `packages/evals/scripts/generate_reference.py`. Do not edit it by hand: change the docstring, field description or definition it came from, then run `uv run python packages/evals/scripts/generate_reference.py`. `tests/test_reference_doc.py` fails while this page is stale.
 
