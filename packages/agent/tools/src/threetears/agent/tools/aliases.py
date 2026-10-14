@@ -8,7 +8,7 @@ existing access-pattern matchers consume.
 
 groups intentionally model the way platform users think about tools:
 
-* ``standard`` -- cheap deterministic local utilities (calculator,
+* ``standard`` -- cheap deterministic local utilities (calculator, date_math,
   current_date, dictionary, unit_converter, timezone_converter). every
   agent should have these on by default; they hit no network and need
   no API keys.
@@ -58,6 +58,7 @@ STANDARD_TOOLS: frozenset[str] = frozenset(
         "threetears.calculator",
         "threetears.context_recall",
         "threetears.current_date",
+        "threetears.date_math",
         "threetears.dictionary",
         "threetears.unit_converter",
         "threetears.timezone_converter",

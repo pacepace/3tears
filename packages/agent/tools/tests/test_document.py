@@ -464,6 +464,33 @@ class TestParseDocumentTool:
         result = await tool.ainvoke({"content_base64": content, "filename": "big.txt"})
         assert "call parse_document again with offset=15000" in result
 
+    async def test_the_part_note_is_the_first_line_before_the_documents_facts_and_text(self):
+        """A reader that keeps only the head of the result still reads that it is a part."""
+        tool = self._create()
+        content = base64.b64encode(("word " * 4000).encode()).decode()
+        result = await tool.ainvoke({"content_base64": content, "filename": "big.txt"})
+        first, _, rest = result.partition("\n")
+        assert first.startswith("[characters 0-15,000 of 20,000") and "offset=15000" in first
+        assert "**Words:**" in rest and rest.rstrip().endswith("word")
+        assert "[characters " not in rest, "the note is stated once, at the top"
+
+    async def test_the_ocr_note_comes_before_the_documents_facts_and_text(self, monkeypatch):
+        from threetears.agent.tools import document as document_module
+        from threetears.agent.tools.document import DocumentResult
+
+        async def _ocr_read(*args: Any, **kwargs: Any) -> DocumentResult:
+            return DocumentResult(
+                text="scanned words " * 2000, title="Scan", page_count=3, word_count=4000, was_ocr=True
+            )
+
+        monkeypatch.setattr(document_module, "parse_document", _ocr_read)
+        tool = self._create()
+        result = await tool.ainvoke({"content_base64": base64.b64encode(b"x").decode(), "filename": "scan.pdf"})
+        lines = result.splitlines()
+        assert lines[0].startswith("[characters 0-15,000 of 28,000")
+        assert lines[1] == "**Note:** OCR was used for some pages"
+        assert lines.index("**Title:** Scan") > 1 and result.index("**Note:**") < result.index("scanned words")
+
     async def test_the_next_part_carries_on_where_the_first_stopped(self):
         tool = self._create()
         big_text = ("word " * 4000).encode()

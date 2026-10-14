@@ -109,7 +109,8 @@ class TestCataloguedDocumentsAreAnalyzable:
         result = await tool.execute(media_ids=[str(mid)], question="What was the revenue?", analyzer="Reader")
 
         assert result.success, result.content
-        assert result.content == "Revenue was 42 widgets."
+        # the tool's statement, a blank line, then the analyser's answer
+        assert result.content.partition("\n\n")[2] == "Revenue was 42 widgets."
         assert len(text.prompts) == 1
         assert "quarterly revenue was 42 widgets" in text.prompts[0]
 
@@ -174,8 +175,9 @@ class TestCataloguedDocumentsAreAnalyzable:
 
         assert result.success, result.content
         assert streamed == [mid]
-        assert result.content.startswith("Revenue was 42 widgets.")
-        assert result.content != "Revenue was 42 widgets.", "the answer says it read only part of the document"
+        head, _, answer = result.content.partition("\n\n")
+        assert answer == "Revenue was 42 widgets."
+        assert "This is a part, not the whole" in head, "the answer says it read only part of the document"
         assert text.prompts[0].count("quarterly revenue") < 50
 
 

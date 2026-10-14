@@ -8,7 +8,17 @@ the trigger's gate for its own transaction only:
 
 - :func:`update_protected` changes the schedule's ``schedule_config`` (an
   interval's length, say), after validating it against the wake's type,
-  and moves ``next_fire_at`` to match.
+  and moves ``next_fire_at`` to match. It answers with what was there before
+  and what is there now (:class:`ProtectedWakeChange`). A fixed-step wake
+  stays on its grid (below), and a config equal to the one it has writes
+  nothing.
+
+**The grid of a fixed-step wake** (``interval``, ``every_n_hours``) is the
+set of instants ``anchor + k * step``. Its anchor is the occurrence before the
+next one: ``next_fire_at - step``. A change of step keeps that anchor and takes
+the first instant of the new grid after now, so 60 minutes, then 90, then 60
+again is due exactly where it was before either change. A wake with no next
+fire has no anchor, and its new grid starts from now.
 - :func:`delete_protected` deletes it. It exists for deleting the agent the
   wake belongs to, and for nothing else.
 
@@ -24,11 +34,13 @@ from L3 with nothing left to evict it.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from uuid import UUID
 
 from threetears.core.collections import CallerTransaction
+from threetears.core.utils.local_time import resolve_zone
 from threetears.observe import get_logger
 from threetears.scheduled_jobs import compute_next_fire_at
 
@@ -36,8 +48,10 @@ from threetears.agent.wake.collections import WakeScheduleCollection
 from threetears.agent.wake.entities import WakeScheduleEntity
 from threetears.agent.wake.migrations import PROTECTED_GATE_SETTING
 from threetears.agent.wake.tools.validators import validate_schedule_config
+from threetears.agent.wake.wording import describe_schedule, format_wake_time
 
 __all__ = [
+    "ProtectedWakeChange",
     "ProtectedWakeError",
     "delete_protected",
     "update_protected",
@@ -59,6 +73,53 @@ class ProtectedWakeError(ValueError):
     """The wake is not the agent's protected wake, or the change is not valid for it."""
 
 
+@dataclass(frozen=True)
+class ProtectedWakeChange:
+    """What a change to a protected wake's schedule replaced, and what stands now.
+
+    A write that answers only with the new state leaves its caller to say what
+    changed from memory, and a caller that remembers wrongly tells a person the
+    wrong thing. Both sides are here, read from the row itself.
+
+    :ivar schedule: the wake as it now stands
+    :ivar schedule_type: the wake's type, which a schedule change never alters
+    :ivar config_before: the schedule config the change replaced
+    :ivar config_after: the schedule config that stands now
+    :ivar next_fire_before: when the wake was next due before the change
+    :ivar next_fire_after: when it is next due now
+    """
+
+    schedule: WakeScheduleEntity
+    schedule_type: str
+    config_before: dict[str, Any]
+    config_after: dict[str, Any]
+    next_fire_before: datetime | None
+    next_fire_after: datetime | None
+
+    @property
+    def changed(self) -> bool:
+        """Whether the schedule config differs from what it replaced."""
+        return self.config_before != self.config_after
+
+    def said(self, tz: tzinfo | str | None = None) -> str:
+        """The change in two sentences: what it was, then what it is.
+
+        :param tz: the zone of the person this is read to: a ``tzinfo`` or an
+            IANA name; ``None`` shows the times as stored (UTC ISO)
+        :ptype tz: tzinfo | str | None
+        :return: ``Was <schedule>, next fire <time>. Now <schedule>, next fire <time>.``
+        :rtype: str
+        :raises ValueError: when ``tz`` is a name that is not a known zone
+        """
+        zone = resolve_zone(tz)
+        was = describe_schedule(self.schedule_type, self.config_before)
+        now = describe_schedule(self.schedule_type, self.config_after)
+        return (
+            f"Was {was}, next fire {format_wake_time(self.next_fire_before, zone, unset='not set')}. "
+            f"Now {now}, next fire {format_wake_time(self.next_fire_after, zone, unset='not set')}."
+        )
+
+
 async def update_protected(
     *,
     collection: WakeScheduleCollection,
@@ -66,13 +127,17 @@ async def update_protected(
     schedule_id: UUID,
     schedule_config: dict[str, Any],
     now: datetime | None = None,
-) -> WakeScheduleEntity:
-    """Change a protected wake's schedule.
+) -> ProtectedWakeChange:
+    """Change a protected wake's schedule, and say what was there before and what is there now.
 
     Only ``schedule_config`` changes; the type, the status and everything
     else stay. The new config is validated against the wake's type before
     anything is written, and ``next_fire_at`` is recomputed from it. The
     cached row is invalidated so the next read sees the change.
+
+    A config equal to the one the wake has writes nothing: the answer's
+    ``changed`` is false and ``next_fire_at`` stays where it was. A fixed-step
+    wake keeps its grid across a change of step (module docstring).
 
     :param collection: three-tier wake-schedules collection
     :ptype collection: WakeScheduleCollection
@@ -84,22 +149,41 @@ async def update_protected(
     :ptype schedule_config: dict[str, Any]
     :param now: the instant ``next_fire_at`` is computed from (defaults to now)
     :ptype now: datetime | None
-    :return: the wake as it now stands
-    :rtype: WakeScheduleEntity
+    :return: the config and next fire the change replaced, and the wake as it now stands
+    :rtype: ProtectedWakeChange
     :raises ProtectedWakeError: when the agent has no such protected wake, or
         the config is not valid for its type
     """
     entity = await _protected_wake(collection, agent_id, schedule_id)
+    # Read before the write: the row is evicted when the transaction ends, and the entity's
+    # fields are read from the cache, so "before" must be copied out now.
+    schedule_type = entity.schedule_type
+    config_before = dict(entity.schedule_config)
+    next_fire_before = entity.next_fire_at
     error = validate_schedule_config(entity.schedule_type, schedule_config)
     if error is not None:
         raise ProtectedWakeError(error)
+    if dict(schedule_config) == config_before:
+        # The schedule it already has: writing it again would move the next fire for nothing.
+        return ProtectedWakeChange(
+            schedule=entity,
+            schedule_type=schedule_type,
+            config_before=config_before,
+            config_after=dict(config_before),
+            next_fire_before=next_fire_before,
+            next_fire_after=next_fire_before,
+        )
+    anchor = _grid_anchor(schedule_type, config_before, next_fire_before)
     try:
         next_fire_at = compute_next_fire_at(
             entity.schedule_type,
             schedule_config,
-            entity.missed_fire_policy,
+            # the first slot of the kept grid after now, whatever the wake's own policy:
+            # a catch-up step from the old anchor could be in the past
+            "coalesce" if anchor is not None else entity.missed_fire_policy,
             last_fired_at=entity.last_fired_at,
             now=now or datetime.now(UTC),
+            current_fire_at=anchor,
         )
     except ValueError as exc:
         raise ProtectedWakeError(f"schedule_config rejected by the reschedule engine: {exc}") from exc
@@ -127,7 +211,47 @@ async def update_protected(
     updated = await collection.find_for_agent(agent_id, schedule_id)
     if updated is None:
         raise ProtectedWakeError(f"wake {schedule_id} vanished while it was being changed")
-    return updated
+    return ProtectedWakeChange(
+        schedule=updated,
+        schedule_type=schedule_type,
+        config_before=config_before,
+        config_after=dict(updated.schedule_config),
+        next_fire_before=next_fire_before,
+        next_fire_after=updated.next_fire_at,
+    )
+
+
+def _grid_anchor(schedule_type: str, config: dict[str, Any], next_fire_at: datetime | None) -> datetime | None:
+    """The occurrence before a fixed-step wake's next fire: the origin its grid is kept from.
+
+    :param schedule_type: the wake's type
+    :ptype schedule_type: str
+    :param config: the config the change replaces
+    :ptype config: dict[str, Any]
+    :param next_fire_at: when the wake was next due before the change
+    :ptype next_fire_at: datetime | None
+    :return: the anchor, or ``None`` for a type with no fixed step, a wake with no next fire,
+        or a config whose step cannot be read
+    :rtype: datetime | None
+    """
+    if next_fire_at is None:
+        return None
+    try:
+        if schedule_type == "interval":
+            step = timedelta(seconds=int(config["seconds"]))
+        elif schedule_type == "every_n_hours":
+            step = timedelta(hours=int(config["n"]))
+        else:
+            return None
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+    ):  # NOSILENT: a config with no readable step has no grid; the change starts from now
+        return None
+    if step <= timedelta(0):
+        return None
+    return next_fire_at - step
 
 
 async def delete_protected(

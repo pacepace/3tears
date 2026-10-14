@@ -112,11 +112,24 @@ from threetears.agent.wake.metrics import (
     get_wake_emitter,
     reset_wake_emitter_for_testing,
 )
+from threetears.agent.wake.manual import (
+    ManualFireClaim,
+    ManualFireRefused,
+    claim_manual_fire,
+    run_manual_fire,
+)
 from threetears.agent.wake.migrations import PROTECTED_GATE_SETTING, register
-from threetears.agent.wake.protected import ProtectedWakeError, delete_protected, update_protected
+from threetears.agent.wake.protected import (
+    ProtectedWakeChange,
+    ProtectedWakeError,
+    delete_protected,
+    update_protected,
+)
+from threetears.agent.wake.wording import describe_schedule, format_wake_time
 from threetears.agent.wake.tables import (
     agent_wake_schedules_table,
     wake_fires_table,
+    webhook_refusals_table,
     webhook_subscriptions_table,
 )
 from threetears.agent.wake.rate_limit import (
@@ -134,8 +147,10 @@ from threetears.agent.wake.tick import DispatchCallback, wake_tick_job
 from threetears.agent.wake.tools import (
     PROTECTED_REFUSAL,
     WakeRegistryClient,
+    load_wake_fires_tool,
     load_wake_schedule_create_tool,
     load_wake_schedule_delete_tool,
+    load_wake_schedule_get_tool,
     load_wake_schedule_list_tool,
     load_wake_schedule_pause_tool,
     load_wake_schedule_resume_tool,
@@ -143,11 +158,13 @@ from threetears.agent.wake.tools import (
     load_wake_yield_tool,
     load_webhook_subscription_create_tool,
     load_webhook_subscription_delete_tool,
+    load_webhook_subscription_get_tool,
     load_webhook_subscription_list_tool,
     load_webhook_subscription_pause_tool,
     load_webhook_subscription_resume_tool,
     load_webhook_subscription_rotate_secret_tool,
     load_webhook_subscription_update_tool,
+    next_fires,
     validate_context_from_chain,
     validate_schedule_config,
 )
@@ -174,6 +191,7 @@ from threetears.agent.wake.types import (
 )
 from threetears.agent.wake.webhook_adapter import (
     WebhookReceiveResult,
+    record_webhook_refusal,
     webhook_receive,
 )
 
@@ -232,10 +250,13 @@ __all__ = [
     "FirePermit",
     "FireSource",
     "FireStatus",
+    "ManualFireClaim",
+    "ManualFireRefused",
     "HandlerCallback",
     "HandlerCallbackResult",
     "MissedFirePolicy",
     "PreparedWakeContext",
+    "ProtectedWakeChange",
     "ProtectedWakeError",
     "ReapedFire",
     "ReapedFiresHook",
@@ -265,17 +286,22 @@ __all__ = [
     "WebhookSubscriptionResponse",
     "WebhookSubscriptionStatus",
     "agent_wake_schedules_table",
+    "claim_manual_fire",
     "check_active_schedule_cap",
     "check_fire_limits",
     "check_rate_limit",
     "delete_protected",
+    "describe_schedule",
+    "format_wake_time",
     "compute_generic_hmac_sha256_signature",
     "detect_silent_prefix",
     "dispatch_wake",
     "is_tool_only",
     "get_wake_emitter",
+    "load_wake_fires_tool",
     "load_wake_schedule_create_tool",
     "load_wake_schedule_delete_tool",
+    "load_wake_schedule_get_tool",
     "load_wake_schedule_list_tool",
     "load_wake_schedule_pause_tool",
     "load_wake_schedule_resume_tool",
@@ -283,6 +309,7 @@ __all__ = [
     "load_wake_yield_tool",
     "load_webhook_subscription_create_tool",
     "load_webhook_subscription_delete_tool",
+    "load_webhook_subscription_get_tool",
     "load_webhook_subscription_list_tool",
     "load_webhook_subscription_pause_tool",
     "load_webhook_subscription_resume_tool",
@@ -294,7 +321,11 @@ __all__ = [
     "validate_context_from_chain",
     "validate_schedule_config",
     "verify_generic_hmac_sha256",
+    "next_fires",
+    "record_webhook_refusal",
+    "run_manual_fire",
     "wake_fires_table",
+    "webhook_refusals_table",
     "wake_tick_job",
     "webhook_receive",
     "webhook_subscriptions_table",

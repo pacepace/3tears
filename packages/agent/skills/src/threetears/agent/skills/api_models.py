@@ -157,6 +157,8 @@ class SkillInvocationResponse(BaseModel):
     outcome: SkillOutcome | None
     outcome_source: OutcomeSource | None
     notes: str | None
+    #: the agent's line on how the use went, apart from ``notes`` (the reason it invoked the skill)
+    outcome_notes: str | None = None
 
 
 class SkillInvocationListResponse(BaseModel):

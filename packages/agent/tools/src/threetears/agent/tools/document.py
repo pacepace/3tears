@@ -205,6 +205,7 @@ async def parse_document(
     ocr_config: OcrConfig | None = None,
     *,
     merge_wrapped_table_rows: bool = False,
+    max_pages: int | None = None,
 ) -> DocumentResult:
     """Parse document bytes into markdown.
 
@@ -224,6 +225,10 @@ async def parse_document(
         :func:`_extract_pdf_tables`'s own *merge_wrapped_rows* docstring for why
         this defaults off. No-op for every other document format.
     :ptype merge_wrapped_table_rows: bool
+    :param max_pages: for PDFs only, read at most this many pages from the start; ``page_count``
+        stays the whole document's and ``metadata["pages_read"]`` says how many were read. None
+        reads every page. No-op for every other format.
+    :ptype max_pages: int | None
     :return: the document as markdown
     :rtype: DocumentResult
     :raises DocumentParseError: no parser reads the document's type, or its parser failed
@@ -251,7 +256,7 @@ async def parse_document(
     parser_fn = parsers[parser_key]
     ocr = ocr_config or OcrConfig()
     if parser_key == "pdf":
-        return await asyncio.to_thread(_parse_pdf, data, filename, ocr, merge_wrapped_table_rows)
+        return await asyncio.to_thread(_parse_pdf, data, filename, ocr, merge_wrapped_table_rows, max_pages)
     return await asyncio.to_thread(parser_fn, data, filename, ocr)
 
 
@@ -263,8 +268,9 @@ def _parse_pdf(
     filename: str | None = None,
     ocr: OcrConfig = OcrConfig(),
     merge_wrapped_table_rows: bool = False,
+    max_pages: int | None = None,
 ) -> DocumentResult:
-    """Parse PDF using PyMuPDF with OCR fallback for scanned pages."""
+    """Parse PDF using PyMuPDF with OCR fallback for scanned pages, up to ``max_pages`` pages."""
     try:
         import fitz  # PyMuPDF
 
@@ -276,12 +282,14 @@ def _parse_pdf(
             title = doc.metadata.get("title") or filename
 
             metadata = {}
-            for key in ("author", "subject", "keywords", "creator", "producer"):
+            for key in ("author", "subject", "keywords", "creator", "producer", "creationDate", "modDate"):
                 val = doc.metadata.get(key)
                 if val:
                     metadata[key] = val
 
-            for page_num in range(len(doc)):
+            pages_read = len(doc) if max_pages is None else max(0, min(len(doc), max_pages))
+            metadata["pages_read"] = pages_read
+            for page_num in range(pages_read):
                 page = doc[page_num]
                 text = page.get_text("text")
 
@@ -1232,22 +1240,23 @@ def create_parse_document_tool(
             return _tool_error("parse_document", "parse", str(exc))
 
         # Windowed, not cut: a document past the bound is read in parts, and
-        # the note names the call for the next one (``text_window``).
-        text = window_text(result.text, offset=offset, max_chars=_PARSE_DOCUMENT_MAX_CHARS).rendered(
-            tool="parse_document"
-        )
-
-        # Build response with metadata
-        parts = []
+        # the note names the call for the next one (``text_window``). The notes
+        # lead the result, the window line first; the document's facts and its
+        # text follow.
+        window = window_text(result.text, offset=offset, max_chars=_PARSE_DOCUMENT_MAX_CHARS)
+        parts: list[str] = []
+        window_note = window.note(tool="parse_document")
+        if window_note:
+            parts.append(window_note)
+        if result.was_ocr:
+            parts.append("**Note:** OCR was used for some pages")
         if result.title:
             parts.append(f"**Title:** {result.title}")
         if result.page_count:
             parts.append(f"**Pages:** {result.page_count}")
         parts.append(f"**Words:** {result.word_count}")
-        if result.was_ocr:
-            parts.append("**Note:** OCR was used for some pages")
         parts.append("")
-        parts.append(text)
+        parts.append(window.text)
 
         return "\n".join(parts)
 

@@ -26,6 +26,7 @@ from threetears.search.testing.fakes import (
     TransportScript,
 )
 from threetears.search.testing.http_server import LocalHttpServer, Reply
+from threetears.search.testing.recorded import RecordedFetchTransport, RecordedPage
 
 __all__ = [
     "FakeBudgetPort",
@@ -33,6 +34,8 @@ __all__ = [
     "LocalHttpServer",
     "ProviderConformanceCase",
     "ProviderConformanceSuite",
+    "RecordedFetchTransport",
+    "RecordedPage",
     "Reply",
     "ScriptedTransport",
     "TransportScript",

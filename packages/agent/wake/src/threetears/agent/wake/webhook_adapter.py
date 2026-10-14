@@ -55,6 +55,7 @@ from threetears.observe import get_logger
 __all__ = [
     "DEFAULT_RATE_WINDOW_SECONDS",
     "WebhookReceiveResult",
+    "record_webhook_refusal",
     "webhook_receive",
 ]
 
@@ -210,6 +211,9 @@ async def webhook_receive(
     receive_at = now if now is not None else datetime.now(UTC)
     emitter = get_wake_emitter()
     sub = await subscriptions.find_by_id(subscription_id)
+    if sub is not None and sub.status != "active":
+        # the sender called a subscription that exists and is paused: kept, so its owner can see it
+        await record_webhook_refusal(subscriptions, sub, reason="paused", status_code=404, at=receive_at)
     if sub is None or sub.status != "active":
         log.info(
             EVENT_WEBHOOK_REJECTED,
@@ -238,6 +242,7 @@ async def webhook_receive(
                 extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "missing_header"}},
             )
             emitter.inc_webhook_received(outcome="auth_failed")
+            await record_webhook_refusal(subscriptions, sub, reason="missing_signature", status_code=401, at=receive_at)
             return WebhookReceiveResult(
                 status_code=401,
                 fire_id=None,
@@ -267,6 +272,7 @@ async def webhook_receive(
                 extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "bad_signature"}},
             )
             emitter.inc_webhook_received(outcome="auth_failed")
+            await record_webhook_refusal(subscriptions, sub, reason="bad_signature", status_code=401, at=receive_at)
             return WebhookReceiveResult(
                 status_code=401,
                 fire_id=None,
@@ -287,6 +293,14 @@ async def webhook_receive(
                     },
                 )
                 emitter.inc_webhook_received(outcome="source_rejected")
+                await record_webhook_refusal(
+                    subscriptions,
+                    sub,
+                    reason="source_not_allowed",
+                    status_code=403,
+                    at=receive_at,
+                    detail=f"from {source_ip}",
+                )
                 return WebhookReceiveResult(
                     status_code=403,
                     fire_id=None,
@@ -346,6 +360,14 @@ async def webhook_receive(
         )
         emitter.inc_webhook_received(outcome="rate_limited")
         emitter.inc_rate_limit_rejection(scope="webhook")
+        await record_webhook_refusal(
+            subscriptions,
+            sub,
+            reason="rate_limited",
+            status_code=429,
+            at=receive_at,
+            detail=f"{window_count} in the last {rate_window_seconds}s, limit {cap}",
+        )
         return WebhookReceiveResult(
             status_code=429,
             fire_id=None,
@@ -356,6 +378,9 @@ async def webhook_receive(
     try:
         payload_obj = _decode_payload(payload_bytes)
     except ValueError as exc:
+        await record_webhook_refusal(
+            subscriptions, sub, reason="bad_payload", status_code=400, at=receive_at, detail=str(exc)
+        )
         return WebhookReceiveResult(
             status_code=400,
             fire_id=None,
@@ -372,6 +397,9 @@ async def webhook_receive(
             extra={"extra_data": {"subscription_id": str(subscription_id), "error": str(exc)}},
         )
         emitter.inc_webhook_received(outcome="bad_template")
+        await record_webhook_refusal(
+            subscriptions, sub, reason="bad_template", status_code=400, at=receive_at, detail=str(exc)
+        )
         return WebhookReceiveResult(
             status_code=400,
             fire_id=None,
@@ -518,6 +546,59 @@ async def webhook_receive(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def record_webhook_refusal(
+    subscriptions: WebhookSubscriptionCollection,
+    subscription: Any,
+    *,
+    reason: str,
+    status_code: int,
+    at: datetime | None = None,
+    detail: str | None = None,
+) -> None:
+    """Keep a refused delivery to a known subscription, and never let the keeping change the answer.
+
+    The sender is answered with the refusal whatever happens here: a store
+    that cannot be written is logged and the refusal still stands. The
+    receiver layer calls this too, for the refusals it decides itself (a
+    signature its verifier registry rejected).
+
+    :param subscriptions: the host process's subscription collection
+    :ptype subscriptions: WebhookSubscriptionCollection
+    :param subscription: the subscription the delivery was for
+    :ptype subscription: Any
+    :param reason: one of :data:`~threetears.agent.wake.collections.WEBHOOK_REFUSAL_REASONS`
+    :ptype reason: str
+    :param status_code: the HTTP status the sender is answered with
+    :ptype status_code: int
+    :param at: when it was refused (defaults to now)
+    :ptype at: datetime | None
+    :param detail: a short note of why, when the reason alone does not say
+    :ptype detail: str | None
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        await subscriptions.record_refusal(
+            subscription.conversation_id,
+            subscription.subscription_id,
+            reason=reason,
+            status_code=status_code,
+            at=at or datetime.now(UTC),
+            detail=detail,
+        )
+    except Exception as exc:  # noqa: BLE001 - boundary: the refusal is the answer; a log that cannot be written must not replace it
+        log.warning(
+            "webhook refusal not recorded",
+            extra={
+                "extra_data": {
+                    "subscription_id": str(subscription.subscription_id),
+                    "reason": reason,
+                    "error": str(exc),
+                }
+            },
+        )
 
 
 def _decode_payload(payload_bytes: bytes) -> Any:

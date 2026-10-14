@@ -2,22 +2,33 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from decimal import Decimal
+
+from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
 
-from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL
+from threetears.models import (
+    DEFAULT_CHAT_MODEL,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_FAST_MODEL,
+    DEFAULT_LARGE_MODEL,
+)
 from threetears.models.capabilities import (
     CapabilityOverride,
     ModelCapabilities,
     clear_capability_overrides,
     get_capabilities,
     get_capability_override,
+    get_published_capabilities,
     list_capabilities,
     register_capabilities,
     register_capability_override,
+    register_published_capabilities,
     unregister_capability_override,
+    unregister_published_capabilities,
 )
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 
@@ -593,3 +604,217 @@ class TestCapabilityOverride:
             CapabilityOverride(model_tier=ModelTier.LARGE)  # type: ignore[call-arg]
         with pytest.raises(Exception):
             CapabilityOverride(provider_name="anthropic")  # type: ignore[call-arg]
+
+
+#: the request-settings fields, in declaration order.
+_REQUEST_SETTINGS_FIELDS = (
+    "accepts_temperature",
+    "reasoning_efforts",
+    "reasoning_budget",
+    "adaptive_reasoning",
+    "reasoning_disable",
+    "structured_output",
+)
+
+
+class TestRequestSettingsFields:
+    """the tri-state facts about which request settings a chat model accepts."""
+
+    def test_every_field_defaults_to_not_declared(self) -> None:
+        """a model that declares nothing reports ``None`` for each fact, never ``False``.
+
+        :return: nothing
+        :rtype: None
+        """
+        caps = ModelCapabilities(model_name="test-model", model_type=ModelType.CHAT, model_tier=ModelTier.SMALL)
+        for name in _REQUEST_SETTINGS_FIELDS:
+            assert getattr(caps, name) is None, name
+
+    def test_every_field_says_what_a_caller_does_with_it(self) -> None:
+        """each field is documented on ModelCapabilities and on CapabilityOverride.
+
+        :return: nothing
+        :rtype: None
+        """
+        for cls in (ModelCapabilities, CapabilityOverride):
+            doc = cls.__doc__ or ""
+            for name in _REQUEST_SETTINGS_FIELDS:
+                assert f":param {name}:" in doc, (cls.__name__, name)
+                assert f":ptype {name}:" in doc, (cls.__name__, name)
+
+    def test_an_empty_effort_list_is_kept_distinct_from_not_declared(self) -> None:
+        """``[]`` means "takes no effort parameter", which ``None`` does not.
+
+        :return: nothing
+        :rtype: None
+        """
+        caps = ModelCapabilities(
+            model_name="test-model",
+            model_type=ModelType.CHAT,
+            model_tier=ModelTier.SMALL,
+            reasoning_efforts=[],
+            accepts_temperature=False,
+        )
+        assert caps.reasoning_efforts == []
+        assert caps.accepts_temperature is False
+
+    def test_the_override_accepts_every_field(self) -> None:
+        """a deployment can correct each fact.
+
+        :return: nothing
+        :rtype: None
+        """
+        override = CapabilityOverride(
+            accepts_temperature=False,
+            reasoning_efforts=["low"],
+            reasoning_budget=False,
+            adaptive_reasoning=True,
+            reasoning_disable=False,
+            structured_output=True,
+        )
+        assert set(override.model_dump(exclude_unset=True)) == set(_REQUEST_SETTINGS_FIELDS)
+
+
+class TestRegisteredRequestSettings:
+    """the static entries carry the facts the providers' docs state, and nothing more."""
+
+    def test_the_large_and_chat_defaults_refuse_temperature_and_budgets(self) -> None:
+        """the adaptive-only Anthropic models: sampling and budget_tokens removed.
+
+        :return: nothing
+        :rtype: None
+        """
+        for model_id in (DEFAULT_LARGE_MODEL, DEFAULT_CHAT_MODEL):
+            caps = get_capabilities(model_id)
+            assert caps is not None
+            assert caps.accepts_temperature is False
+            assert caps.reasoning_budget is False
+            assert caps.adaptive_reasoning is True
+            assert caps.reasoning_disable is True
+            assert caps.reasoning_efforts == ["low", "medium", "high", "xhigh", "max"]
+            assert caps.structured_output is True
+
+    def test_the_fast_default_takes_a_budget_and_no_effort_word(self) -> None:
+        """the budget-only Anthropic model: effort is a 400, so the list is empty.
+
+        temperature is "allowed" in the docs, which is not recorded as True:
+        only a documented removal is a static fact.
+
+        :return: nothing
+        :rtype: None
+        """
+        caps = get_capabilities(DEFAULT_FAST_MODEL)
+        assert caps is not None
+        assert caps.reasoning_efforts == []
+        assert caps.reasoning_budget is True
+        assert caps.adaptive_reasoning is False
+        assert caps.accepts_temperature is None
+
+    def test_openai_chat_models_are_not_reasoning_models(self) -> None:
+        """gpt-4o takes no effort parameter and does take a strict schema.
+
+        :return: nothing
+        :rtype: None
+        """
+        for model_id in ("gpt-4o", "gpt-4o-mini"):
+            caps = get_capabilities(model_id)
+            assert caps is not None
+            assert caps.reasoning_efforts == []
+            assert caps.reasoning_budget is False
+            assert caps.structured_output is True
+            assert caps.accepts_temperature is None
+
+
+class TestPublishedLayer:
+    """provider-published facts sit above the static entry and below the override."""
+
+    @pytest.fixture
+    def model_id(self) -> Iterator[str]:
+        """a fresh registered id, with every layer dropped afterwards.
+
+        :return: the id
+        :rtype: Iterator[str]
+        """
+        model_id = f"test-published-{uuid4().hex}"
+        register_capabilities(
+            model_id,
+            ModelCapabilities(
+                model_name=model_id,
+                model_type=ModelType.CHAT,
+                model_tier=ModelTier.SMALL,
+                context_window=100_000,
+                accepts_temperature=True,
+                reasoning_efforts=["low", "high"],
+                reasoning_budget=True,
+            ),
+        )
+        yield model_id
+        unregister_published_capabilities(model_id)
+        unregister_capability_override(model_id)
+
+    def test_a_published_fact_replaces_the_static_one(self, model_id: str) -> None:
+        """the fetched fact wins; facts it did not publish keep the static value.
+
+        :param model_id: the registered id
+        :ptype model_id: str
+        :return: nothing
+        :rtype: None
+        """
+        register_published_capabilities(model_id, CapabilityOverride(reasoning_budget=False))
+        caps = get_capabilities(model_id)
+        assert caps is not None
+        assert caps.reasoning_budget is False
+        assert caps.reasoning_efforts == ["low", "high"]
+        assert caps.accepts_temperature is True
+        assert caps.context_window == 100_000
+
+    def test_an_override_replaces_a_published_fact(self, model_id: str) -> None:
+        """override > published > static, field by field.
+
+        :param model_id: the registered id
+        :ptype model_id: str
+        :return: nothing
+        :rtype: None
+        """
+        register_published_capabilities(
+            model_id,
+            CapabilityOverride(reasoning_efforts=["low", "medium"], reasoning_budget=False),
+        )
+        register_capability_override(model_id, CapabilityOverride(reasoning_efforts=["medium"]))
+        caps = get_capabilities(model_id)
+        assert caps is not None
+        assert caps.reasoning_efforts == ["medium"]
+        assert caps.reasoning_budget is False
+        assert caps.accepts_temperature is True
+        assert list_capabilities()[model_id] == caps
+
+    def test_dropping_the_published_facts_restores_the_static_ones(self, model_id: str) -> None:
+        """unregistering the layer leaves the static entry answering alone.
+
+        :param model_id: the registered id
+        :ptype model_id: str
+        :return: nothing
+        :rtype: None
+        """
+        register_published_capabilities(model_id, CapabilityOverride(reasoning_budget=False))
+        unregister_published_capabilities(model_id)
+        caps = get_capabilities(model_id)
+        assert caps is not None
+        assert caps.reasoning_budget is True
+        assert get_published_capabilities(model_id) is None
+
+    def test_a_model_without_a_static_entry_keeps_its_published_facts_apart(self) -> None:
+        """no registry entry: get_capabilities stays None (no invented tier), the facts stay readable.
+
+        :return: nothing
+        :rtype: None
+        """
+        model_id = f"test-unregistered-{uuid4().hex}"
+        facts = CapabilityOverride(adaptive_reasoning=True)
+        register_published_capabilities(model_id, facts)
+        try:
+            assert get_capabilities(model_id) is None
+            assert get_published_capabilities(model_id) == facts
+            assert model_id not in list_capabilities()
+        finally:
+            unregister_published_capabilities(model_id)

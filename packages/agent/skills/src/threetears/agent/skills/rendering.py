@@ -43,15 +43,60 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import UUID
-
-from threetears.agent.skills.entities import AgentSkillEntity
 
 __all__ = [
     "ComposedTurnContext",
+    "SkillShape",
     "compose_turn_context",
     "render_skill_body_block",
 ]
+
+
+class SkillShape(Protocol):
+    """What composing a turn reads of a skill.
+
+    An :class:`~threetears.agent.skills.entities.AgentSkillEntity` is one. So
+    is a consumer's own record of the skill a turn started with: a turn that
+    pauses and resumes elsewhere composes from what it stored, not from a row
+    that may have been edited since.
+    """
+
+    @property
+    def skill_id(self) -> UUID:
+        """The skill's id."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """The skill's name."""
+        ...
+
+    @property
+    def summary(self) -> str:
+        """Its one-line summary."""
+        ...
+
+    @property
+    def body(self) -> str | None:
+        """Its steps, or ``None``."""
+        ...
+
+    @property
+    def prompt_mode(self) -> str:
+        """``'additive'`` or ``'replace'``."""
+        ...
+
+    @property
+    def tool_additions(self) -> Sequence[str]:
+        """Tools the skill adds."""
+        ...
+
+    @property
+    def tool_restrictions(self) -> Sequence[str]:
+        """Tools the skill takes away."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -83,7 +128,7 @@ class ComposedTurnContext:
     active_skill_id: UUID | None
 
 
-def render_skill_body_block(skill: AgentSkillEntity) -> str:
+def render_skill_body_block(skill: SkillShape) -> str:
     """Format a skill's prose body as a labeled markdown block.
 
     Used by:
@@ -110,7 +155,7 @@ def render_skill_body_block(skill: AgentSkillEntity) -> str:
     ``'replace'`` mode falls back to ``skill.summary``.
 
     :param skill: the active skill whose body should be rendered
-    :ptype skill: AgentSkillEntity
+    :ptype skill: SkillShape
     :return: the labeled markdown block, or ``""`` if no body
     :rtype: str
     """
@@ -122,7 +167,7 @@ def render_skill_body_block(skill: AgentSkillEntity) -> str:
 
 
 def compose_turn_context(
-    active_skill: AgentSkillEntity | None,
+    active_skill: SkillShape | None,
     base_system_prompt: str,
     base_tool_names: Sequence[str],
     *,
@@ -170,7 +215,7 @@ def compose_turn_context(
     the renderer.
 
     :param active_skill: the skill loaded for this turn, or ``None``
-    :ptype active_skill: AgentSkillEntity | None
+    :ptype active_skill: SkillShape | None
     :param base_system_prompt: the consumer's base system prompt
     :ptype base_system_prompt: str
     :param base_tool_names: tool ``mcp_name`` entries already filtered

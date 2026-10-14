@@ -293,6 +293,19 @@ def create_anthropic_chat(
 
 # canonical Anthropic chat models. extend with additional ids by calling
 # register_capabilities() externally at host-app boot time.
+#
+# request-settings facts (accepts_temperature .. structured_output) are filled
+# only where Anthropic's published model docs state them (the per-model
+# thinking/effort table and the structured-outputs model list, as cached
+# 2026-10-06); anything not stated stays None. the Models API
+# (threetears.models.anthropic_capabilities) is the authoritative source and
+# layers its published facts above these at runtime.
+#
+# temperature is never published by the Models API. it is False only where
+# the docs say sampling parameters were REMOVED (a 400); where the docs say
+# "allowed" it is left None, so a caller sends it and learns from a refusal
+# rather than trusting a static True that a later model rev could break.
+_ANTHROPIC_EFFORTS_THROUGH_XHIGH = ["low", "medium", "high", "xhigh", "max"]
 _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
     "claude-opus-4-8": ModelCapabilities(
         model_name="claude-opus-4-8",
@@ -310,6 +323,15 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=False,
         min_cacheable_tokens=1024,
         cache_ttl_seconds=300,
+        # docs: adaptive is the only on-mode, disabled accepted, budget_tokens
+        # and sampling parameters removed (400), effort low..max incl. xhigh,
+        # structured outputs supported.
+        accepts_temperature=False,
+        reasoning_efforts=list(_ANTHROPIC_EFFORTS_THROUGH_XHIGH),
+        reasoning_budget=False,
+        adaptive_reasoning=True,
+        reasoning_disable=True,
+        structured_output=True,
     ),
     "claude-sonnet-5": ModelCapabilities(
         model_name="claude-sonnet-5",
@@ -327,6 +349,14 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=False,
         min_cacheable_tokens=1024,
         cache_ttl_seconds=300,
+        # docs: same request surface as claude-opus-4-8 (adaptive only,
+        # disabled accepted, budget and sampling removed, effort low..max).
+        accepts_temperature=False,
+        reasoning_efforts=list(_ANTHROPIC_EFFORTS_THROUGH_XHIGH),
+        reasoning_budget=False,
+        adaptive_reasoning=True,
+        reasoning_disable=True,
+        structured_output=True,
     ),
     "claude-sonnet-4-6": ModelCapabilities(
         model_name="claude-sonnet-4-6",
@@ -344,6 +374,14 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=False,
         min_cacheable_tokens=1024,
         cache_ttl_seconds=300,
+        # docs: adaptive recommended, budget_tokens deprecated but still
+        # functional, thinking off unless asked, effort low/medium/high/max
+        # (xhigh arrived with Opus 4.7). sampling "allowed" -> left None (see
+        # above). not on the docs' structured-outputs model list -> None.
+        reasoning_efforts=["low", "medium", "high", "max"],
+        reasoning_budget=True,
+        adaptive_reasoning=True,
+        reasoning_disable=True,
     ),
     "claude-haiku-4-5-20251001": ModelCapabilities(
         model_name="claude-haiku-4-5-20251001",
@@ -361,6 +399,14 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=False,
         min_cacheable_tokens=1024,
         cache_ttl_seconds=300,
+        # docs: thinking only via budget_tokens, no adaptive, the effort
+        # parameter errors (so [] = send none), thinking off unless asked,
+        # structured outputs supported. sampling "allowed" -> left None.
+        reasoning_efforts=[],
+        reasoning_budget=True,
+        adaptive_reasoning=False,
+        reasoning_disable=True,
+        structured_output=True,
     ),
 }
 

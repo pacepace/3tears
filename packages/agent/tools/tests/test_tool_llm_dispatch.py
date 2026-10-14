@@ -165,3 +165,38 @@ async def test_invocation_metadata_preserved_internally() -> None:
         }
     )
     assert result == "extracted content"
+
+
+class _ListingResolver(_Resolver):
+    def __init__(self, names: list[str] | Exception) -> None:
+        super().__init__(result=None)
+        self._names = names
+
+    async def available_names(self) -> list[str]:
+        if isinstance(self._names, Exception):
+            raise self._names
+        return self._names
+
+
+@pytest.mark.asyncio
+async def test_a_miss_names_the_specialists_there_are() -> None:
+    tool = load_tool_llm_dispatch(_ListingResolver(["translator", "coder"]))[0]
+    said = await tool.ainvoke({"tool_name": "summariser", "input_text": "sum this up"})
+    assert (
+        said == "[TOOL ERROR] invoke_tool_llm: specialist 'summariser' not found. Your specialists: coder, translator."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_miss_with_no_specialists_says_there_are_none() -> None:
+    tool = load_tool_llm_dispatch(_ListingResolver([]))[0]
+    said = await tool.ainvoke({"tool_name": "summariser", "input_text": "sum this up"})
+    assert said == "[TOOL ERROR] invoke_tool_llm: specialist 'summariser' not found. You have no specialists to ask."
+
+
+@pytest.mark.asyncio
+async def test_a_miss_is_still_reported_when_the_list_cannot_be_read() -> None:
+    for resolver in (_ListingResolver(RuntimeError("database gone")), _Resolver(result=None)):
+        tool = load_tool_llm_dispatch(resolver)[0]
+        said = await tool.ainvoke({"tool_name": "summariser", "input_text": "sum this up"})
+        assert said == "[TOOL ERROR] invoke_tool_llm: specialist 'summariser' not found. It is not on your list."

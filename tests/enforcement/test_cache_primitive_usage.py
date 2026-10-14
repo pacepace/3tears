@@ -162,6 +162,12 @@ _CONFIG = CacheEnforcementConfig(
             # a row back on a hot path, so cache tiers would hold copies nobody
             # asks for, and erasure would have caches to chase.
             "audit_events",
+            # webhook_refusals (agent-wake v010) is a counted log of refused
+            # webhook deliveries, written by one INSERT ... ON CONFLICT per refusal
+            # (WebhookSubscriptionCollection.record_refusal) and read only when an
+            # agent or person asks for a subscription's history. It has no entity
+            # and no row is read by key; cache tiers would hold copies nobody reads.
+            "webhook_refusals",
         }
     ),
     exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_cache_exemptions.txt",

@@ -1,6 +1,6 @@
 """Integration test: agent-skills migrations apply cleanly.
 
-Verifies that running v001-v004 against a fresh schema:
+Verifies that running v001-v005 against a fresh schema:
 
 - Creates ``agent_skills`` + ``agent_skill_invocations`` with the
   expected column inventory and indexes.
@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
-from threetears.agent.skills.migrations import add_tool_call_columns, drop_gin_indexes
+from threetears.agent.skills.migrations import add_outcome_notes, add_tool_call_columns, drop_gin_indexes
 from threetears.agent.skills.migrations.v004_add_tool_call_columns import PAYLOAD_CHECK_ENGINE_DEF
 from threetears.agent.skills.migrations import register as register_skills
 from threetears.conversations.migrations import register as register_conversations
@@ -167,6 +167,7 @@ class TestSchemaShape:
                 "outcome",
                 "outcome_source",
                 "notes",
+                "outcome_notes",
             }
             assert expected_invocation_cols.issubset(invocation_cols.keys())
         finally:
@@ -424,4 +425,57 @@ class TestV004ToolCallColumns:
         finally:
             for schema in schemas:
                 await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await conn.close()
+
+
+class TestV005OutcomeNotes:
+    """v005 adds ``outcome_notes`` beside ``notes``, keeping every existing use."""
+
+    async def test_upgrade_keeps_each_use_and_its_reason(self, pg_schema: tuple[str, str]) -> None:
+        """A use written at v004 keeps its reason in ``notes`` and has no outcome notes after v005."""
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store, target=4)  # type: ignore[arg-type]
+            assert "outcome_notes" not in await _columns(conn, schema, "agent_skill_invocations")
+            agent_id, skill_id = await conn.fetchrow("SELECT gen_random_uuid() AS a, gen_random_uuid() AS s")
+            await conn.execute(
+                "INSERT INTO agent_skills (agent_id, skill_id, user_id, name, summary, body) "
+                "VALUES ($1, $2, gen_random_uuid(), 'old', 'sum', 'steps')",
+                agent_id,
+                skill_id,
+            )
+            await conn.execute(
+                "INSERT INTO agent_skill_invocations (agent_id, invocation_id, skill_id, user_id, conversation_id, "
+                "invocation_source, outcome, outcome_source, notes) VALUES ($1, gen_random_uuid(), $2, "
+                "gen_random_uuid(), gen_random_uuid(), 'invoke', 'success', 'agent_tool', 'the person asked')",
+                agent_id,
+                skill_id,
+            )
+            before = [dict(r) for r in await conn.fetch("SELECT * FROM agent_skill_invocations")]
+
+            assert await runner.apply_for_agent_schema(store) >= 1  # type: ignore[arg-type]
+
+            after = [dict(r) for r in await conn.fetch("SELECT * FROM agent_skill_invocations")]
+            assert [{k: v for k, v in r.items() if k != "outcome_notes"} for r in after] == before
+            assert after[0]["notes"] == "the person asked" and after[0]["outcome_notes"] is None
+            assert (await _columns(conn, schema, "agent_skill_invocations"))["outcome_notes"] == "text"
+        finally:
+            await conn.close()
+
+    async def test_applies_twice_without_change(self, pg_schema: tuple[str, str]) -> None:
+        """Running v005's body again on a migrated schema raises nothing and keeps the column."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await _build_runner().apply_for_agent_schema(store)  # type: ignore[arg-type]
+            first = await _columns(conn, schema, "agent_skill_invocations")
+            await add_outcome_notes(store)  # type: ignore[arg-type]
+            assert await _columns(conn, schema, "agent_skill_invocations") == first
+        finally:
             await conn.close()

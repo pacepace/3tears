@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -31,7 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
 from uuid_utils import uuid7
 
-from threetears.agent.memory.revisions import is_permanent, retract, supersede
+from threetears.agent.memory.revisions import is_permanent, retract, supersede, write_once
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_EXTRACT,
     MemoryAuthorizerDependencies,
@@ -54,11 +54,16 @@ __all__ = [
     "ExtractionOutcome",
     "ExtractionResult",
     "MemoryExtractor",
+    "REPLY_NOT_A_SOURCE",
 ]
 
 log = get_logger(__name__)
 
 _VALID_MEMORY_TYPES = {t.value for t in MemoryType}
+
+#: What the worthiness and extraction models are shown in place of a reply the
+#: host said is not a source (``extract(reply_is_source=False)``).
+REPLY_NOT_A_SOURCE = "(not given)"
 
 #: JetStream's answer to a per-message TTL on a stream without ``allow_msg_ttl``
 #: (``JSMessageTTLDisabledErr``, "per-message TTL is disabled"). observed on the
@@ -352,8 +357,20 @@ class MemoryExtractor:
         *,
         agent_id: UUID,
         customer_id: UUID,
+        near_message_ids: Sequence[UUID] = (),
+        reply_is_source: bool = True,
     ) -> ExtractionResult:
         """extract memories from one conversation turn and say what happened.
+
+        ``reply_is_source=False`` is for a turn whose reply the host does not
+        stand behind as a record of what happened (one a check sent back and
+        the model rewrote): the worthiness and extraction models are shown the
+        person's message alone, so nothing the reply says can become a memory,
+        and what the person said still can. ``near_message_ids`` are the
+        source messages of this turn and the one before: a new memory replaces
+        one from those messages that says nearly the same thing
+        (:func:`~threetears.agent.memory.revisions.write_once`,
+        ``MemoryConfig.same_event_threshold``).
 
         gates run cheapest first: heuristics, a READ of the conversation's
         cooldown (so a turn inside it costs no worthiness call), the worthiness
@@ -405,6 +422,8 @@ class MemoryExtractor:
                 agent_id=agent_id,
                 customer_id=customer_id,
                 claim=claim,
+                near_message_ids=near_message_ids,
+                reply_is_source=reply_is_source,
             )
         except asyncio.CancelledError:
             # convert at border: log extra_data fields
@@ -468,6 +487,8 @@ class MemoryExtractor:
         agent_id: UUID,
         customer_id: UUID,
         claim: _Claim,
+        near_message_ids: Sequence[UUID] = (),
+        reply_is_source: bool = True,
     ) -> ExtractionResult:
         """run the gated pipeline for one turn; failures propagate to :meth:`extract`.
 
@@ -518,6 +539,10 @@ class MemoryExtractor:
         if not passed:
             log.debug("memory extraction skipped by heuristic gate: %s", reason)
             return ExtractionResult(outcome=ExtractionOutcome.SKIPPED, gate=ExtractionGate.HEURISTIC, reason=reason)
+        if not reply_is_source:
+            # The length gates above read the reply as it was; from here no
+            # model sees it, so no memory can come from it.
+            assistant_response = REPLY_NOT_A_SOURCE
 
         open_window, cooldown = await self.check_rate_limit(conversation_id)
         if not open_window:
@@ -595,6 +620,7 @@ class MemoryExtractor:
             message_id_source,
             agent_id=agent_id,
             customer_id=customer_id,
+            near_message_ids=near_message_ids,
         )
         return tally.as_result()
 
@@ -1103,8 +1129,13 @@ class MemoryExtractor:
         *,
         agent_id: UUID,
         customer_id: UUID,
+        near_message_ids: Sequence[UUID] = (),
     ) -> _ActionTally:
         """execute ADD/UPDATE/DELETE/NOOP actions via the Collection, counting what landed.
+
+        an ADD is written through :func:`~threetears.agent.memory.revisions.write_once`:
+        it replaces an earlier write of the same event from ``near_message_ids``,
+        and is not written at all when a permanent memory from them already says it.
 
         a failing action is logged and counted, and the rest still run.
 
@@ -1137,10 +1168,7 @@ class MemoryExtractor:
 
             try:
                 if action == "ADD":
-                    memory_id = uuid7()
-                    new_data: dict[str, Any] = {
-                        "memory_id": memory_id,
-                        "agent_id": agent_id,
+                    add_fields: dict[str, Any] = {
                         "customer_id": customer_id,
                         "user_id": user_id,
                         "conversation_id": conversation_id,
@@ -1154,12 +1182,33 @@ class MemoryExtractor:
                         # threads consolidation_gist_salience_seed + how
                         # agent/intention threads its salience_seed.
                         "salience": self._config.salience_seed,
+                    }
+                    written = await write_once(
+                        self._memories,
+                        self._consolidations,
+                        agent_id=agent_id,
+                        fields=add_fields,
+                        near_message_ids=near_message_ids,
+                        threshold=self._config.same_event_threshold,
+                        # the person's permanent memory already says it; extraction
+                        # never writes a second copy beside it
+                        when_permanent="skip",
+                    )
+                    if written.memory_id is None:
+                        tally.skipped += 1
+                        continue
+                    memory_id = written.memory_id
+                    new_data: dict[str, Any] = {
+                        **add_fields,
+                        "memory_id": memory_id,
+                        "agent_id": agent_id,
                         "date_created": now,
                         "date_updated": now,
                     }
-                    new_entity: MemoryEntity = self._memories.create(new_data)
-                    await self._memories.save_entity(new_entity)
-                    tally.added += 1
+                    if written.replaced:
+                        tally.updated += 1
+                    else:
+                        tally.added += 1
                     summaries.append(
                         (
                             str(memory_id),  # convert at border: summary_callback Callable[[str, str], ...] contract

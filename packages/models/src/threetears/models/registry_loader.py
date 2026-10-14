@@ -175,6 +175,12 @@ def register_model_capabilities_bulk(
       - ``supports_streaming``
       - ``supports_tools``
       - ``supports_vision``
+      - ``accepts_temperature``, ``reasoning_efforts`` (a list of effort
+        words; ``[]`` = no effort parameter), ``reasoning_budget``,
+        ``adaptive_reasoning``, ``reasoning_disable``, ``structured_output``
+        -- the request settings the model accepts, tri-state like the
+        other flags (absent or NULL = not declared). see
+        :class:`~threetears.models.capabilities.ModelCapabilities` for each
       - ``model_type`` (defaults to CHAT)
       - ``model_tier`` (defaults to STANDARD)
       - ``model_status`` (defaults to ACTIVE)
@@ -228,6 +234,12 @@ def register_model_capabilities_bulk(
             supports_streaming=row.get("supports_streaming"),
             supports_tools=row.get("supports_tools"),
             supports_vision=row.get("supports_vision"),
+            accepts_temperature=row.get("accepts_temperature"),
+            reasoning_efforts=row.get("reasoning_efforts"),
+            reasoning_budget=row.get("reasoning_budget"),
+            adaptive_reasoning=row.get("adaptive_reasoning"),
+            reasoning_disable=row.get("reasoning_disable"),
+            structured_output=row.get("structured_output"),
             cost_per_input_token=_per_token(
                 _first_present(row, "cost_per_1m_input_tokens", "cost_per_1m_prompt_tokens"),
             ),

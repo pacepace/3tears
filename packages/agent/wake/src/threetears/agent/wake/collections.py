@@ -90,6 +90,8 @@ from threetears.observe import get_logger
 from threetears.scheduled_jobs.collections import REAPED_DISPATCH_ERROR
 
 __all__ = [
+    "REFUSALS_KEPT_FOR",
+    "WEBHOOK_REFUSAL_REASONS",
     "WakeFireCollection",
     "WakeScheduleCollection",
     "WebhookSubscriptionCollection",
@@ -97,6 +99,24 @@ __all__ = [
 
 
 log = get_logger(__name__)
+
+#: Why a webhook delivery to a known subscription is refused, as ``webhook_refusals.reason``
+#: keeps it (CHECK-pinned in v010). A delivery to an unknown subscription has no row to hang on.
+WEBHOOK_REFUSAL_REASONS: frozenset[str] = frozenset(
+    {
+        "paused",
+        "missing_signature",
+        "bad_signature",
+        "unknown_scheme",
+        "source_not_allowed",
+        "rate_limited",
+        "bad_payload",
+        "bad_template",
+    }
+)
+
+#: How long a subscription's refused deliveries are kept.
+REFUSALS_KEPT_FOR = timedelta(days=30)
 
 
 # Field-type hints used when L2 cache rounds a row through JSON. The
@@ -140,6 +160,8 @@ _FIRE_FIELD_TYPES: dict[str, Any] = {
     "error": str | None,
     "started_conversation_id": UUID | None,
     "date_created": datetime,
+    "fire_source": str,
+    "requested_by": str | None,
 }
 
 
@@ -214,6 +236,8 @@ _FIRE_INSERT_COLUMNS: tuple[str, ...] = (
     "error",
     "started_conversation_id",
     "date_created",
+    "fire_source",
+    "requested_by",
 )
 
 
@@ -1114,6 +1138,42 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         )
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
+    async def list_for_subscription(
+        self,
+        conversation_id: UUID,
+        webhook_subscription_id: UUID,
+        *,
+        limit: int = 20,
+    ) -> list[WakeFireEntity]:
+        """List the fires a webhook subscription started, newest first.
+
+        The accepted deliveries of a subscription: each one is a fire row.
+        Refused deliveries are not fires; they are read with
+        :meth:`WebhookSubscriptionCollection.list_refusals`.
+
+        :param conversation_id: partition column
+        :ptype conversation_id: UUID
+        :param webhook_subscription_id: the subscription whose fires to read
+        :ptype webhook_subscription_id: UUID
+        :param limit: page size
+        :ptype limit: int
+        :return: fire entities ordered by ``actual_fired_at`` DESC
+        :rtype: list[WakeFireEntity]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: per-subscription history scan.
+        rows = await self.l3_pool.fetch(
+            f"SELECT {_FIRE_SELECT_COLUMNS} "
+            "FROM wake_fires "
+            "WHERE conversation_id = $1 AND webhook_subscription_id = $2 "
+            "ORDER BY actual_fired_at DESC LIMIT $3",
+            conversation_id,
+            webhook_subscription_id,
+            limit,
+        )
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
+
     async def list_for_conversation(
         self,
         conversation_id: UUID,
@@ -1149,6 +1209,8 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         self,
         conversation_id: UUID,
         schedule_id: UUID,
+        *,
+        statuses: tuple[str, ...] | None = None,
     ) -> WakeFireEntity | None:
         """Return the most recent fire for a schedule, or ``None``.
 
@@ -1160,6 +1222,8 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         :ptype conversation_id: UUID
         :param schedule_id: schedule whose latest fire to read
         :ptype schedule_id: UUID
+        :param statuses: only fires that ended in one of these; ``None`` reads the latest whatever it was
+        :ptype statuses: tuple[str, ...] | None
         :return: latest fire entity or ``None``
         :rtype: WakeFireEntity | None
         """
@@ -1167,14 +1231,25 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             return None
         # cache-bypass: lookup by (conv_id, schedule_id) is not pk-
         # addressable for the row cache (the pk is (conv_id, fire_id)).
-        row = await self.l3_pool.fetchrow(
-            f"SELECT {_FIRE_SELECT_COLUMNS} "
-            "FROM wake_fires "
-            "WHERE conversation_id = $1 AND schedule_id = $2 "
-            "ORDER BY actual_fired_at DESC LIMIT 1",
-            conversation_id,
-            schedule_id,
-        )
+        if statuses is None:
+            row = await self.l3_pool.fetchrow(
+                f"SELECT {_FIRE_SELECT_COLUMNS} "
+                "FROM wake_fires "
+                "WHERE conversation_id = $1 AND schedule_id = $2 "
+                "ORDER BY actual_fired_at DESC LIMIT 1",
+                conversation_id,
+                schedule_id,
+            )
+        else:
+            row = await self.l3_pool.fetchrow(
+                f"SELECT {_FIRE_SELECT_COLUMNS} "
+                "FROM wake_fires "
+                "WHERE conversation_id = $1 AND schedule_id = $2 AND status = ANY($3::text[]) "
+                "ORDER BY actual_fired_at DESC LIMIT 1",
+                conversation_id,
+                schedule_id,
+                list(statuses),
+            )
         if row is None:
             return None
         return self.entity_class(dict(row), is_new=False, collection=self)
@@ -1190,6 +1265,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         actual_fired_at: datetime,
         fire_source: str,
         execution_mode: str,
+        requested_by: str | None = None,
     ) -> None:
         """Insert an initial in-flight ``wake_fires`` row.
 
@@ -1213,11 +1289,10 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         in-flight row's NULL ``output_text`` and silently produce an
         empty context block.
 
-        ``execution_mode`` / ``fire_source`` are not stored on the v1
-        ``wake_fires`` row (they live on the schedule); they are
-        accepted here for callsite-symmetry with the trigger envelope
-        and so the platform can promote them to fire columns later
-        without churning every callsite.
+        ``fire_source`` is stored on the row (v009), with ``requested_by``
+        for a fire run by hand. ``execution_mode`` is not a fire column (it
+        lives on the schedule); it is accepted for callsite-symmetry with
+        the trigger envelope.
 
         :param fire_id: pre-generated UUIDv7
         :ptype fire_id: UUID
@@ -1234,14 +1309,16 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         :ptype scheduled_fire_at: datetime | None
         :param actual_fired_at: the actual tick instant
         :ptype actual_fired_at: datetime
-        :param fire_source: source label (reserved for v2)
+        :param fire_source: what started the fire: ``scheduled_tick``, ``webhook`` or ``manual``
         :ptype fire_source: str
-        :param execution_mode: execution mode (reserved for v2)
+        :param execution_mode: execution mode (not stored on the fire row)
         :ptype execution_mode: str
+        :param requested_by: who asked for a manual fire; ``None`` on every other fire
+        :ptype requested_by: str | None
         :return: nothing
         :rtype: None
         """
-        del fire_source, execution_mode
+        del execution_mode
         if self.l3_pool is None:
             return None
         # cache-bypass: INSERT of a fresh fire_id, which no cache can hold. No code reads a
@@ -1249,8 +1326,8 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         await self.l3_pool.execute(
             "INSERT INTO wake_fires "
             "(conversation_id, fire_id, schedule_id, webhook_subscription_id, "
-            " scheduled_fire_at, actual_fired_at, status, display_suppressed) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            " scheduled_fire_at, actual_fired_at, status, display_suppressed, fire_source, requested_by) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             conversation_id,
             fire_id,
             schedule_id,
@@ -1259,6 +1336,8 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             actual_fired_at,
             "dispatching",
             False,
+            fire_source,
+            requested_by,
         )
         return None
 
@@ -1327,7 +1406,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         :param fire_id: target fire row
         :ptype fire_id: UUID
         :param status: terminal status -- one of ``'fired'``,
-            ``'fired_silent'``, ``'yielded'``, or a ``'skipped_*'``
+            ``'fired_silent'``, ``'yielded'``, ``'checked_quiet'``, or a ``'skipped_*'``
         :ptype status: str
         :param output_text: captured assistant output text
         :ptype output_text: str | None
@@ -1444,6 +1523,43 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             "RETURNING conversation_id, fire_id, started_conversation_id",
             REAPED_DISPATCH_ERROR,
             cutoff,
+        )
+        return [
+            ReapedFire(
+                conversation_id=row["conversation_id"],
+                fire_id=row["fire_id"],
+                started_conversation_id=row["started_conversation_id"],
+            )
+            for row in rows
+        ]
+
+    async def reap_fires(self, fire_ids: Sequence[UUID]) -> list[ReapedFire]:
+        """Fail the named fires that are still ``'dispatching'``: their dispatcher is known to be gone.
+
+        :meth:`reap_stale_dispatching` reaps by age, because it cannot know who
+        was dispatching a fire. A consumer that does know (it keeps a record of
+        which process holds each fire, and that process stopped beating) names
+        the fires here and does not wait out the age. Same terminal state and
+        marker as the age sweep, and the same guard: a fire that finished is
+        left as it ended.
+
+        :param fire_ids: the fires whose dispatcher is gone
+        :ptype fire_ids: Sequence[UUID]
+        :return: each fire this call failed, with the conversation it started (if any)
+        :rtype: list[ReapedFire]
+        """
+        if self.l3_pool is None or not fire_ids:
+            return []
+        # __SPANS_PARTITIONS__: the caller names fires across conversations;
+        # ``conversation_id`` is named in the RETURNING clause so the
+        # partition-column enforcement walker sees it as a static literal.
+        # cache-bypass: see reap_stale_dispatching -- no code reads a fire row by primary key.
+        rows = await self.l3_pool.fetch(
+            "UPDATE wake_fires SET status = 'failed', error = $1 "
+            "WHERE status = 'dispatching' AND fire_id = ANY($2::uuid[]) "
+            "RETURNING conversation_id, fire_id, started_conversation_id",
+            REAPED_DISPATCH_ERROR,
+            list(fire_ids),
         )
         return [
             ReapedFire(
@@ -1803,6 +1919,96 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
             )
         return None
 
+    async def record_refusal(
+        self,
+        conversation_id: UUID,
+        subscription_id: UUID,
+        *,
+        reason: str,
+        status_code: int,
+        at: datetime,
+        detail: str | None = None,
+        keep: timedelta = REFUSALS_KEPT_FOR,
+    ) -> None:
+        """Keep one refused delivery: counted into its subscription's row for this reason and minute.
+
+        One statement inserts the minute's row or adds one to it, so a sender
+        that is refused a thousand times a minute costs one row. Rows of the
+        subscription older than ``keep`` are dropped in passing.
+
+        :param conversation_id: partition column
+        :ptype conversation_id: UUID
+        :param subscription_id: the subscription the delivery was for
+        :ptype subscription_id: UUID
+        :param reason: one of :data:`WEBHOOK_REFUSAL_REASONS`
+        :ptype reason: str
+        :param status_code: the HTTP status the sender was answered with
+        :ptype status_code: int
+        :param at: when it was refused
+        :ptype at: datetime
+        :param detail: a short note of why, when the reason alone does not say
+        :ptype detail: str | None
+        :param keep: how long a subscription's refusals are kept
+        :ptype keep: timedelta
+        :return: nothing
+        :rtype: None
+        :raises ValueError: for a reason that is not one of :data:`WEBHOOK_REFUSAL_REASONS`
+        """
+        if reason not in WEBHOOK_REFUSAL_REASONS:
+            raise ValueError(f"{reason!r} is not a webhook refusal reason")
+        if self.l3_pool is None:
+            return None
+        # cache-bypass: webhook_refusals has no entity and no cached row; it is a counted log.
+        await self.l3_pool.execute(
+            "INSERT INTO webhook_refusals "
+            "(conversation_id, subscription_id, reason, window_start, status_code, refusals, last_refused_at, detail) "
+            "VALUES ($1, $2, $3, date_trunc('minute', $4::timestamptz), $5, 1, $4, $6) "
+            "ON CONFLICT (subscription_id, reason, window_start) DO UPDATE "
+            "SET refusals = webhook_refusals.refusals + 1, last_refused_at = EXCLUDED.last_refused_at, "
+            "    status_code = EXCLUDED.status_code, detail = COALESCE(EXCLUDED.detail, webhook_refusals.detail)",
+            conversation_id,
+            subscription_id,
+            reason,
+            at,
+            status_code,
+            str(detail)[:500] if detail else None,
+        )
+        # cache-bypass: as above; the prune keeps the log bounded per subscription.
+        await self.l3_pool.execute(
+            "DELETE FROM webhook_refusals WHERE subscription_id = $1 AND last_refused_at < $2",
+            subscription_id,
+            at - keep,
+        )
+        return None
+
+    async def list_refusals(
+        self,
+        subscription_id: UUID,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """A subscription's refused deliveries, newest first, one row per reason and minute.
+
+        :param subscription_id: the subscription
+        :ptype subscription_id: UUID
+        :param limit: page size
+        :ptype limit: int
+        :return: rows with ``reason``, ``status_code``, ``window_start``, ``refusals``,
+            ``last_refused_at`` and ``detail``
+        :rtype: list[dict[str, Any]]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: a counted log with no entity.
+        rows = await self.l3_pool.fetch(
+            "SELECT reason, status_code, window_start, refusals, last_refused_at, detail "
+            "FROM webhook_refusals WHERE subscription_id = $1 "
+            "ORDER BY last_refused_at DESC LIMIT $2",
+            subscription_id,
+            limit,
+        )
+        return [dict(row) for row in rows]
+
     async def record_fire(
         self,
         conversation_id: UUID,
@@ -1922,6 +2128,9 @@ def _fire_value_for_column(col: str, data: dict[str, Any]) -> Any:
         return data[col]
     if col == "display_suppressed":
         return False
+    if col == "fire_source":
+        # NOT NULL: a row built without one is what its source column says it is
+        return "webhook" if data.get("webhook_subscription_id") is not None else "scheduled_tick"
     return None
 
 

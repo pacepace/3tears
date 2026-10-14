@@ -85,7 +85,7 @@ _ADVISORY_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)"
 _COUNT_WAKE_FIRES_SQL = (
     "SELECT COUNT(*) FROM wake_fires "
     "WHERE conversation_id = $1 AND schedule_id = $2 AND actual_fired_at > $3 "
-    "AND status IN ('fired', 'fired_silent')"
+    "AND status IN ('fired', 'fired_silent') AND ($4 OR fire_source <> 'manual')"
 )
 _COUNT_SUBSCRIPTION_FIRES_SQL = (
     "SELECT COUNT(*) FROM wake_fires "
@@ -101,7 +101,7 @@ _COUNT_AGENT_FIRES_SQL = (
     "(SELECT COUNT(*) FROM wake_fires wf "
     " JOIN agent_wake_schedules ws ON wf.schedule_id = ws.schedule_id "
     " WHERE ws.agent_id = $1 AND NOT ws.protected AND wf.actual_fired_at > $2 "
-    " AND wf.status IN ('fired', 'fired_silent')) "
+    " AND wf.status IN ('fired', 'fired_silent') AND ($3 OR wf.fire_source <> 'manual')) "
     "+ "
     "(SELECT COUNT(*) FROM wake_fires wf "
     " JOIN webhook_subscriptions ws ON wf.webhook_subscription_id = ws.subscription_id "
@@ -266,6 +266,11 @@ async def check_fire_limits(
     without a query. ``None`` pool returns ``None`` so unit tests without a
     DB still exercise the call path.
 
+    A fire run by hand spends the limits like any other while
+    ``limits.manual_fires_count`` is true (the default). When it is false,
+    manual fires are left out of both counts, and a manual fire is itself
+    never refused here.
+
     :param trigger: the fire
     :ptype trigger: WakeTrigger
     :param pool: asyncpg-compatible pool (or ``None`` in unit tests)
@@ -277,11 +282,16 @@ async def check_fire_limits(
     """
     if pool is None or trigger.protected:
         return None
+    count_manual = limits.manual_fires_count
+    if trigger.fire_source == "manual" and not count_manual:
+        return None
     since = datetime.now(UTC) - timedelta(hours=RATE_LIMIT_WINDOW_HOURS)
     # cache-bypass: aggregate COUNTs over a rolling window must read committed
     # state at fire time; a cached count is a limit that silently over-fires.
     if trigger.schedule_id is not None:
-        wake_count = await pool.fetchval(_COUNT_WAKE_FIRES_SQL, trigger.conversation_id, trigger.schedule_id, since)
+        wake_count = await pool.fetchval(
+            _COUNT_WAKE_FIRES_SQL, trigger.conversation_id, trigger.schedule_id, since, count_manual
+        )
     else:
         wake_count = await pool.fetchval(
             _COUNT_SUBSCRIPTION_FIRES_SQL,
@@ -292,7 +302,7 @@ async def check_fire_limits(
     if int(wake_count or 0) >= limits.per_wake:
         _log_limit_reached(trigger, "wake", int(wake_count or 0), limits.per_wake)
         return "wake"
-    agent_count = await pool.fetchval(_COUNT_AGENT_FIRES_SQL, trigger.agent_id, since)
+    agent_count = await pool.fetchval(_COUNT_AGENT_FIRES_SQL, trigger.agent_id, since, count_manual)
     if int(agent_count or 0) >= limits.per_agent:
         _log_limit_reached(trigger, "agent", int(agent_count or 0), limits.per_agent)
         return "agent"

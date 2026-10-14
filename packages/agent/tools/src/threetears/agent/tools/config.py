@@ -30,7 +30,12 @@ __all__ = [
     "get_report_timeout",
     "get_serve_ready_timeout",
     "get_shutdown_timeout",
+    "PDF_PARSE_TIMEOUT_SECONDS",
 ]
+
+#: How long one PDF a fetch reads may take to parse, before ``web_fetch`` says it gave up.
+#: A deployment changes it through ``web_fetch``'s ``pdf_parse_timeout_seconds`` config key.
+PDF_PARSE_TIMEOUT_SECONDS = 30.0
 
 log = get_logger(__name__)
 

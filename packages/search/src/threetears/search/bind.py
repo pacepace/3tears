@@ -8,15 +8,14 @@ The same call renders both, so an agent tool, an MCP face and a direct
 embedded caller are looking at one answer in two registers rather than two
 answers that can disagree.
 
-**The prose is a migration, not a rewrite.** Its shape is the one existing
-callers already read -- a numbered list of ``title`` / ``URL:`` / snippet
-blocks, ``No results found.`` when there are none -- so a model prompted
-against the old tool sees no change. What changed is underneath: the lines
-are rendered from typed candidates instead of from a provider's JSON, which
-is what lets the structure ride alongside instead of being re-parsed out of
-the text. Prose for a request with no criteria is byte-identical to the old
-renderer's; the only addition is a closing note when a criterion could not
-be honoured, and the old renderer had no criteria to fail to honour.
+**The prose keeps the shape existing callers read** -- a numbered list of
+``title`` / ``URL:`` blocks, ``No results found.`` when there are none --
+with one line added under each ``URL:``: the result's date and the engines
+that found it (:func:`result_facts`), because a model handed undated results
+reported a two-year-old page as this week's news. The lines are rendered
+from typed candidates, which is what lets the structure ride alongside
+instead of being re-parsed out of the text, and a closing note names any
+criterion that could not be honoured.
 
 **Nothing raises past here** (D10). Every typed failure becomes a failed
 result carrying its spend, because the far side of the tool envelope has no
@@ -32,7 +31,9 @@ constructs its own.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, time
 from typing import Any, Final
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from threetears.observe import get_logger
 from threetears.search.call import search
@@ -40,6 +41,7 @@ from threetears.search.contracts import (
     EGRESS_DIRECT,
     SEARCH_RESULTS_METADATA_KEY,
     BudgetPort,
+    Candidate,
     CandidateSet,
     FailureRecord,
     RateLimiterPort,
@@ -52,6 +54,7 @@ from threetears.search.contracts import (
 )
 
 __all__ = [
+    "DISPLAY_ZONE_METADATA_KEY",
     "NO_RESULTS_PROSE",
     "PROSE_MAX_CANDIDATES",
     "RenderedSearch",
@@ -61,6 +64,8 @@ __all__ = [
     "project_failure_metadata",
     "project_metadata",
     "render_prose",
+    "result_facts",
+    "shown_date",
 ]
 
 _logger = get_logger(__name__)
@@ -75,6 +80,75 @@ NO_RESULTS_PROSE: Final[str] = "No results found."
 #: every candidate; prose is bounded because it is going into a context
 #: window, and ten is the number the tool it replaces used.
 PROSE_MAX_CANDIDATES: Final[int] = 10
+
+#: ``ToolResult.metadata`` key naming the IANA zone the prose's times were shown in, beside
+#: :data:`SEARCH_RESULTS_METADATA_KEY`, so a reader rendering the typed candidates again shows
+#: them in the same zone the prose did.
+DISPLAY_ZONE_METADATA_KEY: Final[str] = "display_zone"
+
+
+def _zone(name: str | None) -> ZoneInfo | None:
+    """The zone an IANA name names, or None for no name or one that names nothing."""
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError, ValueError:
+        _logger.warning("search results shown in UTC: %r is not a time zone", name)
+        return None
+
+
+def shown_date(value: datetime | None, zone: str | None = None) -> str | None:
+    """A publication time as a person reads it, in their zone.
+
+    A provider that reports only a day reports it as midnight UTC, and that is
+    shown as the day: moved into a zone west of UTC it would read as the day
+    before. A time with a time of day is shown in ``zone`` with the zone's
+    abbreviation, or in UTC when no zone is known.
+
+    :param value: the timezone-aware time, or None
+    :ptype value: datetime | None
+    :param zone: the IANA zone of the person reading, or None
+    :ptype zone: str | None
+    :return: ``2026-10-01`` or ``2026-10-01 14:05 IST``, or None when there is no time
+    :rtype: str | None
+    """
+    if value is None:
+        return None
+    in_utc = value.astimezone(UTC)
+    if in_utc.time() == time(0, 0):
+        return in_utc.date().isoformat()
+    tz = _zone(zone)
+    local = in_utc.astimezone(tz) if tz is not None else in_utc
+    return f"{local:%Y-%m-%d %H:%M} {local.tzname() or 'UTC'}"
+
+
+def _engines(candidate: Candidate) -> list[str]:
+    """The engines a search provider says found this candidate, first to last."""
+    ids = candidate.provenance.provider_ids
+    named = ids.get("engines") or ids.get("engine") or ""
+    return [name.strip() for name in named.split(",") if name.strip()]
+
+
+def result_facts(candidate: Candidate, zone: str | None = None) -> str:
+    """One result's date and where it came from: ``published 2026-10-01; found by duckduckgo, wikipedia``.
+
+    The same words the prose prints under each result, for a reader that
+    renders the typed candidates itself.
+
+    :param candidate: one search result
+    :ptype candidate: Candidate
+    :param zone: the IANA zone of the person reading, or None
+    :ptype zone: str | None
+    :return: the line
+    :rtype: str
+    """
+    shown = shown_date(candidate.published_at, zone)
+    parts = [f"published {shown}" if shown else "no date given"]
+    engines = _engines(candidate)
+    if engines:
+        parts.append(f"found by {', '.join(engines)}")
+    return "; ".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,13 +175,20 @@ class RenderedSearch:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def render_prose(candidate_set: CandidateSet, *, max_candidates: int = PROSE_MAX_CANDIDATES) -> str:
+def render_prose(
+    candidate_set: CandidateSet, *, max_candidates: int = PROSE_MAX_CANDIDATES, zone: str | None = None
+) -> str:
     """Render candidates as the prose a model reads.
+
+    Each result is its title, its ``URL:`` line, a line with its date and the
+    engines that found it (:func:`result_facts`), then its snippet.
 
     :param candidate_set: what the search returned
     :ptype candidate_set: CandidateSet
     :param max_candidates: how many candidates to render
     :ptype max_candidates: int
+    :param zone: the IANA zone a time of day is shown in
+    :ptype zone: str | None
     :return: the numbered list, or :data:`NO_RESULTS_PROSE` when the search
         found nothing. Unhonoured criteria and provider degradations are
         named in a closing note rather than left for the caller to notice
@@ -117,6 +198,7 @@ def render_prose(candidate_set: CandidateSet, *, max_candidates: int = PROSE_MAX
     for position, candidate in enumerate(candidate_set.candidates[:max_candidates], 1):
         lines.append(f"{position}. {candidate.title or 'Untitled'}")
         lines.append(f"   URL: {candidate.identity}")
+        lines.append(f"   {result_facts(candidate, zone)}")
         if candidate.snippet:
             lines.append(f"   {candidate.snippet}")
         lines.append("")
@@ -195,7 +277,11 @@ def project_failure_metadata(query: str, record: FailureRecord) -> dict[str, Any
 
 
 def bind_candidate_set(
-    query: str, candidate_set: CandidateSet, *, max_candidates: int = PROSE_MAX_CANDIDATES
+    query: str,
+    candidate_set: CandidateSet,
+    *,
+    max_candidates: int = PROSE_MAX_CANDIDATES,
+    zone: str | None = None,
 ) -> RenderedSearch:
     """Render one successful search in both registers.
 
@@ -205,15 +291,21 @@ def bind_candidate_set(
     :ptype candidate_set: CandidateSet
     :param max_candidates: how many candidates the prose renders
     :ptype max_candidates: int
+    :param zone: the IANA zone times are shown in; named under
+        :data:`DISPLAY_ZONE_METADATA_KEY` when given
+    :ptype zone: str | None
     :return: the rendered result; ``success`` is True even for zero
         candidates (SR-J2)
     :rtype: RenderedSearch
     """
+    metadata = project_metadata(query, candidate_set)
+    if zone:
+        metadata[DISPLAY_ZONE_METADATA_KEY] = zone
     return RenderedSearch(
         success=True,
-        content=render_prose(candidate_set, max_candidates=max_candidates),
+        content=render_prose(candidate_set, max_candidates=max_candidates, zone=zone),
         error=None,
-        metadata=project_metadata(query, candidate_set),
+        metadata=metadata,
     )
 
 
@@ -254,6 +346,7 @@ async def bind_search(
     budget: BudgetPort | None = None,
     limiter: RateLimiterPort | None = None,
     egress: str = EGRESS_DIRECT,
+    zone: str | None = None,
 ) -> RenderedSearch:
     """Run a search and render it, whatever happens.
 
@@ -293,6 +386,8 @@ async def bind_search(
         half of the pacing key and stamped onto refusals. ``direct`` is a
         named value, not an absence
     :ptype egress: str
+    :param zone: the IANA zone the prose shows times in
+    :ptype zone: str | None
     :return: the rendered result -- successful, or a failure carrying its
         spend
     :rtype: RenderedSearch
@@ -323,4 +418,4 @@ async def bind_search(
             provider_instance=provider.provider_instance,
         )
         return bind_failure(request.query, unmapped)
-    return bind_candidate_set(request.query, result, max_candidates=max_candidates)
+    return bind_candidate_set(request.query, result, max_candidates=max_candidates, zone=zone)

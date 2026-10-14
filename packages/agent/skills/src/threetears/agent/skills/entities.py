@@ -487,3 +487,18 @@ class AgentSkillInvocationEntity(BaseEntity):
     def notes(self, value: str | None) -> None:
         """Set optional notes."""
         BaseEntity.__setattr__(self, "notes", value)
+
+    @property
+    def outcome_notes(self) -> str | None:
+        """Return the agent's line on how this use went, or ``None``.
+
+        Written by ``skill_report_outcome`` beside the outcome. Kept apart from
+        :attr:`notes`, which holds the reason given when the skill was invoked.
+        """
+        value: str | None = self._get_raw("outcome_notes")
+        return value
+
+    @outcome_notes.setter
+    def outcome_notes(self, value: str | None) -> None:
+        """Set the outcome notes."""
+        BaseEntity.__setattr__(self, "outcome_notes", value)

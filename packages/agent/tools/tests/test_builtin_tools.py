@@ -24,11 +24,11 @@ class TestCalculator:
 
     def test_basic(self):
         tool = self._create()
-        assert tool.invoke({"expression": "2 + 3"}) == "5"
+        assert tool.invoke({"expression": "2 + 3"}) == "2 + 3 = 5"
 
     def test_functions(self):
         tool = self._create()
-        assert tool.invoke({"expression": "sqrt(144)"}) == "12"
+        assert tool.invoke({"expression": "sqrt(144)"}) == "sqrt(144) = 12"
 
     def test_error(self):
         tool = self._create()
@@ -38,44 +38,44 @@ class TestCalculator:
     def test_constants(self):
         tool = self._create()
         result = tool.invoke({"expression": "pi"})
-        assert result.startswith("3.14")
+        assert result.startswith("pi = 3.14")
 
     def test_float_formatting(self):
         tool = self._create()
         # 2.0 + 3.0 should show "5", not "5.0"
-        assert tool.invoke({"expression": "2.0 + 3.0"}) == "5"
+        assert tool.invoke({"expression": "2.0 + 3.0"}) == "2.0 + 3.0 = 5"
 
     def test_postfix_factorial_literal(self):
         """``n!`` postfix syntax is rewritten into ``factorial(n)``."""
         tool = self._create()
-        assert tool.invoke({"expression": "10!"}) == "3628800"
+        assert tool.invoke({"expression": "10!"}) == "10! = 3628800"
 
     def test_postfix_factorial_in_compound_expression(self):
         """``n!`` inside a compound expression rewrites correctly."""
         tool = self._create()
         # 5! + 1 == 121
-        assert tool.invoke({"expression": "5! + 1"}) == "121"
+        assert tool.invoke({"expression": "5! + 1"}) == "5! + 1 = 121"
 
     def test_postfix_factorial_paren_subexpression(self):
         """``(expr)!`` rewrites to ``factorial((expr))``."""
         tool = self._create()
         # (2+3)! == 5! == 120
-        assert tool.invoke({"expression": "(2+3)!"}) == "120"
+        assert tool.invoke({"expression": "(2+3)!"}) == "(2+3)! = 120"
 
     def test_explicit_factorial_call_still_works(self):
         """``factorial(n)`` form still works alongside the postfix sugar."""
         tool = self._create()
-        assert tool.invoke({"expression": "factorial(7)"}) == "5040"
+        assert tool.invoke({"expression": "factorial(7)"}) == "factorial(7) = 5040"
 
     def test_caret_translates_to_power(self):
         """``^`` is rewritten to ``**`` so callers can write ``2^10``."""
         tool = self._create()
-        assert tool.invoke({"expression": "2^10"}) == "1024"
+        assert tool.invoke({"expression": "2^10"}) == "2^10 = 1024"
 
     def test_caret_combined_with_factorial(self):
         """notation conveniences compose: ``2^3 + 4!`` -> 32."""
         tool = self._create()
-        assert tool.invoke({"expression": "2^3 + 4!"}) == "32"
+        assert tool.invoke({"expression": "2^3 + 4!"}) == "2^3 + 4! = 32"
 
 
 # ---------------------------------------------------------------------------

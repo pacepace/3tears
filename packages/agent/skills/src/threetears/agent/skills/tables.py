@@ -227,7 +227,8 @@ def agent_skill_invocations_table(metadata: MetaData) -> Table:
     """Register the ``agent_skill_invocations`` table on the SA metadata.
 
     Mirrors the canonical v002 migration DDL
-    (``migrations/v002_create_agent_skill_invocations.py``) exactly:
+    (``migrations/v002_create_agent_skill_invocations.py``) and v005's
+    ``outcome_notes`` column exactly:
     composite primary key ``(agent_id, invocation_id)``, standalone
     ``UNIQUE (invocation_id)``, the composite foreign key
     ``(agent_id, skill_id) REFERENCES agent_skills(agent_id, skill_id)
@@ -276,6 +277,7 @@ def agent_skill_invocations_table(metadata: MetaData) -> Table:
         Column("outcome", Text(), nullable=True),
         Column("outcome_source", Text(), nullable=True),
         Column("notes", Text(), nullable=True),
+        Column("outcome_notes", Text(), nullable=True),
         PrimaryKeyConstraint("agent_id", "invocation_id"),
         UniqueConstraint("invocation_id"),
         ForeignKeyConstraint(

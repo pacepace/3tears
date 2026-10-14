@@ -18,12 +18,16 @@ non-success :class:`ToolResult` rather than raising.
 
 from __future__ import annotations
 
+from datetime import tzinfo
 from typing import Any
 
 from langchain_core.tools import StructuredTool
+from threetears.core.utils.local_time import resolve_zone
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
+from threetears.agent.tools.text_window import WindowedInput
+from threetears.agent.tools.context import missing_result_text, recalled_text
 
 __all__ = [
     "ContextRecallTool",
@@ -51,6 +55,9 @@ def create_context_recall_tool(config: dict[str, Any], description: str) -> Stru
       :data:`~threetears.agent.tools.call_scope.ContextFactory` a
       ToolServer takes; resolves the manager the graph writes offloaded
       results through. without it the tool can recall nothing.
+    - ``tz`` -- the zone of the person the result is read to (a ``tzinfo`` or
+      an IANA name): a result a later call refreshed says when, in it. without
+      it the time is said in UTC.
 
     :param config: per-agent config dict
     :ptype config: dict[str, Any]
@@ -59,6 +66,7 @@ def create_context_recall_tool(config: dict[str, Any], description: str) -> Stru
     :return: a LangChain ``StructuredTool`` wrapping the recall tool
     :rtype: StructuredTool
     :raises TypeError: if ``context_factory`` is given and is not callable
+    :raises ValueError: if ``tz`` is a name that is not a known zone
     """
     from threetears.agent.tools.langchain_adapter import to_langchain_tool
 
@@ -69,7 +77,7 @@ def create_context_recall_tool(config: dict[str, Any], description: str) -> Stru
             f"(conversation_id, user_id) -> ToolContextManager callable, not {type(context_factory).__name__}"
         )
     return to_langchain_tool(
-        ContextRecallTool(),
+        ContextRecallTool(tz=config.get("tz")),
         description=description,
         context_factory=context_factory,
     )
@@ -82,12 +90,27 @@ class ContextRecallTool(TearsTool):
     ``[ctx:<id>]`` handle and gets the full out-of-band content back.
     """
 
+    def __init__(self, *, tz: tzinfo | str | None = None) -> None:
+        """Bind the zone a refreshed result's time is said in.
+
+        :param tz: a ``tzinfo`` or an IANA name; ``None`` says the time in UTC
+        :ptype tz: tzinfo | str | None
+        :raises ValueError: when ``tz`` is a name that is not a known zone
+        """
+        self._zone = resolve_zone(tz)
+
     _INPUT_SCHEMA: dict[str, Any] = {
         "type": "object",
         "properties": {
             "context_id": {
                 "type": "string",
                 "description": "The id in a [ctx:<id>] mark, with or without the ctx: part.",
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "description": WindowedInput.model_fields["offset"].description,
             },
         },
         "required": ["context_id"],
@@ -103,9 +126,13 @@ class ContextRecallTool(TearsTool):
            no scope at all the error names what the caller must supply
            (:func:`~threetears.agent.tools.call_scope.no_call_scope_message`).
         3. unknown id -> "not found".
-        4. found -> success with the full stored content.
+        4. found -> success with the stored content from ``offset``, at most
+           :data:`~threetears.agent.tools.context.RECALL_MAX_CHARS` of it. A
+           part opens with its window line, which names the next offset, and a
+           result a later call with the same input replaced opens with one line
+           saying so.
 
-        :param kwargs: must include ``context_id`` (string handle).
+        :param kwargs: must include ``context_id`` (string handle); may include ``offset``.
         :ptype kwargs: Any
         :return: the stored content on success, else a clear failure
             result the LLM can reason about.
@@ -133,11 +160,12 @@ class ContextRecallTool(TearsTool):
             if item is None:
                 result = ToolResult(
                     success=False,
-                    content=f"Saved result '{context_id}' not found in this conversation.",
+                    content=missing_result_text(context_id, getattr(manager, "items", None) or []),
                     error="not found",
                 )
             else:
-                result = ToolResult(success=True, content=str(item.get("content", "")))
+                offset = max(int(kwargs.get("offset") or 0), 0)
+                result = ToolResult(success=True, content=recalled_text(item, offset=offset, tz=self._zone))
         return result
 
     def mcp_schema(self) -> MCPToolDefinition:
@@ -150,8 +178,8 @@ class ContextRecallTool(TearsTool):
             name=self.mcp_name(),
             version=self.mcp_version(),
             description=(
-                "Recall the full content of a previously-offloaded tool result "
-                "by its context id (the '<id>' from a '[ctx:<id>]' handle)."
+                "Recall a previously-offloaded tool result by its context id (the '<id>' from a "
+                "'[ctx:<id>]' handle). A long one comes in parts: each part names the offset of the next."
             ),
             input_schema=self._INPUT_SCHEMA,
         )

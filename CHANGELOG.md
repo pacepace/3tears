@@ -6,6 +6,927 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.68.0 -- 2026-10-14
+
+### Media and the small tools: a question gets a new look, an image can be changed by its id, and the converters read what people write
+
+`media_analyze` answered every question about an image with its stored description, and stored any
+answer as the description, so "what colour is the car?" became what the image was. `memory_search`
+printed `[media:<content id>]`, which no media tool takes. The image tool changed only the newest
+upload, made no size or seed, and said it edited a photo when the model had used none. The time-zone
+converter stamped a time with no date with the server's UTC day, so 3:00 PM in Chicago at 03:21 UTC
+read as Saturday while it was Friday there; it took no "3pm", "PST" or "chicago". The unit converter
+read "F" to "C" as farad to coulomb and took no "Miles"; the calculator returned a bare number, read
+`sin` in radians and `log` as natural without saying so, and answered errors with its evaluator's
+internals.
+
+**Changed (agent-tools, `media_analyze`):**
+
+- **`question` is optional.** Left out (or blank) it is the describe ask: one item's kept description
+  is served, said to be the kept one, and a new one is kept. Any question is a new look, and its
+  answer is never kept as the description, nor passed to `on_analysis` as one. A document's reading is
+  kept only for the describe ask of its first part. New `DESCRIBE_PROMPT`.
+- **An item the storage did not resolve is never answered from its kept description**, so a storage
+  that refuses another person's media refuses the cache too.
+- **Documents take `offset` and `find`.** The reading opens at the offset, or just before the first
+  match of `find`; every match's offset is listed; no match reads nothing and says so.
+- **Every answer opens with the tool's statement** (what was looked at, by which analyzer, what part,
+  whether it was kept), then the window and find notes, a blank line, and the answer. The "covers only
+  part" note was after the answer.
+- **An id that is not one is refused by name** rather than raising.
+
+**Added (agent-tools):**
+
+- **`text_window.find_in_text(text, term, *, after=0) -> Found`**, `Found` (`offsets`, `total`,
+  `start`, `note()`), `FIND_LEAD_CHARS`, `FIND_LISTED`.
+- **`object_media_storage.read_bounded_stream(media_id, stream, *, max_bytes)`**: the bounded read a
+  host's `MediaStorage.download_media(max_bytes=...)` hands its own stream to.
+- **Image generation:** `source_media_id`, `size`, `aspect`, `seed` arguments; `SourceImage`,
+  `SourceImageRefused`, the `SourceImageContext` protocol (`load_source_image(media_id)`), and
+  `GENERATION_SOURCE_LABEL`. A backend with `takes_source_image = False` is refused an edit before it
+  is paid for, naming the models that can. An option the backend's `generate` does not take is not
+  sent. What was not done is said on the line after the host's statement: "No source was used",
+  "Not applied: seed (...)". `load_attached_image` may return a `SourceImage` to name the file.
+- **`date_math`** (`threetears.date_math`, in `STANDARD_TOOLS`, `STANDARD_BUILTIN_FACTORIES`,
+  `register_builtins` and the tool pod): the weekday of a date, a date plus or minus days, weeks,
+  months or years (a month past the 31st lands on the month's last day and says so), and days
+  between. "Today" is today in the person's zone.
+- **`builtin.time_words`**: `read_zone`, `parse_when`, `parse_date`, `describe_zone`,
+  `ZONE_ABBREVIATIONS` (one stated zone per abbreviation: IST is India), `Clock`, `system_clock`.
+
+**Changed (agent-tools, the small tools):**
+
+- **`timezone_converter`:** a time with no date is on the source zone's day, from the clock there.
+  Takes "3pm", "noon", "tomorrow 9:00", "Oct 9 3pm", ISO with an offset, any-case IANA names, cities,
+  abbreviations and UTC offsets. A left-out zone is the person's (call scope, else
+  `config["_user_timezone"]`); only `time_str` is required. The result names both zones with their
+  abbreviation and offset, says "the next day" or "the day before", and has a `Read:` line saying how
+  each loosely written thing was read. A clock time that summer time skips is refused; one that
+  happens twice says the first was used. `TimezoneConverterTool(timezone=, *, clock=)`.
+- **`unit_converter`:** a unit is read as written, then in lower case; F, C and K are degrees when the
+  other side is a temperature, and F to uF stays farads, either way said; `quantity` (or a
+  `from_unit` with numbers) adds up "5 feet 10 inches"; `value` is optional. Money is a `[NO CHANGE]`
+  ("no exchange rates here"). The result says it is rounded to 6 significant figures and that
+  "gallon", "pint", "cup", "quart" and "ton" are the US measures.
+- **`calculator`:** the result is "84.50*0.15 = 12.675", shown to 12 significant figures (0.1+0.2 is
+  0.3). Reads "15% of 84.50", "84.50*15%", "$22.50*3.5" and "1,000*2"; `10 % 3` is still the
+  remainder and a comma between arguments stays one. New functions: `sind`, `cosd`, `tand`, `asind`,
+  `acosd`, `atand`, `radians`, `degrees`, `ln`, `cbrt`, `atan2`, `hypot`, `trunc`, `gcd`, `lcm`,
+  `sum`, `mean`, `median`. A result that used `sin`-family trig or `log` says radians and natural log.
+  A non-number is refused, and every error says what to write instead.
+
+**Changed (media-contracts):** `ImageGenerationBackend.generate` takes keyword `size`, `aspect` and
+`seed`; result-metadata keys `GENERATION_SOURCE_USED`, `GENERATION_IGNORED`, `GENERATION_SIZE`,
+`GENERATION_SEED`.
+
+**Changed (agent-memory):** `memory_search` prints a file as `[media:<media id>]`, the id the media
+tools take, once per file, with its content kind when opened by id; `MediaContentCollection.search_by_ids`
+matches a media id as well as a content id. The ambient "Files you have seen" block prints the media id.
+
+**Breaking:** a caller that relied on a bare calculator number, a question being served the cached
+description, or `question` being required, now gets the forms above.
+
+### Image providers: size, aspect and seed, and what each could not apply
+
+The five image providers in `threetears.models` did not take the `size`, `aspect` and `seed` the
+image contract gained above, so none of them satisfied `ImageGenerationBackend` and the typecheck
+failed on each. ComfyUI sent seed 0 for every image, so the same prompt made the same picture each
+time. GPT Image models were sent `style` and `response_format`, which they refuse.
+
+**Changed (models, image providers):** each `generate` takes keyword `size`, `aspect` and `seed`,
+applies what the service takes, and says in the result's metadata (`GENERATION_SIZE`,
+`GENERATION_SEED`, `GENERATION_SOURCE_USED`, `GENERATION_IGNORED`) what it made and what it could
+not apply. A call with none of the three sends the body it sent before, except ComfyUI's seed.
+
+- **OpenAI:** a size must be one the model makes (DALL-E 3, DALL-E 2, GPT Image), else it is refused
+  with the sizes it takes and nothing is sent; an aspect picks the model's nearest size, and on a
+  model whose sizes are not known is named as not applied. A seed is named as not applied ("OpenAI's
+  image models take no seed"). A GPT Image model is sent no `style` (named as not applied) and no
+  `response_format`, and `standard` / `hd` quality read as `auto` / `high`. The result's width and
+  height are the size made.
+- **HuggingFace:** `width`, `height` and `seed` go as the task's `parameters`, only when asked.
+- **ModelsLab:** `width` and `height` from the size or aspect (512 by 512 unless asked, at most 1024 on
+  a side); a seed only when asked; the seed the service reports in `meta` is the one said.
+- **ComfyUI:** the empty latent takes the size or aspect (512 by 512 unless asked, at most 2048); the
+  sampler takes the seed asked for, else a new one per image, and the seed used is said. A negative
+  seed is named as not applied and a new one used.
+- **A1111:** `width` and `height` from the size or aspect on both txt2img and img2img (512 by 512
+  unless asked, at most 2048); a seed only when asked; the seed the server reports in `info` is the
+  one said.
+- **HuggingFace, ModelsLab and ComfyUI** carry `takes_source_image = False`, so the image tool refuses
+  an edit on them before an image is made from the words alone; A1111 carries `True`.
+
+**Added (models):** `threetears.models.providers.image.options`: `dimensions_for`, `parse_size`,
+`result_metadata`, `ASPECTS`. An unreadable size or aspect, or a size past a provider's largest side,
+raises `ValueError` saying what to write.
+
+### Web tools: search by kind, date, page and site; robots that cannot be read are not a refusal; PDFs, thin pages and charsets read; every failure says why and what next
+
+`web_search` took a query and nothing else and showed no dates; `web_fetch` refused a whole site whose
+`robots.txt` was its app shell, called a robots timeout "the site refused", read no PDF, cut nothing
+but decoded everything as UTF-8, and a failed read said only "No readable text could be taken".
+
+**Added (search):**
+
+- **`extract(...)` gains** `robots_timeout_seconds=5.0` (the robots read's own bound),
+  `robots_unreadable="deny" | "allow"` (deployment config: whether rules that cannot be read let the page
+  be read), `readers=()` (`CarrierReader`s for carriers that are not pages, each with its own media types
+  and cap) and `thin_page_chars=None` (when set, a page with less readable text that points at its
+  article -- a `citation_pdf_url` meta, or its one `iframe` -- follows it one level, same registrable site
+  only, through the same transport, robots asked for the frame, out of the byte cap and time the page
+  left). All default to the old behaviour except the robots changes below.
+- **New facets:** `EXTRACTION_NEXT_STEP_FACET` ("try again", "find the same facts on another site"),
+  `EXTRACTION_FINAL_URL_FACET`, `EXTRACTION_CHARSET_FACET`, `EXTRACTION_NOTES_FACET` (a followed frame, a
+  PDF read in part, robots read past under `allow`), `EXTRACTION_THIN_TEXT_FACET` (what a thin page held
+  when its frame was not read). A read candidate now carries the page's own `title` and `published_at`
+  (trafilatura's metadata) when the candidate had none.
+- **`CarrierReader`, `CarrierText`, `CarrierUnreadable`, `robots_agent_token(user_agent)`,
+  `same_site(a, b)`, `DEFAULT_ROBOTS_TIMEOUT_SECONDS`, `DEFAULT_THIN_PAGE_CHARS`,
+  `DEFAULT_FETCH_TIME_BUDGET_SECONDS`, `ROBOTS_UNREADABLE_DENY` / `_ALLOW`** in `threetears.search.extract`.
+- **`threetears.search.testing.RecordedFetchTransport` and `RecordedPage`**: a `FetchTransport` that
+  answers each URL from a recording and keeps the real transport's byte cap and content-type gate.
+- **`threetears.search.bind`:** `result_facts(candidate, zone)`, `shown_date(value, zone)`,
+  `DISPLAY_ZONE_METADATA_KEY`; `render_prose`, `bind_candidate_set` and `bind_search` take `zone=`.
+- **`threetears.search.standalone.DEFAULT_TRANSPORT_USER_AGENT`** names the transport's default.
+
+**Changed (search):**
+
+- **The prose under each result's `URL:` line gains one line**: `published 2026-10-01; found by
+  duckduckgo, wikipedia` (or `no date given`). A day-only date is shown as that day; a time of day is
+  shown in `zone` with its abbreviation, else UTC. Prose is no longer byte-identical to the old renderer.
+- **Robots:** a 2xx `robots.txt` is parsed whatever its content type (it had to be `text/plain`). A
+  timeout, a 5xx, a transport failure or a robots file past 512 KB records the candidate `failed`
+  (was `refused`) with "robots.txt could not be read (timed out after 5 s)" and "try again". A disallowing
+  file is still `refused`. Rules are matched against the user agent's product token, so a caller passing
+  its full user agent (`metallm/1.0 (+url)`) is matched as `metallm`.
+- **Charset:** a page is decoded by its header's charset, then a BOM, then a `<meta>` charset, then UTF-8,
+  then charset_normalizer (trafilatura's own dependency); it was always UTF-8 with replacement.
+- **Reasons:** a non-2xx page says which (`the site refused the request (403 Forbidden); ...`, `the site is
+  turning requests away for now (429 Too Many Requests); it asks to wait 60 s`, `the page was not found
+  (404)`, `the site had an error (503)`, `the page needs a login (401)`) where it said "the server answered
+  N"; a cap says which cap and its size; a timeout says the bound.
+
+**Added (agent-tools):**
+
+- **`web_search` takes `category`** (SearXNG's categories), **`time_range`** (`day`/`week`/`month`/`year`),
+  **`page`** (from 1) and **`site`** (a domain; sent as `site:` and held as a domains-include filter). An
+  argument it cannot take is answered before anything is sent. Its first line says what was searched and
+  how many results came back, and names the next page when this one was full. `zone=` (config
+  `_user_timezone`) shows times in the person's zone.
+- **`web_fetch` reads PDFs** through `document.parse_document` (PyMuPDF), as a `CarrierReader`:
+  `pdf_max_bytes` (20 MB), `pdf_max_pages` (100; the rest is named), `pdf_parse_timeout_seconds` (30), no
+  OCR, and the `%PDF-` signature checked in the first kilobyte. `pdf_reader(...)` is public.
+- **`web_fetch` config:** `user_agent` (sent by the default transport and matched by robots),
+  `robots_unreadable`, `thin_page_chars` (1000; 0 turns frame-following off), the PDF limits, and
+  `_user_timezone`. The default transport's own ceiling is the largest carrier the tool reads.
+- **`build_fetch_transport(user_agent=...)`.**
+- **`parse_document(..., max_pages=None)`**: for PDFs, reads at most that many pages;
+  `metadata["pages_read"]` says how many, and `creationDate` / `modDate` are kept in `metadata`.
+
+**Changed (agent-tools):**
+
+- **A fetch opens with one line**: `Read "<title>" (published <date>) at <final URL>: characters a-b of N.`
+  Notes follow on their own lines (the window's "this is a part", a followed frame, a PDF's pages), then a
+  blank line and the text. A read that did not happen is `Did not read <url>: <reason>; <next step>.`
+  (was `No readable text could be taken from <url>: <reason>.`), with what a thin page held below it.
+- **`BackgroundOperation.start_when_needed`** marks its wait's error seen once the wait ends: the error
+  is logged where it is raised and still raised to whoever awaits, and a wait nobody awaited was logged a
+  second time ("Task exception was never retrieved") when it was collected.
+
+**Not built:** pages rendered by JavaScript (a rendering service is an open question for the
+deployment); a PDF served as `application/octet-stream` is refused at the content-type gate.
+
+### Skills: the whole skill, what a change changed, an outcome counted once with its note kept, and each use listed
+
+`skill_invoke` named every tool a skill adds, held or not, so the agent called tools it did not have;
+`skill_report_outcome` logged its note and dropped it, and a second report counted twice; nothing showed
+a skill's uses.
+
+**Schema, agent-skills v005:** `agent_skill_invocations.outcome_notes TEXT NULL` -- the agent's line on
+how a use went, apart from `notes` (the reason given when the skill was invoked). `ADD COLUMN IF NOT
+EXISTS`; existing rows get `NULL`. The table factory, the entity (`outcome_notes`), every invocation read
+and the upsert carry it; `SkillInvocationResponse` gains `outcome_notes: str | None = None`.
+
+**Added:**
+
+- **`AgentSkillInvocationCollection.record_outcome(agent_id, invocation_id, *, skill_id, outcome,
+  source, notes=None) -> OutcomeRecorded`.** Sets the use's outcome and notes and moves the skill's
+  counts in one statement, the use's row locked as it is read: a use counts once however often it is
+  reported, a report of the other outcome moves one count to the other side, and two reports at once
+  count once. `notes=None` keeps the note there. `OutcomeRecorded` says whether the use was found, what
+  it carried before and whether the counts moved. The skill row's cache entry is the caller's to drop.
+  `set_outcome` and `increment_outcome_counts` are unchanged.
+- **`load_skill_history_tool(*, agent_id, user_id, skills_collection, invocations_collection, tz=None)`**
+  builds `skill_history(skill_id, limit=20, offset=0)` (`SkillHistoryInput`): a skill's uses, newest
+  first, each with when (in `tz`), whether a wake ran it or it was invoked, its outcome and note, the
+  reason it was invoked, and its `[conversation:<id>]` and `[message:<id>]`. The head says how many uses
+  there are in all and how the skill has gone; a page says which uses it holds and the offset for the next.
+- **`BindableTools`**, a probe the consumer passes `load_skill_invoke_tool(..., bindable_tools=...)`:
+  the tools the turn can bind.
+- **`SkillShape`**, the Protocol `compose_turn_context` and `render_skill_body_block` now take: an
+  `AgentSkillEntity` is one, and so is a consumer's own record of the skill a turn started with.
+
+**Changed:**
+
+- **`skill_invoke`'s result** opens `[ACTIVE SKILL: <name>] in use for the rest of this turn.`, keeps
+  `prompt_mode`, then names only the tools the turn can bind: `Tools it adds, yours from your next
+  step: ...`, `N more tool(s) it names cannot be used on this turn.` (counted, never named) and `Tools it
+  puts away until the turn ends: ...`. With no probe no tool is named. The steps follow whole, rendered
+  as a wake renders them (`Follow the skill "<name>" for this task:`). The raw `tool_additions: [...]` /
+  `tool_restrictions: [...]` lines are gone.
+- **`skill_get`** (`load_skill_get_tool(..., tz=None)`) shows the skill whole and then how it has gone:
+  `used: N times, last <time>` (or `used: never`), `reported: worked N, failed N (last failure <time>)`,
+  when it was written and last changed, times in `tz`. `skill_introspect` is unchanged.
+- **`skill_update`** returns `Changed [skill:<id>] <name>, was -> now:` and one line per field that
+  changed; a text over 200 characters is shown by its length and the first line that differs. A change
+  to nothing writes nothing and returns `[NO CHANGE] skill_update: ... already reads that way; nothing
+  was written.`
+- **`skill_report_outcome`** stores its note in `outcome_notes` and counts through `record_outcome`:
+  `Recorded <outcome> for this use of [skill:<id>] <name> ("<note>"). It has worked N and failed N
+  time(s).`, `Changed this use of ... from <a> to <b> ...`, `Kept <outcome> for this use ..., counted once.
+  Its note now reads: ...`, or `[NO CHANGE] skill_report_outcome: this use of ... was already recorded as
+  <outcome>; it is counted once.`
+
+### Todo tools: a todo is named by its id or by a title that fits only it, and every result says what changed
+
+A todo named by part of its title was the first row the database returned: `remove_todo("call mom")`
+with "Call mom" and "Call mom's doctor" on the list could delete either, and `%` matched anything.
+
+**Breaking, `TodoStorage`:**
+
+- **Removed, `find_by_title`.** Replaced by **`match_title(conversation_id, title, list_name)`**,
+  which returns every todo the title names, ordered by list then position: those whose whole title is
+  `title` in any case, or when none is, those whose title holds it in any case. `title` is taken
+  literally (`%` and `_` match only themselves). `list_name=None` searches every list.
+- **Added, `get(conversation_id, todo_id)`:** the todo with that id in that conversation, or `None`.
+  An id of another conversation's todo is `None`.
+- **Changed, `update(...)`** takes `new_list_name: str | None = None`: a move goes to the end of the
+  new list.
+- `list_all` rows may carry `date_created` and `date_updated` (a `datetime` or an ISO string); a
+  listing shows them when present.
+
+**The tools:**
+
+- **Changed, `complete_todo`, `update_todo` and `remove_todo`** take `todo_id` (bare, `todo:<id>` or
+  `[todo:<id>]`) or `title`. A title that fits more than one todo changes nothing and returns
+  `[NO CHANGE] ...: "<title>" matches N todos, so nothing was changed.` with each candidate's
+  `[todo:<id>]`, title, list and state. `list_name` now defaults to `None` (every list); a title
+  not on the named list but on another changes nothing and names where it is. `CompleteTodoInput`,
+  `UpdateTodoInput` and `RemoveTodoInput` gain `todo_id`; their `title` and `list_name` are optional.
+- **Changed, the results** name the todo's `[todo:<id>]`, its list and the state it had:
+  `Completed [todo:<id>] "<title>" in "<list>"; it was open.`; `Updated [todo:<id>] in "<list>":
+  title "<old>" -> "<new>"; open -> done; moved from "<a>" to "<b>".`; `Removed ... it was open. It
+  cannot be brought back. That list now has N todos, N open, N done.`; `Todo added: ... [todo:<id>]
+  ... That list now has ...`. Completing a done todo, and an update to what a todo already is, return
+  `[NO CHANGE]`.
+- **Changed, `update_todo`** refuses a blank `new_title` or `new_list_name` (`[TOOL ERROR]`), and a
+  rename or move onto a title the target list already has (`[NO CHANGE]`, naming that todo). It
+  gains `new_list_name`.
+- **Changed, `list_todos`** takes `list_name` (one list; a list that is not there is `[NO CHANGE]`
+  naming the lists) and opens `N todos, N open, N done, in N lists:`; each list's heading carries
+  its counts, and each line its `[todo:<id>]` and when it was added and last changed.
+- **Added, `load_todo_tools(tz=)`**, keyword-only, default `None` (UTC): the zone those times are
+  said in.
+- **Added, `TODO_HANDLE`, `todo_handle()`, `ListTodosInput`** in `threetears.agent.tools.todo`.
+
+### Workflow tools: `variable_list` and `variable_delete`, and a save says what it replaced and what it cut
+
+- **Added, `variable_list`:** every saved variable, by name: its kind, its size, and its first 200
+  characters, under `N of <cap> variables this conversation may hold:`.
+- **Added, `variable_delete(key)`:** `Deleted '<key>' (<kind>, N chars). It cannot be brought back.
+  It held: <value>. N of <cap> variables are saved now.` A name not saved is `[NO CHANGE]` naming the
+  saved ones.
+- **Changed, `variable_set`'s result:** `Saved '<key>' (<kind>, N chars).` then, when the value was
+  over the cap, `It was cut: only the first N of M chars were kept, and the last K are not saved.`,
+  then `Nothing was saved under that name before.`, `It already held this value.`, or `It replaced
+  the earlier value, which is gone (<kind>, N chars): <value>`. The context id is no longer in it.
+- **Changed, `variable_set` checks `value_type`:** one of `string`, `number`, `json`; a `number`
+  must parse as one and a `json` value must parse. Otherwise `[TOOL ERROR] variable_set: ... Nothing
+  was saved.` **Added, `VALUE_TYPES`, `ListVariablesInput`, `DeleteVariableInput`** in
+  `threetears.agent.tools.workflow`.
+- **Added, `ToolContextManager.var_limit`** (read-only). **Changed, the cap's message:** `Delete one
+  you no longer need with variable_delete, or save over one by reusing its name.`
+
+### Intention tools: a listing honours its limit and says how many of how many, a want is read by id, and a near-duplicate is kept as written
+
+- **Fixed, `intention_list` honours `limit` up to 100.** It was clamped to `max_results` (20), so a
+  call for 50 returned 20 and said "20 open want(s)". `max_results` is now the default when the call
+  names no limit. The first line is `N of M <status> wants, strongest first.`, with how many open
+  wants the cooldown held back and, when there are more, how to see them.
+- **Added, `intention_list(status=)`:** `open` (the default, the deliberation set as before),
+  `asked`, `granted`, `dropped` or `all`. Each line carries the want's status and when it was
+  written down. An empty listing is `You have no <status> wants.`
+- **Added, `load_intention_get_tool`** and `IntentionGetInput`: `intention_get(intention_id)` reads
+  one want in full (status, when written and last set, strength, the memory and conversation it came
+  from, the text). Another user's want is not found.
+- **Added, `WantNotes`** and keyword-only `tz=` and `notes=` on `load_intention_list_tool` and
+  `load_intention_get_tool`: the zone times are said in, and a consumer's own words about each want
+  shown (a project carrying it, say), put at the end of its line. A failing `notes` leaves the
+  listing without them.
+- **Fixed, a near-duplicate `intention_log`** answered with the new text, which was not saved, and
+  replaced the stored embedding with the new text's. It now answers with the want as stored and keeps
+  its embedding: `Refreshed existing want [intention:<id>] (it was N% the same), so nothing new was
+  written down. It is now stronger, and it stays as first written: <text>`.
+- **Changed, `intention_mark_surfaced`'s result** says the status it moved from and the want:
+  `Marked [intention:<id>] granted; it was asked. The want: <text>`. A mark to the status a want
+  already has is `[NO CHANGE]` and stamps nothing. Its description says what granted and dropped
+  mean and where a marked want is listed.
+
+### Models: which request settings a model accepts
+
+- **Added, request-settings facts on `threetears.models.ModelCapabilities` and `CapabilityOverride`:**
+  `accepts_temperature`, `reasoning_efforts` (the provider-native effort words a request may carry,
+  lowest first; `[]` = the model takes no effort parameter), `reasoning_budget` (takes a reasoning
+  token budget, Anthropic `thinking.budget_tokens`), `adaptive_reasoning` (takes
+  `thinking={"type": "adaptive"}`), `reasoning_disable` (reasoning can be switched off, Anthropic
+  `thinking={"type": "disabled"}`) and `structured_output` (takes a strict `json_schema` reply
+  format). Each is tri-state: `None` means not declared, and a caller that needs the fact learns it
+  from the provider. The off switch is its own field rather than `"none"` in the effort list,
+  because Anthropic's off switch is a thinking type, not an effort word, and a budget-only model
+  (effort refused) can still be switched off. `register_model_capabilities_bulk` reads the same keys
+  from a product row.
+- **Added, a provider-published capability layer:** `register_published_capabilities`,
+  `get_published_capabilities` and `unregister_published_capabilities`. `get_capabilities` and
+  `list_capabilities` now layer three sources, lowest first: the static entry, the facts the
+  provider publishes, and a deployment override. A model with no static entry keeps its published
+  facts in the layer (readable with `get_published_capabilities`) but stays `None` from
+  `get_capabilities`, which will not invent a model's type or tier.
+- **Added, `threetears.models.anthropic_capabilities`:** reads Anthropic's Models API
+  (`load_anthropic_capabilities` for one model, `load_all_anthropic_capabilities` for the paginated
+  listing) through a caller-supplied client built with `anthropic_models_api_headers`, maps
+  `capabilities.effort`, `capabilities.thinking.types.{enabled,adaptive,disabled}` and
+  `capabilities.structured_outputs` onto the fields, and records them in the published layer,
+  cached per process (`max_age_seconds`, default a day). A failed fetch returns a
+  `PublishedCapabilityLoad` naming the failure, logs a WARNING and changes nothing; an unknown
+  capability key is ignored; a known key in a shape the build cannot read raises
+  `PublishedCapabilityShapeError` before anything is recorded. Temperature is not published there.
+- **Changed, the static entries:** the registered chat models carry the facts their providers'
+  docs state, and nothing more. `claude-opus-4-8` and `claude-sonnet-5`: temperature and budgets
+  refused, adaptive, effort `low`..`max`, can be switched off, structured outputs.
+  `claude-sonnet-4-6`: budget and adaptive, effort `low`/`medium`/`high`/`max`, can be switched off.
+  `claude-haiku-4-5-20251001`: budget only, no effort parameter, can be switched off, structured
+  outputs. `gpt-4o` / `gpt-4o-mini`: no effort parameter, no budget, structured outputs.
+  `deepseek/deepseek-v4-flash`: structured outputs. Temperature is recorded only where a provider
+  documents its removal; "allowed" stays `None`.
+
+### OpenRouter: the usage and response fields LangChain drops reach the answer, `is_byok` among them
+
+OpenRouter reports `usage.is_byok` on every reply: whether the call ran on the caller's own
+provider key. Under BYOK `usage.cost` is only OpenRouter's fee, and the upstream provider's charge
+is `cost_details.upstream_inference_cost`. The `openrouter` SDK parses the flag, but
+`langchain-openrouter` 0.2.9 copies only `cost` and `cost_details` into `response_metadata`, so no
+consumer could tell whether a reported cost was the whole charge. It also drops
+`server_tool_use_details` (billed), every token-detail count beyond cached / cache-write /
+reasoning, the difference between a count OpenRouter omitted and `0` (it reads both as `0`), and
+the response-level `openrouter_metadata`, `service_tier` and `system_fingerprint`.
+
+**Fixed:** an OpenRouter model from `create_openrouter_chat` adds two keys to `response_metadata`,
+each OpenRouter's wire shape as sent:
+
+- **`openrouter_usage`**: the reply's `usage` block exactly as sent -- a field OpenRouter did not
+  send is not in the dict (never defaulted), a sent `null` stays `null`. Absent when the reply
+  carried no usage. Read BYOK as `openrouter_usage["is_byok"]`: when `True`, the call's full cost
+  is `cost + cost_details["upstream_inference_cost"]`; when absent, OpenRouter did not say.
+- **`openrouter_response`**: `openrouter_metadata`, `service_tier`, `system_fingerprint`, each only
+  when sent with a value. Absent when none was. Fields LangChain already carries (`id`, `model`,
+  `provider`, `cost`, `cost_details`) are not repeated.
+
+Both are on the message of a non-streamed answer and on the usage chunk of a streamed one (so on
+the aggregated message too); a stream that ends without a usage chunk carries them on a trailing
+empty chunk. Every path: `invoke`, `ainvoke` with or without the call deadline, `stream`,
+`astream`. They are read from the SDK's own parsed replies as they pass the model's `client`,
+which is now a thin wrapper over the SDK client; each call keeps its own, so concurrent calls on
+one model never see each other's. `langchain-openrouter` is not patched, and every key it writes
+arrives exactly as before. A client whose `chat.send` / `chat.send_async` moved raises
+`TypeError` when the model is built. Pinned at the wire, through the real `openrouter` SDK over a
+mock HTTP transport. No public name added.
+
+### Scheduled jobs: a failed fire keeps the output its handler reported
+
+A handler that returned `JobFireResult(status="failed", error=..., output=...)` had its `output`
+dropped: `finalize_failed` wrote the error and nothing else, so a consumer whose handler reports
+what it did beside the failure (was the result delivered, where is it kept) could read that only
+for a fire that succeeded.
+
+- **Changed, `FireStore.finalize_failed`:** gains an optional keyword `output: dict | None = None`.
+  `JobFireCollection.finalize_failed` writes it to `job_fires.output`; `None` leaves the column as
+  it is. The tick and `BackgroundDispatch` pass `output` only when the handler reported one, so a
+  consumer's own `FireStore` written before the argument existed is called exactly as before for
+  every failure without an output, and raises `TypeError` only if one of its handlers starts
+  returning a failure with an output: add the keyword to that store first.
+- The wake fire store accepts the keyword and does not keep it: `wake_fires` has no column for a
+  failed fire's output.
+
+### Wake: a wake run by hand, what started a fire, refused deliveries kept, and results that state the schedule
+
+A fire did not say what started it (`create_dispatching` discarded `fire_source`), no fire could be
+asked for outside the schedule, a refused webhook delivery was logged and stored nowhere, and the
+tools' results left out how often a wake fires and when it last did.
+
+- **Migration `agent_wake` v009:** `wake_fires.fire_source` (`TEXT NOT NULL DEFAULT
+  'scheduled_tick'`, CHECK `scheduled_tick | webhook | manual`; earlier rows backfilled, a row
+  with a `webhook_subscription_id` becoming `webhook`), `wake_fires.requested_by` (required on a
+  manual fire, by CHECK), and `agent_wake_schedules.last_manual_fire_at`.
+- **Migration `agent_wake` v010:** `webhook_refusals`, one row per subscription, reason and minute,
+  with a count (`refusals`), the last time and a short `detail`; `ON DELETE CASCADE` with its
+  subscription. Rows older than 30 days (`REFUSALS_KEPT_FOR`) are dropped as new ones are written.
+- **Added, `threetears.agent.wake.manual`:** `claim_manual_fire(pool, schedule, *, requested_by,
+  min_gap, task_prompt=None, now=None)` takes the limit and inserts the `dispatching` row in one
+  statement (an `UPDATE ... RETURNING` on `last_manual_fire_at` feeding the `INSERT`): of any
+  number of callers at once exactly one is claimed. It raises `ManualFireRefused` (`reason`:
+  `too_soon` with `retry_at`, `dispatching`, `gone`) and `ValueError` for a gap that is not
+  positive. `run_manual_fire(claim, *, pool, fires, dispatch_callback)` runs the claimed fire
+  through the tick's dispatch callback and finalizes the row; a callback that raises is a failed
+  fire. A manual fire moves neither `next_fire_at` nor `last_fired_at`. Exported from the package:
+  `ManualFireClaim`, `ManualFireRefused`, `claim_manual_fire`, `run_manual_fire`.
+- **Changed, `FireSource`:** adds `"manual"` (and the REST `WakeFireResponse.fire_source`);
+  `WakeTrigger.requested_by` and `WakeFireResponse.requested_by` (default `None`) are added;
+  `WakeFireEntity.fire_source` and `.requested_by` read the new columns. `create_dispatching`
+  stores `fire_source` and takes `requested_by` (default `None`).
+- **Added, `FireLimits.manual_fires_count` (default `True`):** a manual fire spends the per-wake and
+  per-agent limits like any other. `False` leaves manual fires out of both counts and never refuses
+  one.
+- **Changed, `update_protected`:** a config equal to the wake's writes nothing (`changed` false,
+  the next fire where it was). A fixed-step wake (`interval`, `every_n_hours`) keeps its grid: the
+  anchor is the occurrence before the next fire (`next_fire_at - step`), and the new next fire is
+  the first slot of the new step after now, so 60 -> 90 -> 60 minutes is due where it was. A wake
+  with no next fire starts from now, as before.
+- **Added, `WakeFireCollection.list_for_subscription`**, **`WebhookSubscriptionCollection.record_refusal`
+  and `.list_refusals`**, **`WEBHOOK_REFUSAL_REASONS`**, **`webhook_refusals_table`**, and
+  **`webhook_adapter.record_webhook_refusal`**, which keeps a refusal and never lets a store that
+  cannot be written change the answer. `webhook_receive` keeps a paused subscription's delivery,
+  a missing or bad signature, a source the pattern refuses, a rate-limited delivery, and a body or
+  template that cannot be read. `threetears.channels.webhook.WebhookReceiver` keeps the ones it
+  decides (unknown scheme, missing signature, a signature its verifier refuses). A delivery to an
+  unknown subscription id is not kept: there is no row to hang it on.
+- **Added, `load_wake_schedule_get_tool`** (`wake_schedule_get`: one wake in full, its next three
+  fires and its last), **`load_wake_fires_tool`** (`wake_fires`: a wake's fires, or a webhook's
+  accepted and refused deliveries, each line saying on schedule and how late, by hand and who
+  asked, or a delivery), **`next_fires(entity, count=3)`**, **`load_webhook_subscription_get_tool`**
+  (`webhook_subscription_get`: address, template, source pattern, limit, skill, refusal count; never
+  the secret) and **`standing_same_subscription`**.
+- **Changed, the wake tools' results:** a listing line carries the schedule in words and the last
+  fire (`· interval · every 90 minutes · next: ... · last: ... ·`); `wake_schedule_update` answers
+  with `Changed: field old -> new` and a call whose every value is the current one is `[NO CHANGE]`
+  and writes nothing; pause, resume and delete say what the wake was, and pausing a paused wake is
+  `[NO CHANGE]`. `load_wake_schedule_pause_tool` and `load_wake_schedule_delete_tool` take `tz=`.
+- **Changed, the webhook tools:** `webhook_subscription_create` refuses a subscription identical
+  in name, template, skill, source pattern and limit to one the agent has, with `[NO CHANGE]` and
+  the standing one's id and address, before a secret is made. Update answers `Changed: ...`, a call
+  that changes nothing is `[NO CHANGE]`, and `clear_rate_limit_per_minute` puts the limit back to
+  the default. Create, rotate and list say the address, or that none is configured (list and rotate
+  take `endpoint_base_url=`). Pause, resume and delete say what the subscription was.
+- **Added, `redact_secret(text)`, `SECRET_SHOWN_ONCE` and `SECRET_REDACTED`** (`tools.webhook_tools`,
+  exported from `threetears.agent.wake.tools`): the create and rotate results show the plaintext
+  secret after `SECRET_SHOWN_ONCE`, and a host that keeps a copy of a tool result (a ledger, a store
+  read back by handle, an audit trail) keeps `redact_secret(result)`, so "shown only once" holds.
+
+### Wake: the same wake made twice is made once
+
+`wake_schedule_create` had no notion of two rows being one wake: called again with the same
+arguments, in another turn, it made a second schedule that fired beside the first, each fire a turn
+of its own (and, with wake conversations, a second conversation).
+
+- **Changed, `wake_schedule_create`:** before anything is made it reads the agent's active and
+  paused wakes (`list_for_agent`). One with the same name, schedule type and config, text, skill,
+  missed-fire policy, context source and history flag is not made again; the result is
+  `[NO CHANGE] wake_schedule_create: you already have this wake, [schedule:<id>] (<status>): the
+  same name, schedule, text and settings. Nothing was made. To change it use wake_schedule_update.`
+  A wake with no name and no text is never judged the same as another. A listing that cannot be
+  read is logged and the create goes ahead. A consumer that makes identical named wakes on purpose
+  now gets one.
+- **Added, `tools.schedule_tools.standing_same_wake`:** the lookup, for a host tool that makes a
+  wake by another road.
+- `webhook_subscription_create` refuses an identical subscription the same way (entry above).
+
+### Models: a refusal by the model's safeguards is its own error, says what ran it, and can be tried again on a CLI of its own
+
+On one deployment a subscription model's safeguards refused ten ordinary requests in fourteen days
+(`[reasoning_extraction]`), all on calls that hand a model's own output back to it. Each reached the
+caller as a plain `ModelProviderError`, indistinguishable from a provider that is down, and nothing
+recorded which CLI process had made the call or the provider's id for the request.
+
+**Nothing changes for a caller that reads none of this.** A refusal is still a `ModelProviderError`.
+
+- **Added, `ModelRefusalError(ModelProviderError)`** (`threetears.models`): raised by the Claude CLI
+  provider when a message or result has the stop reason `refusal`, or carries the CLI's notice
+  ("...'s safeguards flagged this message"). It carries `category` (`"reasoning_extraction"`),
+  `request_id` and `message_id`, each read from the notice's own `Details:`, `Request ID:` and
+  `Message ID:` lines and `None` when the CLI did not give one. A caller that matches on
+  `type(exc) is ModelProviderError` (not `isinstance`) no longer matches a refusal.
+- **Added, `ModelProviderError.ran_on`:** for a call the Claude CLI ran, a dict of `pid`,
+  `session_id`, `pooled`, `calls_served` (before this call), `uptime_s` and `agents`; `None` for any
+  other provider. `agents` is the names of the system prompts a pooled CLI was launched with:
+  hashes (`agent_name`), never the prompts, which may be other callers'. Set on every CLI failure,
+  not only a refusal.
+- **Added, `claude_cli_pool.on_own_cli()`** and `own_cli_asked()`: inside the block a subscription
+  call runs on a CLI started for it and stopped after it, never a pooled one. For a retry after a
+  refusal, which can follow a session around.
+- **Added, `LentClient(pid=, calls_served=, started_at=, agents=)`** and `PooledCliSession.started_at` /
+  `.calls_served`: what the pool tells a call about the CLI it was lent. A stand-in for
+  `PooledCliSession` in a consumer's tests needs both attributes.
+
+### Memory tools: with nobody present, `memory_add` replaces no memory
+
+On a turn nobody is present for (a wake fire, an injected turn) a memory is not replaced. Before,
+`memory_add` replaced a non-permanent memory three ways on any turn: a near-duplicate, `corrects`,
+and the same event written this turn or the one before.
+
+**Every new argument defaults to "as before".**
+
+- **Added, `load_memory_add_tool(person_present=)`**, keyword-only, default `None` (a person is
+  always present). A `PersonPresent` resolver, read per call. When it answers anything but `True`,
+  or raises, a call that would replace a memory by any of the three ways writes nothing, changes
+  nothing, links nothing, and returns `[NO CHANGE] memory_add: Nothing was stored. It would replace
+  [memory:<id>], written <date>, which says "<text>". A change to a memory waits for a turn with
+  your person in the conversation.` A memory that replaces nothing is stored as before, and so is
+  one written beside a near-twin with `replace=false`, beside a permanent near-twin, or as a
+  correction beside a permanent memory. A `corrects` list naming any memory it would replace
+  stores nothing at all.
+- **Added, `PersonPresent`** (`Callable[[], Awaitable[bool]]`) and **`CHANGE_NEEDS_THE_PERSON`**
+  (`"A change to a memory waits for a turn with your person in the conversation."`), both in
+  `threetears.agent.memory.tools.__all__`.
+- **Added, `revisions.write_once(when_replaceable=)`**, keyword-only, `"replace"` (default) or
+  `"hold"`, and **`Written.held`** (default `()`). With `"hold"` an earlier write of the same event
+  that is not permanent is not replaced: nothing is written, `memory_id` is `None`, and the rows it
+  would have replaced are in `held`.
+- **Changed, `memory_add`'s description** gains `Replacing or correcting one needs your person in
+  the conversation.`, and the `corrects` field's description ends `Needs your person in the
+  conversation.`
+
+### Memory: what ambient recall hands an agent, one event stored once, and a dream that makes nothing permanent
+
+On one deployment eight of the ten memories an agent was handed on a turn were from the last five
+days, most of them its own corrections; 168 of 291 recent memories were written by scheduled fires
+with nobody present; one event was stored three and four times in a few minutes; and a dream had
+marked its merges of the person's own facts permanent, in the agent's first person.
+
+**Every new knob defaults to "as before", except the two marked Changed.**
+
+- **Changed, `DreamService`:** a dream never sets `evergreen` on a gist. The `permanent` field of
+  the reflector's answer is no longer read, and `DEFAULT_CONSOLIDATION_PROMPT` no longer asks for
+  it. The prompt gains one rule: `Keep who each fact is about. A fact about a person stays about
+  that person, in the words the memories use for them. Never restate someone's fact as "I" unless
+  the memories say "I".` A consumer whose own consolidation prompt still asks for `permanent` gets
+  an answer field nothing reads. `DreamService._reflect` returns three values, not four.
+- **Changed, extraction's ADD:** written through `revisions.write_once`. With
+  `MemoryConfig.same_event_threshold` unset this is the same single insert as before.
+- **Added, `threetears.agent.memory.origin`:** `UNATTENDED_TAG` (`"unattended"`),
+  `MADE_BY_PREFIX` (`"made_by:"`), `made_by_tag`, `origin_tags`, `origin_of`, `MemoryOrigin`. Where a
+  memory came from, as tags on its row. A row with neither tag has no recorded origin, and
+  `origin_of` answers `unattended=None` for it, never `False`. A dream's gist carries
+  `UNATTENDED_TAG` when every memory it merges does.
+- **Added, `MemoryConfig`:** `ambient_recent_cap` (`None`), `ambient_recent_days` (`7.0`),
+  `ambient_excluded_tags` (`()`), `ambient_bumps_salience` (`True`), `same_event_threshold`
+  (`None`). `MemoryRetriever` reads the first four.
+- **Added, `MemoriesCollection.hybrid_search(recent_cap=, recent_window_hours=)`:** at most
+  `recent_cap` of the returned memories were written inside the window. Which recent ones is decided
+  on semantic and keyword evidence, never on recency; the returned order is still the composite's.
+  With a cap the nearest `candidate_limit` memories older than the window are candidates too (one
+  more vector query), so a burst that fills the candidate pool does not leave the list short.
+- **Added, `RetrievalScope.tags_none`:** rows carrying any of these tags are not eligible. An empty
+  tuple excludes nothing.
+- **Added, `MemoriesCollection.find_same_event`** and **`revisions.write_once`, `Written`,
+  `SAME_EVENT_RATIONALE`:** a new memory replaces a stored one from the same source messages
+  (`near_message_ids`: this turn's and the one before) that is at least `threshold` like it. A
+  permanent one is never replaced: `when_permanent="skip"` writes nothing, `"beside"` writes beside
+  it.
+- **Added, `MemoryExtractor.extract(near_message_ids=, reply_is_source=)`**, both keyword-only.
+  `reply_is_source=False` shows the worthiness and extraction models `REPLY_NOT_A_SOURCE`
+  (`"(not given)"`) in place of the reply. The length gates still read the reply as it was.
+- **Added, `load_memory_add_tool(permanent_allowed=, near_message_ids=, same_event_threshold=)`**,
+  keyword-only. A same-event replacement answers in the words a near-duplicate's does:
+  `Stored as [memory:<id>]: <text>. It replaces [memory:<id>] (<n>% the same, written <date>),
+  which said "<text>" and stays readable by its id. If they are two facts and not one, store it
+  again with replace=false.` A `permanent=true` the host's `permanent_allowed` refuses is stored
+  not permanent, and the result ends `It is not kept permanently: making this one permanent needs
+  your person's word.` (`PERMANENT_NEEDS_THE_PERSON`).
+- **Added, `load_memory_keep_tool(permanent_allowed=)`**, keyword-only. Refused:
+  `[NO CHANGE] memory_keep: [memory:<id>] is as it was. It is not kept permanently: making this one
+  permanent needs your person's word.`
+- **Added, `load_memory_recall_tool(salience_bump=)`**, keyword-only, default `0.0`: opening a
+  current memory raises its salience by that much.
+- **Changed, additive:** `MemoriesCollection.find_active_for_consolidation` rows carry `tags`.
+
+### Memory tools: every result says which memories still stand, and an agent can correct, retire and restore its own
+
+A search returned a replaced memory and its replacement as two equal facts, and a retired memory
+came back unmarked. `memory_add` named the id it replaced and not the text, and said nothing of a
+permanent near-twin it left standing. Nothing listed memories without a query, corrected one,
+retired one or brought one back. A bare `date_before` left out the day it named. A cut preview read
+as the whole passage.
+
+**A consumer that reads these tools' text, or passes these arguments by position, is affected by
+the lines marked Changed.**
+
+- **Changed, every memory line** (`memory_search` by query, by `ids` and by `alias`; `memory_list`):
+  after the date it carries how it matched, `[match 0.47]` or `[word match]` (a search by query
+  only), then its state, each part in brackets and before the text: `(alias: <name>)`,
+  `(permanent)`, `(retired, no longer holds: <reason>)`,
+  `(replaced by [memory:<id>] on <date>; that one is current)`, `(corrected by [memory:<id>])`.
+  The line was `- [memory:<id>] [<type>] [<date>] <text>`.
+- **Changed, `memory_search`:** a retired (retracted) memory is no longer found by a query; a read
+  by `ids` or `alias` still opens it, marked. `type_filter` accepts `relational_context` (it was
+  described and refused). A bare date in `date_before` runs to the end of that day and in
+  `date_after` starts at its first minute, in the zone passed as `tz` (UTC without one); a time
+  with no zone is read in that zone too (it was read as UTC). The date filters now reach the files
+  and passages sections. New arguments `limit` (1-50, default the factory's `max_results`) and
+  `offset`. New first lines, each before the first `Found` header:
+  `(More memories may match than the <n> shown: call again with offset=<n>.)`,
+  `(Memories <a>-<b>; no more match.)`,
+  `(More files|passages|files and passages may match than the 5 shown: narrow the query, or use chunk_search for passages.)`,
+  `(Not ids, so not looked up: <ids>. An id is the part after the colon in a [memory:<id>], [media:<id>] or [chunk:<id>] mark.)`.
+  Past the last page: `No more memories match this query past the first <n>.` A passage line and a
+  file line read by id carry their date; a file's text cut at 500 characters says
+  `(cut: the first 500 of <n> characters; ...)` (it ended `...`). An id may be passed as its whole
+  `[memory:<id>]` mark.
+- **Added, `load_memory_search_tool(file_reader=)`:** the name of the host's tool that reads a
+  file whole by its media id, named in that cut mark.
+- **Changed, `memory_recall`:** the first line is a header,
+  `[memory:<id>] [<type>] written <date> <state marks>`; a replaced or corrected memory is followed
+  by `Replaced by [memory:<id>]: "<its text>"` or `Corrected by [memory:<id>]: "<its text>"`, and a
+  memory that replaced others by `It replaced or corrects: [memory:<id>], ... .` Then the text,
+  then the parts: `Parts 0-4 of 37. Next: chunk_id_after=<id>.` (with `Earlier: chunk_id_before=<id>.`
+  after the first page), or `<n> of <total> parts, the ones matching the text|asked for.` Each part
+  is `[chunk:<id>] (part <index>)` and a preview cut at 200 characters is marked
+  `(cut: the first 200 of <n> characters; chunk_recall reads [chunk:<id>] whole)`. It was
+  `[memory:<id>]`, the text, `Parts (<n>):` and unmarked 200-character previews labelled
+  `(position <index>)`.
+- **Added, `load_memory_recall_tool(tz=, consolidations_collection=)`**, both keyword-only.
+- **Changed, `memory_add`:** `memory_type` defaults to `fact` (it was `preference`). A replaced
+  near-duplicate is quoted: `It replaces [memory:<id>] (93% the same, written <date>), which said
+  "<text>" and stays readable by its id. ... If they are two facts and not one, store it again with
+  replace=false.` A near-duplicate left standing is named:
+  `[memory:<id>] (permanent, 93% the same) still stands beside it and says "<text>". Both are now in
+  your memory. Only your person can change or retire a permanent memory.` (for one that is not
+  permanent, without the last two sentences). It answered a plain `Stored as [memory:<id>]: ...`
+  in that case.
+- **Added, `memory_add(replace=, corrects=)`:** `replace=false` writes beside a near-duplicate.
+  `corrects` names the memories the new one replaces, each through `supersede`; a permanent one is
+  left standing with the correction written beside it and linked, unless the host's `person_asked`
+  says the person asked. Refused with nothing stored (`[NO CHANGE] memory_add: ...`): a memory that
+  is not the caller's, a retired one, an already replaced one.
+- **Added, `load_memory_add_tool(tz=, person_asked=)`**, both keyword-only.
+- **Added, `memory_list`** (`load_memory_list_tool`, `MemoryListInput`): memories newest first with
+  no query, by `date_after`, `date_before`, `memory_type`, `permanent`, `has_alias` and `show`
+  (`current`, `retired`, `replaced`, `all`), with `limit`, `offset` and the count of every match.
+- **Added, `memory_update`** (`load_memory_update_tool`, `MemoryUpdateInput`): changes a memory's
+  text, type or name by writing its replacement through `supersede`; the result shows both texts.
+- **Added, `memory_forget`** (`load_memory_forget_tool`, `MemoryForgetInput`): retires a memory
+  through `retract`, with a required reason. The row is kept and opens by id.
+- **Added, `memory_restore`** (`load_memory_restore_tool`, `MemoryRestoreInput`): the undo.
+- **Added, `PersonAsked` and `PERMANENT_IS_THE_PERSONS`** in `threetears.agent.memory.tools`.
+  `memory_update` and `memory_forget` leave a permanent memory standing and say only the person can
+  change it, unless the factory was given `person_asked` and it answers yes for that memory. A
+  resolver that raises is a no.
+- **Changed, `memory_keep`:** its description ends `It cannot be taken back here: only your person
+  can change, retire or un-keep a permanent memory.`
+- **Changed, `chunk_search`:** each hit is
+  `[chunk:<id>] (from [memory:<id>], "<title>" p.<n> "<heading>", written <date>)` and a preview cut
+  at 200 characters is marked as in `memory_recall`; more hits than `limit` puts
+  `(More passages match than the <n> shown: raise limit (up to 20), or narrow the query.)` first.
+- **Changed, `chunk_recall`:** it opens with
+  `[chunk:<id>] part <index> of <total> of [memory:<id>], written <date>, from "<title>".`, a blank
+  line, then the passage whole. It was the passage, a blank line, `From [memory:<id>].`
+- **Added, `tz=` on `load_chunk_search_tool` and `load_chunk_recall_tool`**, keyword-only.
+- **Changed, `revisions.retract`:** one `UPDATE` (`MemoriesCollection.mark_retracted`) in place of
+  an entity save and a salience write, so the check and the write have no window between them. It
+  returns `False` for a memory that is already retracted (it re-tagged it and returned `True`). The
+  memory's salience is kept as a `retracted_salience:<value>` tag. New keyword `allow_permanent`.
+  **A consumer whose collection subclass acts on `save_entity` no longer sees a retraction there:
+  override `mark_retracted`.**
+- **Added, `revisions.restore`, `revisions.correct_beside`, `revisions.marks_of`,
+  `revisions.MemoryMarks`, `supersede(allow_permanent=)`.**
+- **Changed, `MemoriesCollection.search_by_semantic` and `search_by_fts`:** a retracted memory is
+  left out unless `include_retracted=True`. Both, and `search_by_ids` and `find_by_alias`, return
+  six more keys per row: `alias`, `evergreen`, `tags`, `superseded_by`, `superseded_at`,
+  `corrected_by`.
+- **Added, `MemoriesCollection.find_for_recall`, `list_for_user`, `mark_retracted`,
+  `clear_retracted`; `MemoryChunkCollection.find_for_recall`, `count_by_memory_id`.**
+  `find_by_user` is unchanged.
+- **Changed, additive:** `MemoryChunkCollection.find_by_memory_id` and `find_by_conversation_id`
+  rows carry `chunk_index`; `search_by_ids` rows carry `chunk_index` and `date_created`;
+  `search_by_semantic` rows carry `date_created`. `MediaContentCollection.search_by_semantic`,
+  `search_by_fts` and `MemoryChunkCollection.search_by_semantic` take `date_after` and `date_before`.
+
+No migration: no column is added.
+
+### Tools: a date filter's day is public, and a fence a cut left open can be closed
+
+- **Added, `threetears.core.utils.parse_date_bound(label, raw, zone)`** (also in
+  `threetears.core.utils.local_time`): reads a `date_after` / `date_before` filter. A date alone is
+  the whole day in the reader's zone, so a bare `date_before` runs to the end of the day it names; a
+  time with no zone is in the reader's zone; with no zone the day is UTC's. Returns the moment, or
+  the error to show. It is the function the memory tools already used, moved out of
+  `threetears.agent.memory.tools` (where it was the private `_parse_bound`) so a consumer's own tools
+  read a date the same way. No behaviour change in the memory tools.
+- **Added, `threetears.langgraph.fence.closed_fences(text)`:** closes every fence `text` opens and
+  does not close. A result that fences parts of itself can be cut afterwards, to a window or a head;
+  a cut inside a fence takes its closing tag, and everything after it in the prompt then reads as
+  inside. Whoever shows such text after a cut passes it through here. Text whose fences are closed,
+  or that has none, comes back unchanged.
+
+### Wake and scheduled jobs: a fire whose dispatcher is known to be gone is reaped by name
+
+A fire left `'dispatching'` by a process that died is reaped by age (15 minutes by default), because
+the store cannot know who was dispatching it. A consumer that keeps that record can now say so.
+
+- **Added, `WakeFireCollection.reap_fires(fire_ids)` and `JobFireCollection.reap_fires(fire_ids)`:**
+  fail the named fires that are still `'dispatching'`, with the reaper's own marker
+  (`REAPED_DISPATCH_ERROR`), whatever their age. The wake one returns `ReapedFire` rows, as the age
+  sweep does; the job one returns the fire ids. A fire that finished is left as it ended.
+
+### Observe: a log line can say which process wrote it
+
+Several worker processes under one supervisor write one log, and no line said which worker wrote
+it, so a worker that hung or died could not be told from its siblings.
+
+- **Added, `configure_logging(process_id=True)` and `ContextFormatter(process_id=True)`:** every
+  line carries `[pid:<id>]` after the timestamp, before the context tags. Off by default: a
+  consumer that parses the line sees no change until it asks. Loggers attached afterwards with
+  `configure_third_party_logging` follow the same choice.
+
+### Tools: a new plan says what it replaced, and a specialist that is not there names the ones that are
+
+- **Changed, `workflow_declare`:** the result opens `Workflow declared. No plan was there before.`
+  or `Workflow declared. It replaced the plan '<plan>' (<n> steps, <m> done, <status>).`, then the
+  plan and steps as before. It opened `Workflow declared:`. **A consumer that matched that opening
+  with the colon no longer matches.**
+- **Changed, `invoke_tool_llm`:** when the resolver returns `None` the result is
+  `[TOOL ERROR] invoke_tool_llm: specialist '<name>' not found. Your specialists: <names>.`, or
+  `You have no specialists to ask.` The names come from the resolver's `available_names()`, an
+  optional async method (`ToolLlmResolver` is unchanged); a resolver without it, or one whose list
+  fails, gets `It is not on your list.` as before.
+
+### Tools: the arguments of `tool_search` have public names
+
+- **Added, `threetears.agent.tools.relevance.ToolSearchInput` and `ToolSearchFamilyInput`:** the
+  argument schemas `create_tool_search_tool` builds its tool with (the second when `group_of` is
+  given). A consumer that adds an argument of its own extends the class and checks
+  `tool.args_schema` against it. They were `_ToolSearchInput` and `_ToolSearchFamilyInput`; the
+  underscored names are gone.
+
+### Tools: a recall that misses names what is saved
+
+- **Changed, `context_recall` (both `load_workflow_tools` and the `threetears.context_recall`
+  builtin):** asked for an id nothing is saved under, it still opens `Saved result '<id>' not found
+  in this conversation.` and then lists the conversation's saved tool results, newest first, each
+  with the `[ctx:<id>]` mark it opens by: the newest 10, with the count when there are more.
+- **Added, `threetears.agent.tools.context.missing_result_text(context_id, items)`:** the one
+  rendering both tools use.
+
+### Tools: a stored result is recalled in parts
+
+`context_recall` returned a stored result whole, whatever its size. A recalled result is a tool
+message, sent again on every later round of the loop that recalled it, so a consumer either put
+tens of thousands of tokens in every round or cut the recall and left the rest unreachable.
+
+- **Changed, `context_recall` (both `load_workflow_tools` and the `threetears.context_recall`
+  builtin):** one call returns at most `RECALL_MAX_CHARS` (15,000) characters, and takes `offset`.
+  A part opens with its window line, which names the offset of the next part; the line saying a
+  later call replaced the row comes second. A result under the bound is returned as before.
+  **A consumer that read a long recall as the whole result now reads its first part.**
+- **Added, `threetears.agent.tools.context.recalled_text(item, offset=, tz=, label=)` and
+  `RECALL_MAX_CHARS`:** the one rendering both tools use.
+
+### Tools: a note comes before the body it is about
+
+A reader that keeps only the head of a long result (a prompt budget, a stored copy, a digest) lost
+the one line saying the result was incomplete, because every tool wrote that line last. A page cut
+at its bound was discussed as if whole; a recall that lost a branch was presented as everything.
+
+- **Added, `TextWindow.rendered(note_first=True, notes=())`:** the window line first, then the
+  tool's other notes one per line, a blank line, then the text. The trailing form stays for a
+  caller that has not moved; `notes` is refused without `note_first`.
+- **Changed, `web_fetch`, `parse_document`, `dictionary`, the transcript `media_analyze` returns and
+  the copy `create_context_save_node` stores:** each renders note-first. `parse_document` puts its
+  OCR note second, above the title, pages and words. A stored copy's `short_desc` and `long_desc`
+  are of the result, not of the note.
+- **Changed, `memory_search`:** `(Partial results: ... failed, so more may exist.)` is the first
+  line, not the last. Sections are parted by one blank line and a result no longer opens with one.
+- **Enforcement, `tests/enforcement/test_a_tool_states_its_notes_first.py`:** no window is rendered
+  without `note_first=True`, no note is glued on behind a body, and no note is appended to a list
+  of lines after lines that are not notes, in any package.
+
+### Tools: a call that changed nothing is not a failure
+
+A consumer read failure only from `[TOOL ERROR]`. A duplicate `add_todo` came back as plain text and
+was recorded as done; a todo that was not found came back as an error, and a consumer that refuses a
+failed tool for the rest of a turn then refused every later call to it.
+
+- **Added, `threetears.agent.tools.utils`:** `NO_CHANGE_PREFIX` (`[NO CHANGE]`), `TOOL_ERROR_PREFIX`,
+  `tool_no_change(tool_name, what)` and `tool_result_status(result)`, which answers `ok`,
+  `no_change` or `error` from how the text opens. A consumer calls it and parses no sentence.
+- **Changed, `add_todo`:** a duplicate answers `[NO CHANGE] add_todo: ...`.
+- **Changed, `complete_todo`, `update_todo`, `remove_todo`:** a todo that is not there answers
+  `[NO CHANGE]` and lists what the list holds, or the lists that exist. `update_todo` with nothing
+  to change is a `[TOOL ERROR]`.
+- **Changed, `variable_set`, `variable_get`:** at the cap, and for a name that is not saved, the
+  answer is `[NO CHANGE]` with the saved names. A store failure is a `[TOOL ERROR]`, where it raised.
+- **Added, `VariableLimitError`** (a `ValueError`), raised by `ToolContextManager.set_variable` at
+  the cap.
+
+### Tools: `tool_search` shows arguments and families, and its caller judges the fit
+
+- **Added, the model's arguments `limit` and, with families, `family`:** `family` alone lists a
+  family, `family` with a query searches it, and a family that does not exist is answered with the
+  families that do.
+- **Changed, a hit line:** `- name(argument: type, optional?: type): description`. Arguments a host
+  injects are not shown.
+- **Added, `create_tool_search_tool(..., max_limit=DEFAULT_SEARCH_MAX_LIMIT, group_of=None, nothing_fits=None)`**
+  (`DEFAULT_SEARCH_MAX_LIMIT` is 20):
+  `group_of` names a tool's family, and a hit list then ends `Also in the <family> family: ...`.
+  `nothing_fits(query, ranked)` is handed the whole scored ranking and answers whether to offer none
+  of it. The factory holds no similarity floor.
+- **Added, `ToolSearchResult.ranked`:** the whole ranking with scores; empty when the ranking did
+  not run.
+- **Added, `create_tool_search_tool(..., offer=None)`:** `offer(found, catalog)` answers with the
+  line for each tool found and the tools `on_hit` receives, for a search and for a listed family. A
+  consumer whose surface keeps some tools behind another names the way in on the tool's line and
+  hands that over instead. Left out, each tool is shown as `tool_hit_line` and handed over as it is.
+  Every other sentence of the result stays the factory's.
+- **Added, `tool_arguments`, `tool_hit_line`, `tool_families`, `also_in_family`:** the pieces a
+  consumer with its own hit lines uses instead of writing them again.
+- **Changed, the word-match fallback:** its first line says the tools were found by matching words
+  only, because the ranked search did not run.
+
+### Wake, memory: times in the zone the caller names
+
+A wake listing printed `2026-10-10T04:11:20.123456+00:00` and a memory `Oct 9, 2026 at 3:00 PM` with
+no zone, to a reader whose clock is somewhere else.
+
+- **Added, `threetears.core.utils.render_local_time(value, tz)` and `resolve_zone(tz)`:**
+  `Oct 9, 2026 at 9:11 PM PDT`. A name that is not a zone is refused, not read as UTC.
+- **Added, `tz=` on `load_memory_search_tool`, the wake schedule create, update, list and resume
+  loaders, and the webhook subscription create, update and list loaders:** a `tzinfo` or an IANA
+  name. Every time in a result is shown in it and names it. Ids stay as stored. With no `tz` the
+  text is unchanged.
+- **Added, `threetears.agent.wake.format_wake_time` and `describe_schedule`:** a wake's time and
+  its schedule in words (`every 4 hours`, `daily at 03:00 America/Los_Angeles`).
+
+### Tools: a stored result a later call replaced says so
+
+A result saved under its input's key is one row, refreshed by the same call again. A handle from the
+first call then opened the second call's answer with nothing saying it had changed.
+
+- **Changed, `context_recall`** (the workflow tool and the `threetears.context_recall` builtin): a
+  row whose `date_updated` is after its `date_created` opens with
+  `(Updated at <time>: a later call with the same input replaced what this first held.)`, a blank
+  line, then the result. A row written once reads as before.
+- **Added, `load_workflow_tools(tool_context, tz=None)` and `ContextRecallTool(tz=None)`** (the
+  builtin's factory reads `config["tz"]`): the zone that time is said in; UTC, and named, without one.
+- **Added, `threetears.agent.tools.context.refreshed_note(item, tz=None)`.**
+- **Fixed, `ToolContextManager.save_tool_result`:** on a refresh the in-memory row keeps the
+  `date_created` the stored row keeps, where it took the refresh's.
+
+### Wake: a change to a protected wake says what was there before
+
+- **Changed, `update_protected`:** returns `ProtectedWakeChange` (`schedule`, `schedule_type`,
+  `config_before`, `config_after`, `next_fire_before`, `next_fire_after`, `changed`, `said(tz)`)
+  where it returned the entity. The wake as it now stands is `.schedule`.
+  `said()` reads `Was every 3 hours, next fire <time>. Now every 6 hours, next fire <time>.`
+
+### Wake: a check that found nothing is a fire status of its own
+
+A consumer can run a check before a fire starts anything -- new mail, a changed page -- and wake the
+agent only when it finds something. A check that found nothing ran no turn, but the only statuses
+for it were `fired` and `fired_silent`, which the fire limits count: a check every ten minutes would
+spend an agent's whole budget.
+
+- **Added, fire status `checked_quiet`:** a handler returns it for a check that found nothing. It is
+  not counted by the fire limits, not a failure, and not a `context_from` source.
+- **Migration `agent_wake` v008** widens `wake_fires_status_check` to accept it (drop and re-add,
+  idempotent).
+- **Changed, `context_from`:** a downstream wake reads its upstream's latest fire past a check's
+  quiet runs (`checked_quiet` only), so they no longer hide its last find. Any other latest fire
+  counts as it is: a failed or skipped one still means the older output is stale, and the
+  downstream gets nothing. `WakeFireCollection.latest_for_schedule` gains `statuses=`.
+- A check that must start no conversation runs in the tick's dispatch callback and returns
+  `checked_quiet` without calling `dispatch_wake`, which starts a fire's conversation before its
+  handler runs.
+
+### Search: a read that did not happen says why
+
+The extraction status says `refused` for robots.txt, a content type and a size cap alike, and
+`failed` for an error status, a transport failure and a page with no text. A caller could not tell
+its reader which one stopped the read.
+
+- **Added, facet `EXTRACTION_REASON_FACET` (`extraction_reason`):** every refused or failed
+  extraction records why, in a sentence a person can read (a cap's own message names the cap).
+- **Changed, `web_fetch`:** "No readable text could be taken from <url>" ends with that reason.
+
+### Testing: a NATS server container without the deprecated wait
+
+`testcontainers.nats.NatsContainer` waits through testcontainers' deprecated
+`wait_container_is_ready` / `wait_for_logs` (still so in 4.15.0), so every live NATS test carried
+two deprecation warnings.
+
+- **Added, `threetears.core.testing.fixtures.nats_server(image)` and `nats_server_uri(container)`:**
+  a NATS container that waits with `LogMessageWaitStrategy`, and the URI it serves. The
+  `nats_container` fixture and every live NATS test use them.
+- **Changed, the workspace pytest config:** a `DeprecationWarning` from testcontainers is an error,
+  and discord.py 2.7.1's own `asyncio.iscoroutinefunction` call in `Client.event` is ignored.
+
 ## v0.67.0 -- 2026-10-13
 
 ### Datasources: a pod can list its own recorded exports

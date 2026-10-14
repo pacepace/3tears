@@ -25,9 +25,7 @@ from unittest.mock import patch
 import asyncpg
 import pytest
 
-from threetears.agent.acl import AclCache
 
-from threetears.agent.intention.authorize import IntentionAuthorizerDependencies
 from threetears.agent.intention.events import (
     IntentionResolvedEvent,
     IntentionSurfacedEvent,
@@ -38,7 +36,7 @@ from threetears.agent.intention.tools import (
     load_intention_mark_surfaced_tool,
 )
 
-from .conftest import apply_migrations, build_collection, make_pool
+from .conftest import apply_migrations, build_collection, make_pool, owner_only_authorizer
 from .conftest import InMemoryNatsBus as _InMemoryNatsBus
 
 
@@ -71,43 +69,6 @@ class _OneHotEmbedder:
         return vec
 
 
-def _authorizer() -> IntentionAuthorizerDependencies:
-    """owner-only authorizer with empty ACL loaders (short-circuit path)."""
-
-    class _EmptyMembershipLoader:
-        async def load_for_user(self, user_id: uuid.UUID) -> tuple[Any, ...]:
-            _ = user_id
-            return ()
-
-        async def load_for_agent(self, agent_id: uuid.UUID) -> tuple[Any, ...]:
-            _ = agent_id
-            return ()
-
-        async def load_for_group(self, group_id: uuid.UUID) -> tuple[Any, ...]:
-            _ = group_id
-            return ()
-
-    class _EmptyGrantLoader:
-        async def load_assignments_for_groups(self, group_ids: Any, namespace: Any) -> tuple[Any, ...]:
-            _ = group_ids, namespace
-            return ()
-
-        async def load_roles(self, role_ids: Any) -> dict[Any, Any]:
-            _ = role_ids
-            return {}
-
-        async def load_groups(self, group_ids: Any) -> dict[Any, Any]:
-            _ = group_ids
-            return {}
-
-    return IntentionAuthorizerDependencies(
-        acl_cache=AclCache(
-            membership_loader=_EmptyMembershipLoader(),
-            grant_loader=_EmptyGrantLoader(),
-        ),
-    )
-
-
 async def _count_open(pool: asyncpg.Pool, agent_id: uuid.UUID, user_id: uuid.UUID) -> int:
     async with pool.acquire() as conn:
         n = await conn.fetchval(
@@ -131,7 +92,7 @@ class TestIntentionLog:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
             )
             out = await log_tool.ainvoke({"content": "learn what the user is building"})
@@ -152,7 +113,7 @@ class TestIntentionLog:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
                 salience_seed=0.5,
                 near_dup_bump=0.05,
@@ -191,7 +152,7 @@ class TestIntentionLog:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
                 on_logged=_record,
             )
@@ -218,7 +179,7 @@ class TestIntentionLog:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
                 on_logged=_broken,
             )
@@ -241,7 +202,7 @@ class TestIntentionLog:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
             )
             await log_tool.ainvoke({"content": "want A"})
@@ -263,7 +224,7 @@ class TestIntentionLog:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
             )
             await log_tool.ainvoke({"content": "same want, will re-log"})
@@ -297,7 +258,7 @@ class TestIntentionLog:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
                 context_resolver=lambda: _Ctx(),
             )
@@ -349,7 +310,7 @@ class TestIntentionList:
             await _insert(user_b, "B only", 0.8, None)
 
             (list_tool,) = await load_intention_list_tool(
-                user_a, agent_id, customer_id, _authorizer(), coll, cooldown_days=7
+                user_a, agent_id, customer_id, owner_only_authorizer(), coll, cooldown_days=7
             )
             out = await list_tool.ainvoke({})
             # ranked, isolated, cooldown-filtered
@@ -377,10 +338,12 @@ class TestIntentionList:
                     user_id,
                 )
             (list_tool,) = await load_intention_list_tool(
-                user_id, agent_id, customer_id, _authorizer(), coll, cooldown_days=7
+                user_id, agent_id, customer_id, owner_only_authorizer(), coll, cooldown_days=7
             )
             out = await list_tool.ainvoke({})
-            assert "No open wants" in out
+            assert out == (
+                "You have no open wants. 1 more open want is held back because it was raised in the last 7 days."
+            )
         finally:
             await pool.close()
 
@@ -398,13 +361,15 @@ class TestIntentionMarkSurfaced:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
             )
             out = await log_tool.ainvoke({"content": "surface this one"})
             intention_id = out.split("[intention:")[1].split("]")[0]
 
-            (mark_tool,) = await load_intention_mark_surfaced_tool(user_id, agent_id, customer_id, _authorizer(), coll)
+            (mark_tool,) = await load_intention_mark_surfaced_tool(
+                user_id, agent_id, customer_id, owner_only_authorizer(), coll
+            )
             captured: list[Any] = []
 
             async def _capture(event: Any, *, config: Any = None) -> None:
@@ -441,12 +406,14 @@ class TestIntentionMarkSurfaced:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
             )
             out = await log_tool.ainvoke({"content": "resolve this one"})
             intention_id = out.split("[intention:")[1].split("]")[0]
-            (mark_tool,) = await load_intention_mark_surfaced_tool(user_id, agent_id, customer_id, _authorizer(), coll)
+            (mark_tool,) = await load_intention_mark_surfaced_tool(
+                user_id, agent_id, customer_id, owner_only_authorizer(), coll
+            )
             captured: list[Any] = []
 
             async def _capture(event: Any, *, config: Any = None) -> None:
@@ -473,7 +440,7 @@ class TestIntentionMarkSurfaced:
                 _OneHotEmbedder(),
                 agent_id,
                 customer_id,
-                _authorizer(),
+                owner_only_authorizer(),
                 coll,  # type: ignore[arg-type]
             )
             out = await owner_log.ainvoke({"content": "owner's private want"})
@@ -481,7 +448,7 @@ class TestIntentionMarkSurfaced:
 
             # a tool minted for the intruder must not be able to touch it
             (intruder_mark,) = await load_intention_mark_surfaced_tool(
-                intruder, agent_id, customer_id, _authorizer(), coll
+                intruder, agent_id, customer_id, owner_only_authorizer(), coll
             )
             res = await intruder_mark.ainvoke({"intention_id": intention_id, "new_status": "dropped"})
             assert "No want found" in res
@@ -503,7 +470,9 @@ class TestIntentionMarkSurfaced:
         try:
             coll, _l1 = build_collection(pool, _InMemoryNatsBus())
             agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-            (mark_tool,) = await load_intention_mark_surfaced_tool(user_id, agent_id, customer_id, _authorizer(), coll)
+            (mark_tool,) = await load_intention_mark_surfaced_tool(
+                user_id, agent_id, customer_id, owner_only_authorizer(), coll
+            )
             res = await mark_tool.ainvoke({"intention_id": str(uuid.uuid4()), "new_status": "open"})
             assert "invalid new_status" in res
         finally:

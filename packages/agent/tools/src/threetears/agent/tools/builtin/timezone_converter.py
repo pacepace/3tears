@@ -1,14 +1,30 @@
-"""Timezone converter tool using stdlib zoneinfo."""
+"""Timezone converter tool: a time in one zone, as it is in another.
+
+A time with no date is on the source zone's day, read from the clock in that
+zone: stamped with the server's day, "3:00 PM" in Chicago at 03:21 UTC was
+printed as the next day, every evening in the Americas, as a success. The result
+names both zones with their offsets, says when the target is on another day, and
+says how anything written loosely ("PST", "chicago", "3pm") was read.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime, date
+from datetime import UTC, datetime
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.builtin.time_words import (
+    Clock,
+    ReadError,
+    ZoneRead,
+    describe_zone,
+    parse_when,
+    read_zone,
+    system_clock,
+)
+from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.utils import tool_error
 
 __all__ = [
@@ -16,16 +32,7 @@ __all__ = [
     "create_timezone_converter_tool",
 ]
 
-_TIME_FORMATS = [
-    "%Y-%m-%d %H:%M:%S",
-    "%Y-%m-%d %H:%M",
-    "%Y-%m-%dT%H:%M:%S",
-    "%Y-%m-%dT%H:%M",
-    "%I:%M %p",
-    "%I:%M%p",
-    "%H:%M",
-    "%H:%M:%S",
-]
+_TOOL = "timezone_converter"
 
 # Sentinels that mean "the current instant". When the caller passes one of
 # these, the tool reads the clock itself instead of requiring an explicit
@@ -33,49 +40,99 @@ _TIME_FORMATS = [
 # LLM caller infers (which it cannot do reliably).
 _NOW_TOKENS = frozenset({"", "now", "current", "current time", "right now"})
 
+_FORMAT = "%-I:%M %p %A, %B %-d, %Y"
 
-def _convert_timezone(time_str: str, from_timezone: str, to_timezone: str) -> str:
+
+def _person_zone(construction_zone: str | None) -> str | None:
+    """The zone of the person the call is for: the call scope's, else the one built in."""
+    scope = current_scope()
+    scoped = scope.context.user_timezone if scope is not None else None
+    return scoped or construction_zone
+
+
+def _convert(
+    time_str: str,
+    from_timezone: str | None,
+    to_timezone: str | None,
+    *,
+    person_zone: str | None,
+    clock: Clock,
+) -> str:
+    """The conversion, as the line the model reads.
+
+    :param time_str: the time as written, or ``now``
+    :ptype time_str: str
+    :param from_timezone: the zone the time is in; the person's zone when left out
+    :ptype from_timezone: str | None
+    :param to_timezone: the zone to show it in; the person's zone when left out
+    :ptype to_timezone: str | None
+    :param person_zone: the zone of the person the call is for, or ``None``
+    :ptype person_zone: str | None
+    :param clock: what returns now
+    :ptype clock: Clock
+    :return: the result, or a tool error saying what to write
+    :rtype: str
+    """
+    reads: list[str] = []
     try:
-        from_tz = ZoneInfo(from_timezone)
-    except ZoneInfoNotFoundError, KeyError:
-        return tool_error("timezone_converter", "convert", f"unknown timezone: {from_timezone}")
+        if not (from_timezone or "").strip() and not (to_timezone or "").strip():
+            raise ReadError("give the zone the time is in, the zone to show it in, or both.")
+        zones: list[ZoneRead] = []
+        for given, role in ((from_timezone, "from"), (to_timezone, "to")):
+            if (given or "").strip():
+                zones.append(read_zone(given))
+            elif person_zone:
+                zone = read_zone(person_zone)
+                zones.append(zone)
+                reads.append(f"no {role} zone given, so the person's zone, {zone.name}, was used")
+            else:
+                raise ReadError(f"no {role} zone given, and the person's zone is not known; name the {role} zone.")
+        source, target = zones
+        for zone in zones:
+            if zone.how:
+                reads.append(zone.how)
 
-    try:
-        to_tz = ZoneInfo(to_timezone)
-    except ZoneInfoNotFoundError, KeyError:
-        return tool_error("timezone_converter", "convert", f"unknown timezone: {to_timezone}")
+        now_there = clock().astimezone(source.zone)
+        if time_str.strip().lower() in _NOW_TOKENS:
+            source_dt = now_there
+        else:
+            when = parse_when(time_str, now_there.date())
+            if when.instant is not None:
+                source_dt = when.instant.astimezone(source.zone)
+                reads.append(f"the time carried its own offset, so it was read as {describe_zone(when.instant)}")
+            else:
+                day = when.day
+                if day is None:
+                    # The source zone's day, read from the clock there: never the server's.
+                    day = now_there.date()
+                    reads.append(f"no date given, so today in {source.name}, {day.strftime('%A, %B %-d')}")
+                clock_time = when.clock if when.clock is not None else datetime.min.time()
+                if when.clock is None:
+                    reads.append("no time given, so midnight at the start of that day")
+                naive = datetime.combine(day, clock_time)
+                source_dt = naive.replace(tzinfo=source.zone)
+                round_trip = source_dt.astimezone(UTC).astimezone(source.zone).replace(tzinfo=None)
+                if round_trip != naive:
+                    raise ReadError(
+                        f"{naive.strftime('%-I:%M %p on %B %-d, %Y')} does not happen in {source.name}: the clocks "
+                        "skip that hour when summer time starts. Give a time outside it."
+                    )
+                if source_dt.replace(fold=1).utcoffset() != source_dt.utcoffset():
+                    reads.append(
+                        f"{naive.strftime('%-I:%M %p')} happens twice that day in {source.name}, as the clocks go "
+                        "back; the first was used"
+                    )
+    except ReadError as exc:
+        return tool_error(_TOOL, "read", str(exc))
 
-    if time_str.strip().lower() in _NOW_TOKENS:
-        # "now": resolve the current instant in the source timezone directly,
-        # so the caller never has to know or pass the current datetime.
-        source_dt = datetime.now(from_tz)
-    else:
-        parsed: datetime | None = None
-        for fmt in _TIME_FORMATS:
-            try:
-                parsed = datetime.strptime(time_str.strip(), fmt)
-                break
-            except ValueError:
-                # NOSILENT: this loop IS the probe -- each candidate format is tried until one
-                # parses, so a rejection is the expected answer for all but the matching format.
-                # Exhausting every format is reported by the tool-error below.
-                continue
-
-        if parsed is None:
-            return tool_error("timezone_converter", "convert", f"could not parse time: {time_str}")
-
-        # If parsed year == 1900 (time-only format), use today's date
-        if parsed.year == 1900:
-            today = date.today()
-            parsed = parsed.replace(year=today.year, month=today.month, day=today.day)
-
-        # Localize to source timezone
-        source_dt = parsed.replace(tzinfo=from_tz)
-
-    target_dt = source_dt.astimezone(to_tz)
-
-    fmt_str = "%A, %B %d, %Y %I:%M %p %Z"
-    return f"{source_dt.strftime(fmt_str)} = {target_dt.strftime(fmt_str)}"
+    target_dt = source_dt.astimezone(target.zone)
+    days = (target_dt.date() - source_dt.date()).days
+    day_word = {1: ", the next day", -1: ", the day before"}.get(days, f", {days:+d} days" if days else "")
+    line = (
+        f"{source_dt.strftime(_FORMAT)} in {source.name} ({describe_zone(source_dt)}) = "
+        f"{target_dt.strftime(_FORMAT)} in {target.name} ({describe_zone(target_dt)}){day_word}"
+    )
+    return line + (f"\nRead: {'; '.join(reads)}." if reads else "")
 
 
 def create_timezone_converter_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -84,12 +141,13 @@ def create_timezone_converter_tool(config: dict[str, Any], description: str) -> 
     delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
     so the StructuredTool path and the NATS-dispatched ToolServer
     path share :meth:`TimezoneConverterTool.execute` as their single
-    execution body. ``config`` is unused.
+    execution body. ``config["_user_timezone"]`` (legacy ``"timezone"``)
+    is the person's zone, used for a zone the call leaves out.
     """
     from threetears.agent.tools.langchain_adapter import to_langchain_tool
 
     return to_langchain_tool(
-        TimezoneConverterTool(),
+        TimezoneConverterTool(timezone=config.get("_user_timezone") or config.get("timezone")),
         description=description,
     )
 
@@ -97,8 +155,14 @@ def create_timezone_converter_tool(config: dict[str, Any], description: str) -> 
 class TimezoneConverterTool(TearsTool):
     """TearsTool wrapper for timezone conversion via stdlib zoneinfo.
 
-    converts time strings between IANA timezones. supports multiple
-    input formats including ISO 8601, 12-hour, and 24-hour notation.
+    converts a time between zones written as IANA names in any case, cities,
+    abbreviations or offsets. a zone left out is the person's zone (the call
+    scope's, else the one given at construction).
+
+    :param timezone: the person's zone when the call scope carries none
+    :ptype timezone: str | None
+    :param clock: what returns now; a test passes a frozen one
+    :ptype clock: Clock | None
     """
 
     _INPUT_SCHEMA: dict[str, Any] = {
@@ -107,35 +171,53 @@ class TimezoneConverterTool(TearsTool):
             "time_str": {
                 "type": "string",
                 "description": (
-                    "Pass 'now' for the current time (resolved by the tool) -- do not compute "
-                    "the current time yourself; otherwise an explicit time e.g. '2024-01-15 14:30' "
-                    "or '3:00 PM'."
+                    "The time to convert, as written: '3pm', '9:30 AM', '15:00', 'noon', 'tomorrow 9:00', "
+                    "'Oct 9 3pm', '2026-10-10T14:00:00Z'. Pass 'now' for the current time; do not work it out "
+                    "yourself. A time with no date is on today's date in the from zone."
                 ),
             },
             "from_timezone": {
                 "type": "string",
-                "description": "IANA, e.g. America/New_York.",
+                "description": (
+                    "The zone the time is in: an IANA name (America/Chicago, any case), a city (Tokyo), an "
+                    "abbreviation (PST, EST, CET, IST is India) or an offset (UTC+5:30). Leave out for the "
+                    "person's zone."
+                ),
             },
             "to_timezone": {
                 "type": "string",
-                "description": "IANA, e.g. Europe/London.",
+                "description": "The zone to show it in, written the same ways. Leave out for the person's zone.",
             },
         },
-        "required": ["time_str", "from_timezone", "to_timezone"],
+        "required": ["time_str"],
     }
+
+    def __init__(self, timezone: str | None = None, *, clock: Clock | None = None) -> None:
+        """keep the person's zone and the clock.
+
+        :param timezone: the person's zone when the call scope carries none
+        :ptype timezone: str | None
+        :param clock: what returns now
+        :ptype clock: Clock | None
+        """
+        self._timezone = timezone
+        self._clock = clock or system_clock
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """convert time between timezones.
 
-        :param kwargs: must include 'time_str', 'from_timezone', 'to_timezone' keys
+        :param kwargs: 'time_str', and 'from_timezone' and/or 'to_timezone'
         :ptype kwargs: Any
         :return: result containing converted time or error
         :rtype: ToolResult
         """
-        time_str = kwargs.get("time_str", "")
-        from_timezone = kwargs.get("from_timezone", "")
-        to_timezone = kwargs.get("to_timezone", "")
-        content = _convert_timezone(time_str, from_timezone, to_timezone)
+        content = _convert(
+            str(kwargs.get("time_str") or ""),
+            kwargs.get("from_timezone"),
+            kwargs.get("to_timezone"),
+            person_zone=_person_zone(self._timezone),
+            clock=self._clock,
+        )
         success = not content.startswith("[TOOL ERROR]")
         result = ToolResult(
             success=success,
@@ -153,7 +235,7 @@ class TimezoneConverterTool(TearsTool):
         result = MCPToolDefinition(
             name=self.mcp_name(),
             version=self.mcp_version(),
-            description="convert time between IANA timezones",
+            description="convert a time from one zone to another; says which zones and which day it used",
             input_schema=self._INPUT_SCHEMA,
         )
         return result
