@@ -375,7 +375,11 @@ class Result:
         """
         if full:
             return "\n\n".join([*(summary.render() for summary in self.arms.values()), report_markdown(self.report)])
+        one_arm = len(self.arms) == 1
         lines = [self._verdict_line()]
+        if one_arm:
+            # One arm's verdict is how its cases came out, and how far its judge can be trusted is read with it.
+            lines += self.calibration_lines()
         for arm, summary in self.arms.items():
             label = "" if len(self.arms) == 1 else f"{arm}{' (control)' if arm == self.control else ''}: "
             lines.append(f"{label}{summary.results_text}")
@@ -392,7 +396,8 @@ class Result:
                     lines.append(f"  {line}")
             lines += [f"  error: {error}" for error in summary.errors]
             lines += [f"  excluded: {cause}" for cause in _exclusion_causes(summary)]
-        lines += self.calibration_lines()
+        if not one_arm:
+            lines += self.calibration_lines()
         misses = [(arm, miss) for arm, summary in self.arms.items() for miss in summary.misses()]
         if misses:
             lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)}):")
@@ -416,9 +421,9 @@ class Result:
         return texts
 
     def _verdict_line(self) -> str:
-        """The first line: what the comparison decided, or what the one arm was."""
+        """The first line: what the comparison decided, or how the one arm's cases came out (:func:`_cases_verdict`)."""
         if len(self.arms) == 1:
-            return self.name if self.name == self.control else f"{self.name}: {self.control}"
+            return f"{self.name}: {_cases_verdict(self.summary)}"
         decided = [row for row in self.contrasts() if row["outcome"] in ("improved", "regressed", "equivalent")]
         if not decided:
             return f"{self.name}: no arm separated from the control {self.control!r}"
@@ -723,6 +728,35 @@ def _levels_of(
 def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
     if arm not in arms:
         raise ValueError(f"{arm!r} names no arm; the arms are {', '.join(map(repr, arms))}")
+
+
+def _cases_verdict(summary: EvalSummary) -> str:
+    """How one arm's cases came out, in plain words: passed of usable, the cases missed, the cases excluded by cause.
+
+    A case is usable when any of its repeats was not excluded, and passed when none of those repeats is a miss; a case
+    every repeat of which was excluded is counted under the cause its first repeat records.
+    """
+    repeats: dict[str, list[CaseResult]] = {}
+    for result in summary.results():
+        repeats.setdefault(result.case, []).append(result)
+    usable = 0
+    missed: list[str] = []
+    excluded: dict[str, int] = {}
+    for case, results in repeats.items():
+        kept = [result for result in results if result.outcome != "excluded"]
+        if not kept:
+            cause = (results[0].errors or ["no reason recorded"])[0]
+            excluded[cause] = excluded.get(cause, 0) + 1
+            continue
+        usable += 1
+        if any(result.missed for result in kept):
+            missed.append(case)
+    text = f"{usable - len(missed)}/{usable} cases passed; {len(missed)} {'miss' if len(missed) == 1 else 'misses'}"
+    if missed:
+        text += f": {', '.join(missed[:QUIET_MISSES])}"
+        if len(missed) > QUIET_MISSES:
+            text += f", and {len(missed) - QUIET_MISSES} more"
+    return text + "".join(f"; {count} excluded: {cause}" for cause, count in excluded.items())
 
 
 def _exclusion_causes(summary: EvalSummary) -> list[str]:

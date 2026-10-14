@@ -369,6 +369,25 @@ async def test_a_log_is_graded_as_logged_and_a_repeat_never_logged_is_excluded_n
         log({"text": "no id"}, "x")
 
 
+async def test_a_single_arm_prints_first_how_many_cases_passed_and_which_it_missed() -> None:
+    result = await Eval(TICKETS, crash_first, ["label", "urgent"]).run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert first == f"{result.name}: 2/4 cases passed; 2 misses: crash, both"
+
+
+async def test_a_single_arm_s_first_line_counts_the_cases_excluded_by_cause(tmp_path: Path) -> None:
+    log = Log(tmp_path / "outputs.jsonl")
+    log(TICKETS[0], {"label": "billing"})
+    log(TICKETS[0], {"label": "billing"})
+
+    result = await Eval(TICKETS[:2], log, ["label"], k=2).run(store=":memory:")
+
+    (cause, *_) = next(repeat for repeat in result.results() if repeat.case == "crash").errors
+    assert cause.startswith(f"apparatus: NotLogged: {NOT_LOGGED}: case crash ")
+    assert result.render().splitlines()[0] == f"{result.name}: 1/1 cases passed; 0 misses; 1 excluded: {cause}"
+
+
 # --- spend from Model -----------------------------------------------------------------------------------------------
 
 

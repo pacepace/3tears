@@ -73,7 +73,7 @@ dimensions. That is what an unchecked judge looks like, not proof the replies ar
 claims the policy never makes. The run says so in the line it never quiets:
 
 ```
-judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs in the to_label.csv the report writes, without looking at the judge's verdict
+judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs in the to_label.csv the report writes, without looking at the judge's verdict
 ```
 
 Calibrating it is yours to do; no person's labels ship with the rung.

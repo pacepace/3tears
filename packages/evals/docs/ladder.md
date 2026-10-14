@@ -74,7 +74,7 @@ triage_eval = Eval("emails.jsonl", runner=triage, grader=["category", "urgent", 
 What it printed:
 
 ```text
-emails: triage
+emails: 18/30 cases passed; 12 misses: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more
 90 result(s): 90 scored
   urgent: mean 0.8333 (n=90, min 0, max 1)
   escalates: mean 0.9889 (n=90, min 0, max 1)
@@ -151,13 +151,13 @@ replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="rep
 What it printed:
 
 ```text
-replies: reply
+replies: 20/20 cases passed; 0 misses
+judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs in the to_label.csv the report writes, without looking at the judge's verdict
 40 result(s): 40 scored, 0 excluded
   answer.grounded (judged pass/fail): mean 1 (n=40, min 1, max 1)
   answer.answers (judged pass/fail): mean 1 (n=40, min 1, max 1)
   answer.safe (judged pass/fail): mean 1 (n=40, min 1, max 1)
   total spend: $0.0168, the results' cost
-judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs in the to_label.csv the report writes, without looking at the judge's verdict
 stored in .evals/evals.sqlite, scope 'replies'
 report: .evals/reports/replies/report.html
 ```

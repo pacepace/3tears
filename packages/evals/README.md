@@ -27,9 +27,15 @@ urgent = "bool"
 needs_human = "bool"
 ```
 
-`python -m threetears.evals examples/1-triage/triage.toml` replays the recorded model, offline and free. It prints
-each field's pass rate (`needs_human: mean 0.8111 (n=90, min 0, max 1)`), a confusion matrix for `category`, the top
-misses, and where its report is. Then climb [the ladder](docs/ladder.md), one idea per rung:
+`python -m threetears.evals examples/1-triage/triage.toml` replays the recorded model, offline and free, and its
+first line says how it went:
+
+```text
+triage: 16/30 cases passed; 14 misses: refund-after-cancel, export-typo, slow-sync, gdpr-delete, nonprofit, and 9 more
+```
+
+Below it come each field's pass rate, a confusion matrix for `category`, the top misses with why each missed, and
+where its report is. Then climb [the ladder](docs/ladder.md), one idea per rung:
 
 | Rung | Example | Climb it when |
 |---|---|---|
