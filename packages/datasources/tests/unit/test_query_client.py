@@ -553,6 +553,7 @@ _EVERY_ASK: dict[str, Any] = {
     ),
     "export": lambda client: client.export("warehouse", "SELECT 1", destination="loads/one"),
     "delete_export": lambda client: client.delete_export("warehouse", destination="loads/one"),
+    "list_own_exports": lambda client: client.list_own_exports("warehouse"),
 }
 
 
