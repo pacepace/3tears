@@ -75,7 +75,9 @@ async def test_a_refused_temperature_is_resent_without_it_and_the_reply_says_non
     unknown = Catalogue(
         http=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"data": []})))
     )
-    model = recorded("negotiation", NO_TEMPERATURE, max_tokens=2000, effort="minimal", temperature=0.2, catalogue=unknown)
+    model = recorded(
+        "negotiation", NO_TEMPERATURE, max_tokens=2000, effort="minimal", temperature=0.2, catalogue=unknown
+    )
     directive = strict_response_format("Triage", Triage.model_json_schema())
     completion = await model.generate(system="Triage the support email.", user=EMAIL, response_format=directive)
     assert completion.temperature is None

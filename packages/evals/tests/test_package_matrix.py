@@ -70,7 +70,8 @@ No row names a 3tears package: the engine depends on none. Its loggers are stdli
 directory: ``threetears/evals/schema/``, ``kernel/``, ``run/``, ``analysis/``, ``gen/``, ``storage/``,
 ``testing/`` or ``quick/``. The two markers the path cannot place -- the ``threetears.evals`` root and its
 ``__main__`` -- are placed by name in :data:`~packages.evals.tests.package_placement.TREE_MARKERS`, the root
-held to schema's row and ``__main__`` to quick's. The rule
+held to a row of its own (``root``: the schema, and ``providers``, whose ``Model`` it exports lazily) and ``__main__``
+to quick's. The rule
 itself lives in :mod:`packages.evals.tests.package_placement`.
 
 **What is checked:**
@@ -124,13 +125,16 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "analysis": frozenset({"schema", "kernel", "analysis"}),
     "gen": frozenset({"schema", "kernel", "gen"}),
     "storage": frozenset({"schema", "storage"}),
-    "testing": frozenset({"schema", "kernel", "ops", "actions", "testing"}),
+    # `root` for `PUBLIC_ROOTS`, which the import-boundary kit checks a host's imports against.
+    "testing": frozenset({"schema", "kernel", "ops", "actions", "testing", "root"}),
     "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "quick"}),
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
     "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
     "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
     "providers": frozenset({"schema", "kernel", "run", "testing", "negotiation", "providers"}),
     "negotiation": frozenset({"schema", "negotiation"}),
+    # The package root: the schema, and the roots whose names it exports lazily (`providers`' `Model`).
+    "root": frozenset({"schema", "providers"}),
 }
 
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
@@ -151,6 +155,7 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "providers": frozenset({"httpx", "pydantic"}),
     # The stdlib alone: what a host's own client of raw HTTP imports beside its own transport.
     "negotiation": frozenset(),
+    "root": frozenset(),
 }
 
 #: The module-level third-party exceptions, one per extra: the FastMCP transport and nothing else may import
