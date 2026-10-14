@@ -278,14 +278,14 @@ async def test_anthropic_s_listed_effort_words_are_learned_and_the_closest_is_se
     done = await negotiate(
         WireSettings(max_tokens=5120, reasoning_effort="minimal"),
         provider_family="anthropic",
-        model="claude-haiku-5-5",
+        model="a-model-taking-five-effort-words",
         send=send,
         read_refusal=lambda exc: read_anthropic_refusal(exc.status, exc.body) if isinstance(exc, Answered) else None,
         learned=learned,
         declared=SettingFacts(reasoning_efforts=EFFORT_LADDER),  # a wrong declaration, which the refusal corrects
     )
     assert sent == ["minimal", "low"] and done.wire.reasoning_effort == "low"
-    facts = learned.facts("anthropic", "claude-haiku-5-5")
+    facts = learned.facts("anthropic", "a-model-taking-five-effort-words")
     assert facts.reasoning_efforts == ("low", "medium", "high", "xhigh", "max")
 
 

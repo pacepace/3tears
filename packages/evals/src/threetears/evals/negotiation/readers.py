@@ -90,6 +90,8 @@ def _parsed(body: object) -> object:
         try:
             return json.loads(body)
         except ValueError:
+            # NOSILENT: a body that is not JSON is no shape a reader knows; None makes the reader answer "no refusal",
+            # so the negotiation raises the provider's original error unchanged rather than losing it.
             return None
     return body
 
