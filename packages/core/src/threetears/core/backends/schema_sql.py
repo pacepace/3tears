@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -51,6 +51,8 @@ __all__ = [
     "build_where_pk",
     "build_whole_key_delete_sql",
     "bulk_batches",
+    "bulk_insert_batches",
+    "bulk_insert_row_sql",
     "cas_mutable_columns_for_data",
     "coerce_datetime_for_read_tz",
     "coerce_datetime_for_write_tz",
@@ -68,6 +70,8 @@ __all__ = [
     "normalize_write_value",
     "pull_value",
     "render_param",
+    "transport_param",
+    "transport_params_bytes",
 ]
 
 # column type tags (string-duplicated here so this module stays import-cycle-free;
@@ -680,10 +684,36 @@ def build_bulk_insert_sql(schema: TableSchema, *, rows: int, columns: list[Colum
     if rows < 1:
         raise ValueError(f"a bulk INSERT needs at least one row, got {rows}")
     cols = list(schema.columns) if columns is None else list(columns)
-    width = len(cols)
-    values = ", ".join(
-        "(" + ", ".join(render_param(c, row * width + i + 1) for i, c in enumerate(cols)) + ")" for row in range(rows)
-    )
+    values = ", ".join(bulk_insert_row_sql(cols, row) for row in range(rows))
+    return _bulk_insert_sql(schema, cols, values)
+
+
+def bulk_insert_row_sql(columns: Sequence[Column], position: int) -> str:
+    """one row's placeholders in a bulk INSERT: ``($k, ..., $k+n-1)`` for the row at ``position`` (0 first).
+
+    :param columns: the columns every row supplies
+    :ptype columns: Sequence[Column]
+    :param position: the row's place in the statement
+    :ptype position: int
+    :return: the row's parenthesised placeholders, each cast as its column needs
+    :rtype: str
+    """
+    width = len(columns)
+    return "(" + ", ".join(render_param(c, position * width + i + 1) for i, c in enumerate(columns)) + ")"
+
+
+def _bulk_insert_sql(schema: TableSchema, cols: list[Column], values: str) -> str:
+    """a bulk INSERT around its rows' placeholders, with the schema's conflict clause.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param cols: the columns every row supplies
+    :ptype cols: list[Column]
+    :param values: the rows' placeholders, joined by ``", "``; empty for the statement's text alone
+    :ptype values: str
+    :return: the INSERT
+    :rtype: str
+    """
     col_names = ", ".join(c.name for c in cols)
     return _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES {values}")
 
@@ -812,42 +842,169 @@ def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
     )
 
 
+def transport_param(value: Any) -> Any:
+    """convert one statement parameter to the form it crosses the L3 rail in.
+
+    The one owner of that form: :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`
+    sends every parameter through it, and :func:`transport_params_bytes` sizes a statement by it,
+    so what is measured is what is sent. A UUID, datetime or Decimal becomes its string and bytes
+    become ``\\x``-prefixed hex, two characters a byte. A list or tuple is an array parameter
+    (``= ANY($1::uuid[])``, ``unnest($1::timestamptz[])``) and is converted element by element, at
+    every depth, into a list, so the broker can restore each element as it restores a scalar.
+    Other types pass through unchanged.
+
+    :param value: parameter value to convert
+    :ptype value: Any
+    :return: the value as the rail carries it, ready for JSON
+    :rtype: Any
+    """
+    if isinstance(value, (list, tuple)):
+        result: Any = [transport_param(element) for element in value]
+    elif isinstance(value, UUID):
+        result = str(value)
+    elif isinstance(value, datetime):
+        result = value.isoformat()
+    elif isinstance(value, Decimal):
+        result = str(value)
+    elif isinstance(value, bytes):
+        result = "\\x" + value.hex()
+    else:
+        result = value
+    return result
+
+
+def transport_params_bytes(params: Sequence[Any]) -> int:
+    """the bytes a statement's parameters occupy in an L3 rail request.
+
+    The parameters as the rail sends them: each through :func:`transport_param`, then the list
+    as JSON with the storage handler (:func:`json_default`) for what is nested in a jsonb value.
+
+    :param params: one statement's parameters, in order
+    :ptype params: Sequence[Any]
+    :return: the size of the request's ``params`` value, in bytes
+    :rtype: int
+    """
+    return len(json.dumps([transport_param(value) for value in params], default=json_default).encode("utf-8"))
+
+
 def bulk_batches(
-    rows: list[list[Any]], *, max_rows: int, max_bytes: int, max_params: int = MAX_STATEMENT_PARAMS
+    rows: list[list[Any]],
+    *,
+    max_rows: int,
+    max_bytes: int,
+    max_params: int = MAX_STATEMENT_PARAMS,
+    base_bytes: int = 0,
+    position_bytes: Callable[[int], int] | None = None,
 ) -> list[list[list[Any]]]:
     """split rows' parameters into consecutive batches, each one statement's worth.
 
     A batch holds at most ``max_rows`` rows (what one statement may write inside the database's
-    statement timeout), at most ``max_params`` parameters, and at most ``max_bytes`` of the
-    parameters as JSON (what one statement may carry over the bus). A row larger than
-    ``max_bytes`` alone is a batch of its own rather than dropped.
+    statement timeout), at most ``max_params`` parameters, and at most ``max_bytes`` (what one
+    statement may carry over the bus). A batch's size is ``base_bytes`` plus, for each row, its
+    parameters as the L3 rail sends them (:func:`transport_params_bytes`) and
+    ``position_bytes`` of its place in the batch (0 first): what a statement adds for a row
+    besides its values, such as its placeholders in the SQL text. With neither, a batch's size is
+    its rows' parameters alone. A row larger than ``max_bytes`` alone is a batch of its own rather
+    than dropped.
 
     :param rows: each row's parameters, in order
     :ptype rows: list[list[Any]]
     :param max_rows: the most rows in one batch
     :ptype max_rows: int
-    :param max_bytes: the most JSON bytes of parameters in one batch
+    :param max_bytes: the most bytes one batch's statement may come to
     :ptype max_bytes: int
     :param max_params: the most parameters in one batch
     :ptype max_params: int
+    :param base_bytes: what a statement comes to before any row
+    :ptype base_bytes: int
+    :param position_bytes: what a row adds besides its parameters, by its place in its batch
+    :ptype position_bytes: Callable[[int], int] | None
     :return: the batches, in order, covering every row once
     :rtype: list[list[list[Any]]]
     """
     batches: list[list[list[Any]]] = []
     batch: list[list[Any]] = []
-    size = 0
+    size = base_bytes
     params = 0
     for row in rows:
-        row_bytes = len(json.dumps(row, default=json_default))
+        values = transport_params_bytes(row)
+        row_bytes = values + (position_bytes(len(batch)) if position_bytes is not None else 0)
         if batch and (len(batch) >= max_rows or size + row_bytes > max_bytes or params + len(row) > max_params):
             batches.append(batch)
-            batch, size, params = [], 0, 0
+            batch, size, params = [], base_bytes, 0
+            row_bytes = values + (position_bytes(0) if position_bytes is not None else 0)
         batch.append(row)
         size += row_bytes
         params += len(row)
     if batch:
         batches.append(batch)
     return batches
+
+
+def bulk_insert_batches(
+    schema: TableSchema,
+    columns: list[Column],
+    rows: list[list[Any]],
+    *,
+    max_rows: int,
+    max_bytes: int,
+    request_bytes: Callable[[str, list[Any]], int | None] | None = None,
+) -> list[list[list[Any]]]:
+    """split rows into :func:`build_bulk_insert_sql` statements whose whole request fits ``max_bytes``.
+
+    A statement's request is its SQL text, its parameters and what the transport sends around
+    them, and all three are counted. ``request_bytes`` is the transport's own measure of the
+    message it sends for a statement (``NatsProxyL3Backend.statement_request_bytes`` and its
+    connection's), asked once, of the statement with no row; each row then adds its placeholders
+    to the text and its values to the parameters, both as JSON, so the sum is the size of the
+    message to the byte. With no ``request_bytes`` (a transport with no bus around it) the
+    statement's text and parameters are counted alone, as they are when it answers no count.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param columns: the columns every row supplies, as :func:`build_bulk_insert_sql` takes them
+    :ptype columns: list[Column]
+    :param rows: each row's parameters, in the order of ``columns``
+    :ptype rows: list[list[Any]]
+    :param max_rows: the most rows one statement writes
+    :ptype max_rows: int
+    :param max_bytes: the most bytes one statement's request may come to
+    :ptype max_bytes: int
+    :param request_bytes: the transport's size of the request for a statement and its parameters
+    :ptype request_bytes: Callable[[str, list[Any]], int | None] | None
+    :return: the batches, in order, covering every row once
+    :rtype: list[list[list[Any]]]
+    """
+    shell = _bulk_insert_sql(schema, columns, "")
+    measured = request_bytes(shell, []) if request_bytes is not None else None
+    base = measured if measured is not None else _json_text_bytes(shell) + len("[]")
+
+    def position_bytes(position: int) -> int:
+        # the row's placeholders in the text, after ", " when a row precedes it; its values in the
+        # parameter list, after ", " too, where the first row's values replace the empty list's
+        # brackets that transport_params_bytes counts
+        placeholders = _json_text_bytes(bulk_insert_row_sql(columns, position))
+        return placeholders + 2 if position else placeholders - 2
+
+    return bulk_batches(
+        rows,
+        max_rows=max_rows,
+        max_bytes=max_bytes,
+        max_params=MAX_STATEMENT_PARAMS,
+        base_bytes=base,
+        position_bytes=position_bytes,
+    )
+
+
+def _json_text_bytes(text: str) -> int:
+    """the bytes ``text`` occupies inside a JSON string, quotes excluded.
+
+    :param text: the text
+    :ptype text: str
+    :return: its encoded size
+    :rtype: int
+    """
+    return len(json.dumps(text).encode("utf-8")) - 2
 
 
 def _conflict_target_ref(schema: TableSchema) -> str:
