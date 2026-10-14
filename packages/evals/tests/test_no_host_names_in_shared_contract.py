@@ -240,6 +240,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/errors.py",
     # The spend ledger a runner call's model calls are counted in: the engine's own usage vocabulary.
     "kernel/runner_spend.py",
+    # Where an eval file's relative paths resolve while `python -m threetears.evals FILE` loads it:
+    # the engine's own loading vocabulary, read by Eval, Model, World, Judge and Log alike.
+    "kernel/eval_file.py",
     "kernel/refusals.py",
     "kernel/remedies.py",
     # The write-seam refusal of an undeclared authoring field, and the lock every writer of an
