@@ -173,6 +173,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`ProposedTemplate`** · model · The drafted template fields for one subject (capability or boundary).
 - **`ProviderFailure`** · dataclass · What eval is allowed to know about a completion call that raised.
 - **`ProviderFailureDescriber`** · *host contract* · protocol · The host's mapping from its own exceptions onto `ProviderFailure`.
+- **`RatedOutput`** · model · What a person rated, carried on the rating so the label outlives the run, result and trace it was given on.
 - **`RecordedCall`** · model · One call a candidate made that succeeded — or, in a control end state, one it is stated to have made.
 - **`RepeatedScore`** · model · One dimension's stored judge score, asked again of the same judge from the same evidence.
 - **`RoleUsage`** · *host contract* · model · Per-role token + cost observation for one `EvalResult`.
@@ -195,6 +196,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`VariationAxis`** · model · One axis along which test cases vary for a template.
 - **`VariationCounts`** · model · How many test cases a launch asked generation for, and how many it froze.
 - **`VariationLLM`** · protocol · The client the variation generator writes an `llm` axis's values with, naming the model it calls.
+- **`VersionSpace`** · dataclass · One kept version space, as a stored read of a document in it reads: its numbers and its upgrade chain.
 - **`WorldEvent`** · model · One thing that moved a cell's world after it was seeded, in the order it happened.
 - **`WorldRound`** · model · A round whose stimulus is a world event rather than an actor's line.
 - **`WorldSeed`** · *host contract* · model · Initial state for the eval's stateful world.
@@ -223,8 +225,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`str`
 - **`DimName`** · type alias · A rubric dimension's name as every model holds it: `<context>.<dim>`, or a reserved dual-score axis id.
   <br>`Annotated[str, AfterValidator(_namespaced_dim_name)]`
-- **`DocLifecycle`** · literal · Whether a later release reads a stored document: `kept` — in the core, read from the core baseline on and upgraded across core versions; `regenerable` — refused on read after a change to its format, and made again (the cassette's format is `CASSETTE_SCHEMA_VERSION`, every other regenerable type's `REGENERABLE_SCHEMA_VERSION`).
-  <br>`'kept'` | `'regenerable'`
+- **`DocLifecycle`** · literal · Whether a later release reads a stored document: `kept` — in the evidence core, read from the core baseline on and deleted by a core baseline reset; `durable` — what people author, read from the durable baseline forever, upgraded across durable versions and never touched by a core baseline reset; `regenerable` — refused on read after a change to its format, and made again (the cassette's format is `CASSETTE_SCHEMA_VERSION`, every other regenerable type's `REGENERABLE_SCHEMA_VERSION`).
+  <br>`'kept'` | `'durable'` | `'regenerable'`
 - **`DocOrigin`** · literal · Where a stored document comes from: `input` — what runs read as given, whoever wrote it; `record` — what happened; `derived` — computed from other stored documents.
   <br>`'input'` | `'record'` | `'derived'`
 - **`EvalRunStatus`** · literal · `budget_stopped` is a budget the run was launched under binding — its cost cap or its wall-clock budget, `EvalRun.budget_stop_reason` says which: a designed stop that keeps what the run delivered, never `failed`.
@@ -317,6 +319,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CORE_BASELINE_VERSION`** · *host contract* · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
   <br>`= 15`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
+- **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
   <br>`= 0`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
@@ -328,6 +331,15 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`DEFAULT_LAUNCH_K_RUNS`** · constant (int) · Repeats per (case, model) a launch uses when the caller names none: one observation per case cannot tell a setting from the model's own variance.
   <br>`= 3`
 - **`DOC_TYPE_FACTS`** · constant (mappingproxy) · Every `doc_type` the engine stores, and its facts.
+- **`DURABLE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per durable type, every field the store reads on the stored bytes, as `CORE_ADDRESSING_FIELDS` is per core type, and under the same rule: a durable upgrader may not touch one.
+- **`DURABLE_BASELINE_VERSION`** · *host contract* · constant (int) · The first durable version, and the oldest every build reads, forever: it never moves, so a durable document any release since `.25` wrote stays readable (`tests/test_durable_schema_pins.py` pins it).
+  <br>`= 15`
+- **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
+- **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
+  <br>`= 1`
+- **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
+  <br>`= 15`
+- **`DURABLE_UPGRADERS`** · constant (tuple) · The registered durable steps, oldest first: `[s.from_version for s in DURABLE_UPGRADERS]` is `range(DURABLE_BASELINE_VERSION, DURABLE_SCHEMA_VERSION)`.
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
 - **`JOB_FAULT_MAX_CHARS`** · constant (int) · How long one fault may be, in characters; a longer one is cut to it (`with_fault`), marked as cut.
   <br>`= 2000`
@@ -350,6 +362,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= '__engine__'`
 - **`PROSE_SCHEMA_KEY`** · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
   <br>`= 'x-model-prose'`
+- **`RATING_WRITTEN_BEFORE_CONTENT`** · constant (str) · The `rated_withheld` a stored read supplies for a rating written before ratings carried what was rated (durable v15.0, the `.25` shape): stated, never a bare None, so every reader that counts labels able to outlive their evidence names these.
+  <br>`= 'written before labels carried their content'`
 - **`REASONING_EFFORTS`** · *host contract* · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
 - **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
@@ -1074,7 +1088,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`fold_metered_cell`** · function · Fold one cell's action-seam tally into the external role's rows.
   <br>`fold_metered_cell(external_usage: RoleUsageLedger, cell: MeteredCallTally | None) -> None`
 - **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results into a judge template.
-  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str], scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None) -> JudgeCaseFreezeReport`
+  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False) -> JudgeCaseFreezeReport`
 - **`get_judge_config`** · function · Load a judge config by id within a scope.
   <br>`get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) -> JudgeConfig`
 - **`get_result`** · function · Load one eval result by id within its scope.
@@ -1245,7 +1259,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`JobRecorder`** · class · A job's own writes of its record while its work runs: each one guarded, and the latest one kept.
 - **`JobWork`** · dataclass · One operation admitted and not yet run: its record as it starts, and the awaitable that runs it to its end.
 - **`JudgeCaseFreezeReport`** · model · What a freeze froze, the case set listing it, and what it could not freeze.
-- **`JudgeCaseSkip`** · model · A stored result the freeze could not make a case of, and why.
+- **`JudgeCaseSkip`** · model · A stored result, or a label, the freeze could not make a case of, and why.
 - **`JudgeContext`** · dataclass · Everything a single-dim judge call needs about the result under review.
 - **`JudgeInputStore`** · protocol · The reads `reproducible_judge_inputs` makes, and no more.
 - **`JudgeKind`** · class · A judge configuration as a candidate: asks each frozen case's criterion of one judge, and grades the answer by code.
@@ -1270,7 +1284,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`MeteredCallTally`** · dataclass · What a run (or one cell's slice of it) metered, kept per provider.
 - **`PlannedJudge`** · dataclass · The judge one arm will be scored by, resolved before anything is built: what `plan_judge` returns.
 - **`PreparedJudge`** · dataclass · One cell's judge: the model it binds, and the cell's tracing windows.
-- **`RatingStore`** · protocol · The two calls a rating makes: read the rated result, write the rating.
+- **`RatingStore`** · protocol · The calls a rating makes: read the rated result, its run and what its judge read, and write the rating.
 - **`RecheckStore`** · protocol · The reads and the one rewrite a re-check makes, and no more.
 - **`ReclaimStore`** · protocol · What `sweep_abandoned_runs` reads and writes: the boot scan of runs not ended, and the job records.
 - **`ReproducibleJudgeInputs`** · class · The stored records a result's judge calls are rebuilt from, each the one its run recorded.
@@ -1945,6 +1959,7 @@ Storage adapters the engine ships: implementations of the one port a host stores
 **Classes**
 
 - **`AsyncStoreBridge`** · class · A `DocumentStore` whose every call runs on an async store's loop.
+- **`CoreReset`** · dataclass · What `RoutedDocumentStore.reset_core` did: the core and regenerable documents deleted, and what moved.
 - **`DocTypeRoute`** · *host contract* · dataclass · Which store each document type is kept in, decided by one of its facts.
 - **`InMemoryDocumentStore`** · *host contract* · class · A `DocumentStore` over one dict.
 - **`MisplacedDocument`** · exception · One id is held by two stores, or by a store its type is not placed in; the router never picks one.
@@ -2305,7 +2320,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
-- **`JudgeCasesFreeze`** · model · What freezing judge cases names: the judge template, the judged runs, and optionally which dims and results.
+- **`JudgeCasesFreeze`** · model · What freezing judge cases names: the judge template, the judged runs (or the scope's labels), and optionally which dims and results.
 - **`JudgeConfigLine`** · model · One judge config, as a listing shows it: the versioned prompt a judge is asked one dimension with.
 - **`JudgeConfigListing`** · model · A scope's judge configs.
 - **`JudgeProfileEntry`** · model · One stored profile, with the tier its own measures decide.
@@ -3106,7 +3121,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
-| `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
+| `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
 | `judge_profiles_record` | `write` | `judge_run_ids` | Store what a judge campaign measured each judge to be, per criterion, for other campaigns to read. |
 | `judge_profiles_list` | `read` | `criterion_dim?` | List the stored judge profiles: each judge and criterion measured, on what, when, and its tier. |
 | `scope_pivot` | `read` | `row_factor`, `column_factor`, `metric?`, `weighting?`, `subject_filter?`, `run_status?`, `predicted_cost?`, `launched_run_ids?` | Aggregate one measure over the scope's observations by two coordinates, cell by cell. |
@@ -3169,6 +3184,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `export_format` | `'csv'` \| `'json'` | The export's form: csv (flat rows, a column per lever) or json (the rows and what was left out). |
 | `export_run_ids` | array of `string` or `null` | Export only these runs, archived ones included since they are named; omitted exports all. |
 | `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (script-free). |
+| `from_labels` | `boolean` | Freeze from the scope's person labels instead of from runs: one case per output and criterion, from the content each label carries, reading no run or result, so it works after the runs are gone. A label that carries no content is skipped by name. |
 | `include_archived` | `boolean` | List archived records too; they are left out by default. |
 | `insight_id` | `string` | An insight's id, as insights_list names it. |
 | `intent` | `string` | What its judge campaign measures, in a sentence a reader of its report is told. |
@@ -3177,7 +3193,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judge_model` | `string` or `null` | The judge model, where the kind is model-judged. |
 | `judge_run_ids` | array of `string` | The finished judge-kind runs whose trials make up the measurement — every arm of the judge campaign, as runs_list names them. Each judge and criterion they measured is recorded from all of them together. |
 | `judged_result_ids` | array of `string` or `null` | The results to freeze; omitted freezes every result of the runs. |
-| `judged_run_ids` | array of `string` | The judged runs whose stored results to freeze, as runs_list names them. |
+| `judged_run_ids` | array of `string` | The judged runs whose stored results to freeze, as runs_list names them; omitted with from_labels, and required without it. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
 | `label` | `string` or `null` | List only runs carrying this label (run_label sets them); every run if unset. |
 | `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction, quote, note?}: a dimension the template scores, a direction of low\|low_mid\|mid\|mid_high\|high, and the reader's words verbatim. They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. |

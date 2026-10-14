@@ -260,11 +260,12 @@ One trial's record (`EvalResult`): one case, one model, one repeat, with its goa
 scores, cost and what the kind reported. Its turn-by-turn trace is stored beside it (`EvalTrace`).
 
 #### Evidence core
-The stored documents a later release always reads (`CORE_DOC_TYPES`): cases, runs, results and their traces,
-calibration ratings, out-of-run spend, case sets, the templates, judge configs and rubric dims they name,
-campaigns, sweeps, analysis attempts, generation slots, and the records of every other job (launches, second
-judge passes, judge temperature comparisons, host action jobs). An older one is upgraded as it is read, and one a
-newer minor wrote (an additive change) is read with the fields this build does not know kept and written back.
+The stored documents a run produced or binds (`CORE_DOC_TYPES`): runs, results and their traces, out-of-run
+spend, campaigns, sweeps, analysis attempts, generation slots, and the records of every other job (launches, second
+judge passes, judge temperature comparisons, host action jobs). Read from the core baseline on: an older one is
+upgraded as it is read, and one a newer minor wrote (an additive change) is read with the fields this build does
+not know kept and written back. A core baseline reset deletes it (`reset_core`). What people author is not in it:
+see [durable](#kept-durable-and-regenerable).
 Analyses, insights, judge
 profiles and cassettes are outside it: a release that changes their format refuses them, and they are made again
 ([what is kept](adopting-a-host.md#stored-data-what-is-kept)). A cassette's format has a version of its own, so a
@@ -461,9 +462,12 @@ written into, the lever gets no row or confound of its own and the arm is named 
 could test is disclosed as `unverified_fold:<lever>`. See [the host](adopting-a-host.md#the-host) and
 [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating).
 
-#### Kept and regenerable
+#### Kept, durable and regenerable
 Every stored type's **lifecycle** (`DOC_TYPE_FACTS`). A **kept** type is the [evidence core](#evidence-core):
-every later release reads it, upgrading it as it is read. A **regenerable** type (analyses, insights, judge
+read from the core baseline on, and deleted by a core baseline reset. A **durable** type is what people author
+(`DURABLE_DOC_TYPES`: templates, rubric dims, judge configs and their tombstones, case sets, test cases, calibration
+ratings): read forever in a version space of its own, changed only additively or through an upgrader, and never
+touched by a core baseline reset. A **regenerable** type (analyses, insights, judge
 profiles, cassettes) is refused after its format changes and made again: an analysis, insight or profile over the
 kept runs, a cassette by capturing it anew. A store can route each lifecycle to its own backend
 (`DocTypeRoute(by="lifecycle")`). See [Stored data: what is kept](adopting-a-host.md#stored-data-what-is-kept).

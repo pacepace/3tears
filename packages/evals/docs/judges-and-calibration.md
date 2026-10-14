@@ -214,6 +214,20 @@ labels = await run_blocking(host.blocking_executor, host.storage.query_calibrati
 A score no key was computed for (one restated from a judge trial) has none, and neither does a rating of it. Such a
 rating is read by its result alone.
 
+### A rating carries what was rated, so it outlives the run
+
+Ratings are durable: a core baseline reset deletes runs, results and traces, and keeps every rating. So `rate_result`
+also copies what the rater read onto the rating (`CalibrationRating.rated`, a `RatedOutput`): the criterion as the
+template worded it, the scenario intent, the variation, the goal outcomes and the `JudgeEvidence`. It rebuilds them
+under the check a judge freeze uses (`reproducible_judge_inputs`), and the rating is refused unless their
+fingerprints are its label key, so the content is provably what was read.
+
+When that check refuses, the person's rating is still stored, with `rated_withheld` saying why: the run is still
+being written, its template was edited after it ran, its trace stored no evidence, or the score carries no label
+key. A warning is logged naming it. Such a label calibrates the judge while its result exists, and cannot outlive
+it. A rating stored before ratings carried their content (by `.25`) reads with `rated_withheld` set to
+`RATING_WRITTEN_BEFORE_CONTENT`. Budget storage at about one judged transcript per label.
+
 ## Step 6: read agreement: kappa
 
 ```python
@@ -603,6 +617,22 @@ Each case is rebuilt under the same check a re-judge uses (`reproducible_judge_i
 the reason, if its run did not record its judging or its template was edited since. Freezing the same output,
 criterion and labels again returns the stored case. A re-freeze after a label changed mints a new case, and the
 new case-set version lists only the new one. The action is `judge_cases_freeze`.
+
+**Freeze from the labels alone, across a core reset.** `freeze_judge_cases(..., from_labels=True)` (and
+`from_labels: true` on the action, with no `judged_run_ids`) reads no run, result or trace. It groups the scope's
+person ratings by label key, one case per output and criterion, and builds each case from the content its labels
+carry. Its labels are every person rating on that key, one per rater, the latest standing. A label that carries no
+content is skipped by name (`JudgeCaseSkip.rating_id`) with the reason the rating states. The case's source names
+the label's run and result as provenance and records no first judge. So the calibration path after a core baseline
+reset is: rate (before the reset), freeze from labels, run the judge campaign over the case set, then record its
+profile. It costs judge calls only.
+
+```python
+frozen = await run_blocking(
+    host.blocking_executor, freeze_judge_cases,
+    host.storage, template=judge_template, scope_id=summary.scope_id, from_labels=True, case_set="grounded-judge",
+)
+```
 
 Run one arm per judge. Through a launch, a host registers `launchable_judge_kind` for `JUDGE_KIND` and declares
 `JUDGE_KIND_CONTRACT` (and `JUDGE_KIND_MEASURES`) on its profile. Then each arm is a `run_launch` of the judge
