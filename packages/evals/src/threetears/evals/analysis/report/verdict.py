@@ -8,8 +8,9 @@
 2. **One arm.** ``<eval>: n/N cases passed; k misses: …`` — how its cases came out.
 3. **A declared decision rule.** Each clause settled or not (:mod:`~threetears.evals.analysis.report.decision`),
    and the rule's outcome in plain words: keep, switch, or unsettled with the fix and its cost. A keep names the
-   counts and costs that settled it, the arms by their models where they have one: ``Keep production: v4-flash
-   passed 2 of 12 trials to v4.1-flash's 10 of 12, and cost more per reply ($0.003301 vs $0.003092).``
+   counts that settled it, the arms by their models where they have one: ``Keep production: v4-flash passed 2 of 12
+   trials to v4.1-flash's 10, and cost more per reply.`` The line is one sentence held to the page's numeral limit;
+   the decision table directly below carries every figure and every clause's reason.
 4. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
    difference is called; the case floor itself is a caveat line under the scoreboard (:func:`caveat_lines`).
 5. **A declared question.** What its contrasts and guardrails came to, in their own verdict words.
@@ -42,7 +43,7 @@ from threetears.evals.analysis.report.decision import (
     rule_readings,
 )
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import humanize, lint_prose
 from threetears.evals.kernel.declaration import Question, preregistered_questions
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 
@@ -407,8 +408,9 @@ def rule_sentence(
 ) -> str:
     """A rule's outcome as the verdict line says it: the decision, then what settled it or the fix with its cost.
 
-    A keep states the counts and costs that settled it, in plain numbers (``cheaper candidate passed 2 of 12 trials
-    to production's 10 of 12, and cost more per reply ($0.003301 vs $0.003092)``).
+    A keep states the counts that settled it (``v4-flash passed 2 of 12 trials to v4.1-flash's 10, and cost more per
+    reply``). Each sentence keeps its clauses only while it stays within the page's numeral and length limits
+    (:func:`~threetears.evals.analysis.style.lint_prose`): the decision table below carries every clause.
 
     Args:
         verdict: The rule read on one candidate.
@@ -422,23 +424,35 @@ def rule_sentence(
         The sentence.
     """
 
-    def reasons(outcome: str) -> str:
-        said = [
-            clause.reason.replace("the candidate", candidate) for clause in verdict.clauses if clause.outcome == outcome
-        ]
-        return ", and ".join(said)
-
     if verdict.outcome == "keep":
-        return f"Keep {control}: {_kept(verdict, control_model or control, candidate_model or candidate)}."
+        said = _kept(verdict, control_model or control, candidate_model or candidate)
+        return _within_limits(f"Keep {control}: ", said)
     if verdict.outcome == "switch":
         return f"Switch to {candidate}: every clause of the decision rule holds."
+    reasons = [
+        clause.reason.replace("the candidate", candidate) for clause in verdict.clauses if clause.outcome == "unsettled"
+    ]
     cost = _cost_per_case(bundle)
     fix = f" Each more case costs about {cost} over every arm." if cost else ""
-    return f"Unsettled between {control} and {candidate}: {reasons('unsettled')}.{fix}"
+    return _within_limits(f"Unsettled between {control} and {candidate}: ", reasons) + fix
 
 
-def _kept(verdict: RuleVerdict, control: str, candidate: str) -> str:
-    """What settled a keep, clause by clause, as counts and costs with the candidate as their one subject."""
+def _within_limits(lead: str, parts: list[str]) -> str:
+    """``lead`` and as many of ``parts`` as one sentence holds within the page's limits, joined by ", and ".
+
+    The first part is always said; each later one only while the sentence stays within the numeral and length
+    limits, the decision table carrying the rest.
+    """
+    kept = parts[:1]
+    for part in parts[1:]:
+        if lint_prose(f"{lead}{', and '.join([*kept, part])}."):
+            break
+        kept.append(part)
+    return f"{lead}{', and '.join(kept)}."
+
+
+def _kept(verdict: RuleVerdict, control: str, candidate: str) -> list[str]:
+    """What settled a keep, clause by clause, as counts with the candidate as their one subject."""
     said: list[str] = []
     readings = verdict.readings
     for clause in verdict.clauses:
@@ -450,21 +464,21 @@ def _kept(verdict: RuleVerdict, control: str, candidate: str) -> str:
         elif clause.clause.kind == "cost_lower" and readings is not None:
             ours, theirs = readings.control_cost, readings.candidate_cost
             more = "more" if ours is not None and theirs is not None and theirs > ours else "no less"
-            costs = (
-                f" (${format_number(theirs)} vs ${format_number(ours)})"
-                if ours is not None and theirs is not None
-                else ""
-            )
-            said.append(f"{subject}cost {more} per reply{costs}")
+            said.append(f"{subject}cost {more} per reply")
         else:
             said.append(subject + clause.reason.replace("the candidate ", ""))
-    return ", and ".join(said)
+    return said
 
 
 def _counts(rate: RateReading, control: str) -> str:
-    """A rate that settled keep, as plain counts: ``passed 2 of 12 trials to production's 10 of 12``."""
+    """A rate that settled keep, as plain counts: ``passed 2 of 12 trials to production's 10``.
+
+    The control's total is said only where it differs from the candidate's, so the counts stay three figures.
+    """
     theirs = f"{rate.candidate_passed} of {rate.candidate_n}"
-    ours = f"{rate.control_passed} of {rate.control_n}"
+    ours = (
+        str(rate.control_passed) if rate.control_n == rate.candidate_n else f"{rate.control_passed} of {rate.control_n}"
+    )
     if rate.name == "the pass rate":
         return f"passed {theirs} trials to {control}'s {ours}"
     return f"passed {rate.name} on {theirs} to {control}'s {ours}"

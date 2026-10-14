@@ -14,6 +14,7 @@ from threetears.evals import Result
 from threetears.evals.analysis import Report
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule, parse_decision_rule
+from threetears.evals.analysis.style import lint_prose
 import pytest
 
 from packages.evals.tests.g2_support import G2_QUESTION, g2_ruled_report
@@ -139,11 +140,12 @@ def test_a_cost_lower_by_a_point_estimate_only_is_unsettled() -> None:
 async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     (verdict,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    # Plain counts and both costs, each arm by its model: "cheaper candidate cost more" would read as a contradiction.
+    # Plain counts, each arm by its model ("cheaper candidate cost more" would read as a contradiction), within the
+    # page's three figures a sentence: the costs are the decision table's, directly below.
     assert verdict.text == (
-        "Keep production: deepseek-v4-flash passed 2 of 12 trials to deepseek-v4.1-flash's 10 of 12, "
-        "and cost more per reply ($0.003301 vs $0.003092)."
+        "Keep production: deepseek-v4-flash passed 2 of 12 trials to deepseek-v4.1-flash's 10, and cost more per reply."
     )
+    assert lint_prose(verdict.text) == []
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "decision"]
     # One candidate: each arm heads its own column by name.
     assert [column.header for column in table.columns] == [
