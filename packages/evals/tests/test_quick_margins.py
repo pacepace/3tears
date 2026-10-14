@@ -356,4 +356,4 @@ class TestTheNoMarginLineAdvisesEachKindOfMeasure:
         assert "Declare a margin on Correct score where it is graded (grader(correct, margin=...))" in line
         assert "Declare a margin on Accuracy on the classifier's field (grader('<field>', margin=...))" in line
         assert "No comparison can declare one on Production cost" in line
-        assert "Production cost by the scorer's name" not in line and "Production cost (compare" not in line
+        assert "Production cost where it is graded" not in line and "Production cost on the classifier's" not in line
