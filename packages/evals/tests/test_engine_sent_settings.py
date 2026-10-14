@@ -27,8 +27,15 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis import judge_self_agreement, tier_sentence
-from threetears.evals.analysis.agreement import judge_agreement, judge_evidence_tiers, judge_key, sent_settings_key
+from threetears.evals.analysis import inter_judge_agreement, judge_drift, judge_self_agreement, tier_sentence
+from threetears.evals.analysis.agreement import (
+    judge_agreement,
+    judge_evidence_tiers,
+    judge_key,
+    sent_settings_from_level,
+    sent_settings_key,
+    sent_settings_level,
+)
 from threetears.evals.analysis.cells import apparatus_class_of
 from threetears.evals.analysis.reporting import (
     RequestSettingsReading,
@@ -51,6 +58,9 @@ from threetears.evals.schema.models import (
     RepeatedScore,
     RoleUsage,
     RubricScore,
+    SecondJudge,
+    SecondJudgeScore,
+    SecondJudging,
     request_settings_words,
 )
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
@@ -348,6 +358,78 @@ class TestAJudgeSentDifferentlyIsAnotherJudge:
 
         assert f", sent {request_settings_words(_BUDGET)}" in tier_sentence(sent)
         assert ", request settings unconfirmed" in tier_sentence(silent)
+
+
+def _seconded(result_id: str, case: str, pass_id: str, sent: ClientRequestSettings | None, score: int) -> EvalResult:
+    """A result whose first score was sent as asked, carrying one second-judge pass whose score was sent ``sent``."""
+    second = RubricScore(
+        dim=_DIM,
+        scale="ordinal",
+        score=score,
+        served_model="judge/second",
+        axis="capability",
+        judge_temperature=0.0,
+        judge_sent_settings=sent,
+    )
+    entry = SecondJudgeScore(
+        dim=_DIM,
+        scale="ordinal",
+        first_score=4,
+        first_served_model=_JUDGE,
+        first_judge_config_id=None,
+        first_judge_temperature=0.0,
+        first_judge_sent_settings=_ASKED,
+        second=second,
+    )
+    judging = SecondJudging(
+        pass_id=pass_id,
+        judge=SecondJudge(model="judge/second"),
+        sample_fraction=1.0,
+        sample_seed=0,
+        scores=[entry],
+    )
+    return make_eval_result(id=result_id, test_case_id=case, rubric_scores=[_score(_ASKED)], judge_seconds=[judging])
+
+
+#: Two passes of one second judge, asked alike: the first sent as asked, the second sent a budget instead.
+_TWO_SECOND_SENDS = [
+    _seconded("r-1", "case-1", "pass-asked", _ASKED, 4),
+    _seconded("r-2", "case-2", "pass-asked", _ASKED, 3),
+    _seconded("r-3", "case-1", "pass-budget", _BUDGET, 2),
+    _seconded("r-4", "case-2", "pass-budget", _BUDGET, 2),
+    _seconded("r-5", "case-1", "pass-silent", None, 5),
+]
+
+
+class TestASecondJudgeSentDifferentlyIsAnotherSecondJudge:
+    def test_inter_judge_agreement_keys_and_names_the_second_judges_send(self) -> None:
+        dimensions = inter_judge_agreement(_TWO_SECOND_SENDS).dimensions
+
+        named = {tuple(d.passes): (d.second_sent_settings, d.n) for d in dimensions}
+        assert named == {
+            ("pass-asked",): ([_ASKED], 2),
+            ("pass-budget",): ([_BUDGET], 2),
+            ("pass-silent",): (None, 1),
+        }
+
+    def test_drift_keys_and_names_the_second_judges_send(self) -> None:
+        dimensions = judge_drift(_TWO_SECOND_SENDS).dimensions
+
+        sent = [
+            (None if d.second_sent_settings is None else [request_settings_words(x) for x in d.second_sent_settings])
+            for d in dimensions
+        ]
+        assert [d.n_pairs for d in dimensions] == [1, 2, 2], "unverified first, then each send in canonical order"
+        assert sent[0] is None
+        assert sorted(sent[1:]) == sorted([[request_settings_words(_ASKED)], [request_settings_words(_BUDGET)]])
+
+    def test_a_pass_reads_as_the_level_the_bundle_names_it_by(self) -> None:
+        """One reading names a pass's send for the bundle and for both readers, so a linked drift groups as its level."""
+        for result in _TWO_SECOND_SENDS:
+            (judging,) = result.judge_seconds
+            level = sent_settings_level(entry.second for entry in judging.scores)
+            (dimension,) = judge_drift([result]).dimensions
+            assert dimension.second_sent_settings == sent_settings_from_level(level)
 
 
 # ---------------------------------------------------------------------------

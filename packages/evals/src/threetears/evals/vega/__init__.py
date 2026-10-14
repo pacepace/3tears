@@ -1,7 +1,7 @@
-"""The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
+"""The Vega-Lite chart renderer — an optional adapter over eval's chart intent, which imports on the base install.
 
-Install it as ``3tears-evals[vega]``, which adds ``vl-convert-python`` for rasterising; compiling a spec
-for a browser to draw needs nothing past the core. The core
+Rasterising needs ``3tears-evals[vega]``, which adds ``vl-convert-python``; compiling a spec for a browser to
+draw needs nothing past the core, so the root is not in :data:`~threetears.evals.ROOT_EXTRAS`. The core
 (:mod:`threetears.evals.analysis.viz`) decides what every chart says as a
 :class:`~threetears.evals.analysis.viz.ChartIntent` and never imports this package; this package reads
 intents and adds a picture, and decides nothing a reader is told.

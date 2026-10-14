@@ -184,7 +184,7 @@
     "threetears.evals.schema.CompletionProtocolDefect": {
       "kind": "exception",
       "signature": "CompletionProtocolDefect(completion: object, member: str, why: str, *, optional: bool = False) -> None",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.CompletionResult": {
       "kind": "protocol",
@@ -4084,7 +4084,7 @@
     "threetears.evals.run.SIMULATOR_REQUEST_SETTINGS": {
       "kind": "constant (ClientRequestSettings)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.run.SimulatorCall": {
       "kind": "dataclass",
@@ -4219,7 +4219,7 @@
     "threetears.evals.analysis.analysis_gen_request_settings_for": {
       "kind": "function",
       "signature": "analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.analysis_report": {
       "kind": "function",
@@ -4873,7 +4873,7 @@
     },
     "threetears.evals.analysis.InterJudgeDimension": {
       "kind": "model",
-      "signature": "InterJudgeDimension(rubric_dim: str, scale: RubricScale, judge_model: str | None, judge_config_id: str | None, judge_temperature: JudgeTemperature | None = None, judge_sent_settings: ClientRequestSettings | None = None, second_model: str, second_judge_config_id: str | None, second_temperature: float | None, second_served_models: list[str] = list(), n: int, results: int, n_cannot_tell: int, passes: list[str], exact_agreement: float, kappa_weighting: Literal['quadratic', 'none'], kappa: float | None, kappa_undefined: str | None = None, agreement_interval: tuple[float, float] | None = None)",
+      "signature": "InterJudgeDimension(rubric_dim: str, scale: RubricScale, judge_model: str | None, judge_config_id: str | None, judge_temperature: JudgeTemperature | None = None, judge_sent_settings: ClientRequestSettings | None = None, second_model: str, second_judge_config_id: str | None, second_temperature: float | None, second_sent_settings: list[ClientRequestSettings] | None = None, second_served_models: list[str] = list(), n: int, results: int, n_cannot_tell: int, passes: list[str], exact_agreement: float, kappa_weighting: Literal['quadratic', 'none'], kappa: float | None, kappa_undefined: str | None = None, agreement_interval: tuple[float, float] | None = None)",
       "tier": "closure"
     },
     "threetears.evals.analysis.judge_agreement": {
@@ -4948,7 +4948,7 @@
     },
     "threetears.evals.analysis.JudgeDriftDimension": {
       "kind": "model",
-      "signature": "JudgeDriftDimension(rubric_dim: str, scale: RubricScale, judge_model: str | None, judge_config_id: str | None, judge_temperature: JudgeTemperature | None = None, judge_sent_settings: ClientRequestSettings | None = None, second_model: str, second_judge_config_id: str | None, second_temperature: float | None, n_pairs: int, n_cases: int, n_unanswered: int, first_mean: float | None, second_mean: float | None, delta: float | None, interval: tuple[float, float] | None, interval_level: float | None, p_adjusted: float | None, verdict: DriftVerdict)",
+      "signature": "JudgeDriftDimension(rubric_dim: str, scale: RubricScale, judge_model: str | None, judge_config_id: str | None, judge_temperature: JudgeTemperature | None = None, judge_sent_settings: ClientRequestSettings | None = None, second_model: str, second_judge_config_id: str | None, second_temperature: float | None, second_sent_settings: list[ClientRequestSettings] | None = None, n_pairs: int, n_cases: int, n_unanswered: int, first_mean: float | None, second_mean: float | None, delta: float | None, interval: tuple[float, float] | None, interval_level: float | None, p_adjusted: float | None, verdict: DriftVerdict)",
       "tier": "closure"
     },
     "threetears.evals.analysis.JudgeDriftLink": {
@@ -5449,7 +5449,7 @@
     "threetears.evals.analysis.RequestSettingsReading": {
       "kind": "model",
       "signature": "RequestSettingsReading(role: RequestSettingsRole, asked: list[ClientRequestSettings] = list(), sent: list[SentSettingsShare] = list(), n_total: int, n_unverified: int, n_not_as_asked: int, n_unenforced: int)",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.RequestSettingsRole": {
       "kind": "literal",
@@ -5529,12 +5529,12 @@
     "threetears.evals.analysis.SentSettingsShare": {
       "kind": "model",
       "signature": "SentSettingsShare(settings: ClientRequestSettings, count: int)",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.SentSettingsState": {
       "kind": "literal",
       "signature": "'as_asked'` | `'sent_otherwise'` | `'mixed'` | `'unverified'",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.serialize_report": {
       "kind": "function",
@@ -7614,12 +7614,12 @@
     "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.negotiation.anthropic_thinking": {
       "kind": "function",
       "signature": "anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str | int] | None",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.negotiation.BUDGET_SHARES": {
       "kind": "constant (dict)",
@@ -7679,7 +7679,7 @@
     "threetears.evals.negotiation.RefusedSetting": {
       "kind": "literal",
       "signature": "'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'max_tokens'` | `'enforcement'",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.negotiation.SettingFacts": {
       "kind": "dataclass",

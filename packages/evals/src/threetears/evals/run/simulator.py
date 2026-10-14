@@ -117,7 +117,7 @@ from threetears.evals.schema.models import (
     KnownSimulatorPurpose,
     WorldRound,
 )
-from threetears.evals.schema.completion import SimulatorLLM
+from threetears.evals.schema.completion import CompletionProtocolDefect, SimulatorLLM
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 
@@ -474,7 +474,7 @@ class TurnDriver:
         for _attempt in range(SCHEDULER_CALL_ATTEMPTS):
             prompt = user if not refusal else f"{user}\n\nYour previous reply was refused: {refusal}. Reply again."
             response = await llm.generate(system=system, user=prompt, response_format=response_format)
-            usage = _call_usage(response)
+            usage = self._usage_of(response, "schedule", None)
             content = getattr(response, "content", None)
             try:
                 reply = NextSpeakerReply.model_validate_json(content or "", strict=True)
@@ -528,7 +528,9 @@ class TurnDriver:
             response_format=SIMULATED_USER_RESPONSE_FORMAT,
         )
         # Spend is recorded before the reply is validated: a malformed reply was still billed.
-        self.calls.append(SimulatorCall("utterance", actor.id, self._round_index, _call_usage(response)))
+        self.calls.append(
+            SimulatorCall("utterance", actor.id, self._round_index, self._usage_of(response, "utterance", actor.id))
+        )
         reply = _parse_reply(getattr(response, "content", None))
         self.user_turns += 1
         if reply.done:
@@ -635,6 +637,32 @@ class TurnDriver:
             return None
         return sum(call.usage.cost_usd or 0.0 for call in self.calls)
 
+    def _usage_of(self, response: Any, purpose: KnownSimulatorPurpose, actor_id: str | None) -> CallUsage:
+        """The spend and sent settings one simulator-role response reports; a field the client did not report is ``None``.
+
+        A response whose ``sent_settings`` is refused (the host's completion type fills it wrong) was billed all the
+        same, so the call goes into :attr:`calls` with its spend, unverified, before the refusal leaves: the
+        driver's calls stay complete whichever way the conversation ended.
+
+        Args:
+            response: The simulator call's completion.
+            purpose: Whether the call was an ``utterance`` or a ``schedule`` pick, for the record of a refused one.
+            actor_id: The actor it spoke for, for the record of a refused one; ``None`` for a pick, whose choice
+                is unread.
+
+        Returns:
+            The call's usage.
+
+        Raises:
+            CompletionProtocolDefect: The response's ``sent_settings`` is neither ``None`` nor request settings; the
+                call is recorded first.
+        """
+        try:
+            return CallUsage.of(response)
+        except CompletionProtocolDefect:
+            self.calls.append(SimulatorCall(purpose, actor_id, self._round_index, CallUsage.billed(response)))
+            raise
+
     def fold_usage(self, ledger: RoleUsageLedger) -> None:
         """Fold every call in :attr:`calls` into the cell's ``simulator`` ledger, one row per actor and purpose.
 
@@ -653,11 +681,6 @@ class TurnDriver:
             raise ValueError(f"simulator calls fold into the simulator ledger, not the {ledger.role!r} one")
         for call in self.calls:
             ledger.add_llm_result(call.usage, actor_id=call.actor_id, purpose=call.purpose)
-
-
-def _call_usage(response: Any) -> CallUsage:
-    """The spend one simulator-role response reports; a field the client did not report stays ``None``."""
-    return CallUsage.of(response)
 
 
 # =============================================================================

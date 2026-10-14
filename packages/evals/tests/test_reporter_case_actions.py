@@ -437,6 +437,20 @@ async def test_a_memo_refused_after_its_billed_calls_returned_keeps_their_cost()
     assert (cost.mean, cost.n, cost.population) == (pytest.approx(0.30), 1, "all_observed")
 
 
+async def test_a_generator_completion_whose_sent_settings_is_mistyped_keeps_its_cost_and_is_never_read() -> None:
+    """The reporter's generator is the candidate, whose rows carry no sent settings: what its completion says it was
+    sent with is never read, so a wrong-typed value there neither fails the cell nor loses the billed calls."""
+    client = FixturedClient("this is not a memo")
+    client.completion.cost_usd = 0.15
+    client.completion.sent_settings = "medium"  # type: ignore[attr-defined]  # a host's completion filling it wrong
+    result, _bundle = await _reporter_result(client)
+
+    assert result.infra_error is None, "the candidate's completion is not read for what it was sent with"
+    assert (result.turns_delivered, result.cost_usd) == (2, pytest.approx(0.30))
+    (row,) = [row for row in result.usage if row.role == "candidate"]
+    assert (row.call_count, row.sent_settings) == (2, None)
+
+
 async def test_a_memo_whose_first_call_was_refused_delivered_no_turn() -> None:
     result, bundle = await _reporter_result(_RefusedWriter(""))
 

@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.schema.base import EvalBaseModel
@@ -163,13 +163,35 @@ class CallUsage:
     sent_settings: ClientRequestSettings | None = None
 
     @classmethod
+    def billed(cls, completion: Any) -> CallUsage:
+        """What one completion reports it spent, read by the ledger's declared attribute names, and nothing else.
+
+        The spend alone, with ``sent_settings`` left unread (``None``, unverified). What a caller reads when it
+        must count a paid call whatever else the completion holds: a cost cap settling the call's reservation, the
+        candidate role (whose rows carry no sent settings: only the judge's and the simulator's are disclosed), and
+        a judge or simulator call whose ``sent_settings`` was refused, whose spend is recorded before the refusal
+        leaves. Read through :data:`~threetears.evals.schema.completion.USAGE_LEDGER_ATTRIBUTES`, so this,
+        :meth:`of` and :meth:`RoleUsageLedger.add_llm_result` cannot read different names; an attribute the
+        completion lacks reads as unreported, never zero.
+
+        Args:
+            completion: A :class:`~threetears.evals.schema.completion.CompletionResult`-shaped object.
+
+        Returns:
+            One call's usage, with no sent settings.
+        """
+        read: dict[str, Any] = {name: getattr(completion, name, None) for name in USAGE_LEDGER_ATTRIBUTES}
+        read["model"] = read["model"] or None
+        read["served_model"] = read["served_model"] or None
+        return cls(**read)
+
+    @classmethod
     def of(cls, completion: Any) -> CallUsage:
-        """What one completion reports, read by the ledger's declared attribute names.
+        """What one completion reports, its sent settings included, read by the ledger's declared attribute names.
 
         For a caller that must hold a completion's spend past the completion itself (the simulator
-        keeps one per call). Read through :data:`~threetears.evals.schema.completion.USAGE_LEDGER_ATTRIBUTES`,
-        so this and :meth:`RoleUsageLedger.add_llm_result` cannot read different names; an attribute the
-        completion lacks reads as unreported, never zero.
+        keeps one per call): :meth:`billed`, and the settings the request was sent with as
+        :func:`~threetears.evals.schema.completion.sent_settings_of` reads them.
 
         Args:
             completion: A :class:`~threetears.evals.schema.completion.CompletionResult`-shaped object.
@@ -179,12 +201,10 @@ class CallUsage:
 
         Raises:
             CompletionProtocolDefect: The completion's ``sent_settings`` is neither ``None`` nor a
-                :class:`~threetears.evals.schema.ClientRequestSettings`.
+                :class:`~threetears.evals.schema.ClientRequestSettings`. The call was billed all the same, so a
+                caller that counts it reads :meth:`billed` on its way out (see there).
         """
-        read: dict[str, Any] = {name: getattr(completion, name, None) for name in USAGE_LEDGER_ATTRIBUTES}
-        read["model"] = read["model"] or None
-        read["served_model"] = read["served_model"] or None
-        return cls(**read, sent_settings=sent_settings_of(completion))
+        return replace(cls.billed(completion), sent_settings=sent_settings_of(completion))
 
 
 #: The attributes :meth:`RoleUsageLedger.add_llm_result` reads beyond
