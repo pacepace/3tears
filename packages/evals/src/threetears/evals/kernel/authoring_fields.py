@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.base import CoreDocumentModel
-from threetears.evals.schema.versioning import CORE_SCHEMA_MINOR
 
 
 def reject_unknown_authoring_fields(
@@ -93,7 +92,7 @@ def edited_core_document[M: CoreDocumentModel](
     as_declared = {
         key: value.model_dump(mode="json") if isinstance(value, BaseModel) else value for key, value in changes.items()
     }
-    declared = {**existing.model_dump(mode="json"), **as_declared, "schema_minor": CORE_SCHEMA_MINOR}
+    declared = {**existing.model_dump(mode="json"), **as_declared, "schema_minor": model.version_space.minor}
     for key in drop:
         declared.pop(key, None)
     checked = model.model_validate(declared)

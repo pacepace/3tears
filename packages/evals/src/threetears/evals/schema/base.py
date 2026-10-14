@@ -59,7 +59,7 @@ import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from functools import cache
-from typing import Annotated, Any, Self, get_args
+from typing import Annotated, Any, ClassVar, Self, get_args
 
 from pydantic import (
     AfterValidator,
@@ -79,10 +79,13 @@ from pydantic import (
 
 from threetears.evals.schema.versioning import (
     CORE_SCHEMA_MINOR,
-    CORE_SCHEMA_VERSION,
+    CORE_VERSION_SPACE,
+    DURABLE_SCHEMA_MINOR,
+    DURABLE_VERSION_SPACE,
     CoreVersionRefused,
+    VersionSpace,
     read_core_minor,
-    upgrade_core_document,
+    upgrade_document,
 )
 from threetears.evals.schema.logs import get_logger
 
@@ -527,34 +530,38 @@ class CoreShapeModel(BaseModel):
         return any(self._holds_kept_fields(getattr(shape, name)) for name in _fields_holding_shapes(type(shape)))
 
 
-def _built_at_this_minor(minor: int, info: ValidationInfo) -> int:
-    """Refuse a core document at any minor but this build's, except the newer one its own stored read is reading.
+def _built_at_this_minor(space: VersionSpace) -> AfterValidator:
+    """The validator of a ``schema_minor`` in ``space``: this build's minor, or the newer one its own stored read is
+    reading.
 
-    A stored read at this build's minor or older reaches here at this build's minor (its read stamps it, and the
-    document now holds this build's defaults); a newer minor's read reaches here at that minor, carrying what it
+    A stored read at this build's minor or older reaches it at this build's minor (its read stamps it, and the
+    document now holds this build's defaults); a newer minor's read reaches it at that minor, carrying what it
     kept. Anything else is a construction or a payload naming a minor this build did not write.
 
     Args:
-        minor: The document's ``schema_minor``.
-        info: The validation's context.
+        space: The version space whose minor the field holds.
 
     Returns:
-        The minor, unchanged.
-
-    Raises:
-        ValueError: ``minor`` is neither this build's nor the newer one this validation is the stored read of.
+        An ``AfterValidator`` for ``Annotated[StrictInt, ...]``.
     """
-    if minor == CORE_SCHEMA_MINOR or minor == _newer_minor_read(info):
-        return minor
-    raise ValueError(
-        f"a core document is built at core minor {CORE_SCHEMA_MINOR}, not {minor}; a newer minor is read only by its "
-        "stored read (from_dict), which keeps the fields this build does not know"
-    )
+
+    def at_this_minor(minor: int, info: ValidationInfo) -> int:
+        if minor == space.minor or minor == _newer_minor_read(info):
+            return minor
+        raise ValueError(
+            f"a {space.name} document is built at {space.name} minor {space.minor}, not {minor}; a newer minor is read "
+            "only by its stored read (from_dict), which keeps the fields this build does not know"
+        )
+
+    return AfterValidator(at_this_minor)
 
 
 #: The ``schema_minor`` field type of every core document: this build's minor, or the newer one its stored read is
 #: reading at.
-CoreSchemaMinor = Annotated[StrictInt, AfterValidator(_built_at_this_minor)]
+CoreSchemaMinor = Annotated[StrictInt, _built_at_this_minor(CORE_VERSION_SPACE)]
+
+#: The ``schema_minor`` field type of every durable document: :data:`CoreSchemaMinor` in the durable space.
+DurableSchemaMinor = Annotated[StrictInt, _built_at_this_minor(DURABLE_VERSION_SPACE)]
 
 
 def known_unless_newer_minor(vocabulary: str, known: tuple[str, ...]) -> AfterValidator:
@@ -588,6 +595,10 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
     """A stored document in the evidence core: kept across releases, upgraded when read at an older major, and
     kept whole when read at a newer minor.
 
+    **Which version space it is read in is the class's** (:attr:`version_space`): the core's here, and the durable
+    space's on :class:`DurableDocumentModel`, which is this class under another space's numbers. Every rule below
+    reads "core" as "the class's space".
+
     Its stored read, :meth:`from_dict`, upgrades the document through
     :data:`~threetears.evals.schema.versioning.CORE_UPGRADERS` to the current core major before
     validating it, so every validator — the model's own and its bases' — sees today's shape. Upgrading
@@ -611,6 +622,9 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
 
     schema_minor: CoreSchemaMinor = CORE_SCHEMA_MINOR
 
+    #: The version space a stored read of this class reads in: its numbers, its baseline and its upgrade chain.
+    version_space: ClassVar[VersionSpace] = CORE_VERSION_SPACE
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
         """Read a stored core document: upgraded to the current major first, and kept whole at a newer minor.
@@ -628,16 +642,23 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
         """
         if not isinstance(data, Mapping):
             return cls.model_validate(data)
+        space = cls.version_space
         try:
-            upgraded = upgrade_core_document({"doc_type": cls.model_fields["doc_type"].default, **data})
+            upgraded = upgrade_document(
+                {"doc_type": cls.model_fields["doc_type"].default, **data},
+                steps=space.upgraders,
+                current=space.version,
+                baseline=space.baseline,
+                space=space.name,
+            )
         except CoreVersionRefused as refused:
             raise cls._refused("schema_version", data.get("schema_version"), refused) from refused
         try:
-            stored_minor = read_core_minor(data)
+            stored_minor = read_core_minor(data, space=space.name)
         except CoreVersionRefused as refused:
             raise cls._refused("schema_minor", data.get("schema_minor"), refused) from refused
-        newer = data.get("schema_version") == CORE_SCHEMA_VERSION and stored_minor > CORE_SCHEMA_MINOR
-        upgraded["schema_minor"] = stored_minor if newer else CORE_SCHEMA_MINOR
+        newer = data.get("schema_version") == space.version and stored_minor > space.minor
+        upgraded["schema_minor"] = stored_minor if newer else space.minor
         if newer:
             return cls.model_validate(upgraded, context={_NEWER_MINOR_READ: stored_minor})
         return cls.model_validate(upgraded)
@@ -733,10 +754,26 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
         return cls.model_validate_json(json_str)
 
 
+class DurableDocumentModel(CoreDocumentModel):
+    """A stored document people author: :class:`CoreDocumentModel` read in the durable version space.
+
+    Every rule of the core's stored read and write holds, under the durable space's numbers
+    (:data:`~threetears.evals.schema.versioning.DURABLE_VERSION_SPACE`): its baseline never moves, and its majors
+    always ship an upgrader (:mod:`~threetears.evals.schema.versioning`). Internal: a host never names it, since a
+    durable model is one of the engine's eight, each exported under its own name.
+    """
+
+    schema_minor: DurableSchemaMinor = DURABLE_SCHEMA_MINOR
+
+    version_space: ClassVar[VersionSpace] = DURABLE_VERSION_SPACE
+
+
 __all__ = [
     "CoreDocumentModel",
     "CoreSchemaMinor",
     "CoreShapeModel",
+    "DurableDocumentModel",
+    "DurableSchemaMinor",
     "EvalBaseModel",
     "EvalDocumentModel",
     "VerbatimJsonObject",

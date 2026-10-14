@@ -502,7 +502,10 @@ def make_analysis_attempt(**overrides: Any) -> EvalAnalysisAttempt:
 
 
 def make_calibration_rating(**overrides: Any) -> CalibrationRating:
-    """Create a ``CalibrationRating``: one person's 4 for ``conversation.tone`` on ``make_eval_result``'s result."""
+    """Create a ``CalibrationRating``: one person's 4 for ``conversation.tone`` on ``make_eval_result``'s result.
+
+    It carries no rated content (``rated_withheld`` says so) unless ``rated`` is given.
+    """
     defaults: dict[str, Any] = {
         "scope_id": "uni-1",
         "run_id": "run-1",
@@ -513,8 +516,11 @@ def make_calibration_rating(**overrides: Any) -> CalibrationRating:
         "scale": "ordinal",
         "score": 4,
         "reason": "warm and on topic",
+        "rated_withheld": "a factory rating of no stored result",
     }
     defaults.update(overrides)
+    if "rated" in overrides and "rated_withheld" not in overrides:
+        defaults.pop("rated_withheld")
     return CalibrationRating(**defaults)
 
 

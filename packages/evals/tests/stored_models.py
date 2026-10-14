@@ -45,8 +45,11 @@ from threetears.evals.schema.models import (
     RoleUsage,
     CassetteKey,
     EvalCassette,
+    GoalStateOutcome,
     JudgeConfigTombstone,
+    JudgedArtifact,
     JudgeEvidence,
+    RatedOutput,
     RubricDim,
     RubricDimTombstone,
     RubricScore,
@@ -135,12 +138,15 @@ def _out_of_run_spend() -> OutOfRunSpend:
     )
 
 
+#: What the sampled rating's rater read: one rendered output, on the tone dimension's definition.
+_RATED_EVIDENCE = JudgeEvidence(
+    case_material="a customer asks about the queue", artifact="assistant: two tickets are waiting"
+)
+_RATED_CRITERION = RubricDim(name="conversation.tone", description="Warm and on topic.", scale="ordinal")
+
 #: The label key a sampled judge score and the rating of it carry (#628): the sample result's tone score, read
 #: off one rendered output on the tone dimension's definition.
-_LABEL_KEY = label_key_of(
-    JudgeEvidence(case_material="a customer asks about the queue", artifact="assistant: two tickets are waiting"),
-    RubricDim(name="conversation.tone", description="Warm and on topic.", scale="ordinal"),
-)
+_LABEL_KEY = label_key_of(_RATED_EVIDENCE, _RATED_CRITERION)
 
 
 #: The lease fault every job record's sample carries, so the frozen core corpus from v13 holds a record with one.
@@ -157,7 +163,18 @@ _CONTROL_LEVERS = {CANDIDATE_MODEL_LEVER: SweepableValue.of("glm", display="GLM"
 #: than slipping past both refusals and the core's frozen fixtures.
 _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "CalibrationRating": lambda: make_calibration_rating(
-        output_fingerprint=_LABEL_KEY.output_fingerprint, criterion_fingerprint=_LABEL_KEY.criterion_fingerprint
+        output_fingerprint=_LABEL_KEY.output_fingerprint,
+        criterion_fingerprint=_LABEL_KEY.criterion_fingerprint,
+        rated=RatedOutput(
+            dim="conversation.tone",
+            scale="ordinal",
+            criterion=_RATED_CRITERION,
+            intent="Answer a customer's question about the queue.",
+            variation={"mood": "curious"},
+            goal_outcomes=[GoalStateOutcome(expression="queue.length >= 1", passed=True)],
+            judged_artifact=JudgedArtifact.TRANSCRIPT,
+            evidence=_RATED_EVIDENCE,
+        ),
     ),
     "EvalSweep": lambda: EvalSweep(
         scope_id="uni-1",

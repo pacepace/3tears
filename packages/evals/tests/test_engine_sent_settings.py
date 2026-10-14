@@ -340,6 +340,7 @@ class TestAJudgeSentDifferentlyIsAnotherJudge:
                 scale="ordinal",
                 score=4,
                 reason="it helps",
+                rated_withheld="not rebuilt in this test",
             )
             for result in results
         ]
