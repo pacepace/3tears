@@ -16,6 +16,11 @@
       "signature": "",
       "tier": "host-contract"
     },
+    "threetears.evals.RootExtra": {
+      "kind": "dataclass",
+      "signature": "RootExtra(extra: str, modules: tuple[str, ...])",
+      "tier": "host-contract"
+    },
     "threetears.evals.schema.ActorPolicy": {
       "kind": "model",
       "signature": "ActorPolicy(id: str, name: str | None = None, policy: str, intent: str, initial_utterance_template: str | None = None)",

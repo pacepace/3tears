@@ -56,6 +56,25 @@ The stored documents and the ports you implement (`DocumentStore`, `CompletionCl
 `threetears.evals.schema`; the behaviour over them (identity, scoring, `EvalStorage`, the candidate kind) is in
 `threetears.evals.kernel`, with the host contract under `threetears.evals.kernel.host`.
 
+Two roots fail to import without an extra, and `threetears.evals.ROOT_EXTRAS` says which and what each needs: a
+`RootExtra` with the extra's name and every module the root imports past the base install (`providers` needs
+`anthropic` as much as `threetears.models`, and may fail on either first). A public-API gate reads it to skip a root
+whose modules are absent, and to name the missing one, without reading the manifest or keeping a list of its own:
+
+```python
+import importlib.util
+
+from threetears.evals import PUBLIC_ROOTS, ROOT_EXTRAS
+
+
+def missing(root: str) -> list[str]:
+    needs = ROOT_EXTRAS.get(root)
+    return [module for module in needs.modules if importlib.util.find_spec(module) is None] if needs else []
+
+
+importable = [root for root in PUBLIC_ROOTS if not missing(root)]
+```
+
 ## The host
 
 **Your app is one value, the host.** Build an `EvalHost` (in `threetears.evals.kernel.host`) and
