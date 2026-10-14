@@ -895,6 +895,13 @@ def _namespaced_dim_name(name: str) -> str:
 DimName = Annotated[str, AfterValidator(_namespaced_dim_name)]
 
 
+#: Which judge scores a rubric dimension, as its author declared it (core v15.1). ``builtin``: the engine's own
+#: prompt for the dimension's scale. ``configured``: the scope's active :class:`JudgeConfig` for the dimension, and
+#: never the built-in prompt in its place. Closed: a value an older build did not know would have it score the
+#: dimension with a judge nobody declared.
+JudgeDeclaration = Literal["builtin", "configured"]
+
+
 class RubricDim(EvalDocumentModel, CoreShapeModel):
     """One judge-scored rubric dimension.
 
@@ -902,6 +909,13 @@ class RubricDim(EvalDocumentModel, CoreShapeModel):
     goal-state checks handle the objective portion of scoring. ``scoring_guide`` maps the
     scale's levels (:data:`SCALE_LEVELS`) to behavioral descriptors; empty means the judge
     prompt relies on ``description`` only.
+
+    **Its judge is declared, never found** (``judge``). A dimension registered apart from its judge (a host's
+    template, seeded or authored) says which judge scores it, and registration and every launch refuse one that
+    does not, or whose declaration the scope contradicts
+    (:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`). Before the declaration existed a dimension
+    with no active config was scored by the built-in prompt with nothing saying so, which is how a host's
+    configured judge could be silently replaced by the engine's.
     """
 
     name: DimName
@@ -914,6 +928,17 @@ class RubricDim(EvalDocumentModel, CoreShapeModel):
             "'capability' = something the subject should do well, read into the composite and pass^k; "
             "'boundary' = something it must not do (leak, comply with an unsafe ask, break policy), a guardrail "
             "that is decided on its own and never averaged with capability. The judge stamps it onto each score."
+        ),
+    )
+    judge: JudgeDeclaration | None = Field(
+        default=None,
+        description=(
+            "Which judge scores this dimension (core v15.1): 'builtin' = the engine's built-in prompt for its "
+            "scale; 'configured' = the scope's active judge config for it (run.create_judge_config, rubric_dim_id = "
+            "this name), never the built-in prompt in its place. None = written before the declaration existed: "
+            "a stored template's dimension reads, and registration and every launch refuse it until it is "
+            "declared. A quick-path Judge declares its own dimensions 'builtin'. Not part of the criterion "
+            "(fingerprint_criterion): it says who judges, not what is asked."
         ),
     )
 
@@ -987,7 +1012,7 @@ def fingerprint_criterion(dim: RubricDim | str) -> str:
     label keyed by the id would follow an output to a dimension that now asks something else, and be read as
     agreement with a question nobody put to the person. Keyed by the definition, a reworded dimension (or one
     moved to another scale) is a new criterion that no earlier label claims. Its ``axis`` is left out: it says
-    how a score is read (capability or guardrail), not what was asked.
+    how a score is read (capability or guardrail), not what was asked; so is its ``judge``, which says who asks.
 
     A reserved dual-score axis (:data:`TRANSCRIPT_DIM_ID`, :data:`OUTCOME_DIM_ID`) has no stored definition —
     the engine states it — so its criterion is its id and its 1-5 scale.
@@ -1788,9 +1813,13 @@ class JudgeConfig(CoreDocumentModel):
     (:data:`TRANSCRIPT_DIM_ID` / :data:`OUTCOME_DIM_ID`).
 
     "Active" config for a dim = the non-archived record with the latest
-    ``created_at`` (see :meth:`EvalStorage.load_active_judge_config`). When no
-    config exists for a dim, the judge service falls back to its built-in
-    default prompt.
+    ``created_at`` (see :meth:`EvalStorage.load_active_judge_config`). A template
+    dim is scored by its active config only when it declares ``judge: "configured"``
+    (:attr:`RubricDim.judge`); a dim declared ``"builtin"`` is scored by the built-in
+    prompt, and a launch refuses either declaration the scope contradicts, so no dim
+    falls back from one judge to the other unannounced. The two reserved axes, which no
+    rubric declares, still take a config when one is active and the built-in prompt
+    otherwise.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -5027,6 +5056,74 @@ class SecondJudging(EvalDocumentModel, CoreShapeModel):
         return scores
 
 
+#: Why a completion stopped, in the engine's words. A host maps its provider's own finish reason
+#: onto one of these before eval sees it: ``"end_turn"`` is a completion that finished, and every
+#: other member (:data:`~threetears.evals.kernel.provider.INCOMPLETE_STOP_REASONS`) is one that was cut short —
+#: ``"max_tokens"`` at the output cap (OpenAI's ``length``), ``"content_filter"`` by the provider's filter,
+#: ``"truncated"`` when output exists and stopped early for a reason the provider did not name (no finish reason at
+#: all, one this build does not know, or a pause such as Anthropic's ``pause_turn``), and ``"error"``
+#: when the provider reported an error in place of a completion (OpenRouter's ``error`` finish
+#: reason) or returned no choices at all. ``"truncated"`` and ``"error"`` are kept apart because they
+#: send an operator different ways: one is output that stopped early, the other a call that failed.
+#: Defined here rather than beside the completion port, which re-exports it, because a stored judge reply
+#: that was cut off (:class:`JudgeCutShort`) records it.
+StopReason = Literal["end_turn", "max_tokens", "content_filter", "truncated", "error"]
+
+
+#: The stop reasons that say a judge reply ran out of room: the output cap (``max_tokens``), or output that stopped
+#: early for a cause the provider did not name (``truncated``). A cut-off reply with either is excluded as
+#: ``truncated`` (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`); a filtered or errored one stays
+#: a fault of the rig.
+OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
+
+
+class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
+    """A judge reply the provider reported cut short, with the cap the call was sent: why a dim carries no score.
+
+    The structured half of the dim's ``judge_error`` line, which stays as it was: the error text says it to a
+    person, this says it to a reader that counts. The reply was not retried and its call not bought again, so the
+    dim is unscored and the result excluded; recording the stop reason and the settings the call was sent with is
+    what lets a report say the trial was lost to the judge's output cap (``truncated``) rather than to a fault of
+    the rig, and name the cap.
+
+    **Read only while it explains a missing score.** An entry is trusted for a dim that carries no score while the
+    result's ``judge_error`` is set. An older build that re-judges the dim writes its score and clears or rewrites
+    ``judge_error`` without knowing this field, so an entry beside a score, or beside no error, is stale and is
+    ignored, never read as a cut-off.
+    """
+
+    stop_reason: StopReason = Field(
+        description="Why the provider stopped the reply: one of the cut-short reasons, never `end_turn`."
+    )
+    sent_settings: ClientRequestSettings | None = Field(
+        description=(
+            "What the cut-off call was sent with, as its completion reported it (`sent_settings_of`): its "
+            "`max_tokens` is the cap the reply ran into. None = the client did not say, which a report states as "
+            "an unreported cap rather than reading the run's asked settings in its place."
+        ),
+    )
+    output_tokens: int | None = Field(
+        ge=0, description="Output tokens the reply spent, as the provider reported them; None = unreported."
+    )
+    reasoning_tokens: int | None = Field(
+        ge=0,
+        description="The reasoning share of `output_tokens`, as the provider reported it; None = unreported.",
+    )
+
+    @field_validator("stop_reason")
+    @classmethod
+    def _cut_short(cls, stop_reason: StopReason) -> StopReason:
+        """Refuse ``end_turn``: a reply that finished was not cut short, and recording it as one would exclude it."""
+        if stop_reason == "end_turn":
+            raise ValueError("a judge reply that ended on its own terms (end_turn) was not cut short")
+        return stop_reason
+
+    @property
+    def out_of_room(self) -> bool:
+        """Whether the reply ran out of room (:data:`OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
+        return self.stop_reason in OUT_OF_ROOM_STOP_REASONS
+
+
 class EvalResult(CoreDocumentModel):
     """One test case x one model x one k-iteration.
 
@@ -5392,6 +5489,16 @@ class EvalResult(CoreDocumentModel):
             "composite, so a can't-tell on one leaves the trial in both; it is out of that guardrail's own "
             "reading only. Empty when no can't-tell is on a boundary dim; a can't-tell not named here is a "
             "capability dim's."
+        ),
+    )
+    judge_cut_short: dict[DimName, JudgeCutShort] = Field(
+        default_factory=dict,
+        description=(
+            "dim -> the cut-off reply, for each dim whose judge reply the provider reported cut short (core v15.1): "
+            "its stop reason, the settings the call was sent with (the cap it ran into) and its token counts. Each "
+            "such dim is also named on judge_error, in words. Read only for a dim that carries no score while "
+            "judge_error is set (JudgeCutShort's read rule): an older build's re-judge leaves a stale entry behind. "
+            "Empty when no judge reply was cut short."
         ),
     )
 

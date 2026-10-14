@@ -128,6 +128,8 @@ the document, so extending one is a major. Each, and why:
 - ``RubricScale``, ``RubricAxis``, the scale ``kind`` tags (``nominal``, ``ordinal``, ``interval``) and the
   ``model_default`` temperature — how a score or a level is read; a new scale tag is a new model.
 - ``JudgedArtifact`` — which axes a cell is judged on.
+- ``JudgeDeclaration`` — which judge scores a template dimension; an unknown one would be scored by a judge nobody
+  declared.
 - ``WorldPlacement``, ``WorldEventKind``, ``WorldEventCause`` — what a transcript or a world means to the judge.
 - ``AsyncDeliveryStatus`` — what a delivered count counts.
 - ``CassetteMode`` — replay semantics, and identity.
@@ -208,7 +210,16 @@ CORE_SCHEMA_VERSION: int = 15
 #: :data:`MINOR_ADDITIVITY_SENTENCE`; a major resets it to 0.
 #:
 #: - **v15.0** — the baseline minor.
-CORE_SCHEMA_MINOR: int = 0
+#: - **v15.1** — two optional fields, each with a default. ``RubricDim.judge`` (``builtin`` | ``configured``, default
+#:   None) declares which judge scores a template dimension; it is left out of the criterion fingerprint, and of every
+#:   digest pre-image while it is None, and None reads as "declared before the field existed", which registration
+#:   and launch refuse rather than guess. ``EvalResult.judge_cut_short`` (default ``{}``) records, per dim, a judge
+#:   reply the provider cut short: its stop reason, the settings the call was sent with and its token counts, beside
+#:   the ``judge_error`` line that already says it in words; it is read only for a dim with no score while
+#:   ``judge_error`` is set, so an older build's re-judge, which scores the dim without touching the field, leaves
+#:   an entry nothing reads. An older build that ignores this field reads the document correctly, and its writes
+#:   leave it true.
+CORE_SCHEMA_MINOR: int = 1
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

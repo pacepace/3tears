@@ -76,30 +76,30 @@ from threetears.evals.schema.versioning import (
 PINNED_CORE_SCHEMA_VERSION = 15
 
 #: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_CORE_SCHEMA_MINOR = 0
+PINNED_CORE_SCHEMA_MINOR = 1
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "6f9ad0190d746c34a262aba8b268182e6a2d7c3ed85e8da9597f9a8d7ed365d6",
-    "case_set": "10843b08827a93f835f70e91282354299b2ec81e1839609a6937fc9032473a2f",
-    "eval_action_job": "b960c0abac4d73afa5bf061df97ba59e39b58d684a4f0660d7eba634de7dc7e0",
-    "eval_analysis_attempt": "7f260bd77c125fe2484933c1deffac9ff6b41d5e399ae6edfb2064c4456d9d64",
-    "eval_campaign": "a937b4282b7ed15f993f2d2c4d7e2bf05f9449d26a0c03db151b41b2e4a8032e",
-    "eval_generation_slot": "4466adfa53f0c9b1e07f6ecfaf252e94a661eb084aa16414a849bc4a2da50f1f",
-    "eval_judge_temperature_check": "89e925705d7b407d7cf1d54f74fcace96a13cc58e214e7d25aa94b50518a4ae6",
-    "eval_launch": "768e476f137056c37a11383b7013d83a0b13bc4707cb5fc0ae758877201d64c2",
-    "eval_out_of_run_spend": "465be395fdcddc11acfc4891e2cc5ca46ddf944a5c72e27f15d38c7beebd7390",
-    "eval_result": "d1a7719eeaa2e48d0b8dbb43f285c12ebfaa85b0385da72749f7f7ad6d57dca0",
-    "eval_run": "f20d70a82d79130ba7bc0eb6c2896221cb0924f0940f89f5d0f44f87191dedc6",
-    "eval_second_judge_pass": "44b048a733c7914e6530aae030667d21ff6aa307a3935fc95d9aa484f8f2b4ba",
-    "eval_sweep": "0614390275057c6fc7362d69033f3cbc432203e2cb228f835349f5ba9af6a996",
-    "eval_template": "2f1c8793034194705e1e2889ebff5a77ce23a95c525083a7fe1b7738483c3c36",
-    "eval_test_case": "933059c8cac11160a6d8ecf42bb17ff2f2dc4314eb83724277d4fd34b019dcef",
-    "eval_trace": "e3fb36a574e5ca361ac0d48d886bcd835dae2f9789373c7367b3d649d0e7f073",
-    "judge_config": "b6856660cd3f04fe36c88b18ab9a8edf0d352b824b3bd54de272057345f4f4b8",
-    "judge_config_tombstone": "40345344b65208edcc863165a50cdd3098c8fab93b55ea38b230fd55dc072608",
-    "rubric_dim": "12276b6acbbe3184fe0cc4e51ec44b0c62b2fd58f35d43947f01c27e2482a179",
-    "rubric_dim_tombstone": "6c53b7851e2f75c6100899d70ef4c3067d67a3e790fad85073514801c26fde41",
+    "calibration_rating": "06d6ad5f49eaca78e679bd187748674042249d47e20cde42c51b37e7121b69bb",
+    "case_set": "73215bf96f3e1162628f0291eb019aab03a9f89342ed92b797acc6f7ab396593",
+    "eval_action_job": "08dde0e492e98335d953dca2198983899a70960b5bfd52b82ba1cbb64d6f3e75",
+    "eval_analysis_attempt": "28cbb946c28429589a90688b593275af8278820ba6f3bc3ee414a088a67f330d",
+    "eval_campaign": "62dbc461d3dc9fd40d05a255aa2446390dee7df6b04ae653109349429327f5bb",
+    "eval_generation_slot": "ea6ecdf0bb0f2baf40a071ede146fbb1f194ed0fd215fa1d99bd837ad7cc8f08",
+    "eval_judge_temperature_check": "239334f02911c04f433c9a21d5c4d2f00df8b65790a85573eb6fe60035f9b8e4",
+    "eval_launch": "17987aee847cc79dcdf4e902f06321f22b9b93cf7a0fbfb9a7eb6310fee0d472",
+    "eval_out_of_run_spend": "85d9d128c2f8ecbd5c41adf6f2cde657ac52c672adb6241d968f8647ec79f1ae",
+    "eval_result": "b8579faea0145a40e7bd0953f3cc7d8827fc93d08bd70cc2c2b7af0ceb855fe7",
+    "eval_run": "e44d44f881a2e9c91825dfd5def7fd5414a39979ef1c4c08aae4bda49e01f52e",
+    "eval_second_judge_pass": "118f451f6e13ef3bab1c551419d3fb4daafc8603f5ca6484c42d2b0b8fd55590",
+    "eval_sweep": "bb9ca087b2023cf639e413b53d70f224f72a0b6dbed690cda60876852ae13976",
+    "eval_template": "458a939535ba0bab040bbafbac4db5ae6aa160ee09c8483cb9815c15ab714c01",
+    "eval_test_case": "43f0234687b956e73f9c858fecb19c5e3e78b09fef6c880dec8a9b78bad9c6b8",
+    "eval_trace": "6c1e00134f894a665baa451633f9281b981d9dbe72546a0f13e7fcffe0fab766",
+    "judge_config": "a81b6a373d7e9b247c2f20709de345de821d0c412d83dbacd2c44fdc5792f348",
+    "judge_config_tombstone": "cdb415348bffd7b1b997639da367567c2a84c84c9a3a69f5df6a8c616dcaad93",
+    "rubric_dim": "b419d4b700256649458dc8c7b8ad646d6526bb358144e925312d79e71c19d3f1",
+    "rubric_dim_tombstone": "c9a4dc812590a5e339c04c4a577d4267549aa944cf837dce4e3e156815ed2801",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
@@ -419,8 +419,29 @@ def test_every_frozen_core_document_reads_under_this_build(path: Path) -> None:
     read = model.from_dict(document)
 
     assert read.schema_version == CORE_SCHEMA_VERSION  # type: ignore[attr-defined]
-    if document["schema_version"] == CORE_SCHEMA_VERSION:
-        assert read.to_dict() == document, "a document at the current version reads back whole"
+    if document["schema_version"] != CORE_SCHEMA_VERSION:
+        return
+    written = read.to_dict()
+    if document.get("schema_minor", 0) == CORE_SCHEMA_MINOR:
+        assert written == document, "a document at the current version reads back whole"
+        return
+    # An older minor of this major: the write stamps this build's minor and adds each later minor's fields at their
+    # defaults, and keeps every value the document stored, at every depth.
+    assert written["schema_minor"] == CORE_SCHEMA_MINOR
+    assert _keeps({k: v for k, v in document.items() if k != "schema_minor"}, written), (
+        "a document at an older minor of the current major reads back with every stored value"
+    )
+
+
+def _keeps(stored: Any, written: Any) -> bool:
+    """Whether ``written`` holds every value ``stored`` holds, at every depth; it may hold more keys beside them."""
+    if isinstance(stored, dict):
+        return isinstance(written, dict) and all(
+            key in written and _keeps(value, written[key]) for key, value in stored.items()
+        )
+    if isinstance(stored, list):
+        return isinstance(written, list) and len(stored) == len(written) and all(map(_keeps, stored, written))
+    return bool(stored == written)
 
 
 @pytest.mark.parametrize("path", _fixture_files(), ids=lambda path: path.relative_to(FIXTURES).as_posix())

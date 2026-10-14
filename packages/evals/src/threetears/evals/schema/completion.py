@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Final, Literal, Protocol, Self
+from typing import Any, Final, Protocol, Self
 
-from threetears.evals.schema.models import ClientRequestSettings
+from threetears.evals.schema.models import ClientRequestSettings, StopReason
 
 #: ``response_format`` directive asking for any JSON object, with no shape. No package call sends it: every call
 #: whose reply is read into a typed shape (the judge, the analysis generator, the proposer on either axis, the
@@ -42,16 +42,6 @@ JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 RequestCeiling = Callable[[int], float]
 
 
-#: Why a completion stopped, in the engine's words. A host maps its provider's own finish reason
-#: onto one of these before eval sees it: ``"end_turn"`` is a completion that finished, and every
-#: other member (:data:`INCOMPLETE_STOP_REASONS`) is one that was cut short — ``"max_tokens"`` at the
-#: output cap (OpenAI's ``length``), ``"content_filter"`` by the provider's filter, ``"truncated"``
-#: when output exists and stopped early for a reason the provider did not name (no finish reason at
-#: all, one this build does not know, or a pause such as Anthropic's ``pause_turn``), and ``"error"``
-#: when the provider reported an error in place of a completion (OpenRouter's ``error`` finish
-#: reason) or returned no choices at all. ``"truncated"`` and ``"error"`` are kept apart because they
-#: send an operator different ways: one is output that stopped early, the other a call that failed.
-StopReason = Literal["end_turn", "max_tokens", "content_filter", "truncated", "error"]
 
 
 class CompletionResult(Protocol):

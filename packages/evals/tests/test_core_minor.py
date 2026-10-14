@@ -661,6 +661,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "ApparatusProvenance": values(models.ApparatusProvenance),
         "RubricScale": values(models.RubricScale),
         "RubricAxis": values(models.RubricAxis),
+        "JudgeDeclaration": values(models.JudgeDeclaration),
         "nominal": frozenset({"nominal"}),
         "ordinal": frozenset({"ordinal"}),
         "interval": frozenset({"interval"}),
