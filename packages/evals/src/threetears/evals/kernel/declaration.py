@@ -1145,8 +1145,12 @@ def _per_result_measure_names(measures: MeasureRegistry) -> frozenset[str]:
 
 
 def _listed(annotation: object) -> bool:
-    """Whether a field annotation holds a LIST of carriers (one observation per element), through ``Optional``."""
-    if get_origin(annotation) in (list, tuple):
+    """Whether a field annotation holds MANY carriers (one observation per element), through ``Optional``.
+
+    A map counts as a list: ``judge_cut_short`` holds one record per rubric dimension, so a result carries
+    as many ``reasoning_tokens`` under it as it has cut-short dimensions, and no one of them is the result's.
+    """
+    if get_origin(annotation) in (list, tuple, dict):
         return True
     return any(_listed(argument) for argument in get_args(annotation) if argument is not type(None))
 
