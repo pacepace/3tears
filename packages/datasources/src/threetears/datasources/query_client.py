@@ -82,6 +82,7 @@ __all__ = [
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
     "RESULT_TOO_LARGE",
     "QUERY_STATEMENT_TIMEOUT_SECONDS",
+    "EXPORT_LIST_MAX_PAGES",
     "EXPORT_LIST_UNSUPPORTED",
     "EXPORT_NOT_GRANTED",
     "EXPORT_REFUSED",
@@ -130,6 +131,10 @@ DEFAULT_QUERY_TIMEOUT_SECONDS: float = 120.0
 #: beside the client deadline so the two cannot drift apart; the hub's responder
 #: imports it rather than choosing its own.
 QUERY_STATEMENT_TIMEOUT_SECONDS: int = 100
+
+#: how many pages ``list_own_exports`` follows before it refuses: 200 000 exports at the hub's
+#: page of 200, far past any pod's
+EXPORT_LIST_MAX_PAGES: Final = 1000
 
 #: one unquoted SQL identifier, the shape every admitted engine accepts unquoted.
 #:
@@ -437,9 +442,11 @@ DatasourceExportResult = ExportResult
 class DatasourceExportDeleteRequest(BaseModel):
     """ask the hub to delete an export the caller has read and proven: every version under its destination.
 
-    Granted as the export is (a tool pod with the read grant and an export record), and only under
-    the datasource's export prefix. The hub deletes with a delete-only grant of its own, so the
-    reader's keys stay read-only.
+    Admitted on the export's record, not on a grant: the hub deletes only an export it recorded
+    running for this very tool pod, at exactly this destination, and asks neither
+    ``datasource.read`` nor the export grant, so a pod can delete what it was let write after its
+    grant is withdrawn. Only under the datasource's export prefix. The hub deletes with a
+    delete-only grant of its own, so the reader's keys stay read-only.
 
     :param destination: the destination the export was written to
     :ptype destination: str
@@ -586,8 +593,11 @@ class DatasourceQueryRequest(BaseModel):
 
         Reusing the subject rather than minting a second one is deliberate: a new
         subject is a new NATS grant on a security surface, and it would buy
-        nothing -- the hub verifies the forwarded identity and evaluates
-        ``datasource.read`` on the same namespace for either ask.
+        nothing -- the hub verifies the forwarded identity on every ask. A query, a
+        fingerprint and an export are then authorized on ``datasource.read`` on the
+        datasource's namespace (an export on its own grant besides); an export delete
+        and an export list are not, being admitted on the verified tool pod and its own
+        export records alone.
 
         :return: the validated request
         :rtype: DatasourceQueryRequest
@@ -755,9 +765,11 @@ class DatasourceQueryError(RuntimeError):
 
 
 class DatasourceExportListUnsupportedError(DatasourceQueryError):
-    """the hub does not know the ask for a caller's own recorded exports: it predates it.
+    """the hub does not know the ask for a caller's own recorded exports.
 
-    Its own type because it is neither an answer nor a fault. The hub named no export, so it is
+    It answered the ask ``MALFORMED_REQUEST``: a hub on a release before the ask cannot parse it,
+    and one on the ask's release with no handler for it parses it and finds nothing to run. A hub
+    that serves the ask never answers it with that code. Its own type because it is neither an answer nor a fault. The hub named no export, so it is
     not an empty list; and the bus, the grant and the request are all sound, so it is not a
     failure to retry or to page anyone about. A caller that lists its exports to delete the ones a
     killed run left catches this, logs it and carries on with nothing to clear: against such a hub
@@ -776,8 +788,9 @@ class DatasourceExportListUnsupportedError(DatasourceQueryError):
         """
         super().__init__(
             EXPORT_LIST_UNSUPPORTED,
-            f"the hub serving {datasource_name!r} does not know the export list ask (it refused the request as "
-            "malformed, as a hub that predates the ask does); it named no export, so none can be cleared through it",
+            f"the hub serving {datasource_name!r} does not know the export list ask (it answered MALFORMED_REQUEST, as "
+            "a hub that predates the ask, or has its models and no handler for it, does); it named no export, so "
+            "none can be cleared through it",
         )
         self.datasource_name = datasource_name
 
@@ -1160,7 +1173,11 @@ class DatasourceQueryClient:
 
     @traced
     async def list_own_exports(
-        self, datasource_name: str, *, correlation_id: UUID | None = None
+        self,
+        datasource_name: str,
+        *,
+        correlation_id: UUID | None = None,
+        max_pages: int = EXPORT_LIST_MAX_PAGES,
     ) -> list[DatasourceExportRecord]:
         """every export the hub holds a record of for this caller on a datasource, read to the last page.
 
@@ -1173,13 +1190,21 @@ class DatasourceQueryClient:
         :ptype datasource_name: str
         :param correlation_id: trace id every page carries; generated when omitted
         :ptype correlation_id: UUID | None
+        :param max_pages: refuse rather than follow cursors past this many pages
+        :ptype max_pages: int
         :return: the caller's recorded exports, in destination order; empty when it has none
         :rtype: list[DatasourceExportRecord]
-        :raises DatasourceExportListUnsupportedError: when the hub predates the ask; nothing was
-            listed, which is not the same as nothing recorded
+        :raises DatasourceExportListUnsupportedError: when the hub cannot place the ask (it answers
+            ``MALFORMED_REQUEST``); nothing was listed, which is not the same as nothing recorded
         :raises DatasourceQueryError: on a refusal, a transport failure, a success carrying no page,
-            or a cursor the hub has already given (the list cannot be shown to end)
+            a cursor the hub has already given, or more than ``max_pages`` pages (the list cannot
+            be shown to end). ``ACCESS_DENIED`` comes only from a hub that has these models but no
+            handler for the ask and read it as a read on a pod with no ``datasource.read``: a hub
+            that serves the ask never asks that grant (see the package README)
+        :raises ValueError: when ``max_pages`` is less than one
         """
+        if max_pages < 1:
+            raise ValueError(f"max_pages must be at least 1, got {max_pages}")
         if not datasource_name:
             raise DatasourceQueryError(
                 "INVALID_DATASOURCE_NAME",
@@ -1191,7 +1216,17 @@ class DatasourceQueryClient:
         given: set[str] = set()
         cursor: str | None = None
         more = True
+        pages = 0
         while more:
+            if pages == max_pages:
+                # a hub minting cursor after new cursor would be followed forever; stopping here would
+                # pass off a prefix as the whole list
+                raise DatasourceQueryError(
+                    "MALFORMED_RESPONSE",
+                    f"export list on {datasource_name!r} still had a next page after {max_pages} pages "
+                    f"({len(exports)} exports)",
+                )
+            pages += 1
             page = await self._own_exports_page(subject, datasource_name, cursor, trace)
             exports.extend(page.exports)
             cursor = page.next_cursor
@@ -1256,6 +1291,20 @@ class DatasourceQueryClient:
                     extra={"extra_data": {"datasource": datasource_name, "correlation_id": f"{correlation_id}"}},
                 )
                 raise DatasourceExportListUnsupportedError(datasource_name)
+            if response.error_code == _ACCESS_DENIED:
+                # a hub that serves the ask admits it on the verified pod alone; one that refuses it on
+                # the read grant has these models and no handler, and took the ask for a read
+                log.warning(
+                    "the hub refused the export list on the read grant; no export was listed",
+                    extra={"extra_data": {"datasource": datasource_name, "correlation_id": f"{correlation_id}"}},
+                )
+                raise DatasourceQueryError(
+                    _ACCESS_DENIED,
+                    f"the hub serving {datasource_name!r} refused the export list on datasource.read, which a hub "
+                    "that serves the ask never asks: it has no handler for the ask, and this pod holds no read "
+                    "grant there. Nothing was listed. Restoring the grant lets that hub answer the ask as one it "
+                    "cannot place (EXPORT_LIST_UNSUPPORTED); a hub with the handler answers it",
+                )
             raise DatasourceQueryError(
                 response.error_code or "UNKNOWN",
                 response.error_message or f"export list on {datasource_name!r} was refused",
@@ -1434,9 +1483,12 @@ EXPORT_REFUSED: Final = "EXPORT_REFUSED"
 #: :class:`DatasourceExportListUnsupportedError`. No hub sends it
 EXPORT_LIST_UNSUPPORTED: Final = "EXPORT_LIST_UNSUPPORTED"
 
-#: the hub's refusal of a request it could not read: a body that did not parse, or a field its
-#: model forbids, which is how a hub answers an ask newer than it is
+#: the hub's refusal of a request it could not read or place: a body that did not parse, a field its
+#: model forbids, or an ask it reads and has no handler for -- how a hub answers an ask newer than it
 _MALFORMED_REQUEST: Final = "MALFORMED_REQUEST"
+
+#: the hub's refusal of a caller with no ``datasource.read`` on the datasource's namespace
+_ACCESS_DENIED: Final = "ACCESS_DENIED"
 
 #: how many times the client asks again after a ``DATASOURCE_BUSY`` refusal before raising it
 BUSY_RETRIES: Final = 3

@@ -2,8 +2,12 @@
 
 The hub here is the contract in ``packages/datasources/README.md`` ("A pod's own exports"), kept in
 memory: it answers for the pod its token names, pages by the core keyset, and deletes by destination.
-A hub one release older is stood in for by that release's request shape, so the client's reading of
-"this hub does not know the ask" is tested against what such a hub does with the real wire bytes.
+The two hubs that cannot answer the ask are stood in for as the hub's responder
+(``aibots.hub.datasources.broker``) behaves today, in its order: one on release 0.66.0 parses the
+real wire bytes with that release's request shape and refuses them before anything else; one with
+this release's models and no handler verifies, resolves, asks ``datasource.read`` and only then
+finds no ask it runs. The responder itself lives in the hub, which 3tears cannot import (the
+dependency runs the other way), so its ordering is mirrored here rather than driven.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from threetears.core.pagination import Keyset, decode_cursor
 from threetears.datasources.query_client import (
+    EXPORT_LIST_MAX_PAGES,
     EXPORT_LIST_UNSUPPORTED,
     DatasourceExportDeleteRequest,
     DatasourceExportListRequest,
@@ -60,6 +65,22 @@ class _Release066Request(BaseModel):
     export_delete: dict[str, Any] | None = None
 
 
+class _Release066Response(BaseModel):
+    """the reply as release 0.66.0 declares it: unknown fields ignored, as pydantic's default."""
+
+    success: bool
+    rows: list[dict[str, Any]] = []
+    row_count: int = 0
+    truncated: bool = False
+    error_code: str | None = None
+    error_message: str | None = None
+    correlation_id: UUID | None = None
+    fingerprint: dict[str, Any] | None = None
+    fingerprint_groups: list[dict[str, Any]] | None = None
+    export: dict[str, Any] | None = None
+    export_deleted: int | None = None
+
+
 def _record(destination: str) -> DatasourceExportRecord:
     return DatasourceExportRecord(
         destination=destination, object_prefix=f"exports/warehouse/{destination}/", date_created=_MADE
@@ -73,6 +94,8 @@ class _FakeHub:
     :param records: token -> the destinations recorded for the pod that token names
     :param page_size: the most exports one page carries
     :param knows_the_ask: False for a hub of release 0.66.0, which reads requests in that release's shape
+    :param has_handler: False for a hub on this release's models with no handler for the ask
+    :param read_grants: the tokens whose pods hold ``datasource.read``; every pod when None
     :param older_replica_from_page: the first page (0-based) answered by a replica of release 0.66.0,
         the ones before it by replicas that know the ask; for a hub part-way through a roll
     """
@@ -83,11 +106,15 @@ class _FakeHub:
         *,
         page_size: int = 2,
         knows_the_ask: bool = True,
+        has_handler: bool = True,
+        read_grants: set[str] | None = None,
         older_replica_from_page: int | None = None,
     ) -> None:
         self.records = {token: sorted(destinations) for token, destinations in (records or {}).items()}
         self.page_size = page_size
         self.knows_the_ask = knows_the_ask
+        self.has_handler = has_handler
+        self.read_grants = read_grants
         self.older_replica_from_page = older_replica_from_page
         self.subjects: list[str] = []
         self.wire: list[dict[str, Any]] = []
@@ -112,10 +139,28 @@ class _FakeHub:
                     success=False, error_code="MALFORMED_REQUEST", error_message="malformed datasource query request"
                 )
         request = DatasourceQueryRequest.model_validate_json(payload)
-        own = self.records.setdefault(request.identity_token.get_secret_value(), [])
+        token = request.identity_token.get_secret_value()
+        own = self.records.setdefault(token, [])
+        served = request.export_delete is not None or (request.export_list is not None and self.has_handler)
+        if not served and self.read_grants is not None and token not in self.read_grants:
+            # every ask the responder does not admit on the pod alone is authorized as a read first
+            return DatasourceQueryResponse(
+                success=False,
+                error_code="ACCESS_DENIED",
+                error_message="datasource access denied: warehouse (datasource.read)",
+                correlation_id=request.correlation_id,
+            )
         if request.export_delete is not None:
             own.remove(request.export_delete.destination)
             return DatasourceQueryResponse(success=True, correlation_id=request.correlation_id, export_deleted=1)
+        if not served:
+            # past the read grant, a request with no query, fingerprint, export or delete
+            return DatasourceQueryResponse(
+                success=False,
+                error_code="MALFORMED_REQUEST",
+                error_message="a datasource request carries exactly one of query or fingerprint",
+                correlation_id=request.correlation_id,
+            )
         assert request.export_list is not None
         after = decode_cursor(request.export_list.cursor)[0] if request.export_list.cursor is not None else ""
         rows = [destination for destination in own if destination > after][: self.page_size + 1]
@@ -206,11 +251,14 @@ class TestTheWire:
             )
 
     def test_an_older_client_reads_a_reply_that_carries_a_page(self) -> None:
-        # the response model ignores what it does not know, so a hub that answers the new ask
-        # breaks no reader of the old ones
+        # a reply of this release, page and all, is read by 0.66.0's response model, so a hub that
+        # answers the new ask breaks no reader of the old ones
         reply = _page("enr/a").model_dump_json()
-        assert DatasourceQueryResponse.model_validate_json(reply).export_list is not None
-        assert "export_list" in json.loads(DatasourceQueryResponse(success=True).model_dump_json())
+        assert "export_list" in json.loads(reply)
+        older = _Release066Response.model_validate_json(reply)
+        assert older.success is True
+        deleted = DatasourceQueryResponse(success=True, correlation_id=uuid7(), export_deleted=3).model_dump_json()
+        assert _Release066Response.model_validate_json(deleted).export_deleted == 3
 
 
 class TestListOwnExports:
@@ -275,16 +323,30 @@ class TestListOwnExports:
         assert len(hub.wire) == 2
 
     @pytest.mark.asyncio
-    async def test_a_hub_that_read_the_ask_but_has_no_answer_for_it_is_unsupported_too(self) -> None:
-        # a hub on this release's models with no handler yet answers the ask as one it cannot place
-        refusal = DatasourceQueryResponse(
-            success=False,
-            error_code="MALFORMED_REQUEST",
-            error_message="a datasource request carries exactly one of query or fingerprint",
-            correlation_id=uuid7(),
-        )
+    async def test_a_hub_with_the_models_and_no_handler_is_unsupported_to_a_pod_it_lets_read(self) -> None:
+        hub = _FakeHub({_POD: ["enr/left-behind"]}, has_handler=False, read_grants={_POD})
         with pytest.raises(DatasourceExportListUnsupportedError):
-            await _client(_FakeNats(refusal)).list_own_exports("warehouse")
+            await _client(hub).list_own_exports("warehouse")
+
+    @pytest.mark.asyncio
+    async def test_a_hub_with_no_handler_refuses_a_pod_without_the_read_grant_and_says_why(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        hub = _FakeHub({_POD: ["enr/left-behind"]}, has_handler=False, read_grants=set())
+        client = _client(hub)
+        with caplog.at_level("WARNING"), pytest.raises(DatasourceQueryError) as raised:
+            await client.list_own_exports("warehouse")
+        assert raised.value.error_code == "ACCESS_DENIED"
+        assert not isinstance(raised.value, DatasourceExportListUnsupportedError)
+        assert "no handler for the ask" in str(raised.value)
+        assert "refused the export list on the read grant" in caplog.text
+        # the delete is admitted on the export's record, grant or none, on the same hub
+        assert await client.delete_export("warehouse", destination="enr/left-behind") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_hub_that_serves_the_ask_lists_for_a_pod_without_the_read_grant(self) -> None:
+        hub = _FakeHub({_POD: ["enr/left-behind"]}, read_grants=set())
+        assert await _client(hub).list_own_exports("warehouse") == [_record("enr/left-behind")]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -309,6 +371,23 @@ class TestListOwnExports:
             await _client(fake).list_own_exports("warehouse")
         assert raised.value.error_code == "MALFORMED_RESPONSE"
         assert len(fake.messages) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_hub_that_never_stops_paging_is_refused_at_the_page_bound(self) -> None:
+        fake = _FakeNats(*(_page(f"enr/{i}", next_cursor=f"c{i}") for i in range(4)))
+        with pytest.raises(DatasourceQueryError, match="after 3 pages") as raised:
+            await _client(fake).list_own_exports("warehouse", max_pages=3)
+        assert raised.value.error_code == "MALFORMED_RESPONSE"
+        assert len(fake.messages) == 3
+        with pytest.raises(ValueError):
+            await _client(fake).list_own_exports("warehouse", max_pages=0)
+
+    @pytest.mark.asyncio
+    async def test_a_list_of_exactly_the_bound_is_read_whole(self) -> None:
+        fake = _FakeNats(_page("enr/a", next_cursor="c1"), _page("enr/b", next_cursor="c2"), _page("enr/c"))
+        exports = await _client(fake).list_own_exports("warehouse", max_pages=3)
+        assert [export.destination for export in exports] == ["enr/a", "enr/b", "enr/c"]
+        assert EXPORT_LIST_MAX_PAGES >= 1000
 
     @pytest.mark.asyncio
     async def test_a_success_with_no_page_is_not_taken_as_no_exports(self) -> None:
