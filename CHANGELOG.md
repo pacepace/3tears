@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.67.0 -- 2026-10-13
+
 ### Datasources: a pod can list its own recorded exports
 
 A pod deletes each export once its load has proven it. A pod killed mid-load left its exports in the
