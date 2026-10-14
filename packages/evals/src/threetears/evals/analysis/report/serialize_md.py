@@ -116,7 +116,8 @@ def _text(block: TextBlock) -> list[str]:
     body = _one_line(block.body.strip())
     facts = {fact.name: fact.value for fact in block.facts}
     if block.role == "finding_title":
-        return [f"**F{block.finding_number}.** {body}"]
+        # A finding leads with its headline, unnumbered: nothing on the page cites it by number.
+        return [f"**{body}**"]
     if block.role == "answer":
         lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
         return [f"**{lead}.** {body}" if lead else body]

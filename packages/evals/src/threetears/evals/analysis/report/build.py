@@ -93,7 +93,6 @@ from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
     GUARDRAIL_DECISION_WORDS,
     evidence_rows,
-    positions,
     reading_heading,
     reading_name,
     stands_on_words,
@@ -132,6 +131,9 @@ from threetears.evals.kernel.surface import (
     earlier_control_mark,
 )
 from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR, ClientRequestSettings
+
+#: An answer the settled decision rule replaced, pointing at the rule rather than repeating the verdict line.
+_RULE_ANSWERS = "See the decision rule above."
 
 #: What the methods say of a report no analysis was written for.
 NO_ANALYSIS = "none written; the analysis_generate action writes one from this same evidence"
@@ -714,7 +716,8 @@ def _memo_blocks(
 
     A finding is one sentence its writer wrote and a table code built from the readings the writer chose; everything
     else it carries sits in a closed ``Evidence`` fold. Every word the memo contributes passes ``style`` first
-    (:mod:`~threetears.evals.analysis.report.memo_style`).
+    (:mod:`~threetears.evals.analysis.report.memo_style`). An answer the settled rule replaced points at the decision
+    table rather than repeating the verdict line. A finding is cited by its headline, never by a number.
     """
     document = analysis.document
     # The analysis's own variant index names the cells its memo cites, by the page's rule.
@@ -724,8 +727,11 @@ def _memo_blocks(
     for answer in document.questions:
         replaced = len(style.replaced)
         body = style.sentence(answer.answer)
-        # An answer the rule's settled outcome replaced is code's answer now, not the memo's resolution.
-        resolved = "answered" if len(style.replaced) > replaced else answer.resolution
+        # An answer the rule's settled outcome replaced is code's answer now, not the memo's resolution: the verdict
+        # line says it already, so the answer points at the rule rather than saying it twice.
+        resolved = answer.resolution
+        if len(style.replaced) > replaced:
+            resolved, body = "answered", _RULE_ANSWERS
         blocks.append(
             TextBlock(
                 section="memo",
@@ -738,19 +744,35 @@ def _memo_blocks(
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
+    headlines = [style.names_arms(" ".join(finding.title.split())) for finding in document.findings]
     for position, (finding, resolution) in enumerate(zip(document.findings, resolutions, strict=True)):
         exploratory = not questions or _rests_on_exploratory(resolution, analysis.decision_surface, questions)
-        blocks.extend(
-            _finding_blocks(analysis, position, finding, resolution, arm, charts, style, exploratory=exploratory)
+        found = _finding_blocks(
+            analysis,
+            position,
+            finding,
+            resolution,
+            arm,
+            charts,
+            style,
+            exploratory=exploratory,
+            headlines=headlines,
+            bundle=bundle,
+            names=names,
         )
+        # A finding is cited by the headline the page prints for it.
+        headlines[position] = next(
+            block.body for block in found if isinstance(block, TextBlock) and block.role == "finding_title"
+        )
+        blocks.extend(found)
     for decision in document.decisions:
         facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[decision.confidence])]
         if decision.cells:
             facts.append(Fact(name="Arms", value="; ".join(arm(cell) for cell in decision.cells)))
         if decision.disposition == "adopted" and (standing := _guardrail_standing(decision.cells, bundle, arm)):
             facts.append(Fact(name="Guardrails", value=standing))
-        if decision.rests_on:
-            facts.append(Fact(name="Findings", value=positions(list(decision.rests_on))))
+        # The findings a recommendation rests on are the ones printed just above it: its block carries them for a
+        # program (``rests_on``), and the page does not cite them again.
         if cases := _cases_of(bundle, decision.rests_on, document.findings):
             facts.append(Fact(name="See", value=", ".join(cases)))
         blocks.append(
@@ -768,20 +790,25 @@ def _memo_blocks(
             )
         blocks.append(_facts_table(facts, name="recommendation_facts"))
     coverage_status = {row.name: row.status for row in analysis.coverage.levers}
+    steps: list[str] = []
     for step in document.next:
         facts = [Fact(name="Leverage", value=step.leverage)]
         if step.lever:
             status = coverage_status.get(step.lever) or "no coverage row"
             facts.append(Fact(name="Lever", value=f"{step.lever} ({status})"))
         # The facts ride on the block for a program; the page prints them once, in the fold below.
-        blocks.append(
-            TextBlock(section="memo", role="next_step", body=style.sentence(step.title, decides=False), facts=facts)
-        )
+        steps.append(style.sentence(step.title, decides=False))
+        blocks.append(TextBlock(section="memo", role="next_step", body=steps[-1], facts=facts))
         if (why := style.prose(step.why)).strip():
             blocks.append(TextBlock(section="memo", role="next_step_why", body=why, fold="Why"))
         blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
-    blocks.extend(_coverage_blocks(analysis))
+    blocks.extend(_coverage_blocks(analysis, headlines, steps))
     return blocks
+
+
+def _cited(headlines: Sequence[str], cited: Sequence[int]) -> str:
+    """Findings as a reader finds them on the page: by their headlines, never by a number, `` · `` between them."""
+    return " · ".join(headlines[position].rstrip(".") for position in cited if 0 <= position < len(headlines))
 
 
 def _facts_table(facts: Sequence[Fact], *, name: str, finding: int | None = None, fold: str = "Evidence") -> TableBlock:
@@ -813,12 +840,13 @@ def _ref_namer(surface: DecisionSurface, names: dict[str, ArmName]) -> Callable[
     return name
 
 
-def _coverage_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
+def _coverage_blocks(analysis: EvalAnalysis, headlines: Sequence[str], steps: Sequence[str]) -> list[ReportBlock]:
     """The coverage map joined to the findings and the next steps, on the stored lever names (#630, #631).
 
-    One row per lever: its status, the findings naming it in their ``axes`` (or "no finding"), and the next steps
-    whose ``lever`` names it; a ``thin`` or ``unswept`` lever no step names says so. Then one line naming the levers
-    no finding names, when there are any.
+    One row per lever: its status, the findings naming it in their ``axes`` by the headlines the page prints (or "no
+    finding"), and the next steps whose ``lever`` names it, as the page words them (``steps``, in the memo's order);
+    a ``thin`` or ``unswept`` lever no step names says so. Then one line naming the levers no finding names, when
+    there are any.
     """
     levers = analysis.coverage.levers
     if not levers:
@@ -827,14 +855,14 @@ def _coverage_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
     rows: list[dict[str, CellValue]] = []
     for row in levers:
         named = [position for position, finding in enumerate(findings) if row.name in finding.axes]
-        steps = [step.title for step in analysis.document.next if step.lever == row.name]
+        worded = [said for step, said in zip(analysis.document.next, steps, strict=True) if step.lever == row.name]
         gap = row.status in ("thin", "unswept")
         rows.append(
             {
                 "lever": row.name,
                 "status": row.status,
-                "findings": positions(named) or "no finding",
-                "next": "; ".join(steps) or ("no next step names it" if gap else None),
+                "findings": _cited(headlines, named) or "no finding",
+                "next": "; ".join(worded) or ("no next step names it" if gap else None),
             }
         )
     unnamed = [row.name for row in levers if not any(row.name in finding.axes for finding in findings)]
@@ -904,6 +932,9 @@ def _finding_blocks(
     style: MemoStyle,
     *,
     exploratory: bool,
+    headlines: Sequence[str] = (),
+    bundle: AnalysisContextBundle | None = None,
+    names: dict[str, ArmName] | None = None,
 ) -> list[ReportBlock]:
     """One finding: its one sentence, the table code built from its readings, their charts, then a closed fold.
 
@@ -920,12 +951,15 @@ def _finding_blocks(
     if finding.trials:
         facts.append(Fact(name="Trials", value=", ".join(finding.trials)))
     if finding.invalidates:
-        facts.append(Fact(name="Overturns", value=positions(list(finding.invalidates))))
+        facts.append(Fact(name="Overturns", value=_cited(headlines, finding.invalidates)))
     table = _evidence_table(analysis, position, resolution, arm) if resolution and resolution.evidence else None
     fallback = None
     if table is not None and len(table.columns) > 2:
         reading = table.columns[1]
-        fallback = row_words(reading.header, [(str(row["arm"].value), row[reading.key].text) for row in table.rows])
+        values = [(str(row["arm"].value), row[reading.key].text) for row in table.rows]
+        fallback = _row_sentence(bundle, names or {}, resolution, reading.header, values) or row_words(
+            reading.header, values
+        )
     blocks: list[ReportBlock] = [
         # The facts ride on the block for a program; the page prints them once, in the finding's fold.
         TextBlock(
@@ -962,6 +996,54 @@ def _finding_blocks(
     return blocks
 
 
+def _row_sentence(
+    bundle: AnalysisContextBundle | None,
+    names: dict[str, ArmName],
+    resolution: FindingResolution | None,
+    reading: str,
+    values: Sequence[tuple[str, str]],
+) -> str | None:
+    """A finding's one reading on the control and one candidate as a plain sentence, candidate first.
+
+    ``cheaper candidate cost $0.003301 per reply to production's $0.003092; the difference did not separate.`` None
+    where the table is not one reading on the control and one other arm.
+    """
+    if bundle is None or resolution is None or len(values) != 2:
+        return None
+    control = _control_key(bundle)
+    label = _namer(names)
+    if control is None or label(control) not in {arm for arm, _ in values}:
+        return None
+    (ours,) = [value for arm, value in values if arm == label(control)]
+    ((candidate, theirs),) = [(arm, value) for arm, value in values if arm != label(control)]
+    measures = {row.measure_id for row in resolution.evidence}
+    if len(measures) != 1:
+        return None
+    (measure,) = measures
+    said = (
+        f"{candidate} cost {theirs} per reply to {label(control)}'s {ours}"
+        if measure == "production_replicating_cost"
+        else f"{reading}: {candidate} {theirs} to {label(control)}'s {ours}"
+    )
+    verdicts = {
+        comparison.verdict
+        for family in bundle.multiple_comparisons.families
+        for comparison in family.comparisons
+        if comparison.name == measure
+        and comparison.control.variant_key == control
+        and label(comparison.contrast.variant_key) == candidate
+    }
+    if verdicts == {"not_separated"}:
+        said += "; the difference did not separate"
+    elif verdicts and verdicts <= set(_SEPARATED):
+        said += "; the difference separated"
+    return f"{said[:1].upper()}{said[1:]}."
+
+
+#: The contrast verdicts that separated from the control.
+_SEPARATED = ("improved", "regressed")
+
+
 def _evidence_table(
     analysis: EvalAnalysis, position: int, resolution: FindingResolution, arm: Callable[[str], str]
 ) -> TableBlock:
@@ -985,7 +1067,7 @@ def _evidence_table(
         section="memo",
         finding=position,
         name="evidence",
-        title=f"F{position + 1} readings",
+        title="Readings",
         columns=[
             TableColumn(key="arm", header="Arm"),
             *(TableColumn(key=key, header=reading) for reading, key in keys.items()),
@@ -1044,7 +1126,7 @@ def _finding_charts(
                     section="memo",
                     finding=position,
                     chart="interval_rows",
-                    title=f"F{position + 1}: {what}",
+                    title=what,
                     rows=rows,
                     unit=ruler.unit,
                 )

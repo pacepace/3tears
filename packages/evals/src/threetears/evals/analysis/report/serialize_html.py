@@ -176,7 +176,7 @@ def _text(block: TextBlock) -> str:
     body = _inline(_one_line(block.body))
     if block.role == "finding_title":
         anchor = f' id="{_escape(block.anchor)}"' if block.anchor else ""
-        return f'<p class="finding"{anchor}><strong>F{block.finding_number}.</strong> {body}</p>'
+        return f'<p class="finding"{anchor}><strong>{body}</strong></p>'
     if block.role == "answer":
         lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
         return '<p data-role="answer">' + (f"<strong>{_escape(lead)}.</strong> " if lead else "") + f"{body}</p>"

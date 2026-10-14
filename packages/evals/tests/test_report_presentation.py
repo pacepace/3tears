@@ -276,6 +276,17 @@ def test_a_memo_sentence_contradicting_the_settled_rule_is_replaced_and_disclose
     assert style.names_arms("deepseek-v4-flash queued fewer tracks than deepseek-v4.1-flash.") == (
         "cheaper candidate queued fewer tracks than production."
     )
+    # A role word already beside the id collapses with it into the label once: never "production production".
+    assert style.names_arms(
+        "On the proven check requiring at least two queued tracks, deepseek-v4-flash passed 6 of 12 of runs "
+        "compared to 11 of 12 for production deepseek-v4.1-flash."
+    ) == (
+        "On the proven check requiring at least two queued tracks, cheaper candidate passed 6 of 12 of runs "
+        "compared to 11 of 12 for production."
+    )
+    assert (
+        style.names_arms("deepseek-v4.1-flash (production) kept the queue full.") == "production kept the queue full."
+    )
 
 
 async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_ruled: tuple[Result, Report]) -> None:
@@ -329,11 +340,14 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     markdown = report_markdown(report)
 
     # The hedge on a measured fact is code's row instead; the meta-prose and the restated count are gone.
-    assert "no measurable" not in markdown and "**F1.** Accuracy: production " in markdown
+    assert "no measurable" not in markdown and "**Accuracy: cheaper candidate " in markdown
+    assert "**F1." not in markdown
     assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
     assert "The candidate skipped the queue." in markdown
     # The answer that contradicted the settled rule reads the rule's outcome, and the methods say so.
-    assert "**Answered.** Keep production: " in markdown
+    # The verdict line already says it, so the answer points at the rule rather than restating it.
+    assert "**Answered.** See the decision rule above." in markdown
+    assert markdown.count("Keep production: ") == 1
     assert any("“Unanswerable because" in b.text for b in report.blocks if isinstance(b, DisclosureBlock))
     # What code could not fix is kept, counted in the methods table and listed in a fold.
     assert "| Memo style | style: 1 violations |" in markdown
