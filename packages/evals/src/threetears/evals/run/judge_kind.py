@@ -516,7 +516,8 @@ def freeze_judge_cases(
         raise ValidationFailedError(
             f"no judge case could be frozen — {why}",
             remedy=(
-                "rate judged results on this build (rate_result), which stores what each label rated, and freeze again"
+                "have a person rate judged results on this build (run.rate_result with rater_kind 'person'; an "
+                "agent's result_rate rating is not a label), which stores what each label rated, and freeze again"
                 if from_labels
                 else "freeze from judged runs whose results recorded their judging, or launch the template again for "
                 "one"
