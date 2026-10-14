@@ -697,14 +697,14 @@ def _memo_blocks(
         replaced = len(style.replaced)
         body = style.sentence(answer.answer)
         # An answer the rule's settled outcome replaced is code's answer now, not the memo's resolution.
-        resolution = "answered" if len(style.replaced) > replaced else answer.resolution
+        resolved = "answered" if len(style.replaced) > replaced else answer.resolution
         blocks.append(
             TextBlock(
                 section="memo",
                 role="answer",
                 body=body,
                 rests_on=list(answer.rests_on),
-                facts=[Fact(name="Resolution", value=resolution)],
+                facts=[Fact(name="Resolution", value=resolved)],
             )
         )
     resolutions: list[FindingResolution | None] = (
@@ -1858,7 +1858,7 @@ def _strata_blocks(surface: DecisionSurface, arms: dict[str, ArmName]) -> list[R
             if stratum.n_cases < STRATUM_MIN_CASES:
                 cases[columns[name]] = f"{cases[columns[name]]} — {TOO_FEW_CASES}"
                 plural = "" if stratum.n_cases == 1 else "s"
-                thin.append(f"{_stratum_word(name)} in {arm} ({stratum.n_cases} case{plural})")
+                thin.append(f"{_stratum_word(name)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})")
         rows.append(cases)
         rows.extend(_measure_rows(arm, cell, by_name, columns, surface))
         rows.extend(_judged_rows(arm, cell, by_name, columns))
@@ -1881,15 +1881,12 @@ def _strata_blocks(surface: DecisionSurface, arms: dict[str, ArmName]) -> list[R
         )
     ]
     if thin:
+        # A list of counts belongs beside the table it qualifies, in the methods' fold, not in a line of prose.
         blocks.append(
-            DisclosureBlock(
-                section="contrasts",
-                source="strata",
-                text=(
-                    f"Too few cases to read alone (a stratum needs at least {STRATUM_MIN_CASES} cases), so read their intervals: "
-                    + "; ".join(thin)
-                    + "."
-                ),
+            _note(
+                f"Too few cases to read alone (a stratum needs at least {STRATUM_MIN_CASES} cases), so read their "
+                "intervals: " + "; ".join(thin) + ".",
+                "strata",
             )
         )
     return blocks

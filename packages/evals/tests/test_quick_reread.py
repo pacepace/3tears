@@ -119,8 +119,8 @@ async def test_a_reader_declaring_otherwise_reads_the_launched_verdicts_and_is_n
     path = tmp_path / "evals.sqlite"
     comparison = await _compare(path)
     launched = _launched(comparison)
-    assert ("contrast", "correct", "candidate=cheaper", "equivalent", 0.1) in launched
-    assert ("guardrail", "no_leak", "candidate=cheaper", "held", 0.1) in launched
+    assert ("contrast", "correct", "cheaper", "equivalent", 0.1) in launched
+    assert ("guardrail", "no_leak", "cheaper", "held", 0.1) in launched
 
     # A reader declaring nothing, one declaring another margin, and one declaring the guardrail a quality score.
     for declares, named in (

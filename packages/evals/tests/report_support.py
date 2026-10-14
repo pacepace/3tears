@@ -11,10 +11,13 @@ from typing import Any
 
 from threetears.evals.analysis import (
     Report,
+    TableBlock,
     analysis_report,
     prepare_analysis_generation,
+    report_markdown,
     run_analysis_generation,
 )
+from threetears.evals.analysis.style import StyleViolation, lint_page
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign
 from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
@@ -23,9 +26,28 @@ from packages.evals.tests.toyhost_memo import PROMPT, PROMPT_ID, FixturedClient,
 from packages.evals.tests.off_loop import off_loop
 
 __all__ = [
+    "page_violations",
     "toy_campaign_host",
     "toy_report",
 ]
+
+
+def page_violations(report: Report) -> list[StyleViolation]:
+    """Every style rule a report's page breaks outside the data it quotes, its arms' names read as names.
+
+    Args:
+        report: The report.
+
+    Returns:
+        The violations; empty for a page that passes.
+    """
+    names = {
+        str(row["arm"]).removeprefix("▸ ")
+        for block in report.blocks
+        if isinstance(block, TableBlock) and block.name == "scoreboard"
+        for row in block.values()
+    }
+    return lint_page(report_markdown(report), names=names)
 
 
 def toy_campaign_host(clients: Any = None) -> tuple[EvalHost, EvalCampaign]:

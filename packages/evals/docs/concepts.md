@@ -51,7 +51,7 @@ decided apart, `held`, `breached` or `undecided`, so a gain elsewhere cannot pay
 ### Report
 
 What a run tells you. Printed, it is quiet: the verdict, each arm's readings, the top misses, and where the runs and
-the report are kept. Written, it is one page, verdict first ([Reading reports](reading-reports.md)). Never quieted:
+the report are kept. Written, it is one page, result first ([Reading reports](reading-reports.md)). Never quieted:
 errors, exclusions and their causes, truncation, unpriced spend, the self-judging warning, and how the judge stands
 against people.
 

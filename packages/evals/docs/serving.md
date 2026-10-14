@@ -165,7 +165,7 @@ Each flag passes to one `start_run` argument: `--model` to `models`, `--k` to `k
 
 ### `report` and `bundle`
 
-`report` prints the campaign's report (see [Reading reports](reading-reports.md#the-report-one-page-verdict-first)) —
+`report` prints the campaign's report (see [Reading reports](reading-reports.md#the-report-one-page-result-first)) —
 its analysis, or, when it has none, a code-only report of its evidence. `bundle` prints, as JSON, the analysis
 bundle a generation would read inside a wrapper (`BundleInspection`) that adds its campaign, scope and
 fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command calls a model.

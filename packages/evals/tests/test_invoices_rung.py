@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from threetears.evals import Result
-from threetears.evals.analysis import AnalysisContextBundle
+from threetears.evals.analysis import AnalysisContextBundle, report_markdown
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
@@ -29,6 +29,7 @@ from packages.evals.tests.ladder_support import (
     secret_markers,
     stated_spend,
 )
+from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 RUNG = EXAMPLES / "3-invoices"
@@ -73,6 +74,18 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     served = count_calls(module.model, monkeypatch)
 
     result = await module.invoices.run(store=":memory:")
+    # The first screen, golden: the question, the arms with the control marked, the result, a bare scoreboard.
+    lines = report_markdown(result.report).splitlines()
+    assert lines[0] == "# invoices: does v2 do better than v1?"
+    assert lines[1].startswith("v1 (control) vs v2 · ")
+    assert (
+        lines[3]
+        == "**Exploratory: v2 separated from v1 on no reading. Guardrail undecided for v2: no invented total.**"
+    )
+    assert lines[7] == (
+        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Failed otherwise | Cost per reply |"
+    )
+    assert page_violations(result.report) == []
 
     assert len(served.calls) == recorded_spend(RECORDING)[0] == 180, "30 invoices x 2 prompts x k=3"
     assert isinstance(result, Result) and result.control == "v1" and list(result.arms) == ["v1", "v2"]

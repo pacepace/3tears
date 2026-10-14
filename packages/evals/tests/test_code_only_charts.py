@@ -138,9 +138,7 @@ class TestUnobservedCost:
     async def test_one_arm_unmeasured_is_named_and_left_out_of_the_cost_chart(self) -> None:
         comparison = await _compare(right, guess_priced)
         (said,) = _cost_disclosures(comparison)
-        assert said.startswith("Cost was not measured in 1 of 2 cells") and said.endswith(
-            "Unmeasured: candidate=candidate."
-        )
+        assert said.startswith("Cost was not measured in 1 of 2 cells") and said.endswith("Unmeasured: candidate.")
         bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
         (unmeasured,) = bundle.cost_unmeasured_cells
         (cell,) = [c for c in bundle.cell_measures if c.variant_key == unmeasured.variant_key]

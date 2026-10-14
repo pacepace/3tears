@@ -96,7 +96,7 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
     pairs = [_PAIR.match(part.strip()) for part in display.split(", ")]
     if len(pairs) > 1 and all(pairs):
         # The candidate's kind is no name: an arm named by its kind and one other lever is named by that lever.
-        named = [match for match in pairs if match and match["axis"] != "candidate_kind"]
+        named: list[re.Match[str] | None] = [match for match in pairs if match and match["axis"] != "candidate_kind"]
         pairs = named if len(named) == 1 else pairs
     if len(pairs) > 1 and all(pairs):
         label = ", ".join(f"{humanize('dimension', match['axis'])} {match['level']}" for match in pairs if match)
