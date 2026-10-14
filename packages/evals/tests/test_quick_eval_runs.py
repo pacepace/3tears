@@ -22,11 +22,11 @@ from typing import Any
 import pydantic
 import pytest
 
-from threetears.evals import Eval
+from threetears.evals import Eval, grader
 from threetears.evals.analysis.stats import wilson_interval
 from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
 from threetears.evals.kernel.host import EvalHost, KindContract
-from threetears.evals.quick.graders import UNUSABLE_ANSWER
+from threetears.evals.quick.graders import UNUSABLE_ANSWER, field_scorer
 from threetears.evals.quick.one_call import CALLABLE_KIND, CALLABLE_KIND_CONTRACT, callable_host
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
 from packages.evals.tests.bundle_support import one_batch_bundle
@@ -533,6 +533,39 @@ async def test_an_expected_label_no_confusion_matrix_could_hold_is_refused(label
     with pytest.raises(ValueError, match=said):
         await Eval([first, *LABELLED[1:]], classify, [LABEL]).run(host=host, scope=SCOPE)
     assert off_loop(list_templates, host.storage, SCOPE) == []
+
+
+class _Extracted(pydantic.BaseModel):
+    total: float | None
+
+
+@pytest.mark.parametrize(
+    ("expected", "answer", "passed"),
+    [
+        (None, {"total": None}, True),
+        (None, {}, True),
+        (None, _Extracted(total=None), True),
+        (None, {"total": 12.5}, False),
+        (None, {"total": 0}, False),
+        (12.5, {"total": None}, False),
+        (12.5, _Extracted(total=12.5), True),
+    ],
+    ids=["null", "no field", "a model's None", "a value", "zero", "missing a value", "the value"],
+)
+def test_a_field_a_case_expects_null_must_be_absent_from_the_answer(expected: Any, answer: Any, passed: bool) -> None:
+    assert field_scorer("total")({"total": expected}, answer) is passed
+
+
+async def test_a_field_with_a_margin_grades_a_case_expecting_null_and_its_miss_shows_the_value() -> None:
+    cases = [{"id": "printed", "label": "a", "total": 12.5}, {"id": "none", "label": "a", "total": None}]
+
+    async def extract(case: Mapping[str, Any]) -> dict[str, Any]:
+        return {"label": "a", "total": 12.5}  # states a total on the invoice that prints none
+
+    result = await Eval(cases, extract, ["label", grader("total", margin=0.05)], k=1).run(store=MEMORY, scope=SCOPE)
+
+    (miss,) = result.misses()
+    assert (miss.case, miss.answer, miss.missed_because) == ("none", {"label": "a", "total": 12.5}, ["total gave 0"])
 
 
 @pytest.mark.parametrize(

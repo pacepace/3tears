@@ -78,7 +78,7 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     assert isinstance(result, Result) and result.control == "v1" and list(result.arms) == ["v1", "v2"]
     for summary in result.arms.values():
         assert summary.status == "completed" and (summary.n_results, summary.n_excluded) == (90, 0)
-    assert result.fields == ("currency", "number", "due")
+    assert result.fields == ("currency", "number", "due", "total")
     # The guardrail is decided per arm against the control, never in the contrasts.
     assert result.contrasts("no_invented_total") == []
     assert {row["arm"] for row in result.guardrails()} == {"v2"}

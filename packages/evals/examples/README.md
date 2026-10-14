@@ -96,8 +96,8 @@ Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 120 judge
 [`extract.py`](3-invoices/extract.py) reads 30 invoices ([`invoices.jsonl`](3-invoices/invoices.jsonl)) in three
 strata (clean, multi-currency, noisy OCR) with two prompts, as `runner={"v1": model.prompt(V1, Invoice), "v2": ...}`;
 the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict. A field
-grader per field, `grader(margin=0.05)` on `total` for equivalence, and `@grader(guard=0.02) no_invented_total`, a
-guardrail decided apart from the rest. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
+grader per field, `grader("total", margin=0.05)` declaring a margin for equivalence (a case whose `total` is `null`
+expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail decided apart from the rest. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
 fails the run in CI on a regression or a guardrail not shown held. Its closing comment names arms as `k=v` pairs for a
 grid of factors, read against another control with `result.against()`.
 
