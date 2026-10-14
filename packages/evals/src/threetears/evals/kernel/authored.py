@@ -217,7 +217,8 @@ class MapFieldInSchema(TypeError):
 
 class UnportableSchema(TypeError):
     """A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation
-    stands in for: a structural keyword (``allOf``, ``not``, ``if``), which dropping would change the shape sent."""
+    stands in for: a structural keyword (``allOf``, ``not``, ``if``), which dropping would change the shape sent; or an
+    ``enum`` or ``const`` holding a value that is not a string, which not every strict mode enforces."""
 
 
 class OffVocabulary(ValueError):
@@ -237,6 +238,12 @@ class OffVocabulary(ValueError):
 #: number bounds, ``pattern``, ``format`` and item counts to the structural set, and not string lengths or ``allOf``.
 #: The intersection is the structural set below. Everything else a model's schema states is enforced where it always
 #: was: the reply is validated against the model on return.
+#:
+#: **An ``enum`` enumerates strings only.** Gemini's structured output supports string enums alone, and an integer
+#: enum sent to ``google/gemini-3.5-flash-lite`` through OpenRouter, ``require_parameters`` on, was accepted and not
+#: enforced: the reply left the field out. So a value that is not a string is refused in an ``enum`` or a ``const``
+#: (:func:`strict_schema`): a reply the engine reads asks for strings and reads them back
+#: (:data:`threetears.evals.run.judge.ORDINAL_ANSWERS`), and a host's schema says so in its own types.
 PORTABLE_STRICT_KEYWORDS: frozenset[str] = frozenset(
     {"type", "properties", "required", "additionalProperties", "items", "enum", "anyOf", "$ref", "$defs", "description"}
 )
@@ -279,6 +286,13 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     out — sent, a provider's strict mode refuses the schema or quietly demotes the keyword to a hint. A keyword that
     is neither is refused rather than dropped: dropping a structural one would send another shape.
 
+    **An ``enum`` or ``const`` holding a value that is not a string is refused, not rewritten.** A string enum is the
+    one enum form every provider's strict mode enforces; an integer one was sent and not enforced
+    (:data:`PORTABLE_STRICT_KEYWORDS`). Projecting ``[1, 2, 3]`` to ``["1", "2", "3"]`` here would change the type of
+    the reply its reader parses, and this projection does not know the reader: the engine's own judge asks for
+    strings and reads them back (:func:`threetears.evals.run.judge.judge_reply_format`), and a host projecting its own
+    model declares the values as strings in it (a ``Literal["1", "2"]``, a ``str`` enum) and converts on read.
+
     Args:
         schema: A pydantic-generated JSON schema.
 
@@ -287,8 +301,21 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
     Raises:
         MapFieldInSchema: An object carries an open ``additionalProperties``.
-        UnportableSchema: A node carries a keyword outside the portable subset that validation does not stand in for.
+        UnportableSchema: A node carries a keyword outside the portable subset that validation does not stand in for,
+            or an ``enum`` or ``const`` holding a value that is not a string.
     """
+
+    def string_values(key: str, values: list[Any], path: str) -> list[str]:
+        """An ``enum``'s or ``const``'s values, refused by name when one is not a string."""
+        others = [value for value in values if not isinstance(value, str)]
+        if others:
+            raise UnportableSchema(
+                f"{path or '/'} carries {key!r} with {others!r}, values that are not strings: a string enum is the one "
+                "enum form every provider's strict structured-output mode enforces (Gemini's takes no other), so a "
+                "strict schema enumerates strings only; declare the values as strings (a Literal of strings, a str "
+                "enum) and read them back to the type your code wants"
+            )
+        return list(values)
 
     def walk(node: Any, path: str) -> Any:
         if isinstance(node, list):
@@ -305,7 +332,10 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
             if key in _VALIDATED_ON_RETURN:
                 continue
             if key == "const":
-                out["enum"] = [value]
+                out["enum"] = string_values(key, [value], f"{path}/const")
+                continue
+            if key == "enum":
+                out["enum"] = string_values(key, list(value), f"{path}/enum")
                 continue
             target = "anyOf" if key == "oneOf" else key
             if target not in PORTABLE_STRICT_KEYWORDS:
@@ -345,6 +375,8 @@ def strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, An
 
     Raises:
         MapFieldInSchema: An object in it admits arbitrary keys, which no strict mode accepts.
+        UnportableSchema: A node in it carries a keyword outside the portable subset that validation does not stand in
+            for, or an ``enum`` or ``const`` holding a value that is not a string (:func:`strict_schema`).
     """
     projected = {key: value for key, value in strict_schema(dict(schema)).items() if key != "description"}
     return {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": projected}}

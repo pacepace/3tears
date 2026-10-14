@@ -653,7 +653,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ToolLike`** · protocol · The three members the cassette layer calls on a synchronous tool it wraps.
 - **`UndeclarableAxisError`** · exception · A declared axis this host will not accept: neither a registered lever nor a recognised open-family member.
 - **`UnknownCandidateKind`** · exception · A template names a kind this host did not wire.
-- **`UnportableSchema`** · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent.
+- **`UnportableSchema`** · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent; or an `enum` or `const` holding a value that is not a string, which not every strict mode enforces.
 - **`UnreadableBarName`** · dataclass · A bar name no verdict can be given on, and why — the text an author or a reader is shown.
 - **`UnreadableRecordError`** · exception · A stored record this build's model refuses, met by a read that cannot answer without it (status 500).
 - **`UnreadableRunError`** · *host contract* · exception · A read that cannot leave a run out met one this build's model refuses (status 500).

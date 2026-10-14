@@ -143,7 +143,11 @@ v<version>` prints a release's notes).
 - **Judges and calibration.** Rubric dimensions carry their names and scales. A judge is a model plus its config,
   and a dimension judged by the built-in wording records which wording judged it. Every built-in prompt tells the
   judge that sourced facts outrank its recall. A candidate does not judge itself when an alternate is configured.
-  A judge completion that breaks the protocol fails the run. Judged readings carry an evidence tier decided by code.
+  A judge completion that breaks the protocol fails the run. Every judge call sends its reply's shape as a strict
+  `json_schema` in the portable subset, every enum in it a string enum (the one form every provider's strict mode
+  enforces; a Gemini model did not enforce an integer one): an ordinal score is asked for as `"1"` to `"5"` and read
+  back to its integer, a bare integer still read, and `strict_response_format` refuses a host schema enumerating
+  anything but strings, by name. Judged readings carry an evidence tier decided by code.
   People and agents rate results (`rate_result`), and `judge_agreement` reports exact agreement and Cohen's kappa,
   quadratic-weighted on 1–5 scales. The package also measures a judge's agreement with itself (repeat judging),
   a second judge, and the judge's temperature. A judge's recorded identity is a fingerprint of its wording (the

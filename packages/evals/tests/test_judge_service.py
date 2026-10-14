@@ -46,7 +46,7 @@ def _dim_of(system: str) -> str:
 class _CapturingClient:
     """Records the prompts it received and returns a fixed score for the asked dim."""
 
-    def __init__(self, *, score: int = 4, reasoning: str = "ok", cost: float = 0.002, fail: bool = False):
+    def __init__(self, *, score: Any = 4, reasoning: str = "ok", cost: float = 0.002, fail: bool = False):
         self.score = score
         self.reasoning = reasoning
         self.cost = cost
@@ -161,9 +161,9 @@ async def test_score_dimension_returns_single_rubric_score():
     ]
 
 
-@pytest.mark.parametrize("off_scale", [9, 0, -1, 3.5, "4", None, True])
+@pytest.mark.parametrize("off_scale", [9, 0, -1, 3.5, "9", "0", "4.0", " 4", "four", None, True])
 async def test_an_off_scale_score_is_refused_not_clamped(off_scale):
-    """A score that is not an integer on 1-5 fails the dim through the parse-failure path.
+    """A score that is not one of "1" to "5", nor an integer on 1-5, fails the dim through the parse-failure path.
 
     Clamping 9 to 5, or rounding 3.5 up to 4, would store a score the judge never gave.
     """
@@ -179,9 +179,10 @@ async def test_an_off_scale_score_is_refused_not_clamped(off_scale):
     assert outcome.usage is not None and outcome.usage.calls == 2
 
 
-@pytest.mark.parametrize("on_scale", [1, 3, 5, 4.0])
+@pytest.mark.parametrize("on_scale", ["1", "3", "5", 1, 3, 5, 4.0])
 async def test_an_on_scale_score_is_stored_as_given(on_scale):
-    """Every integer on the scale lands unchanged — the positive case beside the refusal."""
+    """Every score on the scale lands unchanged, as the string the schema asks for or a bare integer — the positive
+    case beside the refusal."""
     service = JudgeService(
         client_factory=lambda m, t: _CapturingClient(score=on_scale), failure_describer=withhold_failure_detail
     )

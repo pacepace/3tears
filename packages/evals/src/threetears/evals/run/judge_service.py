@@ -86,7 +86,13 @@ from threetears.evals.kernel.host.eval_host import CompletionClients
 from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
 from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
-from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS, judge_reply_format, run_judge_llm
+from threetears.evals.run.judge import (
+    CANNOT_TELL,
+    JUDGE_CALL_ATTEMPTS,
+    ORDINAL_ANSWERS,
+    judge_reply_format,
+    run_judge_llm,
+)
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
@@ -292,9 +298,16 @@ _OUTCOME_INSTRUCTIONS = (
     "re-derive them.\n\n" + _SOURCED_FACTS_RULE
 )
 
-#: How each scale is asked for: the scale sentence, and what ``criteria_scores`` maps the key to.
+#: How each scale is asked for: the scale sentence, and what ``criteria_scores`` maps the key to. An ordinal score is
+#: asked for as a string, in the words of the strict reply format's enum (:data:`~threetears.evals.run.judge.ORDINAL_ANSWERS`),
+#: so the prompt and the schema sent beside it ask for the same reply.
 _SCALE_WORDING: dict[str, tuple[str, str]] = {
-    "ordinal": ("Score on an integer scale of 1 (worst) to 5 (best).", "integer score (1-5)"),
+    "ordinal": (
+        "Score on a scale of 1 (worst) to 5 (best).",
+        "score, written as a string: "
+        + ", ".join(f'"{answer}"' for answer in ORDINAL_ANSWERS[:-1])
+        + f' or "{ORDINAL_ANSWERS[-1]}"',
+    ),
     "pass_fail": ("Answer pass or fail.", 'answer, the string "pass" or the string "fail"'),
 }
 

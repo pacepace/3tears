@@ -330,7 +330,8 @@ provider: `models_client` from `threetears.evals.providers` (the `[models]` extr
 stand-in of your own returns what a model would:
 a JSON reply with a string `reasoning` and `criteria_scores`, an object whose one key is the dimension asked
 about as `<context>.<dimension>` (`answer.acknowledges` here, the key the engine's prompt names), mapped to a score
-of 1 to 5 (`"pass"` or `"fail"` on a pass/fail dimension).
+of 1 to 5 (`"pass"` or `"fail"` on a pass/fail dimension). The prompt and the strict schema sent beside it ask for the
+score as a string, `"1"` to `"5"`; the bare integer this stand-in returns is read too.
 
 ```python
 async def draft_reply(case: dict) -> str:

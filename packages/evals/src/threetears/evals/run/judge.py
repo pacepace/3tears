@@ -4,7 +4,7 @@ This module holds the callable that code outside the rubric judge depends on:
 
 - :func:`run_judge_llm` — shared LLM-judge execution path: call the LLM,
   parse a criteria-based response (``{"reasoning": ..., "criteria_scores":
-  {name: 1..5, ...}}``), aggregate to a 0..1 normalized composite, log cost.
+  {name: "1".."5", ...}}``), aggregate to a 0..1 normalized composite, log cost.
   Called from :mod:`threetears.evals.run.judge_service`, whose narrow single-dim rubric
   judge is built on it, and open to a host's own scorers.
 
@@ -75,8 +75,8 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 #: **Asked for, not disabled — the classifier's remedy is the wrong one here.** The
 #: classifier asks for two words, reasoning buys it nothing, so it sends
 #: ``reasoning: {enabled: false}``. A judge's reply is short too (the JSON contract in
-#: ``judge_service`` asks for one paragraph and one integer), but the work behind the
-#: integer is not. ``reporter.groundedness`` checks every claim in a memo against its
+#: ``judge_service`` asks for one paragraph and one score), but the work behind the
+#: score is not. ``reporter.groundedness`` checks every claim in a memo against its
 #: evidence bundle, and that is what reasoning is for, so taking reasoning away would
 #: change the instrument, not just its cost. Disabling is also refused permanently by
 #: models whose reasoning is mandatory (``openai/gpt-5-mini`` answers HTTP 400), which
@@ -104,7 +104,7 @@ JUDGE_REASONING_EFFORT: KnownReasoningEffort = "high"
 JUDGE_REASONING_HEADROOM_TOKENS = 8192
 
 #: Output room kept for the judge's visible answer: the JSON object with its one
-#: reasoning paragraph and one integer score. That is a few hundred tokens, so this is
+#: reasoning paragraph and one score. That is a few hundred tokens, so this is
 #: headroom, and unused output tokens are not billed.
 JUDGE_ANSWER_BUDGET_TOKENS = 2048
 
@@ -157,14 +157,27 @@ JUDGE_SCORE_MIN, JUDGE_SCORE_MAX = SCALES["ordinal"].scores
 #: accepts it; for any other it is a reply that broke the protocol.
 CANNOT_TELL = "cannot_tell"
 
+#: The answers an ordinal criterion is asked for, as the strict reply format enumerates them: each score on the scale
+#: written as a string, ``"1"`` to ``"5"``, read back to its integer by the parse.
+#:
+#: **Strings, because a string enum is the one enum form every provider's strict mode enforces.** An integer enum is
+#: not portable: ``google/gemini-3.5-flash-lite`` through OpenRouter, with ``require_parameters`` on, accepted a
+#: strict schema scoring a criterion as ``{"type": "integer", "enum": [1, 2, 3, 4, 5]}`` and did not enforce it,
+#: answering ``"criteria_scores": {}`` with the score in prose, so every ordinal call of a run failed its parse twice
+#: and was paid for twice; Gemini's structured output supports string enums only. The projection every package
+#: directive takes now refuses a non-string enum (:func:`~threetears.evals.kernel.authored.strict_schema`).
+ORDINAL_ANSWERS: tuple[str, ...] = tuple(str(score) for score in range(JUDGE_SCORE_MIN, JUDGE_SCORE_MAX + 1))
+
 
 def _ordinal_score(name: str, value: Any) -> int:
     """Read one criterion's score as the integer on the scale it was asked for, or refuse it.
 
-    The score is the judge's protocol answer, so it is taken as given or not at all: a
-    fraction, a number off the scale, a string or a boolean is a reply that broke the
-    protocol, and the caller's parse-failure path handles it. Nothing is truncated, rounded
-    or clamped into range — each of those would record a score the judge never gave.
+    The score is asked for as a string (:data:`ORDINAL_ANSWERS`, the strict reply format's enum) and read back to its
+    integer here; a bare integer is read too, since a provider that does not enforce the schema may still send one.
+    Either is the judge's protocol answer, so it is taken as given or not at all: a fraction, a number off the scale,
+    any other string or a boolean is a reply that broke the protocol, and the caller's parse-failure path handles it.
+    Nothing is truncated, rounded, stripped or clamped into range — each of those would record a score the judge
+    never gave.
 
     Args:
         name: The criterion, for the message.
@@ -174,8 +187,15 @@ def _ordinal_score(name: str, value: Any) -> int:
         The score.
 
     Raises:
-        ValueError: The value is not an integer on the scale.
+        ValueError: The value is neither one of :data:`ORDINAL_ANSWERS` nor an integer on the scale.
     """
+    if isinstance(value, str):
+        if value not in ORDINAL_ANSWERS:
+            raise ValueError(
+                f"Score for criterion '{name}' is not one of the {JUDGE_SCORE_MIN}-{JUDGE_SCORE_MAX} scale's answers "
+                f"{list(ORDINAL_ANSWERS)}: {value!r}"
+            )
+        return int(value)
     integral = isinstance(value, int) or (isinstance(value, float) and value.is_integer())
     if isinstance(value, bool) or not integral:
         raise ValueError(f"Score for criterion '{name}' is not an integer: {value!r}")
@@ -222,6 +242,12 @@ def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_off
     the parse refuses, and a judge's parse retry spends nothing on one. The reply is still read and refused as
     before, for a provider that cannot enforce a strict schema.
 
+    **Every answer is a string, an ordinal score included.** A criterion's answers are ONE string enum: a pass/fail
+    criterion's two words, an ordinal criterion's :data:`ORDINAL_ANSWERS` (``"1"`` to ``"5"``, read back to integers
+    by the parse), and :data:`CANNOT_TELL` beside either when it was offered, so no ``anyOf`` is needed. A string enum
+    is the one enum form every provider's strict mode enforces; an integer enum was sent and not enforced
+    (:data:`ORDINAL_ANSWERS` says where).
+
     Args:
         criteria: The criteria, as :func:`run_judge_llm` takes them: each with its ``name`` and, optionally, its
             ``scale`` (a key of :data:`SCALE_READERS`).
@@ -248,14 +274,14 @@ def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_off
 
 
 def _scale_answers(scale: str, cannot_tell_offered: bool) -> dict[str, Any]:
-    """One criterion's answers as a strict schema admits them: those :data:`SCALE_READERS` reads, and the offered one."""
+    """One criterion's answers as a strict schema admits them, as one string enum: those :data:`SCALE_READERS` reads in
+    the form the schema asks for them, and the offered one."""
     offered = [CANNOT_TELL] if cannot_tell_offered else []
     if scale == "pass_fail":
         return {"type": "string", "enum": [*PASS_FAIL_SCORES, *offered]}
     if scale != "ordinal":
         raise KeyError(f"no reader for scale {scale!r}")
-    on_scale = {"type": "integer", "enum": list(range(JUDGE_SCORE_MIN, JUDGE_SCORE_MAX + 1))}
-    return {"anyOf": [on_scale, {"type": "string", "enum": offered}]} if offered else on_scale
+    return {"type": "string", "enum": [*ORDINAL_ANSWERS, *offered]}
 
 
 def _parse_criteria_response(
@@ -268,7 +294,7 @@ def _parse_criteria_response(
 
     Expected format::
 
-        {"reasoning": "...", "criteria_scores": {"name": 1-5, ...}}
+        {"reasoning": "...", "criteria_scores": {"name": "1"-"5", ...}}
 
     ``reasoning`` is part of the protocol, not decoration: a stored score and a recorded "can't
     tell" both carry it, so a reply without one as a string — absent, ``null``, a number, an
@@ -277,7 +303,8 @@ def _parse_criteria_response(
     folded, and either lose that spend with the score or fail the result outright.
 
     A criterion dict carrying ``"scale": "pass_fail"`` is answered ``"pass"`` or ``"fail"`` and
-    returned as 1 or 0; one without a scale is ordinal. With ``cannot_tell_offered``, a criterion may carry :data:`CANNOT_TELL` in place of its
+    returned as 1 or 0; one without a scale is ordinal, answered as one of :data:`ORDINAL_ANSWERS` (or a bare
+    integer on the scale) and returned as its integer. With ``cannot_tell_offered``, a criterion may carry :data:`CANNOT_TELL` in place of its
     score; it is returned under ``cannot_tell`` and left out of ``criteria_scores``.
 
     Raises:
@@ -398,7 +425,7 @@ async def run_judge_llm(
         protocol, :func:`sent_temperature`) is not a failed reply but the host's defect: it raises
         :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, naming the conformance check, after
         one call. A finished reply that will not parse — including one
-        scoring a criterion with anything but an integer on the scale — fails with
+        scoring a criterion with anything but a score on the scale — fails with
         "Failed to parse" after the bounded retries. Each caller
         composites the per-dimension scores itself (``judge_service`` across its
         single-dim calls, a host's own scorer however it composites), so this path returns

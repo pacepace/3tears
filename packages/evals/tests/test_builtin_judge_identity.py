@@ -148,11 +148,11 @@ def test_a_built_in_identity_is_the_prefix_and_twelve_hex_characters() -> None:
 #: stops applying to scores judged with the new one, as it would for a new config. That is what a wording change
 #: costs; re-pin only when it is meant, and say so in the release's notes.
 _PINNED: dict[tuple[JudgedArtifact, str], str] = {
-    (JudgedArtifact.TRANSCRIPT, TRANSCRIPT_DIM_ID): "builtin:f886726e63d2",
-    (JudgedArtifact.TRANSCRIPT, OUTCOME_DIM_ID): "builtin:5fd0040e2c22",
-    (JudgedArtifact.TRANSCRIPT, _TONE.name): "builtin:501c023ca46f",
+    (JudgedArtifact.TRANSCRIPT, TRANSCRIPT_DIM_ID): "builtin:fdfa47da36a8",
+    (JudgedArtifact.TRANSCRIPT, OUTCOME_DIM_ID): "builtin:576896bef534",
+    (JudgedArtifact.TRANSCRIPT, _TONE.name): "builtin:61371c63c7dd",
     (JudgedArtifact.TRANSCRIPT, _PASS.name): "builtin:6a15a72a00e0",
-    (JudgedArtifact.DOCUMENT, _TONE.name): "builtin:acec207171e0",
+    (JudgedArtifact.DOCUMENT, _TONE.name): "builtin:24be20140704",
     (JudgedArtifact.DOCUMENT, _PASS.name): "builtin:c2362452be2f",
 }
 
@@ -224,11 +224,11 @@ def test_a_configured_judge_s_identity_moves_with_the_reply_format_appended_to_i
 #: changed**, and with it every configured judge: profiles and agreement measured under the old suffix stop applying,
 #: though no config changed. Re-pin only when it is meant, and say so in the release's notes.
 _PINNED_FORMATS: dict[tuple[JudgedArtifact, str], str] = {
-    (JudgedArtifact.TRANSCRIPT, TRANSCRIPT_DIM_ID): "cfg@48f825101269",
-    (JudgedArtifact.TRANSCRIPT, OUTCOME_DIM_ID): "cfg@48f825101269",
-    (JudgedArtifact.TRANSCRIPT, _TONE.name): "cfg@48f825101269",
+    (JudgedArtifact.TRANSCRIPT, TRANSCRIPT_DIM_ID): "cfg@244c6e35eec0",
+    (JudgedArtifact.TRANSCRIPT, OUTCOME_DIM_ID): "cfg@244c6e35eec0",
+    (JudgedArtifact.TRANSCRIPT, _TONE.name): "cfg@244c6e35eec0",
     (JudgedArtifact.TRANSCRIPT, _PASS.name): "cfg@77f5d3e70b47",
-    (JudgedArtifact.DOCUMENT, _TONE.name): "cfg@c31b0cac0f26",
+    (JudgedArtifact.DOCUMENT, _TONE.name): "cfg@31a65e926680",
     (JudgedArtifact.DOCUMENT, _PASS.name): "cfg@469f6f5d4bdb",
 }
 
