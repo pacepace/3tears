@@ -13,14 +13,14 @@ to `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py`.
 
 Run an eval written as a file from the command line, or wire a host's own commands into the same entry; the exit codes are what a CI step reads.
 
-- `quick`: `build_parser`, `DEFAULT_PROG`, `ENGINE_COMMANDS`, `EXIT_FAILED`, `EXIT_GATE_FAILED`, `EXIT_OK`, `EXIT_REFUSED`, `EXIT_RUN_DID_NOT_COMPLETE`, `HostCommand`, `HostFactory`, `run_cli`
+- `quick`: `DEFAULT_PROG`, `EXIT_FAILED`, `EXIT_GATE_FAILED`, `EXIT_OK`, `EXIT_REFUSED`, `EXIT_RUN_DID_NOT_COMPLETE`, `HostCommand`, `HostFactory`, `run_cli`
 
 ## Rung 1: an eval and a grader
 
 Cases, the code under test and what counts as right, run k times; the result, read whole or case by case.
 
 - `threetears.evals`: `Answer`, `Eval`, `grader`, `Model`, `Result`
-- `analysis`: `CaseResult`, `LabelStatistics`, `Verdict`
+- `analysis`: `CaseResult`, `GLOSSARY`, `humanize`, `LabelStatistics`, `lint_prose`, `StyleViolation`, `Verdict`
 - `quick`: `Grader`, `Measure`, `measure`
 
 ## Rung 2: a judge, examples and calibration
@@ -78,7 +78,7 @@ What a host writes against beyond the rungs: the host and profile, registries, t
 Declared because the production host imports it: launch and judge plumbing, the reporter kind, prompt registry, metering, the routed store and the operations its routes call.
 
 - `schema`: `ActorPolicy`, `AsyncDelivery`, `AsyncDeliveryStatus`, `AsyncExternalSpend`, `CatalogRubricDim`, `ConversationSpec`, `ConversationStopCause`, `DOC_TYPE_FACTS`, `DURABLE_DOC_TYPES`, `EVAL_DOC_TYPES`, `EvalBaseModel`, `ExternalSpend`, `JudgeConfig`, `nested_schemas`, `NON_TERMINAL_RUN_STATUSES`, `OutOfRunSpend`, `PROSE_SCHEMA_KEY`, `ProviderFailure`, `RefusedCall`, `RESERVED_DIM_IDS`, `RubricAxis`, `RubricProposal`, `VariationAxis`, `VariationCounts`
-- `kernel`: `ActionSeam`, `AdmittedCall`, `DeliveryRecorder`, `DeliveryReplay`, `DeliverySeam`, `DeliveryTicket`, `EvalJobTimeout`, `ExclusionCause`, `ExternalRateTable`, `extract_json`, `extract_json_array`, `FIND_TEMPLATE`, `fold_phase_timings`, `JUDGE_KIND_CONTRACT`, `JUDGE_KIND_MEASURES`, `KIND_TEMPLATE`, `KIND_TEXT`, `MeritAxis`, `OutOfRunBudget`, `PlannedCall`, `prompt_drift`, `PromptDrift`, `Recordable`, `ReplayedDelivery`, `RoleUsageLedger`, `seed_digest`, `SEED_PROMPTS`, `SEED_REMEDY`, `SeedPrompt`, `SeedSection`, `SeedTemplate`, `ToolWrap`
+- `kernel`: `ActionSeam`, `AdmittedCall`, `DeliveryRecorder`, `DeliveryReplay`, `DeliverySeam`, `DeliveryTicket`, `EvalJobTimeout`, `ExclusionCause`, `ExternalRateTable`, `extract_json`, `FIND_TEMPLATE`, `JUDGE_KIND_CONTRACT`, `JUDGE_KIND_MEASURES`, `KIND_TEMPLATE`, `KIND_TEXT`, `MeritAxis`, `OutOfRunBudget`, `PlannedCall`, `prompt_drift`, `PromptDrift`, `Recordable`, `ReplayedDelivery`, `RoleUsageLedger`, `seed_digest`, `SEED_PROMPTS`, `SEED_REMEDY`, `SeedPrompt`, `SeedSection`, `SeedTemplate`, `ToolWrap`
 - `kernel.host`: `check_seed`, `EvalCellTimeout`, `ResolvesInto`, `UnsupportedSchemaError`
 - `run`: `AbandonedRunSweepReport`, `assert_preconditions`, `build_judge_service`, `CallCeiling`, `CandidateTurn`, `CellContext`, `delete_run`, `drive_conversation`, `fold_metered_cell`, `JUDGE_CALL_ATTEMPTS`, `JUDGE_MAX_TOKENS`, `launchable_judge_kind`, `metered_cell_tally`, `MeteredCallLedger`, `MeteredCallTally`, `plan_judge`, `precondition_failure_text`, `refuse_ignored_template_fields`, `resolve_judge_pin`, `run_judge_llm`, `SCHEDULER_CALL_ATTEMPTS`, `seed_eval_definitions`, `SeedCorpus`, `SeedOutcome`, `SIMULATOR_ANSWER_BUDGET_TOKENS`, `SIMULATOR_MAX_TOKENS`, `SimulatorTurn`, `sweep_abandoned_runs`, `TemplateField`, `TurnDriver`
 - `analysis`: `AsRecordedReporterKind`, `CampaignReadStore`, `dollars_text`, `generation_ceiling_s`, `judge_phase_ceiling_s`, `refuse_undeliverable_reporter_template`, `reporter_cell_timeout_s`, `REPORTER_KIND`, `reporter_kind_contract`, `ReporterKind`, `ReporterOverlays`
