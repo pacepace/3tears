@@ -560,7 +560,8 @@ class SqlL3Backend:
         :ptype rows: Sequence[Mapping[str, Any]]
         :param max_rows: the most rows one statement writes
         :ptype max_rows: int
-        :param max_bytes: the most JSON bytes of parameters one statement carries
+        :param max_bytes: the most bytes of parameters, as the L3 rail sends them, one statement
+            carries
         :ptype max_bytes: int
         :param conn: the caller's transaction handle; ``None`` uses the pool
         :ptype conn: Any

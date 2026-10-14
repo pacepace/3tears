@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, NoReturn
 from uuid import UUID, uuid7
@@ -39,7 +38,7 @@ from threetears.core.backends.broker_generation import (
     record_reply_generations,
 )
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
-from threetears.core.backends.schema_sql import json_default
+from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
     DataVersionNotReadyError,
@@ -187,33 +186,6 @@ def _raise_for_failed_reply(
     if error_code == LOCK_NOT_AVAILABLE_ERROR_CODE and sqlstate == _LOCK_NOT_AVAILABLE_SQLSTATE:
         raise asyncpg.PostgresError.new({"C": sqlstate, "M": str(response.get("error_message", ""))})
     raise DataLayerUnavailableError(message)
-
-
-def _serialize_param(value: Any) -> Any:
-    """serialize parameter value for NATS transport.
-
-    converts UUID, datetime, Decimal to string representations and bytes to
-    ``\\x``-prefixed hex. a list or tuple is an array parameter (``= ANY($1::uuid[])``,
-    ``unnest($1::timestamptz[])``) and is converted element by element, at every
-    depth, into a list, so the broker can restore each element as it restores a
-    scalar. other types passed through unchanged.
-
-    :param value: parameter value to serialize
-    :ptype value: Any
-    :return: serialized value suitable for JSON transport
-    :rtype: Any
-    """
-    if isinstance(value, (list, tuple)):
-        return [_serialize_param(element) for element in value]
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, bytes):
-        return "\\x" + value.hex()
-    return value
 
 
 def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -893,7 +865,7 @@ class NatsProxyL3Backend:
                 {
                     "operation": q.get("operation", _detect_operation(q["query"])),
                     "query": q["query"],
-                    "params": [_serialize_param(p) for p in q.get("params", [])],
+                    "params": [transport_param(p) for p in q.get("params", [])],
                 }
                 for q in queries
             ],
@@ -946,7 +918,7 @@ class NatsProxyL3Backend:
             "namespace": ns,
             "operation": operation,
             "query": query,
-            "params": [_serialize_param(p) for p in params],
+            "params": [transport_param(p) for p in params],
             "timeout_ms": self.timeout_ms,
         }
         if customer_scope is not None:
@@ -980,7 +952,7 @@ class NatsProxyL3Backend:
         :ptype subject: str
         :param payload: request payload dict, JSON-encoded with the storage handler
             (:func:`~threetears.core.backends.schema_sql.json_default`). Top-level parameters are
-            already converted by ``_serialize_param``; what the handler still meets is a value
+            already converted by :func:`~threetears.core.backends.schema_sql.transport_param`; what the handler still meets is a value
             nested in a dict or list parameter bound for a jsonb column, which the broker stores
             as it arrives -- so a nested datetime is written in
             :func:`~threetears.core.serialization.json_datetime`'s one form, as every tier writes it
@@ -1257,7 +1229,7 @@ class _ProxyConnection:
             "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(self.tx_id),
             "query": query,
-            "params": [_serialize_param(p) for p in params],
+            "params": [transport_param(p) for p in params],
         }
         subject = f"{self._backend.ns}.l3.tx.execute"
         response = await self._backend.nats_request(subject, payload)
@@ -1308,7 +1280,7 @@ class _ProxyConnection:
             "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(self.tx_id),
             "query": query,
-            "params": [_serialize_param(p) for p in params],
+            "params": [transport_param(p) for p in params],
         }
         subject = f"{self._backend.ns}.l3.tx.fetchrow"
         response = await self._backend.nats_request(subject, payload)
@@ -1403,7 +1375,7 @@ class _ProxyConnection:
             "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(self.tx_id),
             "query": query,
-            "params": [_serialize_param(p) for p in params],
+            "params": [transport_param(p) for p in params],
         }
         subject = f"{self._backend.ns}.l3.tx.fetch"
         response = await self._backend.nats_request(subject, payload)

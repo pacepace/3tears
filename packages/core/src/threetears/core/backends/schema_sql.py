@@ -68,6 +68,8 @@ __all__ = [
     "normalize_write_value",
     "pull_value",
     "render_param",
+    "transport_param",
+    "transport_params_bytes",
 ]
 
 # column type tags (string-duplicated here so this module stays import-cycle-free;
@@ -812,6 +814,51 @@ def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
     )
 
 
+def transport_param(value: Any) -> Any:
+    """convert one statement parameter to the form it crosses the L3 rail in.
+
+    The one owner of that form: :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`
+    sends every parameter through it, and :func:`transport_params_bytes` sizes a statement by it,
+    so what is measured is what is sent. A UUID, datetime or Decimal becomes its string and bytes
+    become ``\\x``-prefixed hex, two characters a byte. A list or tuple is an array parameter
+    (``= ANY($1::uuid[])``, ``unnest($1::timestamptz[])``) and is converted element by element, at
+    every depth, into a list, so the broker can restore each element as it restores a scalar.
+    Other types pass through unchanged.
+
+    :param value: parameter value to convert
+    :ptype value: Any
+    :return: the value as the rail carries it, ready for JSON
+    :rtype: Any
+    """
+    if isinstance(value, (list, tuple)):
+        result: Any = [transport_param(element) for element in value]
+    elif isinstance(value, UUID):
+        result = str(value)
+    elif isinstance(value, datetime):
+        result = value.isoformat()
+    elif isinstance(value, Decimal):
+        result = str(value)
+    elif isinstance(value, bytes):
+        result = "\\x" + value.hex()
+    else:
+        result = value
+    return result
+
+
+def transport_params_bytes(params: Sequence[Any]) -> int:
+    """the bytes a statement's parameters occupy in an L3 rail request.
+
+    The parameters as the rail sends them: each through :func:`transport_param`, then the list
+    as JSON with the storage handler (:func:`json_default`) for what is nested in a jsonb value.
+
+    :param params: one statement's parameters, in order
+    :ptype params: Sequence[Any]
+    :return: the size of the request's ``params`` value, in bytes
+    :rtype: int
+    """
+    return len(json.dumps([transport_param(value) for value in params], default=json_default).encode("utf-8"))
+
+
 def bulk_batches(
     rows: list[list[Any]], *, max_rows: int, max_bytes: int, max_params: int = MAX_STATEMENT_PARAMS
 ) -> list[list[list[Any]]]:
@@ -819,14 +866,15 @@ def bulk_batches(
 
     A batch holds at most ``max_rows`` rows (what one statement may write inside the database's
     statement timeout), at most ``max_params`` parameters, and at most ``max_bytes`` of the
-    parameters as JSON (what one statement may carry over the bus). A row larger than
-    ``max_bytes`` alone is a batch of its own rather than dropped.
+    parameters as the L3 rail sends them (:func:`transport_params_bytes`: what one statement may
+    carry over the bus). A row larger than ``max_bytes`` alone is a batch of its own rather than
+    dropped.
 
     :param rows: each row's parameters, in order
     :ptype rows: list[list[Any]]
     :param max_rows: the most rows in one batch
     :ptype max_rows: int
-    :param max_bytes: the most JSON bytes of parameters in one batch
+    :param max_bytes: the most bytes of parameters, as the rail sends them, in one batch
     :ptype max_bytes: int
     :param max_params: the most parameters in one batch
     :ptype max_params: int
@@ -838,7 +886,7 @@ def bulk_batches(
     size = 0
     params = 0
     for row in rows:
-        row_bytes = len(json.dumps(row, default=json_default))
+        row_bytes = transport_params_bytes(row)
         if batch and (len(batch) >= max_rows or size + row_bytes > max_bytes or params + len(row) > max_params):
             batches.append(batch)
             batch, size, params = [], 0, 0

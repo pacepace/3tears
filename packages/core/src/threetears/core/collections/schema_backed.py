@@ -1871,8 +1871,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: row of a few dozen columns
     BULK_MAX_ROWS: ClassVar[int] = 1000
 
-    #: the most JSON bytes of parameters one bulk statement carries: under a NATS deployment's
-    #: default 1 MiB message, with room for the request around them
+    #: the most bytes of parameters one bulk statement carries, measured as the L3 rail sends
+    #: them (:func:`~threetears.core.backends.schema_sql.transport_params_bytes`): under a NATS
+    #: deployment's default 1 MiB message, with room for the request around them
     BULK_MAX_BYTES: ClassVar[int] = 768 * 1024
 
     #: the most leading-key values one key-led read names: a value usually holds a few rows, so a
@@ -1916,8 +1917,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype conn: Any
         :param max_rows: the most rows one statement writes; :attr:`BULK_MAX_ROWS` when None
         :ptype max_rows: int | None
-        :param max_bytes: the most JSON bytes of parameters one statement carries;
-            :attr:`BULK_MAX_BYTES` when None
+        :param max_bytes: the most bytes of parameters, as the L3 rail sends them, one statement
+            carries; :attr:`BULK_MAX_BYTES` when None
         :ptype max_bytes: int | None
         :return: how many rows were submitted: every row given, whether the conflict clause updated
             a row already held, left it as it was (``on_conflict="ignore"``) or raised

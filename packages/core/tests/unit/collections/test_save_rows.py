@@ -6,9 +6,15 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
+from threetears.nats import Subject
+
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 
 from threetears.core.backends.schema_sql import (
     build_bulk_insert_sql,
@@ -16,14 +22,18 @@ from threetears.core.backends.schema_sql import (
     build_key_led_delete_sql,
     bulk_batches,
     json_default,
+    transport_params_bytes,
 )
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
+    BYTES_TYPE,
     DATETIMETZ_TYPE,
     INT_TYPE,
     STRING_TYPE,
     Column,
+    SchemaBackedCollection,
     TableSchema,
     collection_for_schema,
 )
@@ -342,9 +352,107 @@ async def test_a_collection_fencing_with_a_null_safe_cas_is_refused() -> None:
     assert conn.executed == []
 
 
-async def test_a_sql_store_refuses_a_bulk_upsert_to_a_table_whose_schema_it_does_not_hold() -> None:
-    from threetears.core.backends.sql import SqlL3Backend
+# -- a statement is sized by what the rail sends --------------------------------------------------
 
+#: a NATS deployment's default ``max_payload``, the message :attr:`BULK_MAX_BYTES` is set to fit
+NATS_DEFAULT_MAX_PAYLOAD = 1024 * 1024
+
+SHAPES = TableSchema(
+    name="shapes",
+    primary_key="id",
+    columns=[Column("id", STRING_TYPE), Column("shape", BYTES_TYPE)],
+)
+
+
+def _recording_proxy() -> tuple[NatsProxyL3Backend, list[bytes]]:
+    """the rail's pod-side transport over a bus that keeps every request it is handed.
+
+    :return: the proxy, and the request payloads it put on the bus, in order
+    :rtype: tuple[NatsProxyL3Backend, list[bytes]]
+    """
+    sent: list[bytes] = []
+
+    async def request_raw(*, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
+        del subject, timeout
+        sent.append(payload)
+        return json.dumps({"success": True, "row_count": 1}).encode("utf-8")
+
+    nats = MagicMock()
+    nats.request_raw = AsyncMock(side_effect=request_raw)
+    proxy = NatsProxyL3Backend(
+        nats_client=nats,
+        namespace_prefix="test",
+        agent_id="agent-123",
+        identity_token=lambda: "test-identity-token",
+    )
+    return proxy, sent
+
+
+def _params_on_the_wire(request: bytes) -> int:
+    """the bytes a request's ``params`` value occupies in the message.
+
+    :param request: one request payload, as sent
+    :ptype request: bytes
+    :return: the size of its ``params`` value
+    :rtype: int
+    """
+    return len(json.dumps(json.loads(request)["params"]).encode("utf-8"))
+
+
+async def test_a_page_of_bytes_heavy_rows_fits_the_bus_statement_by_statement() -> None:
+    proxy, sent = _recording_proxy()
+    store = SqlL3Backend(proxy)
+    store.register_schema("shapes", SHAPES)
+    # 4 MiB of shape: the page must split, and a split by any size smaller than the wire's
+    # (bytes cross the rail as hex, two characters a byte) sends a statement past the bound
+    rows = [{"id": f"{i:04d}", "shape": bytes([i % 251]) * (16 * 1024)} for i in range(256)]
+    written = await store.upsert_many(
+        "shapes",
+        rows,
+        max_rows=SchemaBackedCollection.BULK_MAX_ROWS,
+        max_bytes=SchemaBackedCollection.BULK_MAX_BYTES,
+    )
+    assert written == 256
+    assert len(sent) > 1
+    assert max(_params_on_the_wire(request) for request in sent) <= SchemaBackedCollection.BULK_MAX_BYTES
+    assert max(len(request) for request in sent) < NATS_DEFAULT_MAX_PAYLOAD
+    # sized by the wire and not by something larger: every statement but the last is full to
+    # within one row of the bound
+    one_row = transport_params_bytes(["0000", rows[0]["shape"]])
+    assert min(_params_on_the_wire(request) for request in sent[:-1]) > SchemaBackedCollection.BULK_MAX_BYTES - one_row
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        b"\x00\xff" * 512,
+        UUID("019d9a00-0000-7000-8000-000000000000"),
+        datetime(2026, 10, 13, 12, 30, tzinfo=UTC),
+        Decimal("12345.678900"),
+        [UUID("019d9a00-0000-7000-8000-000000000000"), UUID("019d9a00-0000-7000-8000-000000000001")],
+        (b"ab", b"cd"),
+        {"nested": {"when": datetime(2026, 10, 13, tzinfo=UTC), "blob": b"xyz", "text": "caf\u00e9"}},
+        "plain text, with a caf\u00e9",
+        17,
+        None,
+    ],
+    ids=["bytes", "uuid", "datetime", "decimal", "uuid-array", "bytes-tuple", "jsonb", "str", "int", "none"],
+)
+async def test_a_row_is_sized_at_exactly_what_the_rail_sends_for_it(value: Any) -> None:
+    # the sizing and the transport share one encoding: a change to either without the other
+    # moves one of these two numbers and not the other
+    proxy, sent = _recording_proxy()
+    row = ["key", value]
+    await proxy.execute("INSERT INTO t (k, v) VALUES ($1, $2)", *row)
+    [request] = sent
+    on_the_wire = _params_on_the_wire(request)
+    assert transport_params_bytes(row) == on_the_wire
+    other = ["other", 1]
+    assert [len(b) for b in bulk_batches([row, other], max_rows=10, max_bytes=on_the_wire + 12)] == [2]
+    assert [len(b) for b in bulk_batches([row, other], max_rows=10, max_bytes=on_the_wire + 11)] == [1, 1]
+
+
+async def test_a_sql_store_refuses_a_bulk_upsert_to_a_table_whose_schema_it_does_not_hold() -> None:
     store = SqlL3Backend(_Pool())
     with pytest.raises(ValueError, match="schema of 'nowhere' registered"):
         await store.upsert_many("nowhere", [{"id": 1}], max_rows=10, max_bytes=1000)
