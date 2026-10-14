@@ -124,6 +124,7 @@ you installed.
 **Learn**
 
 - [Tutorial](docs/tutorial.md): your first eval, end to end. Start here.
+- [Building an inventory](docs/building-an-inventory.md): what to test, before a line of code — incidents, a behaviour tree, graders, hard negatives, and what you have not tested.
 - [Designing a classifier eval set](docs/designing-classifier-evals.md): which cases to write, and how many.
 - [Reading reports](docs/reading-reports.md): what each part of a comparison and a report means.
 
