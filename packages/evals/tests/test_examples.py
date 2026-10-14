@@ -1,10 +1,10 @@
 """What every example under ``examples/`` holds to, read across all of them.
 
 Each example that calls a model builds its clients one way: with ``ANTHROPIC_API_KEY`` set,
-``models_client(MODEL, provider="anthropic", ...)`` from the request settings it declares, recorded into
+``Model(MODEL, provider="anthropic", ...)`` from the request settings it declares, recorded into
 ``recordings/<example>.jsonl`` when ``RECORD=1``; without it, a replay of that file. There is no other path: no
 scripted stand-in and no shared helper module. The examples call one model, ``claude-haiku-5-5``, and send it no
-temperature, which it refuses. No test here calls the API or touches a committed recording.
+temperature, which it takes none of. No test here calls the API or touches a committed recording.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def test_every_example_reaches_the_engine_only_through_public_roots() -> None:
 
 
 def test_the_model_calling_examples_are_exactly_those_that_build_a_client() -> None:
-    builds = {path.name for path in EXAMPLES.glob("*.py") if "models_client(" in path.read_text(encoding="utf-8")}
+    builds = {path.name for path in EXAMPLES.glob("*.py") if "live = Model(" in path.read_text(encoding="utf-8")}
     assert builds == set(MODEL_CALLING)
     assert not list(EXAMPLES.glob("_*.py")), "every example stands alone: no shared module beside them"
 
@@ -69,11 +69,11 @@ def test_live_each_client_is_built_from_its_request_settings_with_no_temperature
     monkeypatch.setattr(module, "RECORDING", tmp_path / "recording.jsonl")  # never the committed one
     built: list[tuple[str, dict[str, Any]]] = []
 
-    def models_client(model: str, **kwargs: Any) -> Any:
+    def model_client(model: str, **kwargs: Any) -> Any:
         built.append((model, kwargs))
         return object()
 
-    monkeypatch.setattr(module, "models_client", models_client)
+    monkeypatch.setattr(module, "Model", model_client)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-not-a-real-key")
     monkeypatch.delenv("RECORD", raising=False)
     for settings in _settings_of(module):
@@ -86,11 +86,10 @@ def test_live_each_client_is_built_from_its_request_settings_with_no_temperature
     assert built, "every model-calling example declares its request settings"
     for model, kwargs in built:
         assert model == MODEL and kwargs["provider"] == "anthropic" and kwargs["api_key"] == "sk-not-a-real-key"
-        assert "temperature" not in kwargs, f"{MODEL} refuses a temperature"
-        sent = {field: kwargs.get(field) for field in ("max_tokens", "reasoning_effort", "reasoning_max_tokens")}
-        assert any(sent == {field: getattr(settings, field) for field in sent} for settings in _settings_of(module)), (
-            f"{name} built a client from settings it does not declare: {sent}"
-        )
+        assert "temperature" not in kwargs, f"{MODEL} takes no temperature"
+        sent = (kwargs.get("max_tokens"), kwargs.get("effort"))
+        declared = [(s.max_tokens, s.reasoning_effort or s.reasoning_max_tokens) for s in _settings_of(module)]
+        assert sent in declared, f"{name} built a client from settings it does not declare: {sent}"
 
 
 @pytest.mark.parametrize("name", MODEL_CALLING)

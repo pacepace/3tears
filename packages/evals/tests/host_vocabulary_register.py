@@ -22,9 +22,7 @@ __all__ = ["CEILINGS"]
 
 #: Host terms allowed per module and term. Keyed by module path, then by term as the canary's ``TERMS`` spells it.
 CEILINGS: dict[str, dict[str, int]] = {
-    # The root's one `openrouter` is an import name in ROOT_EXTRAS (the top-level modules the `providers` root needs,
-    # which a host's import gate checks), not host vocabulary in the package's prose. Exact, like the rows below.
-    "__init__.py": {"openrouter": 1},
+    "__init__.py": {},
     "analysis/__init__.py": {},
     "analysis/agreement.py": {},
     "analysis/bar_proposals.py": {},
@@ -229,14 +227,15 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/simulator.py": {},
     "run/witnessed.py": {},
     "__main__.py": {},
-    # The provider adapter names the providers it builds clients for, by 3tears-models' registry names, and
-    # `openrouter` is one of them: a provider's name there, where naming providers is the tree's purpose, and a
-    # host noun everywhere else (the shared-contract canary's _PROVIDER_NAMES says the same). These counts are
-    # exact, so a doc edit that adds or drops a mention moves them; no other host term is allowed in the tree.
+    # The completion client names the providers it speaks to, and `openrouter` is one of them: a provider's name
+    # there, where naming providers is the tree's purpose, and a host noun everywhere else (the shared-contract
+    # canary's _PROVIDER_NAMES says the same). These counts are exact, so a doc edit that adds or drops a mention
+    # moves them; no other host term is allowed in the tree.
     "providers/__init__.py": {"openrouter": 2},
-    "providers/adapter.py": {"openrouter": 37},
-    "providers/factory.py": {"openrouter": 1},
-    "providers/failures.py": {"openrouter": 16},
+    "providers/catalogue.py": {"openrouter": 4},
+    "providers/failures.py": {"openrouter": 3},
+    "providers/model.py": {"openrouter": 12},
+    "providers/wire.py": {"openrouter": 15},
     # The negotiation every completion client shares names no provider in its mapping, loop or store: OpenRouter's
     # request shape is the `router` family there. Only its readers name the provider whose answers they read.
     "negotiation/__init__.py": {},

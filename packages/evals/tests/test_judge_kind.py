@@ -528,7 +528,9 @@ async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_
     assert action.permission == "write"
     text = action.render(report)
     lines = text.splitlines()
-    assert {f"template_id: {template.id}", f"cases ({len(source)}):", "  name: faithfulness", "  version: 1"} <= set(lines)
+    assert {f"template_id: {template.id}", f"cases ({len(source)}):", "  name: faithfulness", "  version: 1"} <= set(
+        lines
+    )
     # The same freeze again answers with the version already listing exactly these cases.
     assert off_loop(judge_cases_freeze, host, freeze, TOYHOST_SCOPE).case_set == report.case_set
 

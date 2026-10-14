@@ -27,10 +27,8 @@ the open tickets it closed, the meeting it booked, the light it switched on.
    checkout of this repo, `uv sync` at the root does it.
    `threetears.evals.__version__` says which version is installed.
 
-   The `[models]` extra (the shipped provider adapter, `threetears.evals.providers`) installs from PyPI once 0.68.0
-   ships, as `pip install "3tears-evals[models]"`. Until then it has no install line from a tag: it needs
-   3tears-models and its family packages at 0.68.0, none of them on PyPI yet, so use a checkout of this repo at the
-   tag and run `uv sync --extra models` at the root.
+   The completion client (`threetears.evals.providers`, `Model`) is on the base install: it speaks each provider's
+   HTTP API over `httpx`, with no SDK and no other 3tears package.
 
 2. **Run the first example.** It grades a small sentiment classifier on six cases, offline and free. In a
    checkout:

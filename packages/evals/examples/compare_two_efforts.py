@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from threetears.evals.analysis import format_number, format_signed
-from threetears.evals.providers import models_client
+from threetears.evals.providers import Model
 from threetears.evals.quick import Answer, Comparison, compare
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions
@@ -111,13 +111,13 @@ def client(model: str, settings: ClientRequestSettings) -> Any:
         if recording:
             raise SystemExit("RECORD=1 records a live run, which needs ANTHROPIC_API_KEY")
         return RecordedCompletions.replay(RECORDING, settings=settings, rerecord=RERECORD)
-    live = models_client(
+    live = Model(
         model,
         api_key=key,
-        provider="anthropic",  # models' registry does not place this id on its own
+        provider="anthropic",  # a bare id names its provider
         max_tokens=settings.max_tokens,
-        reasoning_effort=settings.reasoning_effort,
-    )  # and no temperature, so the model's own sampling applies
+        effort=settings.reasoning_effort or settings.reasoning_max_tokens,
+    )  # and no temperature: this model takes none
     # Every client is built before the first call, so replace=True clears the old recording and nothing of this run.
     return RecordedCompletions.record(live, RECORDING, settings=settings, replace=True) if recording else live
 

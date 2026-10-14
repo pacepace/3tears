@@ -8,7 +8,7 @@ ties going lower; a budget to the word its share of the cap maps to on a model t
 that share of the cap on a model that takes budgets only; Anthropic's effort words over adaptive thinking with no
 temperature beside any thinking; ``max`` and ``none`` per provider; the strict reply format sent unenforced where it
 cannot be enforced; the output cap clamped to the model's own. Facts left unknown are sent as asked. The shares are
-one constant, pinned here. What reaches the wire is ``test_models_adapter*.py``; what is learned from a refusal,
+one constant, pinned here. What reaches the wire is ``test_providers_model.py``; what is learned from a refusal,
 ``test_negotiation_loop.py``.
 """
 

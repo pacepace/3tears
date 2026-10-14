@@ -12,8 +12,9 @@ work), :mod:`~threetears.evals.actions` (the action catalogue every transport mo
 :mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). Two more are for a
 completion client: :mod:`~threetears.evals.negotiation` (sending the closest request settings a model
 takes, and answering a provider's refusal of one, on the base install) and :mod:`~threetears.evals.providers` (the
-shipped adapter over 3tears-models, ``3tears-evals[models]``, which uses it); nothing in the engine imports
-either. Runs are launched on demand; there is no scheduled-run surface.
+shipped client over each provider's HTTP API, which uses it, and whose :class:`~threetears.evals.providers.Model`
+this package also exports, loaded on first use); nothing in the engine imports either. Runs are launched on demand;
+there is no scheduled-run surface.
 
 **Import only from a public root**, and only the names its ``__all__`` declares. The roots are
 :data:`PUBLIC_ROOTS`, which a consumer can read to check its own imports rather than keep a copy;
@@ -35,8 +36,13 @@ what records it beside what it stores.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from importlib.metadata import version as _distribution_version
 from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from threetears.evals.providers import Model
 
 #: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
 #: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
@@ -47,14 +53,19 @@ from types import MappingProxyType
 __version__: str
 
 
-def __getattr__(name: str) -> str:
-    """Resolve :data:`__version__` from the distribution's metadata on first read.
+#: The names this package exports from a public root, loaded on first read so ``import threetears.evals`` (and
+#: ``from threetears.evals import ops``) loads none of them: name -> the root that defines it.
+_LAZY_EXPORTS: Mapping[str, str] = MappingProxyType({"Model": "threetears.evals.providers"})
+
+
+def __getattr__(name: str) -> Any:  # Any: __version__ is a str, and a lazy export is whatever its root defines
+    """Resolve :data:`__version__` from the distribution's metadata, and each name of ``_LAZY_EXPORTS``, on first read.
 
     Args:
-        name: The attribute asked for; only ``__version__`` is served here.
+        name: The attribute asked for.
 
     Returns:
-        The installed distribution's version string.
+        The installed distribution's version string, or the exported object.
 
     Raises:
         AttributeError: For any other name, as a module normally would.
@@ -63,14 +74,15 @@ def __getattr__(name: str) -> str:
     """
     if name == "__version__":
         return _distribution_version("3tears-evals")
+    if name in _LAZY_EXPORTS:
+        return getattr(import_module(_LAZY_EXPORTS[name]), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 #: The public roots, as absolute module names. A consumer imports from these and from no module
 #: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` is a root of its own inside a
-#: package: the contract a host implements. Two roots fail to import without an extra
-#: (:data:`ROOT_EXTRAS`): ``transports.fastmcp``, which needs ``[fastmcp]``, and ``providers``, the shipped provider
-#: adapter over 3tears-models, which needs ``[models]``.
+#: package: the contract a host implements. One root fails to import without an extra (:data:`ROOT_EXTRAS`):
+#: ``transports.fastmcp``, which needs ``[fastmcp]``.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.schema",
     "threetears.evals.kernel",
@@ -96,10 +108,10 @@ class RootExtra:
     Attributes:
         extra: The extra to install, as ``pip install "3tears-evals[<extra>]"`` names it.
         modules: Every module the root imports that the base install does not provide, by the absolute name an
-            ``import`` statement gives it (``anthropic``, ``threetears.models``), sorted: what must be importable for
-            the root to import. A gate checks each with ``importlib.util.find_spec`` rather than read the manifest.
-            The root may fail on any one of them first, so a gate that checks only the extra's own distribution
-            (``threetears.models`` for ``[models]``) misses an install that has it and lacks another.
+            ``import`` statement gives it (``fastmcp``), sorted: what must be importable for the root to import. A
+            gate checks each with ``importlib.util.find_spec`` rather than read the manifest. The root may fail on
+            any one of them first, so a gate that checks only the extra's own distribution misses an install that
+            has it and lacks another.
     """
 
     extra: str
@@ -109,7 +121,7 @@ class RootExtra:
 #: Each public root that fails to import without an extra installed, mapped to what it needs (:class:`RootExtra`): the
 #: extra's name, and the modules that extra provides which the root imports. What a consumer's import gate reads to
 #: import every root its install can, and to say which module is missing, rather than keep its own list. Every root not
-#: here imports on the base install, whose only dependency is pydantic.
+#: here imports on the base install, whose dependencies are pydantic and httpx.
 #: ``tests/test_extraction_import_boundary.py`` proves the map: in fresh interpreters, with every extra's dependencies
 #: unimportable exactly these roots fail, with one extra's missing exactly the roots listed under it fail, and with any
 #: one listed module missing its root fails; and by an import walk, the modules listed for a root are exactly the
@@ -117,10 +129,7 @@ class RootExtra:
 ROOT_EXTRAS: Mapping[str, RootExtra] = MappingProxyType(
     {
         "threetears.evals.transports.fastmcp": RootExtra("fastmcp", ("fastmcp",)),
-        "threetears.evals.providers": RootExtra(
-            "models", ("anthropic", "httpx", "langchain_core", "openai", "openrouter", "threetears.models")
-        ),
     }
 )
 
-__all__ = ["PUBLIC_ROOTS", "ROOT_EXTRAS", "RootExtra", "__version__"]
+__all__ = ["PUBLIC_ROOTS", "ROOT_EXTRAS", "Model", "RootExtra", "__version__"]

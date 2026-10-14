@@ -1,7 +1,7 @@
 """The negotiation loop: send the closest settings, and on a refusal learn it and send again, never failing for a lack.
 
 :func:`negotiate` is the one implementation of "a model that lacks a request feature never fails the request" (owner
-ruling, 2026-10-13), for the shipped adapter and for a host's own client alike. The caller brings the sending
+ruling, 2026-10-13), for the shipped client and for a host's own client alike. The caller brings the sending
 (``send``, its own HTTP or SDK call) and the reading of a failure (``read_refusal``, usually one of the shipped
 readers over the status and body it saw); the loop chooses what to send (:func:`closest_settings`), decides whether a
 refusal is one to answer, in what order, and how often, keeps what a served request proved
@@ -47,8 +47,8 @@ _EFFORT_REFUSALS: Final = frozenset({"effort_word", "effort"})
 class LearnedSettings:
     """What providers refused, per provider and model, kept for as long as the callers that share it live.
 
-    One store is shared by every client that should not meet a refusal another already met: the shipped adapter keeps
-    one per factory (every client of one :class:`~threetears.evals.providers.ModelsClients`), and a host's own client
+    One store is shared by every client that should not meet a refusal another already met: the shipped client keeps
+    one per :class:`~threetears.evals.providers.Catalogue` (every model sharing it), and a host's own client
     keeps one per process or per client factory, as it chooses. **A learned fact lasts for the store's life**, which
     is the process, or the factory that keeps it: nothing expires it. Not persisted: a provider may start accepting
     a setting, and each completion already records what its request carried. A refusal wins over what the caller
@@ -75,7 +75,7 @@ class LearnedSettings:
 
         Args:
             client: The event name a learned fact's WARNING begins with, naming the client that learned it (the
-                shipped adapter's is ``eval.providers``).
+                shipped client's is ``eval.providers``).
             declared_by: What the declared facts are called in the log (``registry=unknown``, ``declared=refuses``).
             contradiction: What the log says when a refusal contradicts a declared fact: where to correct it.
         """
@@ -267,7 +267,7 @@ async def negotiate[R](
         read_refusal: The caller's reading of what ``send`` raised: a :class:`SettingRefusal`, or ``None`` for anything
             else. Usually one of the shipped readers over the status and body the exception carries.
         learned: The store of learned facts, shared as the caller chooses.
-        declared: What the caller knows of the model before any request (3tears-models' capabilities, a router's
+        declared: What the caller knows of the model before any request (a registry's capabilities, a router's
             catalogue through :func:`~threetears.evals.negotiation.facts_from_router_catalogue`), below what was
             learned; ``None`` for nothing.
 

@@ -10,7 +10,7 @@ temperature only when dropping it alone was served, a temperature refused beside
 that what is learned is shared by every caller of one store and by no other, that concurrent calls refused together
 each resend and the fact is logged once, and that the result reports what the SERVED request carried. Each shipped
 reader is held to recorded-shape bodies, OpenRouter's production 404 and Anthropic's live effort list among them.
-The pure choice of what to send is ``test_closest_settings.py``; the adapter over it, ``test_models_adapter*.py``.
+The pure choice of what to send is ``test_closest_settings.py``; the client over it, ``test_providers_model.py``.
 """
 
 from __future__ import annotations

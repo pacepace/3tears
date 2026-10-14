@@ -448,5 +448,3 @@ async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_r
 
     assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert host.job_manager.admitted_count == 0
-
-

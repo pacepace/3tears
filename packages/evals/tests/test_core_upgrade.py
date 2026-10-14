@@ -1,7 +1,7 @@
 """The core's upgrade runner: an older core document reads through its upgraders, and nothing else reads.
 
-The runner is driven here, apart from the steps ``CORE_UPGRADERS`` registers, through its public front door, :func:`upgrade_document`, with
-synthetic chains, against a real core document from the frozen corpus and a real core model. A
+The runner is driven here, the core registering no steps of its own, through its public front door,
+:func:`upgrade_document`, with synthetic chains, against a real core document from the frozen corpus and a real core model. A
 test-defined core model reads through ``from_dict`` to show where the upgrade sits: before every
 validator, the model's own included.
 """

@@ -100,7 +100,7 @@ if TYPE_CHECKING:
     from threetears.evals.schema.subject import SubjectSnapshot
     from threetears.evals.kernel.host.sweepables import SweepableRegistry
     from threetears.evals.schema.models import JudgeConfig, VariationCounts
-    from threetears.evals.schema.completion import BoundCompletionClient, PricedCompletion
+    from threetears.evals.schema.completion import BoundCompletionClient
     from threetears.evals.kernel.scoring import CellSummary
     from threetears.evals.kernel.storage import DefinitionStore
     from threetears.evals.kernel.usage_capture import ExternalRateTable

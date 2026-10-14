@@ -7,7 +7,7 @@ recording of a live run when you do not, so every one runs offline and free out 
 ## Running them
 
 The examples that call a model run **live by default**: with `ANTHROPIC_API_KEY` set they call Claude
-(`claude-haiku-5-5`, the only model they use) through the package's shipped provider adapter,
+(`claude-haiku-5-5`, the only model they use) through the package's own completion client,
 [`threetears.evals.providers`](../src/threetears/evals/providers/__init__.py). Without a key they replay
 `recordings/<example>.jsonl`, what Claude answered when the run was last recorded, so they call nothing and cost
 nothing, and their output is a real model's, as of that recording. There is no scripted stand-in for a model
@@ -21,11 +21,10 @@ anywhere in them. Each prints which way it ran, first:
 - `No model is called: ...` means the example never calls one, live or not (`cassettes.py`, `reports.py`).
   `rung_zero.py` calls no model either, and prints no such line.
 
-The examples need the `[models]` extra, which brings in `3tears-models` and the Anthropic SDK through it. Outside a
-checkout that is `pip install "3tears-evals[models]"`, which resolves only once 0.68.0 is on PyPI. Until then, use a
-checkout of this repo and `uv sync --extra models` at its root.
+The examples need nothing beyond the base install: the client speaks Anthropic's API over `httpx`, which the
+package depends on.
 
-**In a checkout of this repo**, from the repo root, after `uv sync --extra models`:
+**In a checkout of this repo**, from the repo root, after `uv sync`:
 
 ```bash
 uv run python packages/evals/examples/llm_judge.py
@@ -43,7 +42,7 @@ Git ignores `.env` files, so the key stays out of commits. Then pass the file to
 uv run --env-file packages/evals/examples/.env python packages/evals/examples/llm_judge.py
 ```
 
-**Outside a checkout** (once 0.68.0 is on PyPI and you installed `3tears-evals[models]` with pip): the examples are
+**Outside a checkout** (once 0.68.0 is on PyPI and you installed `3tears-evals` with pip): the examples are
 not part of the installed package, so fetch this whole directory from the repository, at the tag you installed (the
 [README's install step](../README.md#first-result-in-10-minutes) names it). This fetches only the examples:
 
@@ -57,11 +56,11 @@ Keep all of it together: the examples replay `recordings/` and read `tickets.jso
 `export ANTHROPIC_API_KEY=sk-ant-...` first, any example live.
 
 **How an example builds its client.** Each model-calling example has the same few lines, so read any one: with the
-key, `models_client("claude-haiku-5-5", api_key=..., provider="anthropic", max_tokens=..., reasoning_effort=...)`
-from `threetears.evals.providers`, built from the `ClientRequestSettings` the example declares (`SETTINGS`, or one
+key, `Model("claude-haiku-5-5", api_key=..., provider="anthropic", max_tokens=..., effort=...)` from
+`threetears.evals.providers`, built from the `ClientRequestSettings` the example declares (`SETTINGS`, or one
 per arm); without it, `RecordedCompletions.replay(recording, settings=...)` from
 `threetears.evals.testing`, given the same settings, since a recording serves only a client built the way it was.
-No temperature is sent: `claude-haiku-5-5` refuses one, so the model's own sampling applies. The candidates ask for
+No temperature is sent: `claude-haiku-5-5` takes none, so the model's own sampling applies. The candidates ask for
 `low` effort; `compare_two_efforts.py` and `prompt_x_effort.py` compare `low` with `medium`, and `llm_judge.py`'s
 judge is asked as a judged run records it (`JUDGE_REQUEST_SETTINGS`: an output cap and `high` effort).
 
@@ -73,7 +72,7 @@ request actually carried, which the engine records as unverified when it is abse
 `threetears.evals.testing`) is the check: hand it one completion your client returned, and it names each attribute
 missing and a `stop_reason` the engine does not know (`end_turn`, `max_tokens`, `content_filter`, `truncated` or
 `error`). An absent or unknown finish reason is `truncated` (output that stopped early, cause unnamed); `error` is for
-a provider that reported a failure in place of a completion. When to keep your own rather than the shipped adapter:
+a provider that reported a failure in place of a completion. When to keep your own rather than the shipped client:
 [Adopting the engine](../docs/adopting-a-host.md#bringing-a-provider).
 
 Live runs call `claude-haiku-5-5` over 5 to 14 cases (50 for `guardrails.py`), so each costs cents. Each file's

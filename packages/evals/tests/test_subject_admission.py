@@ -124,5 +124,3 @@ async def test_the_kinds_resolver_decides_not_one_the_host_holds() -> None:
     host = OpsHost(launch=dataclasses.replace(fixture.host.launch, kinds={name: admitting}))
     estimate = await launch_estimate(host, _arguments("Vera"), TOYHOST_SCOPE)
     assert estimate.subject_id == "Vera"
-
-
