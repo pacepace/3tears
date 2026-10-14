@@ -156,6 +156,11 @@ class _StubFetchTransport:
         )
 
 
+def _page(content: str) -> str:
+    """The page text of a fetch result: what follows the opening line and its notes."""
+    return content.partition("\n\n")[2]
+
+
 def _projection(result: Any) -> SearchResultsMetadata:
     """read the structured projection back off a tool result, as a consumer does."""
     assert result.metadata is not None
@@ -352,9 +357,12 @@ class TestWebFetchCarriesStructure:
 
         result = await tool.execute(url=_PAGE_URL)
 
-        body, _, note = result.content.partition("\n\n[characters ")
-        assert len(body) <= 60
-        assert note, "a part must say it is a part"
+        head, _, body = result.content.partition("\n\n")
+        opening, note = head.splitlines()[:2]
+        assert 0 < len(body) <= 60
+        assert opening.startswith('Read "Otter husbandry"'), "the first line says what was read"
+        assert "characters 0-60 of " in opening
+        assert note.startswith("[characters "), "a part says it is a part before the page, not after it"
         assert "call web_fetch again with offset=60" in note
         assert result.metadata["window"]["offset"] == 0
         assert result.metadata["window"]["next_offset"] == 60
@@ -366,7 +374,7 @@ class TestWebFetchCarriesStructure:
         read, offset = "", 0
         while True:
             result = await tool.execute(url=_PAGE_URL, offset=offset)
-            read += result.content.split("\n\n[characters ")[0]
+            read += _page(result.content)
             next_offset = result.metadata["window"]["next_offset"]
             if next_offset is None:
                 break
@@ -381,7 +389,7 @@ class TestWebFetchCarriesStructure:
 
         result = await tool.execute(url=_PAGE_URL)
 
-        assert "[characters " not in result.content
+        assert "This is a part" not in result.content
         assert result.metadata["window"]["next_offset"] is None
 
 
@@ -403,6 +411,11 @@ class TestWebFetchHonoursRobots:
         assert result.success is False
         assert _projection(result).candidates[0].facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
         assert _PAGE_URL not in transport.fetched
+        # the reader is told which refusal it was, not a list of what it might have been
+        assert result.content == (
+            f"Did not read {_PAGE_URL}: the site's robots.txt does not allow it to be read; "
+            "find the same facts on another site."
+        )
 
     @pytest.mark.asyncio
     async def test_the_stance_is_configuration_not_a_per_call_choice(self) -> None:
@@ -430,6 +443,9 @@ class TestWebFetchFailsTyped:
         assert result.success is False
         assert not result.content.startswith("[TOOL ERROR]")
         assert _projection(result).candidates[0].facets[EXTRACTION_STATUS_FACET] == "failed"
+        assert result.content == (
+            f"Did not read {_PAGE_URL}: the page was not found (404); check the address, or search for the page."
+        )
 
     @pytest.mark.asyncio
     async def test_a_missing_url_is_answered_rather_than_fetched(self) -> None:
@@ -507,9 +523,10 @@ class TestTheCharacterBoundHoldsAtItsEdges:
 
         result = await tool.execute(url=_PAGE_URL)
 
-        body = result.content.split("\n\n[characters ")[0]
-        assert len(body) <= max_chars, f"max_chars={max_chars} returned {len(body)} chars of page"
-        assert len(result.content) <= max_chars + NOTE_ALLOWANCE, "the note outgrew its allowance"
+        body = _page(result.content)
+        assert 0 < len(body) <= max_chars, f"max_chars={max_chars} returned {len(body)} chars of page"
+        opening = result.content.split("\n", 1)[0]
+        assert len(result.content) <= max_chars + len(opening) + NOTE_ALLOWANCE, "the note outgrew its allowance"
 
     @pytest.mark.asyncio
     async def test_a_bound_under_the_marker_does_not_return_the_tail_of_the_page(self) -> None:
@@ -518,7 +535,7 @@ class TestTheCharacterBoundHoldsAtItsEdges:
 
         result = await tool.execute(url=_PAGE_URL)
 
-        assert "social animals" not in result.content.split("\n\n[characters ")[0]
+        assert "social animals" not in _page(result.content)
 
 
 class TestTheDefaultWiringMeetsARealServer:

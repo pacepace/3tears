@@ -20,6 +20,10 @@ __all__ = [
     "EXTRACTION_STATUS_PENDING",
     "EXTRACTION_STATUS_REFUSED",
     "EXTRACTION_STATUS_UNCHANGED",
+    "GENERATION_IGNORED",
+    "GENERATION_SEED",
+    "GENERATION_SIZE",
+    "GENERATION_SOURCE_USED",
     "OBJECT_HANDLE_METADATA_KEY",
     "GeneratedImage",
     "ImageGenerationBackend",
@@ -164,7 +168,22 @@ class MediaSizeLimitExceeded(Exception):
 
 @runtime_checkable
 class ImageGenerationBackend(Protocol):
-    """Protocol for image generation backends."""
+    """Protocol for image generation backends.
+
+    What a backend did with what it was given is said in the result's
+    ``metadata``, under the keys :data:`GENERATION_SOURCE_USED`,
+    :data:`GENERATION_IGNORED`, :data:`GENERATION_SIZE` and
+    :data:`GENERATION_SEED`, so the caller can tell the model "the source was not
+    used" or "this model takes no seed" instead of reporting what was asked as
+    what was done. A backend may also carry a ``takes_source_image`` attribute
+    (bool): ``False`` lets a caller refuse an edit before paying for an image
+    made from the words alone. It is not part of the protocol's structure, so a
+    backend without it still satisfies ``isinstance``.
+
+    ``size``, ``aspect`` and ``seed`` are passed only when the caller set them,
+    so a backend written before they existed still takes every call that does
+    not use them.
+    """
 
     async def generate(
         self,
@@ -173,6 +192,9 @@ class ImageGenerationBackend(Protocol):
         style: str | None = None,
         source_image: bytes | None = None,
         source_mime_type: str | None = None,
+        size: str | None = None,
+        aspect: str | None = None,
+        seed: int | None = None,
     ) -> GeneratedImage:
         """Generate an image from a text prompt.
 
@@ -184,10 +206,33 @@ class ImageGenerationBackend(Protocol):
         :ptype source_image: bytes | None
         :param source_mime_type: MIME type of source image
         :ptype source_mime_type: str | None
+        :param size: pixel size as ``"WIDTHxHEIGHT"``, e.g. ``"1024x1536"``
+        :ptype size: str | None
+        :param aspect: shape when no size is given: ``"square"``, ``"landscape"``,
+            ``"portrait"`` or a ratio such as ``"16:9"``
+        :ptype aspect: str | None
+        :param seed: a number that makes the same prompt give the same image again
+        :ptype seed: int | None
         :return: generated image result
         :rtype: GeneratedImage
         """
         ...
+
+
+#: ``GeneratedImage.metadata`` key: ``True`` when a given source image shaped the
+#: result, ``False`` when the backend made the image from the words alone.
+GENERATION_SOURCE_USED = "source_used"
+
+#: ``GeneratedImage.metadata`` key: the names of the options the backend could not
+#: apply (``"size"``, ``"aspect"``, ``"seed"``, ``"style"``), each with why, as
+#: ``{name: reason}``.
+GENERATION_IGNORED = "ignored"
+
+#: ``GeneratedImage.metadata`` key: the size the image was made at, ``"WIDTHxHEIGHT"``.
+GENERATION_SIZE = "size"
+
+#: ``GeneratedImage.metadata`` key: the seed the image was made with, when the backend has one.
+GENERATION_SEED = "seed"
 
 
 @runtime_checkable

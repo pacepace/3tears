@@ -23,6 +23,7 @@ than cached; both methods are honest no-ops documented as such.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
@@ -34,7 +35,7 @@ from threetears.agent.tools.object_resolver import ResolveObjectError
 
 log = get_logger(__name__)
 
-__all__ = ["ObjectCatalogMediaStorage", "media_category_for_mime"]
+__all__ = ["ObjectCatalogMediaStorage", "media_category_for_mime", "read_bounded_stream"]
 
 
 def media_category_for_mime(mime_type: str) -> str:
@@ -57,23 +58,27 @@ def media_category_for_mime(mime_type: str) -> str:
     return result
 
 
-async def _read_bounded(media_id: UUID, s3_key: str, *, max_bytes: int | None) -> bytes:
-    """stream one stored object, stopping the moment the bytes read pass ``max_bytes``.
+async def read_bounded_stream(media_id: UUID, stream: AsyncIterator[bytes], *, max_bytes: int | None) -> bytes:
+    """read a stream of a stored object's bytes, stopping the moment they pass ``max_bytes``.
+
+    the one bounded read every :class:`MediaStorage` shares: a storage opens its
+    own stream (the object catalog through the hub, a host through its own
+    store) and hands it here, so ``download_media(max_bytes=...)`` never holds
+    more than the limit plus one chunk, whatever the recorded size said. the
+    stream is closed on the way out, early or not.
 
     :param media_id: the media/object UUID, for the refusal
     :ptype media_id: UUID
-    :param s3_key: the customer-scoped key the hub resolved
-    :ptype s3_key: str
+    :param stream: the object's bytes, in chunks
+    :ptype stream: AsyncIterator[bytes]
     :param max_bytes: the most bytes to hold, or ``None`` for no limit
     :ptype max_bytes: int | None
     :return: the object's bytes
     :rtype: bytes
     :raises MediaSizeLimitExceeded: when the stream passes ``max_bytes``
-    :raises ConsumeObjectError: when the stream cannot be opened for the caller
     """
     chunks: list[bytes] = []
     total = 0
-    stream = open_object_stream(s3_key)
     try:
         async for chunk in stream:
             total += len(chunk)
@@ -92,6 +97,23 @@ async def _read_bounded(media_id: UUID, s3_key: str, *, max_bytes: int | None) -
         if close is not None:
             await close()
     return b"".join(chunks)
+
+
+async def _read_bounded(media_id: UUID, s3_key: str, *, max_bytes: int | None) -> bytes:
+    """stream one catalogued object through the hub, bounded by ``max_bytes``.
+
+    :param media_id: the media/object UUID, for the refusal
+    :ptype media_id: UUID
+    :param s3_key: the customer-scoped key the hub resolved
+    :ptype s3_key: str
+    :param max_bytes: the most bytes to hold, or ``None`` for no limit
+    :ptype max_bytes: int | None
+    :return: the object's bytes
+    :rtype: bytes
+    :raises MediaSizeLimitExceeded: when the stream passes ``max_bytes``
+    :raises ConsumeObjectError: when the stream cannot be opened for the caller
+    """
+    return await read_bounded_stream(media_id, open_object_stream(s3_key), max_bytes=max_bytes)
 
 
 class ObjectCatalogMediaStorage:

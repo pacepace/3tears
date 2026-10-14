@@ -11,6 +11,8 @@ Extract's choices rather than httpx's.
 
 from __future__ import annotations
 
+from typing import Any
+
 from collections.abc import Mapping
 
 import pytest
@@ -27,6 +29,7 @@ from threetears.search.contracts.fidelity import FIDELITY_CONTENT
 from threetears.search.contracts.spend import Spend
 from threetears.search.contracts.transport import FetchTransport, HeavyFetcher, TransportResponse
 from threetears.search.extract import (
+    EXTRACTION_REASON_FACET,
     EXTRACTION_METHOD_FACET,
     EXTRACTION_STATUS_FACET,
     EXTRACTOR_UNAVAILABLE_SCOPE,
@@ -314,7 +317,9 @@ async def test_unknown_robots_rules_are_honoured_as_deny(robots_reply: Transport
     """RFC 9309's other half, and the reason it is not the convenient default.
 
     Reading "allowed" out of a server error is how a polite fetcher becomes
-    an impolite one for exactly as long as the origin is having a bad day.
+    an impolite one for exactly as long as the origin is having a bad day. The
+    page is not read -- and the record says the rules could not be read, as
+    ``failed``, never that the site refused: it said no such thing.
 
     :param robots_reply: the failing ``robots.txt`` outcome under test
     :ptype robots_reply: TransportResponse | Exception
@@ -323,7 +328,9 @@ async def test_unknown_robots_rules_are_honoured_as_deny(robots_reply: Transport
 
     result = await extract(_candidate(), transport=transport)
 
-    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
+    assert result.facets[EXTRACTION_REASON_FACET].startswith("robots.txt could not be read (")
+    assert result.content is None
     assert transport.requested == [_ROBOTS_URL]
 
 
@@ -382,6 +389,65 @@ async def test_a_page_that_yields_no_text_is_recorded_as_failed(page_reply: Tran
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
     assert result.content is None
+
+
+@pytest.mark.parametrize(
+    ("replies", "locators", "reason"),
+    [
+        pytest.param({_ROBOTS_URL: "disallow"}, None, "robots.txt does not allow it", id="robots"),
+        pytest.param(
+            {_ROBOTS_URL: "allow", _PAGE_URL: LocalCapExceeded("body past cap", spend=Spend(), scope="response-bytes")},
+            None,
+            "the page is larger than 2 MB, the most a fetch reads",
+            id="cap",
+        ),
+        pytest.param(
+            {
+                _ROBOTS_URL: "allow",
+                _PAGE_URL: TransportResponse(
+                    status_code=404,
+                    body=b"nope",
+                    final_url=_PAGE_URL,
+                    egress="direct",
+                    elapsed_seconds=0.01,
+                    headers={"content-type": "text/html"},
+                ),
+            },
+            None,
+            "the page was not found (404)",
+            id="status",
+        ),
+        pytest.param({_ROBOTS_URL: "allow", _PAGE_URL: "empty"}, None, "the page has no readable text", id="no-text"),
+        pytest.param(
+            {_ROBOTS_URL: "allow", _PAGE_URL: TransportFailed("connection reset", spend=Spend())},
+            None,
+            "connection reset",
+            id="transport",
+        ),
+        pytest.param({}, (), "it has no address to fetch", id="no-locator"),
+    ],
+)
+async def test_a_read_that_did_not_happen_says_why(
+    replies: dict[str, Any], locators: tuple[Any, ...] | None, reason: str
+) -> None:
+    """The status says refused or failed for several causes alike; the reason says which.
+
+    A caller tells its reader why the page was not read (robots, the cap, the
+    server's answer), not a list of everything it might have been.
+    """
+    built = {
+        url: _disallowed()
+        if reply == "disallow"
+        else _allowed()
+        if reply == "allow"
+        else (_ok(b"<html><body></body></html>") if reply == "empty" else reply)
+        for url, reply in replies.items()
+    }
+    transport = ScriptedFetchTransport(built)
+
+    result = await extract(_candidate() if locators is None else _candidate(locators=locators), transport=transport)
+
+    assert reason in result.facets[EXTRACTION_REASON_FACET]
 
 
 async def test_a_candidate_with_no_locator_fails_without_fetching() -> None:

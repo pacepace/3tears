@@ -930,12 +930,14 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
         """Stamp a failed-dispatch result onto the fire row.
 
         Called by the tick body when the dispatch callback raises -- the
         per-job try/except keeps one bad fire from poisoning the rest of
-        the tick.
+        the tick -- and when it returns ``status='failed'``, whose ``output``
+        is kept beside the error. ``None`` leaves the row's output as it is.
 
         :param partition_key: partition column value
         :ptype partition_key: UUID
@@ -945,6 +947,8 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         :ptype error: str
         :param latency_ms: latency up to the failure
         :ptype latency_ms: int | None
+        :param output: what the callback reported beside its failure
+        :ptype output: dict[str, Any] | None
         :return: nothing
         :rtype: None
         """
@@ -952,12 +956,14 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
             return None
         # cache-bypass: targeted UPDATE on the failure columns.
         await self.l3_pool.execute(
-            "UPDATE job_fires SET status = 'failed', error = $1, latency_ms = $2 "
+            "UPDATE job_fires SET status = 'failed', error = $1, latency_ms = $2, "
+            "output = COALESCE($5::jsonb, output) "
             "WHERE partition_key = $3 AND fire_id = $4",
             error,
             latency_ms,
             partition_key,
             fire_id,
+            output,
         )
         return None
 
@@ -1056,6 +1062,35 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
             list(kinds),
         )
         return len(rows)
+
+    async def reap_fires(self, fire_ids: Sequence[UUID]) -> list[UUID]:
+        """Fail the named fires that are still ``'dispatching'``: their dispatcher is known to be gone.
+
+        :meth:`reap_stale_dispatching` reaps by age, because it cannot know who
+        was dispatching a fire. A consumer that does know (it keeps a record of
+        which process holds each fire, and that process stopped beating) names
+        the fires here and does not wait out the age. Same terminal state and
+        marker as the age sweep; a fire that finished is left as it ended.
+
+        :param fire_ids: the fires whose dispatcher is gone
+        :ptype fire_ids: Sequence[UUID]
+        :return: the fires this call failed
+        :rtype: list[UUID]
+        """
+        if self.l3_pool is None or not fire_ids:
+            return []
+        # __SPANS_PARTITIONS__: the caller names fires across partitions;
+        # ``partition_key`` is named in the RETURNING clause so the
+        # partition-column enforcement walker sees it as a static literal.
+        # cache-bypass: see reap_stale_dispatching.
+        rows = await self.l3_pool.fetch(
+            "UPDATE job_fires SET status = 'failed', error = $1 "
+            "WHERE status = 'dispatching' AND fire_id = ANY($2::uuid[]) "
+            "RETURNING partition_key, fire_id",
+            REAPED_DISPATCH_ERROR,
+            list(fire_ids),
+        )
+        return [row["fire_id"] for row in rows]
 
     async def list_for_job(
         self,

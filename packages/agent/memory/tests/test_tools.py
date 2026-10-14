@@ -139,7 +139,9 @@ class _FakeAliasMemories:
         return self.row
 
 
-async def _search_by_alias(authorizer: MemoryAuthorizerDependencies, memories: _FakeAliasMemories) -> str:
+async def _search_by_alias(
+    authorizer: MemoryAuthorizerDependencies, memories: _FakeAliasMemories, **loader_kwargs: Any
+) -> str:
     (tool,) = await load_memory_search_tool(
         uuid4(),
         None,  # type: ignore[arg-type]  # the alias lookup embeds nothing
@@ -149,6 +151,7 @@ async def _search_by_alias(authorizer: MemoryAuthorizerDependencies, memories: _
         memories,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
+        **loader_kwargs,
     )
     result = await tool.ainvoke({"alias": "home", "query": "home"})
     assert isinstance(result, str)
@@ -195,6 +198,180 @@ class TestFmtDt:
         assert "[fact] [some string] lives in Leeds" in result
         result = await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(_alias_row(42)))
         assert "[fact] [42] lives in Leeds" in result
+
+
+class TestDatesAreInTheZoneTheCallerNames:
+    """a date is read to a person who lives somewhere; an id is read by the next call."""
+
+    async def test_an_alias_hit_is_dated_in_the_zone_and_names_it(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        row = _alias_row(datetime(2026, 3, 12, 14, 30, tzinfo=timezone.utc))
+        result = await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(row), tz="America/Los_Angeles")
+        assert f"[memory:{row['memory_id']}] [fact] [Mar 12, 2026 at 7:30 AM PDT] lives in Leeds" in result
+
+    async def test_a_search_dates_memories_and_files_in_the_zone_and_leaves_ids_as_stored(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        late = datetime(2026, 10, 10, 4, 11, tzinfo=timezone.utc)
+        memory, media = _memory_row("lives in Leeds", late), _media_row("a photo of the house", late)
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(semantic=[memory]),
+            media=_FakeSearchRows(semantic=[media]),
+            chunks=_FakeSearchRows(),
+            tz="America/Los_Angeles",
+        )
+        assert (
+            f"- [memory:{memory['memory_id']}] [fact] [Oct 9, 2026 at 9:11 PM PDT] [match 0.90] lives in Leeds"
+            in result
+        )
+        # the file by its media id, the id the media tools take, as stored
+        assert f"- [media:{media['media_id']}] a photo of the house (created: Oct 9, 2026 at 9:11 PM PDT)" in result
+        assert str(media["content_id"]) not in result
+        assert "Oct 10" not in result, "no date is left in UTC beside the zoned ones"
+
+    async def test_a_file_found_twice_is_listed_once_by_its_media_id(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        """a file's description and its text are two rows; the agent is handed one id for the file."""
+        description = _media_row("a lease, two pages")
+        text = {**_media_row("The tenant shall pay rent monthly."), "media_id": description["media_id"]}
+        other = _media_row("a photo of the house")
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(),
+            media=_FakeSearchRows(semantic=[description, text, other]),
+            chunks=_FakeSearchRows(),
+        )
+        assert "Found 2 files:" in result
+        assert result.count(f"[media:{description['media_id']}]") == 1
+        assert f"[media:{other['media_id']}]" in result
+
+    async def test_with_no_zone_named_a_date_reads_as_it_did(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        late = datetime(2026, 10, 10, 4, 11, tzinfo=timezone.utc)
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(semantic=[_memory_row("lives in Leeds", late)]),
+            media=_FakeSearchRows(),
+            chunks=_FakeSearchRows(),
+        )
+        assert "[fact] [Oct 10, 2026 at 4:11 AM] [match 0.90] lives in Leeds" in result
+
+    async def test_a_zone_that_does_not_exist_is_refused_when_the_tool_is_built(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        with pytest.raises(ValueError, match="is not a time zone"):
+            await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(), tz="Mars/Olympus")
+
+
+# -- A search that lost a branch says so before anything it found ---------------
+
+
+# parity-exempt: answers only the two searches memory_search's query path makes on each collection; the SQL behind them is covered by the collection tests
+class _FakeSearchRows:
+    """a collection whose semantic and full-text searches return fixed rows, or raise."""
+
+    def __init__(
+        self, semantic: list[dict[str, Any]] | None = None, fts: list[dict[str, Any]] | Exception | None = None
+    ) -> None:
+        self.semantic = semantic or []
+        self.fts = fts if fts is not None else []
+
+    async def search_by_semantic(self, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = kwargs
+        return self.semantic
+
+    async def search_by_fts(self, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = kwargs
+        if isinstance(self.fts, Exception):
+            raise self.fts
+        return self.fts
+
+
+async def _search(
+    authorizer: MemoryAuthorizerDependencies,
+    *,
+    memories: _FakeSearchRows,
+    media: _FakeSearchRows,
+    chunks: _FakeSearchRows,
+    **loader_kwargs: Any,
+) -> str:
+    from langchain_core.embeddings import DeterministicFakeEmbedding
+
+    (tool,) = await load_memory_search_tool(
+        uuid4(),
+        DeterministicFakeEmbedding(size=8),
+        uuid4(),
+        uuid4(),
+        authorizer,
+        memories,  # type: ignore[arg-type]
+        media,  # type: ignore[arg-type]
+        chunks,  # type: ignore[arg-type]
+        **loader_kwargs,
+    )
+    result = await tool.ainvoke({"query": "where the person lives"})
+    assert isinstance(result, str)
+    return result
+
+
+def _memory_row(content: str, date_created: Any = None) -> dict[str, Any]:
+    return {"memory_id": uuid4(), "type": "fact", "content": content, "date_created": date_created, "similarity": 0.9}
+
+
+def _media_row(content: str, date_created: Any = None) -> dict[str, Any]:
+    return {
+        "content_id": uuid4(),
+        "content": content,
+        "media_id": uuid4(),
+        "media_category": "image",
+        "metadata_json": None,
+        "date_created": date_created,
+        "similarity": 0.8,
+    }
+
+
+class TestPartialResultsAreSaidFirst:
+    async def test_the_note_is_the_first_line_and_everything_found_follows_it(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(semantic=[_memory_row("lives in Leeds")], fts=RuntimeError("fts down")),
+            media=_FakeSearchRows(semantic=[_media_row("a photo of the house")]),
+            chunks=_FakeSearchRows(),
+        )
+        lines = result.splitlines()
+        assert lines[0] == "(Partial results: memory full-text search failed, so more may exist.)"
+        assert lines[1] == "" and lines[2] == "Found 1 relevant memories:"
+        assert "lives in Leeds" in result and "a photo of the house" in result
+        assert result.count("Partial results") == 1 and not result.rstrip().endswith(")"), "no note after the body"
+
+    async def test_a_search_that_lost_nothing_starts_with_what_it_found(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(),
+            media=_FakeSearchRows(semantic=[_media_row("a photo of the house")]),
+            chunks=_FakeSearchRows(),
+        )
+        assert result.startswith("Found 1 files:\n- [media:"), "no blank line before the first section"
+        assert "Partial results" not in result
+
+    async def test_sections_are_parted_by_one_blank_line(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(semantic=[_memory_row("lives in Leeds")]),
+            media=_FakeSearchRows(semantic=[_media_row("a photo of the house")]),
+            chunks=_FakeSearchRows(),
+        )
+        first, second = result.split("\n\n")
+        assert first.startswith("Found 1 relevant memories:") and second.startswith("Found 1 files:")
 
 
 # -- Shard C input schemas (v0.7.0 transcript-chunks tools) ------------------

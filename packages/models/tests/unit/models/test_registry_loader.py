@@ -11,6 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.models.capabilities import clear_capability_overrides, get_capabilities
 from threetears.models.enums import ModelType
@@ -160,3 +161,69 @@ class TestLegacyColumnNamesStillResolve:
         assert caps is not None
         # 1 per MTok -> 0.000001 per token; the 999 legacy value must not win
         assert caps.cost_per_input_token == Decimal("1") / Decimal(1_000_000)
+
+
+class TestRequestSettingsKeys:
+    """the loader carries the request-settings facts from a product row."""
+
+    def test_every_request_settings_key_is_read(self) -> None:
+        """each key reaches the registry entry unchanged.
+
+        :return: nothing
+        :rtype: None
+        """
+        register_model_capabilities_bulk(
+            [
+                {
+                    "model_name": "test-request-settings",
+                    "accepts_temperature": False,
+                    "reasoning_efforts": ["low", "medium", "high"],
+                    "reasoning_budget": False,
+                    "adaptive_reasoning": True,
+                    "reasoning_disable": True,
+                    "structured_output": True,
+                }
+            ]
+        )
+
+        caps = get_capabilities("test-request-settings")
+        assert caps is not None
+        assert caps.accepts_temperature is False
+        assert caps.reasoning_efforts == ["low", "medium", "high"]
+        assert caps.reasoning_budget is False
+        assert caps.adaptive_reasoning is True
+        assert caps.reasoning_disable is True
+        assert caps.structured_output is True
+
+    def test_absent_and_null_keys_stay_not_declared(self) -> None:
+        """a row without the keys, or with NULL columns, declares nothing.
+
+        an empty effort list is a value, not an absence, and survives.
+
+        :return: nothing
+        :rtype: None
+        """
+        register_model_capabilities_bulk(
+            [
+                {"model_name": "test-request-settings-absent"},
+                {"model_name": "test-request-settings-null", "accepts_temperature": None, "reasoning_efforts": []},
+            ]
+        )
+
+        absent = get_capabilities("test-request-settings-absent")
+        assert absent is not None
+        assert absent.accepts_temperature is None
+        assert absent.reasoning_efforts is None
+        null = get_capabilities("test-request-settings-null")
+        assert null is not None
+        assert null.accepts_temperature is None
+        assert null.reasoning_efforts == []
+
+    def test_an_unreadable_effort_list_is_refused(self) -> None:
+        """a bare string is not a list of words; the loader refuses rather than splitting it.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValidationError):
+            register_model_capabilities_bulk([{"model_name": "test-request-settings-bad", "reasoning_efforts": "low"}])

@@ -28,13 +28,14 @@ this package, so the factories below construct the ``Table`` directly.
 
 **Drift protection.** A parallel hand-written DDL with no parity
 guarantee would be the embedded-DDL-drift smell. The factory output is
-pinned against the canonical migration DDL (the FINAL post-v007 shape:
+pinned against the canonical migration DDL (the FINAL post-v008 shape:
 v001-v003 create the tables, v004 extends the ``wake_fires.status``
 CHECK to add ``'dispatching'``, v005 replaces the
 ``webhook_subscriptions.verification_scheme`` hardcoded-value CHECK
 with a slug-format guard, v006 adds ``include_conversation_history``, v007
 adds ``protected`` and its CHECK, ``started_conversation_id``, the agent
-indexes, ``'skipped_life_off'`` and the ``'spawn'`` default) by
+indexes, ``'skipped_life_off'`` and the ``'spawn'`` default, v008 adds
+``'checked_quiet'``) by
 ``tests/integration/test_sqlalchemy_table_parity.py``: it applies the
 migrations to one Postgres schema, emits each factory's ``CREATE
 TABLE`` + indexes into a second schema, and asserts the two are
@@ -93,6 +94,7 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 __all__ = [
     "agent_wake_schedules_table",
     "wake_fires_table",
+    "webhook_refusals_table",
     "webhook_subscriptions_table",
 ]
 
@@ -196,6 +198,8 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             nullable=False,
             server_default=sa_text("now()"),
         ),
+        # When the wake was last run by hand (v009). Written only by the manual-fire claim.
+        Column("last_manual_fire_at", SADateTime(timezone=True), nullable=True),
         PrimaryKeyConstraint("conversation_id", "schedule_id"),
         UniqueConstraint("schedule_id"),
         ForeignKeyConstraint(
@@ -258,9 +262,9 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
 def wake_fires_table(metadata: MetaData) -> Table:
     """Register the ``wake_fires`` table on the given SA metadata.
 
-    Mirrors the canonical migration DDL in its FINAL post-v007 shape
+    Mirrors the canonical migration DDL in its FINAL post-v008 shape
     (``migrations/v002_create_wake_fires.py`` for the table + the v003
-    retro-added webhook FK + the v004 extended ``status`` CHECK):
+    retro-added webhook FK + the ``status`` CHECK as v008 leaves it):
     composite primary key ``(conversation_id, fire_id)``, standalone
     ``UNIQUE (fire_id)``, the FK ``schedule_id REFERENCES
     agent_wake_schedules(schedule_id) ON DELETE CASCADE``
@@ -321,6 +325,9 @@ def wake_fires_table(metadata: MetaData) -> Table:
             nullable=False,
             server_default=sa_text("now()"),
         ),
+        # What started the fire, and who asked for one run by hand (v009).
+        Column("fire_source", Text(), nullable=False, server_default=sa_text("'scheduled_tick'")),
+        Column("requested_by", Text(), nullable=True),
         PrimaryKeyConstraint("conversation_id", "fire_id"),
         UniqueConstraint("fire_id"),
         ForeignKeyConstraint(
@@ -350,9 +357,18 @@ def wake_fires_table(metadata: MetaData) -> Table:
             "'skipped_cap', "
             "'skipped_no_handler', "
             "'skipped_life_off', "
+            "'checked_quiet', "
             "'failed'"
             ")",
             name="wake_fires_status_check",
+        ),
+        CheckConstraint(
+            "fire_source IN ('scheduled_tick', 'webhook', 'manual')",
+            name="wake_fires_fire_source_check",
+        ),
+        CheckConstraint(
+            "fire_source <> 'manual' OR requested_by IS NOT NULL",
+            name="wake_fires_manual_requested_by_check",
         ),
         Index(
             "idx_wake_fires_schedule_time",
@@ -486,5 +502,66 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
         Index(
             "idx_webhook_subs_agent",
             "agent_id",
+        ),
+    )
+
+
+def webhook_refusals_table(metadata: MetaData) -> Table:
+    """Register the ``webhook_refusals`` table on the given SA metadata.
+
+    Mirrors the v010 migration DDL (``migrations/v010_create_webhook_refusals.py``):
+    primary key ``(subscription_id, reason, window_start)`` -- one row per
+    subscription, reason and minute -- the FK ``subscription_id REFERENCES
+    webhook_subscriptions(subscription_id) ON DELETE CASCADE``, the ``reason``
+    and count CHECKs, and the per-subscription time index.
+
+    Register :func:`webhook_subscriptions_table` on the same metadata first.
+
+    Idempotent: returns the existing :class:`Table` if one with this name is
+    already registered on ``metadata``.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``webhook_refusals`` :class:`Table`
+    :rtype: Table
+    """
+    if "webhook_refusals" in metadata.tables:
+        return metadata.tables["webhook_refusals"]
+    return Table(
+        "webhook_refusals",
+        metadata,
+        Column("conversation_id", PgUUID(as_uuid=True), nullable=False),
+        Column("subscription_id", PgUUID(as_uuid=True), nullable=False),
+        Column("reason", Text(), nullable=False),
+        Column("window_start", SADateTime(timezone=True), nullable=False),
+        Column("status_code", Integer(), nullable=False),
+        Column("refusals", Integer(), nullable=False, server_default=sa_text("1")),
+        Column("last_refused_at", SADateTime(timezone=True), nullable=False),
+        Column("detail", Text(), nullable=True),
+        PrimaryKeyConstraint("subscription_id", "reason", "window_start", name="webhook_refusals_pkey"),
+        ForeignKeyConstraint(
+            ["subscription_id"],
+            ["webhook_subscriptions.subscription_id"],
+            ondelete="CASCADE",
+            name="webhook_refusals_subscription_fk",
+        ),
+        CheckConstraint(
+            "reason IN ("
+            "'paused', "
+            "'missing_signature', "
+            "'bad_signature', "
+            "'unknown_scheme', "
+            "'source_not_allowed', "
+            "'rate_limited', "
+            "'bad_payload', "
+            "'bad_template'"
+            ")",
+            name="webhook_refusals_reason_check",
+        ),
+        CheckConstraint("refusals >= 1", name="webhook_refusals_count_check"),
+        Index(
+            "idx_webhook_refusals_sub_time",
+            "subscription_id",
+            sa_text("last_refused_at DESC"),
         ),
     )

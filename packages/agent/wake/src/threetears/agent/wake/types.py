@@ -112,6 +112,12 @@ MissedFirePolicy = Literal["coalesce", "catch_up"]
 # - ``'skipped_life_off'`` -- the consumer's :class:`FirePermit` answered
 #   "not now" (v007). Not a failure: the wake is fine, its agent is not
 #   taking fires at the moment.
+# - ``'checked_quiet'`` -- the consumer ran a check before the fire and it
+#   found nothing (v008). No turn ran; not counted by the fire limits, not a
+#   failure, not a ``context_from`` source. A check that must start nothing
+#   runs in the tick's dispatch callback and returns this status without
+#   calling :func:`dispatch_wake`, which starts the fire's conversation (with
+#   a ``start_conversation`` hook) before its handler runs.
 # - ``'failed'`` -- exception raised during dispatch / handler.
 FireStatus = Literal[
     "dispatching",
@@ -123,6 +129,7 @@ FireStatus = Literal[
     "skipped_cap",
     "skipped_no_handler",
     "skipped_life_off",
+    "checked_quiet",
     "failed",
 ]
 
@@ -149,10 +156,11 @@ WebhookSubscriptionStatus = Literal["active", "paused"]
 
 # Source of a wake fire. ``'scheduled_tick'`` for fires emitted by
 # :func:`threetears.agent.wake.tick.wake_tick_job`; ``'webhook'`` for
-# inbound HTTP webhook fires (shard 06). Stored verbatim on the
-# ``wake_fires`` row so the audit history records the origin without
-# requiring a join.
-FireSource = Literal["scheduled_tick", "webhook"]
+# inbound HTTP webhook fires; ``'manual'`` for a fire someone asked for
+# outside the schedule (:mod:`threetears.agent.wake.manual`). Stored on the
+# ``wake_fires`` row (``fire_source``, v009) so the history records the origin
+# without a join.
+FireSource = Literal["scheduled_tick", "webhook", "manual"]
 
 
 @dataclass(frozen=True)
@@ -187,7 +195,9 @@ class WakeTrigger:
     :class:`FireConversationHook` started for this fire; :func:`dispatch_wake`
     sets it before the handler runs, and it is ``None`` when the consumer
     supplies no hook. ``webhook_subscription_id`` is the subscription a
-    webhook fire came through, ``None`` on scheduled fires.
+    webhook fire came through, ``None`` on scheduled fires. ``requested_by``
+    names who asked for a manual fire, as the consumer names them; ``None``
+    on every other fire.
     """
 
     schedule_id: UUID | None
@@ -207,6 +217,7 @@ class WakeTrigger:
     protected: bool = False
     started_conversation_id: UUID | None = None
     webhook_subscription_id: UUID | None = None
+    requested_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,10 +231,15 @@ class FireLimits:
     :ivar per_wake: fires one wake (or one webhook subscription) may make
     :ivar per_agent: fires all the agent's wakes and subscriptions may make
         together; protected wakes' fires are not counted
+    :ivar manual_fires_count: whether a fire run by hand spends these limits.
+        ``True``: a manual fire is counted like any other and is itself refused
+        when a limit is reached. ``False``: manual fires are left out of both
+        counts and are never refused by them
     """
 
     per_wake: int
     per_agent: int
+    manual_fires_count: bool = True
 
 
 @runtime_checkable
@@ -430,6 +446,11 @@ class HandlerCallbackResult:
     - ``'skipped_busy'`` -- the handler declined because the conv was
       busy on a parallel turn. Rare; most busy detection lives in the
       platform's per-conv lock acquire upstream.
+    - ``'checked_quiet'`` -- a check found nothing to wake the agent for,
+      and no turn ran; the fire limits do not count it. Returned from a
+      handler, any conversation a ``start_conversation`` hook started is
+      already there: a check that must start nothing runs in the tick's
+      dispatch callback instead, before :func:`dispatch_wake`.
 
     The platform inspects :attr:`assistant_message_content` for the
     ``[SILENT]`` prefix and records ``display_suppressed`` on the fire

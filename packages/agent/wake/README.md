@@ -7,10 +7,9 @@ ships the schema + Collection layer for three platform tables:
   conversation (cron / one-shot / random-window / etc). Carries a
   nullable `skill_id` FK referencing the cross-package
   `agent_skills.skill_id` standalone UNIQUE.
-- `wake_fires` -- one row per wake fire (history; status enum spans
-  `'fired'`, `'fired_silent'`, `'yielded'`, `'skipped_busy'`,
-  `'skipped_rate_limit'`, `'skipped_cap'`, `'skipped_no_handler'`,
-  `'failed'`).
+- `wake_fires` -- one row per wake fire (history; the statuses are
+  `types.FireStatus`, among them `'checked_quiet'`: a check that found
+  nothing, no turn ran, not counted by the fire limits).
 - `webhook_subscriptions` -- one row per inbound HTTP webhook
   subscription. Carries nullable `default_skill_id` FK to
   `agent_skills.skill_id` and Fernet-encrypted `secret_ciphertext`.

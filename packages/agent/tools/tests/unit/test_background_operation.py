@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -164,6 +165,11 @@ async def test_an_unnamed_error_ending_the_wait_is_logged_even_when_nobody_waits
     ]
     assert len(failures) == 2
     assert body.calls == 0
+    # the replaced wait, once collected, is not logged a second time as an error nobody retrieved
+    operation.start_when_needed(needed, retry_on=(ConnectionError,), retry_seconds=0)
+    await asyncio.sleep(0.01)
+    gc.collect()
+    assert not [record for record in caplog.records if "never retrieved" in record.getMessage()]
 
 
 async def test_a_second_start_when_needed_while_one_waits_is_refused_and_stop_still_ends_the_first() -> None:

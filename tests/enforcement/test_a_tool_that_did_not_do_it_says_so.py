@@ -1,8 +1,10 @@
 """A tool that did not do what it was asked returns ``[TOOL ERROR]``, or every caller records it as done.
 
 A consumer reads a tool's failure only from that prefix, the platform's own
-convention (``threetears.agent.tools.utils.tool_error``): any other text is a call
-that worked. This walks every tool in every package's ``src``: each function
+convention (``threetears.agent.tools.utils.tool_error``). A call that ran and had
+nothing to change (already there, not found, at a cap) opens ``[NO CHANGE]``
+(``tool_no_change``), which is its own status and not a failure. Any other text is
+a call that worked. This walks every tool in every package's ``src``: each function
 decorated ``@tool`` and each handed to ``StructuredTool.from_function``, and every
 string it returns that opens with a refusal's words. An answer that only looks
 like one goes in ``ANSWERS``, with why.
@@ -24,11 +26,12 @@ REFUSAL = re.compile(
 
 #: ``file:opening`` -> why it is an answer and not a refusal.
 ANSWERS: dict[str, str] = {
-    "packages/agent/intention/src/threetears/agent/intention/tools.py:No open wants to raise now.": "a listing that is empty",
     "packages/agent/memory/src/threetears/agent/memory/tools.py:No relevant memories or documents found": "a search that ran",
     "packages/agent/memory/src/threetears/agent/memory/tools.py:No passages matched.": "a search that ran",
+    "packages/agent/memory/src/threetears/agent/memory/tools.py:No more memories match this query past the first ": "a search that ran, read past its last page",
     "packages/agent/skills/src/threetears/agent/skills/tools.py:No skills available.": "a listing that is empty",
     "packages/agent/tools/src/threetears/agent/tools/relevance.py:No matching tools found.": "a search that ran",
+    "packages/agent/tools/src/threetears/agent/tools/relevance.py:No tool fits that.": "a search that ran, and whose caller judged the nearest tools too far to offer",
     "packages/agent/tools/src/threetears/agent/tools/todo.py:No todos in this conversation.": "a listing that is empty",
 }
 
