@@ -1,11 +1,11 @@
 """What does the new prompt change, and is the difference real or noise?
 
 Two versions of a support-ticket classifier, differing only in their prompt, run over the same tickets, and the
-engine tests the new one against the old one, the control. New here: ``compare``, which runs each candidate as
-one arm and reports every arm against the control: the difference (delta), its interval, the Holm-adjusted p,
-and a verdict. Then read each arm per kind of case (``stratum_key=``, ``comparison.strata()``) and where the arms
-disagree, through ``comparison.results(arm)``. The verdicts and what
-each licenses: ``docs/reading-reports.md``.
+engine tests the new one against the old one, the control. New here: an ``Eval`` whose runner is a mapping of
+arms, the first the control, which runs each candidate as one arm and reports every arm against the control: the
+difference (delta), its interval, the Holm-adjusted p, and a verdict. Then read each arm per kind of case (each
+case's ``stratum``, ``comparison.strata()``) and where the arms disagree, through ``comparison.results(arm)``. The
+verdicts and what each licenses: ``docs/reading-reports.md``.
 
 The tickets are a file beside this one, ``tickets.jsonl``, not a list in the script, so the next prompt version,
 and every one after it, runs against exactly the same cases. When production gets a ticket wrong, add it there
@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from threetears.evals.providers import models_client
-from threetears.evals.quick import Comparison, compare
+from threetears.evals import Eval, Result
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions
 
@@ -45,10 +45,10 @@ RERECORD = "RECORD=1 python compare_two_prompts.py"
 # The test set is data, not code: the next prompt version runs against exactly these cases, and when production
 # gets a ticket wrong, it becomes a new line here (docs/designing-classifier-evals.md, section 8, "Maintaining the
 # set"). Each line's "kind" marks the hard ones, the lookalikes that mention a second queue's words, and is the
-# case's stratum (stratum_key="kind" below): the report reads each arm again per kind, and compare takes the key
-# out of every case before an arm sees it, since a ticket that says it is a lookalike tells the model what to watch
-# for. When the suite needs versions and history, store it as a case set (mint_case_set, or the case_set_mint
-# action: docs/concepts.md, "Case set").
+# case's stratum (read as each case's reserved "stratum" key below): the report reads each arm again per kind, and
+# the eval takes the key out of every case before an arm sees it, since a ticket that says it is a lookalike tells
+# the model what to watch for. When the suite needs versions and history, store it as a case set (mint_case_set, or
+# the case_set_mint action: docs/concepts.md, "Case set").
 # -----------------------------------------------------------------------------
 
 TICKETS = Path(__file__).with_name("tickets.jsonl")
@@ -128,20 +128,20 @@ def how_it_runs(what: str) -> str:
 # -----------------------------------------------------------------------------
 
 
-async def main() -> Comparison:
+async def main() -> Result:
     llm = client(MODEL, SETTINGS)
     print(how_it_runs(MODEL) + "\n")
 
     try:
-        comparison = await compare(
-            CASES,
-            {"baseline": classifier(llm, BASELINE_PROMPT), "candidate": classifier(llm, CANDIDATE_PROMPT)},  # by name
-            expected=lambda case: case["queue"],  # a classifier eval: accuracy and a confusion matrix per arm
-            stratum_key="kind",  # each case's kind: the report's By stratum table reads every arm per kind of case
-            control="baseline",  # the arm every other arm is tested against
+        comparison = await Eval(
+            # Each case's kind is its stratum: the report's By stratum table reads every arm per kind of case.
+            [{"ticket": case["ticket"], "queue": case["queue"], "stratum": case["kind"]} for case in CASES],
+            # The arms, by name; the first is the control every other arm is tested against.
+            {"baseline": classifier(llm, BASELINE_PROMPT), "candidate": classifier(llm, CANDIDATE_PROMPT)},
+            ["queue"],  # a classifier eval: accuracy and a confusion matrix per arm
             name="ticket triage: baseline vs candidate prompt",  # titles the report
             k=2,  # repeats per case: a model's answer can change between calls
-        )
+        ).run(store=":memory:")
     finally:
         await llm.aclose()
 
@@ -166,7 +166,7 @@ async def main() -> Comparison:
         if len({str(answers) for answers in said.values()}) > 1:
             print(f"  {case['ticket']!r}, filed under {case['queue']} ({case['kind']}):")
             print("    " + "; ".join(f"{arm} said {', '.join(answers)}" for arm, answers in said.items()))
-    print("\nThe full report: print(comparison.render()), or reports.py to write it to files.")
+    print("\nThe full report: print(comparison.render(full=True)), or reports.py to write it to files.")
     return comparison
 
 

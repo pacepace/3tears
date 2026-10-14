@@ -12,7 +12,7 @@ from types import ModuleType
 
 import pytest
 
-from threetears.evals.quick import Comparison
+from threetears.evals import Result
 from threetears.evals.testing import RecordedPrompt
 from packages.evals.tests.example_loader import EXAMPLES, check_covers, load_example, replaying
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
@@ -39,7 +39,7 @@ async def test_with_no_api_key_it_replays_and_an_arm_that_breached_is_never_the_
     comparison = await module.main()
 
     assert replay.served() == 150, "50 questions x 3 prompts, as the docstring says"
-    assert isinstance(comparison, Comparison) and list(comparison.arms) == ["current", "friendlier", "careful"]
+    assert isinstance(comparison, Result) and list(comparison.arms) == ["current", "friendlier", "careful"]
     for summary in comparison.arms.values():
         assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (50, 1, 50)
     assert {row["arm"] for row in comparison.contrasts("gives_status")} == {"friendlier", "careful"}

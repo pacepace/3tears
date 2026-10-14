@@ -30,6 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from threetears.evals import Eval
 from threetears.evals.analysis import (
     EVAL_ANALYSIS_GEN_DEFAULT,
     AnalysisContextBundle,
@@ -38,7 +39,6 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.kernel import EvalAnalysis
 from threetears.evals.providers import models_client
-from threetears.evals.quick import compare
 from threetears.evals.run import run_blocking
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions
@@ -155,9 +155,8 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
     print(how_it_runs(MODEL) + "\n")
 
     arms = {"baseline": keyword_classifier(BASELINE_RULES), "candidate": keyword_classifier(CANDIDATE_RULES)}
-    comparison = await compare(
-        CASES, arms, expected=lambda case: case["queue"], control="baseline", scope_id="llm-analysis", k=2
-    )
+    # The first arm is the control; "queue" grades each answer as a label.
+    comparison = await Eval(CASES, arms, ["queue"], k=2).run(store=":memory:", scope="llm-analysis")
 
     # The verdict code reached; nothing an analysis writes changes it.
     (row,) = comparison.contrasts("accuracy")

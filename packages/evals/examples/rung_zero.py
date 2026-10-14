@@ -1,15 +1,15 @@
 """Does my function give the right answer on my cases?
 
-The first rung: cases, an async function, and what a right answer is. New here: ``run_eval``, and code grading each
-answer two ways: ``expected=`` grades a classifier (accuracy, confusion matrix, each label's precision and recall),
-and a scorer checks one thing. Then ``summary.misses()``: every miss, and why. Most answers have no exact right
+The first rung: cases, an async function, and what a right answer is. New here: ``Eval``, and code grading each
+answer two ways: a field name (``"expected"``) grades a classifier (accuracy, confusion matrix, each label's precision
+and recall), and a function checks one thing. Then ``summary.misses()``: every miss, and why. Most answers have no exact right
 label; ``llm_judge.py`` grades those with a model. Run ``python rung_zero.py`` (``README.md`` beside it says how).
 It calls no model, so it is free.
 """
 
 import asyncio
 
-from threetears.evals.quick import run_eval
+from threetears.evals import Eval
 from threetears.evals.analysis import EvalSummary
 
 # 1. The cases: each review, and the sentiment a person gave it.
@@ -41,7 +41,8 @@ def no_false_alarm(case: dict, label: str) -> bool:  # the engine reads its docs
 
 # 3. Run it over every case twice, print what the run measured, then read every miss.
 async def main() -> EvalSummary:
-    summary = await run_eval(CASES, classify, [no_false_alarm], expected=lambda case: case["expected"], k=2)
+    result = await Eval(CASES, classify, ["expected", no_false_alarm], k=2).run(store=":memory:")
+    summary = result.summary
     print(summary.render())
     print("\nWhat it got wrong, each case once per repeat:")
     for miss in summary.misses():

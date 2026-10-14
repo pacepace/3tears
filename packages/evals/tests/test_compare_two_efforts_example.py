@@ -15,7 +15,7 @@ from typing import get_args
 import pytest
 
 from threetears.evals.analysis import ContrastOutcome
-from threetears.evals.quick import Comparison
+from threetears.evals import Result
 from threetears.evals.testing import RecordedPrompt
 from packages.evals.tests.example_loader import EXAMPLES, check_covers, load_example, replaying
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
@@ -40,7 +40,7 @@ async def test_with_no_api_key_it_replays_both_efforts_and_decides_by_the_typed_
 
     assert replay.served() == 48, "12 emails x 2 repeats x 2 efforts, as the docstring says"
     today, cheaper = module.EFFORTS
-    assert isinstance(comparison, Comparison) and comparison.control == today
+    assert isinstance(comparison, Result) and comparison.control == today
     assert list(comparison.arms) == [today, cheaper]
     for summary in comparison.arms.values():
         assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (12, 2, 24)

@@ -1,8 +1,8 @@
 """Is each answer helpful, and does it say only what its source supports?
 
 No code grades that, so a model does: a model answers questions about a store policy, and a judge, a second
-model call, grades each answer on a rubric. New here: ``Judge``, passed to ``run_eval`` as ``judge=``: the client
-it calls, that client's model, the rubric, and ``case_material``, what it reads beside each answer. Each dimension
+model call, grades each answer on a rubric. New here: ``Judge``, listed among the eval's graders: the client it
+calls (which names its model), the rubric, and ``case_material``, what it reads beside each answer. Each dimension
 here is pass/fail, so a fail is a miss and ``summary.misses()`` carries the judge's reason. Read them: a judge can
 be wrong too. How far to trust a judge: ``docs/judges-and-calibration.md``.
 
@@ -20,7 +20,7 @@ from typing import Any
 
 from threetears.evals.analysis import EvalSummary
 from threetears.evals.providers import models_client
-from threetears.evals.quick import Judge, run_eval
+from threetears.evals import Eval, Judge
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions
@@ -117,11 +117,13 @@ async def main() -> EvalSummary:
         """Answer a customer's question from the store policy."""
         return (await answering.generate(system=SYSTEM, user=case["question"])).content
 
-    # The judge: a client you own (the run never closes it), the model it calls, the rubric, and what it reads.
-    judge = Judge(client=judging, model=MODEL, rubric=RUBRIC, scale="pass_fail", case_material=judged_against)
+    # The judge: a client you own (the run never closes it) naming the model it calls, the rubric (each dimension
+    # pass/fail), and what it reads.
+    judge = Judge(judging, RUBRIC, case_material=judged_against)
     try:
-        # model= names the candidate's model, so the summary can warn when a model judges its own answers.
-        summary = await run_eval(CASES, candidate, judge=judge, scope_id="llm-judge", k=2, model=MODEL)
+        # The arm is named for the candidate's model, so the summary can warn when a model judges its own answers.
+        result = await Eval(CASES, {MODEL: candidate}, [judge], k=2).run(store=":memory:", scope="llm-judge")
+        summary = result.summary
     finally:
         await answering.aclose()
         await judging.aclose()

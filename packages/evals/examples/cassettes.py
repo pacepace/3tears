@@ -1,10 +1,11 @@
 """How do I compare candidates fairly when the tool they call answers differently every time?
 
 The candidates call a search whose results drift from call to call, so two arms run one after the other
-would be graded on different results. A cassette fixes that: a ``capture`` run calls the tools live and
-records what they answered, and a ``replay`` run serves that recording instead; it records the tools, never
-the candidate. New here: ``tools=``, which hands the candidate its tools as ``candidate(case, tools)``, and
-``cassette_mode=`` / ``cassette_corpus_id=``. How replay matches each ask: ``docs/adopting-a-host.md``.
+would be graded on different results. A recording fixes that: the first run calls the tools live and records what
+they answered, and every run after it is served that recording instead; it records the tools, never the candidate.
+New here: a ``World`` with no state, only tools, which hands the candidate its tools as ``candidate(case, tools)``,
+and its ``recording=``: a file that is there is replayed, one that is not is recorded (``RECORD=1`` records it
+again). Each answer is keyed by the case, the tool, its arguments and which time the cell asked it.
 
 Run it with ``python cassettes.py`` (``README.md`` beside it says how). It calls no model, so it needs no API key
 and costs nothing: the candidates are plain code and the search is an offline stand-in.
@@ -12,11 +13,13 @@ and costs nothing: the candidates are plain code and the search is an offline st
 
 import asyncio
 import random
+import tempfile
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import Any
 
-from threetears.evals.quick import CandidateTools, Comparison, callable_host, compare, run_eval
+from threetears.evals import Eval, Result, World
 
 # -----------------------------------------------------------------------------
 # 1. The cases, and the pages a search finds for each: one current page and two stale ones.
@@ -41,7 +44,7 @@ PAGES = {
 }
 
 # -----------------------------------------------------------------------------
-# 2. The tool: a plain function of keyword arguments that returns JSON.
+# 2. The tool: a plain function of typed keyword arguments that returns JSON, named by its def.
 #
 # This offline stand-in returns two of a query's three pages, re-ranked every time the query is
 # asked again, as a live index would. Seeded, so the script prints the same thing every run.
@@ -50,7 +53,8 @@ PAGES = {
 live_searches: Counter[str] = Counter()
 
 
-def offline_search(query: str) -> list[dict[str, str]]:
+def search(query: str) -> list[dict[str, str]]:
+    """Search the help pages for a query."""
     live_searches[query] += 1
     return random.Random(f"{query} #{live_searches[query]}").sample(PAGES[query], k=2)
 
@@ -65,8 +69,8 @@ served: dict[str, dict[str, list[Any]]] = {}  # arm -> query -> the results it w
 def reader(arm: str, pick: Callable[[list[dict[str, str]]], dict[str, str]]) -> Callable[..., Awaitable[str]]:
     """A candidate that searches the case's query and answers with what the page ``pick`` chooses says."""
 
-    async def answer(case: Mapping[str, Any], tools: CandidateTools) -> str:
-        hits = await tools["search"](query=case["query"])  # the tool, as the engine hands it over
+    async def answer(case: Mapping[str, Any], tools: Mapping[str, Callable[..., Awaitable[Any]]]) -> str:
+        hits = await tools["search"](query=case["query"])  # the tool, as the world hands it over
         served.setdefault(arm, {}).setdefault(case["query"], []).append(hits)
         return pick(hits)["says"]
 
@@ -77,49 +81,36 @@ trust_top_hit = reader("top_hit", lambda hits: hits[0])
 trust_newest_hit = reader("newest_hit", lambda hits: max(hits, key=lambda hit: hit["date"]))
 
 
-# The engine reads this docstring's first line: it is the measure's description.
-def correct(case: Mapping[str, Any], answer: str) -> bool:
+# The engine reads this docstring's first line: it is the measure's description. A world's runner is graded on its
+# outcome: the answer, beside the calls it made.
+def correct(case: Mapping[str, Any], out: Any) -> bool:
     """Whether the answer is what the current page says."""
-    return answer == case["expected"]
+    return out.answer == case["expected"]
 
 
 # -----------------------------------------------------------------------------
-# 4. Capture the search once, then replay that recording to both arms, twice per case, and print the verdict.
+# 4. Record the search once, then replay that recording to both arms, twice per case, and print the verdict.
 # -----------------------------------------------------------------------------
 
 
-async def main() -> Comparison:
+async def main(recording: Path | None = None) -> Result:
+    """Record the search into ``recording`` (a fresh temporary file when ``None``), then replay it to both arms."""
     print("No model is called: running OFFLINE, with plain-code candidates and a stand-in search.\n")
-    tools = {"search": offline_search}  # each tool by the name the candidate calls it by
-    # The replay reads the capture's recording from the same host and scope.
-    host, scope = callable_host([correct]), "cassettes-example"
+    with tempfile.TemporaryDirectory() as scratch:
+        # The search, and where its answers are kept: the first run records them, every later run replays them.
+        lookups = World(tools=[search], recording=recording or Path(scratch) / "search.jsonl")
 
-    capture = await run_eval(
-        CASES,
-        trust_top_hit,
-        [correct],
-        scope_id=scope,
-        host=host,
-        k=1,  # one recorded session per case
-        tools=tools,
-        cassette_mode="capture",  # call the search live, and record every answer
-    )
-    print(f"captured run {capture.run_id}: {live_searches.total()} live search(es) recorded")
+        capture = await Eval(CASES, lookups(trust_top_hit), [correct], k=1).run(store=":memory:")  # one per case
+        print(f"captured run {capture.run_id}: {live_searches.total()} live search(es) recorded")
 
-    live_searches.clear()
-    served.clear()
-    comparison = await compare(
-        CASES,
-        {"top_hit": trust_top_hit, "newest_hit": trust_newest_hit},
-        [correct],
-        control="top_hit",
-        scope_id=scope,
-        host=host,
-        k=2,
-        tools=tools,
-        cassette_mode="replay",  # serve the recording instead of calling the search
-        cassette_corpus_id=capture.run_id,  # which capture to serve
-    )
+        live_searches.clear()
+        served.clear()
+        comparison = await Eval(
+            CASES,
+            {"top_hit": lookups(trust_top_hit), "newest_hit": lookups(trust_newest_hit)},  # the first is the control
+            [correct],
+            k=2,
+        ).run(store=":memory:", scope="cassettes-example")
     print(f"replayed both arms: {live_searches.total()} live search(es)\n")
     for case in CASES:
         dates = {arm: [hit["date"] for hit in served[arm][case["query"]][0]] for arm in ("top_hit", "newest_hit")}
@@ -131,7 +122,7 @@ async def main() -> Comparison:
         p = "" if row["p_adjusted"] is None else f", Holm-adjusted p {row['p_adjusted']:.2g}"  # none if nothing varied
         print(f"{row['arm']} vs {comparison.control} on {row['reading']}: delta {row['delta']:+.2f}, ", end="")
         print(f"interval {row['interval']}{p}: {row['verdict']}")
-    print("\nThe full report: print(comparison.render()), or reports.py to write it to files.")
+    print("\nThe full report: print(comparison.render(full=True)), or reports.py to write it to files.")
     return comparison
 
 

@@ -15,8 +15,8 @@ from types import ModuleType
 
 import pytest
 
+from threetears.evals import Eval
 from threetears.evals.analysis import AnalysisContextBundle, inspect_campaign_bundle
-from threetears.evals.quick import compare
 from packages.evals.tests.example_loader import EXAMPLES, load_example, replaying
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
@@ -69,9 +69,7 @@ async def test_assembling_the_same_campaign_twice_gives_the_same_fingerprint() -
     module = _load()
     arms = {"baseline": module.keyword_classifier(module.BASELINE_RULES)}
     arms["candidate"] = module.keyword_classifier(module.CANDIDATE_RULES)
-    comparison = await compare(
-        module.CASES, arms, expected=lambda case: case["queue"], control="baseline", scope_id="determinism", k=2
-    )
+    comparison = await Eval(module.CASES, arms, ["queue"], k=2).run(store=":memory:", scope="determinism")
     once, twice = (
         off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
         for _ in range(2)

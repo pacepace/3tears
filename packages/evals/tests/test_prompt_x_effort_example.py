@@ -1,8 +1,8 @@
 """``examples/prompt_x_effort.py`` runs a 2x2 as a newcomer would, with no API key, and reads both factors.
 
 With no key the example replays its recording: four arms, the prompt crossed with the reasoning effort, each effort
-one client replaying its own calls from the one file. The arms are read by their keys, never by the words a report
-names them by, and nothing here assumes what Claude answered: each printed line is held to the contrast it reads.
+one client replaying its own calls from the one file. The arms are read by their names (their ``k=v`` factors), never
+by the words a report names them by, and nothing here assumes what Claude answered: each printed line is held to the contrast it reads.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
+from threetears.evals import Result
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER
-from threetears.evals.quick import Comparison
 from threetears.evals.testing import RecordedPrompt
 from packages.evals.tests.example_loader import EXAMPLES, check_covers, load_example, replaying
 from packages.evals.tests.off_loop import off_loop
@@ -39,16 +39,12 @@ async def test_with_no_api_key_it_replays_four_arms_keyed_by_every_factor(
     comparison = await module.main()
 
     assert replay.served() == 112, "14 tickets x 2 repeats x 4 arms, as the docstring says"
-    low, medium, model = *module.EFFORTS, module.MODEL
-    assert isinstance(comparison, Comparison)
-    assert comparison.factors == ("effort", "prompt", "model")
-    assert list(comparison.arms) == [
-        (low, "v1", model),
-        (low, "v2", model),
-        (medium, "v1", model),
-        (medium, "v2", model),
-    ]
-    assert comparison.control == (low, "v1", model)
+    low, medium, model, arm = *module.EFFORTS, module.MODEL, module.arm
+    assert isinstance(comparison, Result)
+    assert comparison.factors == ("model", "effort", "prompt")
+    assert list(comparison.arms) == [arm(low, "v1"), arm(low, "v2"), arm(medium, "v1"), arm(medium, "v2")]
+    assert arm(low, "v1") == f"effort={low}, prompt=v1, model={model}"
+    assert comparison.control == arm(low, "v1")
     assert all(summary.status == "completed" and summary.n_scored == 28 for summary in comparison.arms.values())
     assert {summary.candidate_model for summary in comparison.arms.values()} == {model}
 
@@ -60,14 +56,16 @@ async def test_with_no_api_key_it_replays_four_arms_keyed_by_every_factor(
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: replaying recordings/prompt_x_effort.jsonl, Claude (")
     # Each effort's line reads v2 against v1 at that effort: against (low, v1) at low, and against() at medium.
-    for effort, read in ((low, comparison), (medium, await comparison.against((medium, "v1", model)))):
-        (row,) = [row for row in read.contrasts("accuracy") if row["arm"] == (effort, "v2", model)]
+    for effort, read in ((low, comparison), (medium, await comparison.against(arm(medium, "v1")))):
+        (row,) = [row for row in read.contrasts("accuracy") if row["arm"] == arm(effort, "v2")]
         assert (
             f"\nAt {effort} effort, v2 vs v1 on Accuracy: {row['control_mean']:.2f} -> {row['arm_mean']:.2f}, " in out
         )
         assert re.search(rf"\nAt {effort} effort, v2 vs v1 on .*: {re.escape(row['verdict'])}\n", out)
-    assert comparison.render() not in out
-    assert out.rstrip().endswith("The full report: print(comparison.render()), or reports.py to write it to files.")
+    assert comparison.render(full=True) not in out
+    assert out.rstrip().endswith(
+        "The full report: print(comparison.render(full=True)), or reports.py to write it to files."
+    )
 
 
 async def test_a_candidate_sends_its_arm_s_prompt_and_reads_the_label() -> None:
