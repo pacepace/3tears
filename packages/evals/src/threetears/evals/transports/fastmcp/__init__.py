@@ -61,10 +61,15 @@ import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+# ``FastMCP`` is named only in ``mount_fastmcp``'s annotation, so it is imported for the type checker alone: importing
+# it loads FastMCP's whole server stack (its context, sampling, HTTP app and event store), about as long again as the
+# tool classes this module subclasses, and a host that builds its server imports it there anyway.
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
 
 try:
-    from fastmcp import FastMCP
     from fastmcp.tools import Tool
     from fastmcp.tools.base import ToolResult
 except ModuleNotFoundError as missing:
