@@ -1351,6 +1351,17 @@ case authoring would refuse, then freezes it into its judge template after the t
 case set runs every live case of the judge template, so a host boots with its hard negatives in place and no
 authoring tool of its own over `judge_case_author`.
 
+**A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
+case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
+implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (in
+memory, `SeedCorpus(case_sets=...)`) with the set's `name`, its judge `template` by name and its `judge_cases` by
+their corpus names, in order. A judge case's corpus name is its file's name without `.json` (or its own `name`, which
+an in-memory case must set to be listed). A set naming a case twice, a case the corpus does not carry or a case of
+another judge template refuses the whole corpus when it is built. Once the cases are frozen, each set whose name the
+scope holds no version of is minted over their stored ids through `mint_case_set`, the path `case_set_mint` takes,
+and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
+`case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
+
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
 conversation, the transcript as your kind writes it). The engine places those strings and reads none

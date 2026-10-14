@@ -4106,14 +4106,19 @@
       "signature": "seed_eval_definitions(host: EvalHost, corpus: SeedCorpus, *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> SeedOutcome",
       "tier": "stable"
     },
+    "threetears.evals.run.SeedCaseSet": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.run.SeedCorpus": {
       "kind": "dataclass",
-      "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = ())",
+      "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = (), case_sets: tuple[SeedCaseSet, ...] = ())",
       "tier": "stable"
     },
     "threetears.evals.run.SeedJudgeCase": {
       "kind": "model",
-      "signature": "SeedJudgeCase(judge_template: str, criterion_template: str, criterion: str, output: str, case_material: str, expected: AuthoredVerdict, note: str, author: str, scenario: str | None = None, subject: str | None = None, judged_artifact: Literal['document', 'transcript'] = 'document')",
+      "signature": "SeedJudgeCase(judge_template: str, criterion_template: str, criterion: str, output: str, case_material: str, expected: AuthoredVerdict, note: str, author: str, scenario: str | None = None, subject: str | None = None, judged_artifact: Literal['document', 'transcript'] = 'document', name: str | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.run.SeedOutcome": {

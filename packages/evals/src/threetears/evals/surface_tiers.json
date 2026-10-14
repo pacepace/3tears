@@ -822,6 +822,7 @@
 "threetears.evals.run.SecondJudgeReport": "provisional",
 "threetears.evals.run.SecondJudgeSkip": "provisional",
 "threetears.evals.run.seed_eval_definitions": "stable",
+"threetears.evals.run.SeedCaseSet": "provisional",
 "threetears.evals.run.SeedCorpus": "stable",
 "threetears.evals.run.SeedJudgeCase": "host-contract",
 "threetears.evals.run.SeedOutcome": "stable",
