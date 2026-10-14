@@ -97,6 +97,10 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
     # The classifier is the first field, read per label; the other field and the code grader are pass rates.
     assert "category: mean 0.9 (n=90" in printed and "per label:" in printed
+    # Each label's precision and recall count answers over cases, since k=3 answers each case three times.
+    assert (
+        "    account: precision 1 (17/17 over 7 cases, 95% CI 0.5687-1), recall 0.8095 (17/21 over 7 cases" in printed
+    )
     assert "urgent: mean 0.8333 (n=90" in printed
     assert "escalates: mean 0.9889 (n=90" in printed
     assert "top misses (5 of 20):" in printed
@@ -149,3 +153,13 @@ def test_the_program_imports_only_the_package_root() -> None:
     path = RUNG / "triage.py"
     assert root_only_imports(path) == []
     assert public_root_violations(SOURCE_ROOT, [("triage.py", path)], consumer_root=REPO_ROOT) == []
+
+
+def test_the_inventory_guide_s_last_step_writes_the_rung_s_own_files() -> None:
+    """``docs/building-an-inventory.md`` ends by writing rung 0: its blocks are the shipped files, verbatim."""
+    guide = (RUNG.parents[1] / "docs" / "building-an-inventory.md").read_text(encoding="utf-8")
+    toml_block = guide.split("```toml\n", 1)[1].split("```", 1)[0]
+    assert toml_block == (RUNG / "triage.toml").read_text(encoding="utf-8")
+    json_lines = guide.split("```json\n", 1)[1].split("```", 1)[0].splitlines()
+    shipped = (RUNG / "emails.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json_lines and all(line in shipped for line in json_lines)

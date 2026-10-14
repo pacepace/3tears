@@ -65,6 +65,42 @@ calibrated against people ([reading reports](reading-reports.md#screen-5-not-tes
 leaves are not in that list, because the package does not hold the tree: publish them yourself, beside the report. A
 reader should learn what the eval cannot see before they learn what it found.
 
+**7. Write it down and run it (15 min).** Rung 0 of the [examples' ladder](../examples/README.md#the-ladder) is
+this step, done for the triage example. The cases go in `emails.jsonl`, one email a line, with the triage a person
+gives it. Write a "should" and a "should not" case for each leaf, and put the lookalikes (the hard negatives) in a
+stratum of their own, so the report reads them apart:
+
+```json
+{"id": "hijacked", "stratum": "plain", "email": "Someone signed in to my account from another country an hour ago and changed my password. That was not me!", "category": "account", "urgent": true, "needs_human": true}
+{"id": "phish-suspend", "stratum": "lookalike", "email": "URGENT: your account will be suspended in 24 hours. Verify your password at acme-secure-login.co to keep access.", "category": "spam", "urgent": false, "needs_human": false}
+```
+
+The eval goes in `triage.toml`, beside them: the cases, a prompt the model answers for each one (`{email}` is filled
+from the case), the fields of its answer, and the fields to grade.
+
+```toml
+# Rung 0, no Python: python -m threetears.evals triage.toml
+cases = "emails.jsonl"
+grader = ["category", "urgent", "needs_human"]
+recording = "recordings/triage-toml.jsonl"
+k = 3
+
+[runner]
+model = "deepseek/deepseek-v4-flash"
+prompt = "Triage this support email:\n\n{email}"
+
+[runner.output]
+category = ["billing", "bug", "account", "sales", "spam"]
+urgent = "bool"
+needs_human = "bool"
+```
+
+Run it with `python -m threetears.evals triage.toml`. The first run records the model's answers into `recording`, on
+`OPENROUTER_API_KEY`; every run after replays them, offline and free. It prints each field's pass rate, a confusion
+matrix for `category`, and the misses, and writes its report to `.evals/reports/triage/`. When a leaf needs a rule a
+field name cannot say ("never leave alone an email a person must see"), that is
+[rung 1](../examples/README.md#rungs-0-and-1-email-triage-1-triage): the same eval, in 15 lines of Python.
+
 **Then:** run one baseline of your current production configuration at k=3, with as many cases per behavior as you can
 write (a contrast on fewer than 5 cases is reported `not tested`; 20 or more gives a usable interval), and read the
 bars it proposes (`bars_propose`, or `propose_bars`). A baseline proposes a bar on each measure it measured, seeded
