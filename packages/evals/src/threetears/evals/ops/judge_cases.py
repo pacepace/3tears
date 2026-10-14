@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
@@ -189,9 +189,9 @@ def judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, a
             subject=case.subject,
             judged_artifact=JudgedArtifact(case.judged_artifact),
         )
-    except ValueError as refused:
+    except ValidationError as refused:
         raise ValidationFailedError(
-            str(refused),
+            "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in refused.errors()),
             remedy="give a verdict the dimension's scale holds: 'pass' or 'fail' on pass/fail, 1 to 5 on ordinal",
         ) from refused
     return freeze_judge_cases(
