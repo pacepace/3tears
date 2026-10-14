@@ -21,7 +21,6 @@ from threetears.core.backends.schema_sql import (
     build_insert_params,
     build_key_led_delete_sql,
     bulk_batches,
-    json_default,
     transport_params_bytes,
 )
 from threetears.core.backends.sql import SqlL3Backend
@@ -30,6 +29,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     BYTES_TYPE,
     DATETIMETZ_TYPE,
+    JSONB_TYPE,
     INT_TYPE,
     STRING_TYPE,
     Column,
@@ -140,13 +140,17 @@ async def test_rows_are_split_so_no_statement_passes_the_row_limit() -> None:
     assert [sql.count("), (") + 1 for sql, _ in conn.committed] == [2, 2, 1]
 
 
-async def test_rows_are_split_so_no_statement_passes_the_byte_limit() -> None:
+@pytest.mark.parametrize(("slack", "per_statement"), [(0, [2, 2]), (-1, [1, 1, 1, 1])])
+async def test_rows_are_split_so_no_statement_passes_the_byte_limit(slack: int, per_statement: list[int]) -> None:
+    # with no bus around it a statement is its text and its parameters, both as JSON: the bound is
+    # exactly two rows' statement, or a byte short of it
     collection, conn = _collection(), _Conn()
     stamped = {**_rows(1)[0], "date_created": datetime.now(UTC), "date_updated": datetime.now(UTC)}
-    one_row = len(json.dumps(build_insert_params(SCHEMA, stamped), default=json_default))
+    two_rows = len(json.dumps(build_bulk_insert_sql(SCHEMA, rows=2))) - 2
+    two_rows += transport_params_bytes(build_insert_params(SCHEMA, stamped) * 2)
     async with CallerTransaction(conn):
-        await collection.save_rows(_rows(4), conn=conn, max_bytes=one_row * 2 + 10)
-    assert [len(params) // 5 for _, params in conn.committed] == [2, 2]
+        await collection.save_rows(_rows(4), conn=conn, max_bytes=two_rows + slack)
+    assert [len(params) // 5 for _, params in conn.committed] == per_statement
 
 
 def test_a_batch_never_holds_more_parameters_than_a_statement_may_bind() -> None:
@@ -364,18 +368,27 @@ SHAPES = TableSchema(
 )
 
 
-def _recording_proxy() -> tuple[NatsProxyL3Backend, list[bytes]]:
+#: the transaction a recording proxy's broker opens
+_TX_ID = "019d9a00-0000-7000-8000-0000000000aa"
+
+
+def _recording_proxy(*, statements: list[bytes] | None = None) -> tuple[NatsProxyL3Backend, list[bytes]]:
     """the rail's pod-side transport over a bus that keeps every request it is handed.
 
+    :param statements: where to keep only the requests that carry a statement (not a transaction's
+        begin or end), when given
     :return: the proxy, and the request payloads it put on the bus, in order
     :rtype: tuple[NatsProxyL3Backend, list[bytes]]
     """
     sent: list[bytes] = []
 
     async def request_raw(*, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
-        del subject, timeout
+        del timeout
         sent.append(payload)
-        return json.dumps({"success": True, "row_count": 1}).encode("utf-8")
+        if statements is not None and "query" in json.loads(payload):
+            statements.append(payload)
+        del subject
+        return json.dumps({"success": True, "row_count": 1, "tx_id": _TX_ID}).encode("utf-8")
 
     nats = MagicMock()
     nats.request_raw = AsyncMock(side_effect=request_raw)
@@ -420,6 +433,91 @@ async def test_a_page_of_bytes_heavy_rows_fits_the_bus_statement_by_statement() 
     # within one row of the bound
     one_row = transport_params_bytes(["0000", rows[0]["shape"]])
     assert min(_params_on_the_wire(request) for request in sent[:-1]) > SchemaBackedCollection.BULK_MAX_BYTES - one_row
+
+
+#: a table of many jsonb columns: each costs a statement ``$N::jsonb`` in its text, per row, beside
+#: its value
+WIDE = TableSchema(
+    name="wide",
+    primary_key="id",
+    columns=[Column("id", STRING_TYPE), *(Column(f"j{i:02d}", JSONB_TYPE) for i in range(20))],
+)
+
+
+def _wide_rows(count: int) -> list[dict[str, Any]]:
+    return [{"id": f"{i:05d}", **{f"j{c:02d}": {"k": "v" * 24} for c in range(20)}} for i in range(count)]
+
+
+async def test_a_wide_jsonb_page_fits_the_bus_request_by_request() -> None:
+    # parameters alone would fill BULK_MAX_BYTES with the statement's text, a ``$N::jsonb`` a
+    # value, on top of it: every whole request is what is bounded
+    proxy, sent = _recording_proxy()
+    store = SqlL3Backend(proxy)
+    store.register_schema("wide", WIDE)
+    await store.upsert_many(
+        "wide",
+        _wide_rows(1000),
+        max_rows=SchemaBackedCollection.BULK_MAX_ROWS,
+        max_bytes=SchemaBackedCollection.BULK_MAX_BYTES,
+    )
+    assert len(sent) > 1
+    assert max(len(request) for request in sent) <= SchemaBackedCollection.BULK_MAX_BYTES
+    assert max(len(request) for request in sent) < NATS_DEFAULT_MAX_PAYLOAD
+
+
+async def test_a_wide_jsonb_page_fits_the_bus_inside_a_transaction() -> None:
+    statements: list[bytes] = []
+    proxy, _ = _recording_proxy(statements=statements)
+    collection = _collection(WIDE)
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn):
+        await collection.save_rows(_wide_rows(1000), conn=conn)
+    assert len(statements) > 1
+    assert all(json.loads(request)["tx_id"] == _TX_ID for request in statements)
+    assert max(len(request) for request in statements) <= SchemaBackedCollection.BULK_MAX_BYTES
+
+
+@pytest.mark.parametrize("in_transaction", [False, True])
+async def test_a_statement_is_sized_at_exactly_its_whole_request(in_transaction: bool) -> None:
+    # the size a batch is cut at is the size of the message the transport sends for it, to the byte:
+    # bounded at one statement's request, the rows go in one; a byte under, they do not
+    rows = _wide_rows(30)
+
+    async def requests(max_bytes: int) -> list[bytes]:
+        statements: list[bytes] = []
+        proxy, _ = _recording_proxy(statements=statements)
+        store = SqlL3Backend(proxy)
+        store.register_schema("wide", WIDE)
+        async with proxy.acquire() as conn:
+            if in_transaction:
+                async with conn.transaction():
+                    await store.upsert_many("wide", rows, max_rows=1000, max_bytes=max_bytes, conn=conn)
+            else:
+                await store.upsert_many("wide", rows, max_rows=1000, max_bytes=max_bytes, conn=conn)
+        return statements
+
+    [whole] = await requests(10**9)
+    assert len(await requests(len(whole))) == 1
+    assert len(await requests(len(whole) - 1)) == 2
+
+
+@pytest.mark.parametrize("in_transaction", [False, True])
+async def test_a_transport_measures_the_request_it_sends(in_transaction: bool) -> None:
+    proxy, sent = _recording_proxy()
+    sql = "INSERT INTO t (k, v) VALUES ($1, $2::jsonb)"
+    params = ["key", {"nested": [1, "two"]}]
+    async with proxy.acquire() as conn:
+        if in_transaction:
+            async with conn.transaction():
+                measured = conn.statement_request_bytes(sql, params)
+                await conn.execute(sql, *params)
+            statement = sent[1]
+        else:
+            measured = conn.statement_request_bytes(sql, params)
+            assert proxy.statement_request_bytes(sql, params) == measured
+            await conn.execute(sql, *params)
+            statement = sent[0]
+    assert measured == len(statement)
 
 
 @pytest.mark.parametrize(

@@ -1871,9 +1871,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: row of a few dozen columns
     BULK_MAX_ROWS: ClassVar[int] = 1000
 
-    #: the most bytes of parameters one bulk statement carries, measured as the L3 rail sends
-    #: them (:func:`~threetears.core.backends.schema_sql.transport_params_bytes`): under a NATS
-    #: deployment's default 1 MiB message, with room for the request around them
+    #: the most bytes one bulk statement's whole request comes to -- its SQL text, its parameters
+    #: and the envelope around them, measured by the transport that sends it
+    #: (:func:`~threetears.core.backends.schema_sql.bulk_insert_batches`): under a NATS
+    #: deployment's default 1 MiB message, with room to spare
     BULK_MAX_BYTES: ClassVar[int] = 768 * 1024
 
     #: the most leading-key values one key-led read names: a value usually holds a few rows, so a
@@ -1894,7 +1895,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         For a load, where :meth:`save_entity` would make a round trip per row. The rows go to the
         store's :meth:`~threetears.core.backends.protocol.BulkDurableStore.upsert_many` when it has
         one -- a SQL store writes one ``INSERT ... VALUES (...), (...) ON CONFLICT`` per batch, each
-        batch within ``max_rows`` rows, the bind-parameter limit and ``max_bytes`` of parameters --
+        batch within ``max_rows`` rows, the bind-parameter limit and a request of ``max_bytes`` --
         and a row at a time through ``upsert`` when it has not.
 
         **On the caller's transaction only, like** ``save_entity(conn=...)``: the rows are final
@@ -1917,8 +1918,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype conn: Any
         :param max_rows: the most rows one statement writes; :attr:`BULK_MAX_ROWS` when None
         :ptype max_rows: int | None
-        :param max_bytes: the most bytes of parameters, as the L3 rail sends them, one statement
-            carries; :attr:`BULK_MAX_BYTES` when None
+        :param max_bytes: the most bytes one statement's whole request comes to on the L3 rail;
+            :attr:`BULK_MAX_BYTES` when None
         :ptype max_bytes: int | None
         :return: how many rows were submitted: every row given, whether the conflict clause updated
             a row already held, left it as it was (``on_conflict="ignore"``) or raised

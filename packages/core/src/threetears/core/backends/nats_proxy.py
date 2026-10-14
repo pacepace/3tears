@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, NoReturn
 from uuid import UUID, uuid7
 
@@ -186,6 +186,20 @@ def _raise_for_failed_reply(
     if error_code == LOCK_NOT_AVAILABLE_ERROR_CODE and sqlstate == _LOCK_NOT_AVAILABLE_SQLSTATE:
         raise asyncpg.PostgresError.new({"C": sqlstate, "M": str(response.get("error_message", ""))})
     raise DataLayerUnavailableError(message)
+
+
+def _encode_request(payload: dict[str, Any]) -> bytes:
+    """encode a request payload as the proxy puts it on the bus.
+
+    The one encoder every request goes through (:meth:`NatsProxyL3Backend.nats_request`), and the
+    one :meth:`NatsProxyL3Backend.statement_request_bytes` measures with.
+
+    :param payload: the request payload
+    :ptype payload: dict[str, Any]
+    :return: the message body
+    :rtype: bytes
+    """
+    return json.dumps(payload, default=json_default).encode("utf-8")
 
 
 def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -883,6 +897,61 @@ class NatsProxyL3Backend:
         results: list[Any] = response.get("results", [])
         return results
 
+    def _query_payload(
+        self,
+        query: str,
+        params: Sequence[Any],
+        operation: str,
+        namespace: str | None,
+        *,
+        customer_scope: UUID | None = None,
+    ) -> dict[str, Any]:
+        """the ``l3.query`` request for one statement, as it is sent and as it is measured.
+
+        :param query: SQL query string
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: Sequence[Any]
+        :param operation: SQL operation type
+        :ptype operation: str
+        :param namespace: target namespace
+        :ptype namespace: str | None
+        :param customer_scope: conversation customer for Class-B read clamping; the
+            ``conv_customer_id`` field is emitted only when set
+        :ptype customer_scope: UUID | None
+        :return: the request payload
+        :rtype: dict[str, Any]
+        """
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "identity_token": self.forwarded_identity_token(),
+            "namespace": namespace or self.default_namespace,
+            "operation": operation,
+            "query": query,
+            "params": [transport_param(p) for p in params],
+            "timeout_ms": self.timeout_ms,
+        }
+        if customer_scope is not None:
+            # convert at border: NATS l3.query request payload field.
+            payload["conv_customer_id"] = str(customer_scope)
+        return payload
+
+    def statement_request_bytes(self, query: str, params: Sequence[Any]) -> int:
+        """the bytes of the message one statement is sent as, outside a transaction.
+
+        Built and encoded exactly as :meth:`execute` sends it, so a caller sizing a statement for
+        the bus measures what goes on it (:func:`~threetears.core.backends.schema_sql.bulk_insert_batches`).
+
+        :param query: SQL query string
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: Sequence[Any]
+        :return: the size of the request, in bytes
+        :rtype: int
+        :raises DataLayerUnavailableError: when no identity token is available, as sending would
+        """
+        return len(_encode_request(self._query_payload(query, params, _detect_operation(query), None)))
+
     async def _send_query(
         self,
         query: str,
@@ -911,19 +980,7 @@ class NatsProxyL3Backend:
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        ns = namespace or self.default_namespace
-        payload = {
-            "correlation_id": str(uuid7()),
-            "identity_token": self.forwarded_identity_token(),
-            "namespace": ns,
-            "operation": operation,
-            "query": query,
-            "params": [transport_param(p) for p in params],
-            "timeout_ms": self.timeout_ms,
-        }
-        if customer_scope is not None:
-            # convert at border: NATS l3.query request payload field.
-            payload["conv_customer_id"] = str(customer_scope)
+        payload = self._query_payload(query, params, operation, namespace, customer_scope=customer_scope)
         subject = f"{self.ns}.l3.query"
         response = await self.nats_request(subject, payload)
 
@@ -962,7 +1019,7 @@ class NatsProxyL3Backend:
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
-        payload_bytes = json.dumps(payload, default=json_default).encode("utf-8")
+        payload_bytes = _encode_request(payload)
         nats_timeout = (self.timeout_ms / 1000) + 2
 
         try:
@@ -1182,6 +1239,42 @@ class _ProxyConnection:
         """
         return _ProxyTransaction(self, self._backend, namespace)
 
+    def _tx_payload(self, query: str, params: Sequence[Any]) -> dict[str, Any]:
+        """the ``l3.tx.*`` request for one statement in the open transaction.
+
+        :param query: parameterized SQL
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: Sequence[Any]
+        :return: the request payload
+        :rtype: dict[str, Any]
+        """
+        return {
+            "correlation_id": str(uuid7()),
+            "identity_token": self._backend.forwarded_identity_token(),
+            "tx_id": str(self.tx_id),
+            "query": query,
+            "params": [transport_param(p) for p in params],
+        }
+
+    def statement_request_bytes(self, query: str, params: Sequence[Any]) -> int:
+        """the bytes of the message one statement on this connection is sent as.
+
+        Inside a transaction the ``l3.tx.*`` request :meth:`execute` sends; outside one, the
+        backend's (:meth:`NatsProxyL3Backend.statement_request_bytes`).
+
+        :param query: parameterized SQL
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: Sequence[Any]
+        :return: the size of the request, in bytes
+        :rtype: int
+        :raises DataLayerUnavailableError: when no identity token is available, as sending would
+        """
+        if self.tx_id is None:
+            return self._backend.statement_request_bytes(query, params)
+        return len(_encode_request(self._tx_payload(query, params)))
+
     async def execute(
         self,
         query: str,
@@ -1224,13 +1317,7 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload: dict[str, Any] = {
-            "correlation_id": str(uuid7()),
-            "identity_token": self._backend.forwarded_identity_token(),
-            "tx_id": str(self.tx_id),
-            "query": query,
-            "params": [transport_param(p) for p in params],
-        }
+        payload = self._tx_payload(query, params)
         subject = f"{self._backend.ns}.l3.tx.execute"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
@@ -1275,13 +1362,7 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload: dict[str, Any] = {
-            "correlation_id": str(uuid7()),
-            "identity_token": self._backend.forwarded_identity_token(),
-            "tx_id": str(self.tx_id),
-            "query": query,
-            "params": [transport_param(p) for p in params],
-        }
+        payload = self._tx_payload(query, params)
         subject = f"{self._backend.ns}.l3.tx.fetchrow"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
@@ -1370,13 +1451,7 @@ class _ProxyConnection:
                 "conn.transaction(namespace=...) and bound on the broker "
                 "for the lifetime of the session",
             )
-        payload: dict[str, Any] = {
-            "correlation_id": str(uuid7()),
-            "identity_token": self._backend.forwarded_identity_token(),
-            "tx_id": str(self.tx_id),
-            "query": query,
-            "params": [transport_param(p) for p in params],
-        }
+        payload = self._tx_payload(query, params)
         subject = f"{self._backend.ns}.l3.tx.fetch"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -166,6 +166,30 @@ def _quote_ident(name: str) -> str:
     if '"' in name:
         raise ValueError(f"illegal SQL identifier {name!r}")
     return f'"{name}"'
+
+
+def _request_measure(transport: Any) -> Callable[[str, list[Any]], int | None] | None:
+    """the transport's measure of the message it sends for a statement, or None when it has none.
+
+    ``NatsProxyL3Backend`` and its connections measure their own requests
+    (``statement_request_bytes``); a direct asyncpg pool sends no message and has none. An answer
+    that is not a count (a mock's auto-attribute) is no measure, and the statement is sized by its
+    text and parameters alone.
+
+    :param transport: the pool or connection the statements go to
+    :ptype transport: Any
+    :return: the measure, or None
+    :rtype: Callable[[str, list[Any]], int | None] | None
+    """
+    stated = getattr(transport, "statement_request_bytes", None)
+    if not callable(stated):
+        return None
+
+    def measure(query: str, params: list[Any]) -> int | None:
+        size = stated(query, params)
+        return size if isinstance(size, int) and not isinstance(size, bool) else None
+
+    return measure
 
 
 def _key_led_groups(
@@ -551,7 +575,9 @@ class SqlL3Backend:
         which leaves out a server-default column a row omits), and both each statement's SQL and
         every row's parameters are built from it, so the two cannot disagree. Rows that disagree on
         which server-default columns they supply are refused: one statement names one column list.
-        Batches split by :func:`schema_sql.bulk_batches`. On ``conn`` a failing statement fails the
+        Batches split by :func:`schema_sql.bulk_insert_batches`, each statement's whole request
+        (its text, its parameters and what the transport sends around them, measured by the
+        transport that sends it) within ``max_bytes``. On ``conn`` a failing statement fails the
         caller's transaction, so every batch rolls back with it.
 
         :param table: the table; its schema must be registered (:meth:`register_schema`)
@@ -560,8 +586,7 @@ class SqlL3Backend:
         :ptype rows: Sequence[Mapping[str, Any]]
         :param max_rows: the most rows one statement writes
         :ptype max_rows: int
-        :param max_bytes: the most bytes of parameters, as the L3 rail sends them, one statement
-            carries
+        :param max_bytes: the most bytes one statement's request comes to on the L3 rail
         :ptype max_bytes: int
         :param conn: the caller's transaction handle; ``None`` uses the pool
         :ptype conn: Any
@@ -586,8 +611,13 @@ class SqlL3Backend:
                         f"a server-default column is supplied by some rows and not others"
                     )
                 params.append(schema_sql.build_insert_params(schema, data))
-            for batch in schema_sql.bulk_batches(
-                params, max_rows=max_rows, max_bytes=max_bytes, max_params=schema_sql.MAX_STATEMENT_PARAMS
+            for batch in schema_sql.bulk_insert_batches(
+                schema,
+                columns,
+                params,
+                max_rows=max_rows,
+                max_bytes=max_bytes,
+                request_bytes=_request_measure(conn if conn is not None else self._pool),
             ):
                 sql = schema_sql.build_bulk_insert_sql(schema, rows=len(batch), columns=columns)
                 await self._execute(sql, *(value for row in batch for value in row), conn=conn)
