@@ -105,7 +105,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`AsyncStoreClock`** · *host contract* · protocol · `StoreClock` for an `AsyncDocumentStore`: the store's own time, awaited.
 - **`BoundCompletionClient`** · protocol · A completion client built for one model, which it names.
 - **`CalibrationRating`** · model · A rater's score for one judged dimension of one result — a person's, or an agent's.
-- **`CallLedger`** · model · The calls one cell's candidate made that succeeded, across every tool, in recorded order.
+- **`CallLedger`** · model · The calls one cell's candidate made that succeeded, across every tool, in recorded order, and those refused.
 - **`CaseSet`** · model · A named, versioned, frozen list of one template's test cases — what a launch can target by name.
 - **`CaseSetRef`** · model · Which named, versioned case set a run was launched against: a label on its frozen case ids.
 - **`CassetteKey`** · dataclass · Everything that names one recorded answer — and the one place its document id is composed.
@@ -174,6 +174,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`ProviderFailure`** · dataclass · What eval is allowed to know about a completion call that raised.
 - **`ProviderFailureDescriber`** · *host contract* · protocol · The host's mapping from its own exceptions onto `ProviderFailure`.
 - **`RecordedCall`** · model · One call a candidate made that succeeded — or, in a control end state, one it is stated to have made.
+- **`RefusedCall`** · model · One call a candidate made that its tool refused: nothing changed, and the refusal said why.
 - **`RepeatedScore`** · model · One dimension's stored judge score, asked again of the same judge from the same evidence.
 - **`RoleUsage`** · *host contract* · model · Per-role token + cost observation for one `EvalResult`.
 - **`RubricDim`** · model · One judge-scored rubric dimension.
@@ -318,7 +319,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 0`
+  <br>`= 1`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
   <br>`= 15`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
@@ -2919,6 +2920,21 @@ not passed() and call_count("inventory.place_order") >= 1
 `passed()` holds when the cell recorded a pass and no call: a candidate that acted and then passed did not
 pass. A cell that did nothing and recorded no pass did not pass either.
 
+Refused calls (`refused()` and `refused_count()` read the calls a tool refused — recorded apart by
+`CallLedger.record_refusal`, never among the calls — and nothing else does):
+
+```python
+refused("inventory.place_order")
+refused_count("inventory.place_order") == 0
+call_count("inventory.place_order") >= 1 and not refused("inventory.place_order")
+```
+
+Every other call builtin counts only calls that succeeded, so a candidate whose every call was refused reads,
+to them, as one that never called; these two are what tell the two apart. `refused(a)` is
+`refused_count(a) >= 1`. A ledger that keeps no refusal record (a kind that does not record refusals, or a
+cell stored before refusals were recorded) is not read as "none refused": evaluating either against it raises,
+so the check cannot be graded rather than graded as a pass.
+
 Call parameters (`calls()` returns the matching calls' recorded parameters, in order):
 
 ```python
@@ -3046,6 +3062,8 @@ a run starts.
 | `last_call_was` | `spec` | True when the most recent recorded call matches `tool.action`. |
 | `length` | `value` | Return `len(value)` or Missing if unsizable. |
 | `passed` | `` | True when the cell recorded a deliberate pass and made no call. |
+| `refused` | `spec` | True when a tool refused at least one call matching `tool.action`; reads only refused calls. |
+| `refused_count` | `spec` | Return the count of refused calls matching `tool.action`; a call that succeeded is never counted here. |
 
 <a id="actions"></a>
 ## The action catalogue (MCP)
