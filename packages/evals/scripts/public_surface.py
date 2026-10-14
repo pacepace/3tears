@@ -536,7 +536,7 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 
 #: The host contract: every public name a host binds to, by ``root.name``. Each moves only with a
 #: ``MIGRATIONS.toml`` record and a deprecation cycle (the old name keeps working beside the new one for one minor
-#: release), from 0.68.0 on. :data:`STABLE` holds the rest of the declared surface; every other public name is
+#: release), from 0.69.0 on. :data:`STABLE` holds the rest of the declared surface; every other public name is
 #: ``provisional``.
 #:
 #: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/ladder.md``, the
