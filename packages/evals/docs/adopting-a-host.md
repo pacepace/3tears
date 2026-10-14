@@ -582,28 +582,44 @@ types the engine stores, and says three things about each:
   out-of-run spend ledger, sweeps, analysis attempts, cassettes, generation slots, launches, second judge passes,
   judge temperature comparisons, host action jobs) or `derived` (computed from other stored
   documents: analyses, insights, judge profiles).
-- **lifecycle**: `kept` (read by every later release, below) or `regenerable` (refused after a format change,
-  and made again: an analysis, insight or judge profile is regenerated, a cassette re-captured).
+- **lifecycle**: `kept` (the evidence core: read from the core baseline on, and deleted by a core baseline reset),
+  `durable` (what people author: templates, rubric dims, judge configs and their tombstones, case sets, test cases
+  and calibration ratings; never wiped by a core baseline, read forever from durable v15, changed only additively
+  or through an upgrader) or `regenerable` (refused after a format change, and made again: an analysis, insight or
+  judge profile is regenerated, a cassette re-captured).
 - **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
   slot, `judge_config_tombstone` a `judge_config`'s).
 
-`EVAL_DOC_TYPES` (what the operator wipe sweeps) and `CORE_DOC_TYPES` (what is kept) are derived from it.
+`EVAL_DOC_TYPES` (what the operator wipe sweeps), `CORE_DOC_TYPES` (the evidence core) and `DURABLE_DOC_TYPES`
+(what people author) are derived from it.
 
-**The evidence core is kept.** Every release reads it, from core v15 (the first public release's baseline) on. The core is
-what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
-the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
-tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
-records of how each sweep ended, what each analysis generation spent, and which generation holds a campaign's
-slot (a later build that could not read a slot would block the campaign's generations, or start a second beside
-a live one), and the records of every other job: a launch (the runs it started), a second judge's pass (its report),
-a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
-`CORE_DOC_TYPES` lists them.
+**The evidence core is kept until its baseline moves.** Every release reads it from the core baseline (v15) on.
+The core is what a run produced or binds: runs, results, traces, the out-of-run spend ledger, the campaigns people
+declared and gathered runs into, and the records of how each sweep ended, what each analysis generation spent, and
+which generation holds a campaign's slot (a later build that could not read a slot would block the campaign's
+generations, or start a second beside a live one), and the records of every other job: a launch (the runs it
+started), a second judge's pass (its report), a judge temperature comparison (every answer, stored nowhere else) and
+a host action's job (its result). `CORE_DOC_TYPES` lists them. The core is baseline-resettable: a release may move
+`CORE_BASELINE_VERSION` instead of shipping an upgrader, and every core document below it is then refused by name
+and deleted with `reset_core` (below).
+
+**What people author is durable, and no core baseline ever touches it.** Templates, rubric dims, judge configs
+(with their tombstones), case sets, test cases and calibration ratings (`DURABLE_DOC_TYPES`) have a version space
+of their own, forked from core v15 at `.26` (`DURABLE_SCHEMA_VERSION`, `DURABLE_SCHEMA_MINOR`). Its baseline,
+`DURABLE_BASELINE_VERSION`, is 15 forever, and a durable shape changes only additively (a minor) or with an
+upgrader (`DURABLE_UPGRADERS`); a durable major never resets. No durable document needs a core one to be read: a
+rating names the run and result it was given on as provenance, and carries what was rated
+(`CalibrationRating.rated`), so it still calibrates a judge after the result is gone. Budget storage at about one
+judged transcript per rating. **Back the durable store up like source code**: it is what people wrote, and nothing
+can make it again.
 
 **The first public release is the baseline.** It writes core v15.1 (major `CORE_BASELINE_VERSION`, equal to
 `CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 1, which added refused calls to the call ledger and to
-control end states and reads every v15.0 document), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and cassette
-v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is nothing older
-for it to read.
+control end states and reads every v15.0 document), durable v15.1 (`DURABLE_SCHEMA_VERSION` and
+`DURABLE_SCHEMA_MINOR`: a rating carries what was rated), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and
+cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` and `DURABLE_UPGRADERS`
+are empty): there is nothing older for it to read. A durable document `.25` wrote (as core v15.0) reads as durable
+v15.0 with no step.
 
 **A core version is a major and a minor, and your store needs no migration for either.** Every core document
 carries `schema_version`, the major, and `schema_minor`, the minor within it. Every change to a core shape is one
@@ -656,7 +672,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.1), regenerable documents (v10), cassettes
+**Each version space moves on its own.** Core documents (v15.1), durable documents (v15.1), regenerable documents (v10), cassettes
 (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 53), the cell model
 (`CELL_MODEL_VERSION`, 13), the report (`REPORT_VERSION`, 10) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
@@ -691,9 +707,29 @@ at a newer minor, read as above. A core document written by a newer major is ref
 two builds share one store across a major, upgrade the older one. Only the stored read is tolerant: a document a
 caller hands an authoring surface is validated strictly, and `schema_minor` is a server field it ignores. A core
 document written before `.25` (`v0.67.0-evaladopt.25`, core below v15) is refused
-too: its read fails validation on `schema_version`, with a message that names it a pre-release document and
-the baseline it is below. A store written before `.25` is never read, so delete its documents (the operator wipe)
-rather than keep them beside ones `.25` or a later build wrote; `.25` wrote the v15 baseline this release reads.
+too: its read fails validation on `schema_version`, with a message that names the baseline it is below. So is a
+core document below a later core baseline.
+
+**On a core baseline, call `reset_core`; do not truncate tables by name.** It is the one operation your deploy
+runbook runs, with the engine stopped, and the store boots the moment it returns:
+
+- **On a `RoutedDocumentStore`**: `RoutedDocumentStore.reset_core(stores, route, scope_ids=..., routing_scope=...,
+  host_doc_types=...)`. It deletes every core and regenerable document (`CORE_RESET_DOC_TYPES`) of the named scopes
+  from every store, wherever it sits, and never a durable document, one of your own types or the router's placement
+  record. Then it relocates: a durable type your route now keeps in a store of its own is moved there once, and
+  every store's placement record is written, so the router starts even if a hand-run TRUNCATE once wiped the
+  records (which is what makes a runbook that names tables fail to boot with `RouteChanged`). It returns a
+  `CoreReset` naming what it deleted and moved.
+- **On any other store**: `EvalStorage.reset_core(scopes)` deletes the same types through the store port.
+
+Never truncate the tables holding durable documents. A store written before `.25` (core and durable below v15) is
+never read; reset it from `.25` or later, and reset the durable tables too only for that pre-release store
+(`nuke_all_eval_data(scopes, include_durable=True)`), since no release reads what it holds.
+
+**`nuke_all_eval_data` requires `include_durable=`.** The full operator wipe takes a keyword with no default, so
+your code states whether the labels and definitions people wrote go too. With `include_durable=False` it is every
+engine type but the durable ones, and your own types; `reset_core` is narrower (core and regenerable only) and is
+the baseline operation.
 A refused run stays as stored, and the boot reclaim (`sweep_abandoned_runs`) counts it `unreadable` rather than
 settling it. `runs_unreadable` (operation and action) names each stored run of the scope the current model refuses,
 of any status, with the fields it refused and why. The ones stored pending or running are marked stranded: they are
@@ -715,8 +751,14 @@ for every value of it, plus one store for the types the registry does not hold (
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.storage import DocTypeRoute, RoutedDocumentStore, SqliteDocumentStore
 
-stores = {"evidence": MyPostgresStore(dsn), "scratch": SqliteDocumentStore("regenerable.sqlite")}
-route = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="evidence")
+stores = {
+    "evidence": MyPostgresStore(dsn),
+    "authored": MyPostgresStore(dsn, table="eval_authored"),  # what people author: back it up like source code
+    "scratch": SqliteDocumentStore("regenerable.sqlite"),
+}
+route = DocTypeRoute(
+    by="lifecycle", to={"kept": "evidence", "durable": "authored", "regenerable": "scratch"}, unregistered="evidence"
+)
 
 ROUTING = "evals-routing.production"  # yours to name; never a scope you keep documents in
 
@@ -753,7 +795,10 @@ two stores are passed under each other's names, and when no store has a record y
 moves every document of the scopes and host types you name to its new store, then writes the records. Run it
 once when you adopt the router and again whenever you change the route, with the engine stopped. If it is
 interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
-somewhere other than your `unregistered` store.
+somewhere other than your `unregistered` store. A release that adds a fact value needs your route to map it: a
+lifecycle route must map `durable` (from `.26`), or it is refused when built. Giving `durable` a store other than
+the one `kept` types were written to moves the eight durable types, so the first start raises `RouteChanged` for
+them until you relocate (or run `RoutedDocumentStore.reset_core`, which relocates).
 
 **Ask whether the stores hold anything before you relocate.** A host's start that adopts tables, rather than
 relocating on every start, asks first: `RoutedDocumentStore.holds_documents(stores, scope_ids, host_doc_types=...)`

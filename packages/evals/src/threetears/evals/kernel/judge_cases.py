@@ -50,6 +50,7 @@ from threetears.evals.schema.models import (
     RubricDim,
     RubricScale,
     KnownUsageRole,
+    RatedOutput,
 )
 
 __all__ = [
@@ -110,13 +111,29 @@ class JudgeCaseLabel(EvalBaseModel):
 
 
 class JudgeCaseSource(EvalBaseModel):
-    """Where a judge case's output came from: the stored result, and what its own judge answered."""
+    """Where a judge case's output came from: the stored result, and what its own judge answered.
+
+    A case frozen from a durable label (``freeze_judge_cases(from_labels=True)``) names the run and result the label
+    was given on as provenance, which a core baseline reset may since have deleted; it records no test case and no
+    first judge (every ``first_*`` is None): the label carries what was rated, never who first judged it.
+    """
 
     run_id: str = Field(min_length=1, description="The run the judged result belongs to.")
     result_id: str = Field(min_length=1, description="The judged result whose stored evidence the case replays.")
-    test_case_id: str = Field(min_length=1, description="The source run's test case the result ran.")
+    test_case_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The source run's test case the result ran; None = frozen from a durable label, which records the run "
+            "and result it was given on but not their test case."
+        ),
+    )
     first_score: int | None = Field(
-        default=None, description="The score the result's own judge gave the criterion; None when it gave none."
+        default=None,
+        description=(
+            "The score the result's own judge gave the criterion; None when it gave none, or when the case was frozen "
+            "from a durable label, where the first judge is not recorded."
+        ),
     )
     first_served_model: str | None = Field(default=None, description="The model that served that score.")
     first_judge_config_id: str | None = Field(
@@ -172,6 +189,32 @@ class JudgeCase(EvalBaseModel):
         default_factory=list, description="Person ratings of the output on the criterion; empty for an unlabelled case."
     )
     source: JudgeCaseSource
+
+    @classmethod
+    def from_rated(cls, rated: RatedOutput, labels: list[JudgeCaseLabel], source: JudgeCaseSource) -> Self:
+        """The case a durable label's rated content freezes into, read from no result.
+
+        Args:
+            rated: What the label's rater read (``CalibrationRating.rated``), proven against its label key when
+                the rating was written.
+            labels: The person labels on that output and criterion.
+            source: Where the content came from, as provenance (a label's run and result, which may be gone).
+
+        Returns:
+            The case, its content field for field the rated content's.
+        """
+        return cls(
+            dim=rated.dim,
+            scale=rated.scale,
+            criterion=rated.criterion,
+            intent=rated.intent,
+            variation=dict(rated.variation),
+            goal_outcomes=list(rated.goal_outcomes),
+            judged_artifact=rated.judged_artifact,
+            evidence=rated.evidence,
+            labels=labels,
+            source=source,
+        )
 
     def criterion_digest(self) -> str:
         """A digest of the criterion as the case asks it: its id, scale and wording.

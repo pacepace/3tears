@@ -55,6 +55,7 @@ from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import ConflictError, EvalServiceError, StorageError
 from threetears.evals.kernel.remedies import FIND_UNREADABLE_RUNS, REREAD_AND_RETRY, UNREADABLE_JOB_RECORD
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
+from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES, DURABLE_DOC_TYPES
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
     NON_TERMINAL_RUN_STATUSES,
@@ -2312,13 +2313,16 @@ class EvalStorage:
     # Operator action — nuke all eval data
     # =========================================================================
 
-    def nuke_all_eval_data(self, scopes: Iterable[str]) -> dict[str, int]:
-        """Delete every eval document in the scopes named.
+    def nuke_all_eval_data(self, scopes: Iterable[str], *, include_durable: bool) -> dict[str, int]:
+        """Delete every eval document in the scopes named; what people author too only when asked by name.
 
-        Sweeps every type in :data:`EVAL_DOC_TYPES` plus the host's own documents named at
-        construction, so a wipe of a scope leaves nothing behind. Between them the two name
-        **every** ``doc_type`` the store can hold, which is what makes this a wipe rather than a
-        partial sweep.
+        Sweeps every type in :data:`EVAL_DOC_TYPES` plus the host's own documents named at construction, less the
+        durable types (:data:`~threetears.evals.schema.versioning.DURABLE_DOC_TYPES`: templates, rubric dims, judge
+        configs and their tombstones, case sets, test cases, calibration ratings) unless ``include_durable`` is
+        true. ``include_durable`` has no default, so every caller decides, in its own source, whether the labels
+        and definitions people wrote go too: they are what no engine can make again. With it true the two name
+        **every** ``doc_type`` the store can hold, which is what makes this a wipe rather than a partial sweep. A
+        core baseline is not this operation: it is :meth:`reset_core`, which leaves the host's documents alone too.
 
         The scopes are the host's to name: the engine has no way to enumerate them and does not
         assume the store can. A scope the store holds nothing in is swept to zero, which is
@@ -2330,17 +2334,54 @@ class EvalStorage:
 
         Args:
             scopes: The scopes to wipe.
+            include_durable: Whether the durable types are deleted too. Required.
 
         Returns:
-            ``{doc_type: count_deleted, ...}`` for each swept doc_type, summed over the scopes.
+            ``{doc_type: count_deleted, ...}`` for each swept doc_type, summed over the scopes. A durable type
+            kept is not a key; how many of each were kept is logged.
         """
-        counts: dict[str, int] = dict.fromkeys((*EVAL_DOC_TYPES, *self._host_doc_types), 0)
+        swept = [*EVAL_DOC_TYPES, *self._host_doc_types]
+        if not include_durable:
+            swept = [doc_type for doc_type in swept if doc_type not in DURABLE_DOC_TYPES]
+        return self._sweep("nuke_all_eval_data", list(scopes), swept)
+
+    def reset_core(self, scopes: Iterable[str]) -> dict[str, int]:
+        """The core baseline operation: delete every core and regenerable document in the scopes named, nothing else.
+
+        A core baseline reset (``schema/versioning.py``) refuses every core document below the new baseline, so
+        they are deleted, with the regenerable documents derived from them; what people author (the durable types)
+        is never touched, and neither is a host's own document or anything outside the named scopes (a routed
+        store's placement record lives in its routing scope, never a document scope). It goes through the store
+        port, so a host names no table, and the store is bootable as soon as it returns. On a
+        :class:`~threetears.evals.storage.RoutedDocumentStore` that may not start (the durable types newly placed
+        apart), call :meth:`~threetears.evals.storage.RoutedDocumentStore.reset_core` instead, with the engine
+        stopped: it is this call over the router's stores, followed by the relocation that re-adopts them.
+
+        Callers must gate this behind explicit operator confirmation — the action is unrecoverable for the core.
+
+        Args:
+            scopes: The scopes to reset.
+
+        Returns:
+            ``{doc_type: count_deleted, ...}`` for each core and regenerable type, summed over the scopes. How many
+            durable documents were kept is logged, per type.
+        """
+        swept = [doc_type for doc_type in EVAL_DOC_TYPES if doc_type in CORE_RESET_DOC_TYPES]
+        return self._sweep("reset_core", list(scopes), swept)
+
+    def _sweep(self, operation: str, scopes: list[str], doc_types: list[str]) -> dict[str, int]:
+        """Delete every document of ``doc_types`` in ``scopes``, logging each drop and every durable type kept."""
+        counts: dict[str, int] = dict.fromkeys(doc_types, 0)
         for scope_id in scopes:
             for doc_type in counts:
                 deleted = self._delete_every(doc_type, scope_id)
                 counts[doc_type] += deleted
                 if deleted:
-                    log.warning("nuke_all_eval_data: dropped %d %s docs from scope=%s", deleted, doc_type, scope_id)
+                    log.warning("%s: dropped %d %s docs from scope=%s", operation, deleted, doc_type, scope_id)
+            for doc_type in sorted(DURABLE_DOC_TYPES - set(counts)):
+                kept = sum(1 for _ in self._store.iter_by_doc_type(doc_type, scope_id))
+                if kept:
+                    log.info("%s: kept %d %s docs (durable) in scope=%s", operation, kept, doc_type, scope_id)
         return counts
 
     def drop_all_analyses(self, scopes: Iterable[str]) -> int:
@@ -2349,7 +2390,7 @@ class EvalStorage:
         The operator step for a boundary that retires only the analysis shape: analyses
         regenerate from their campaigns, and nothing depends on one existing — an insight names
         its source analysis as provenance, a reporter case pins its recorded memo as text. It
-        iterates ids and deletes raw, like :meth:`nuke_all_eval_data`, because the documents it
+        iterates ids and deletes raw, like :meth:`nuke_all_eval_data` and :meth:`reset_core`, because the documents it
         exists to remove are exactly the ones no current model can read.
 
         Callers must gate this behind explicit operator confirmation — the action is unrecoverable.

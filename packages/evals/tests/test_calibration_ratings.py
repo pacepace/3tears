@@ -28,10 +28,20 @@ from pydantic import ValidationError
 from threetears.evals.analysis import JudgeAgreement, assemble_context_bundle, judge_agreement, reporter_calibration
 from threetears.evals.analysis.reporter_kind import ReporterCase, reporter_case_payload
 from threetears.evals.analysis.stats import cohen_kappa
-from threetears.evals.schema import TRANSCRIPT_DIM_ID, CalibrationRating, EvalResult, EvalTestCase, RubricScore
+from threetears.evals.schema import (
+    DURABLE_SCHEMA_MINOR,
+    RATING_WRITTEN_BEFORE_CONTENT,
+    TRANSCRIPT_DIM_ID,
+    CalibrationRating,
+    EvalResult,
+    EvalTestCase,
+    RubricScore,
+    label_key_of,
+)
 from threetears.evals.kernel import NotFoundError, ValidationFailedError
 from threetears.evals.run import rate_result
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, make_eval_run, memory_storage
+from packages.evals.tests.stored_models import stored_sample
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -100,6 +110,78 @@ class TestTheDocument:
         assert storage.query_calibration_ratings("uni-2") == [], "a scope reads only its own ratings"
 
 
+# --- what was rated (durable v15.1) --------------------------------------------------------------------
+
+
+def _carrying() -> dict[str, Any]:
+    """A stored rating that carries what was rated, its label key the rated content's own."""
+    return stored_sample(CalibrationRating)
+
+
+class TestTheRatedContent:
+    def test_rated_content_is_proven_by_the_label_key(self) -> None:
+        document = _carrying()
+        rating = CalibrationRating.from_dict(document)
+
+        assert rating.rated is not None and rating.rated_withheld is None
+        assert label_key_of(rating.rated.evidence, rating.rated.criterion or rating.rubric_dim) == rating.label_key
+
+    def test_tampered_evidence_is_refused(self) -> None:
+        document = _carrying()
+        document["rated"]["evidence"]["artifact"] += " (and one more)"
+
+        with pytest.raises(ValidationError, match="not the rating's output_fingerprint"):
+            CalibrationRating.from_dict(document)
+
+    def test_a_reworded_criterion_is_refused(self) -> None:
+        document = _carrying()
+        document["rated"]["criterion"]["description"] = "Something else entirely."
+
+        with pytest.raises(ValidationError, match="not the rating's criterion_fingerprint"):
+            CalibrationRating.from_dict(document)
+
+    def test_rated_content_without_a_label_key_is_refused(self) -> None:
+        document = {**_carrying(), "output_fingerprint": None, "criterion_fingerprint": None}
+
+        with pytest.raises(ValidationError, match="carries none"):
+            CalibrationRating.from_dict(document)
+
+    @pytest.mark.parametrize(
+        ("fields", "says"), [({"rated": None}, "sets neither"), ({"rated_withheld": "and why not"}, "sets both")]
+    )
+    def test_a_rating_states_what_was_rated_or_why_not_exactly_once(self, fields: dict[str, Any], says: str) -> None:
+        with pytest.raises(ValidationError, match=says):
+            CalibrationRating.model_validate({**_carrying(), **fields})
+
+    def test_a_rating_25_wrote_reads_as_withheld_for_being_written_before_ratings_carried_it(self) -> None:
+        document = {key: value for key, value in _carrying().items() if key not in ("rated", "rated_withheld")}
+        document["schema_minor"] = 0
+
+        rating = CalibrationRating.from_dict(document)
+
+        assert rating.rated is None and rating.rated_withheld == RATING_WRITTEN_BEFORE_CONTENT
+        assert rating.to_dict()["schema_minor"] == DURABLE_SCHEMA_MINOR
+
+    def test_a_rating_at_this_minor_that_states_neither_is_refused_as_drift(self) -> None:
+        document = {key: value for key, value in _carrying().items() if key not in ("rated", "rated_withheld")}
+
+        with pytest.raises(ValidationError, match="sets neither"):
+            CalibrationRating.from_dict(document)
+
+    def test_a_newer_minor_s_rated_shape_is_kept_whole_by_this_build(self) -> None:
+        """The rollback case, one minor along: a build reads a rating a newer durable minor wrote, whose rated
+        content holds a field it does not know, and its rewrite keeps it exactly as written — as ``.25`` keeps the
+        whole of ``rated``, a field it does not know, on a v15.1 rating."""
+        document = _carrying()
+        document["schema_minor"] = DURABLE_SCHEMA_MINOR + 1
+        document["rated"]["rendered_with"] = {"renderer": "a newer one", "pages": [1, 2]}
+        document["rated_by_a_newer_build"] = True
+
+        rating = CalibrationRating.from_dict(document)
+
+        assert rating.to_dict() == document
+
+
 # --- the write ---------------------------------------------------------------------------------------
 
 
@@ -127,6 +209,10 @@ class TestRateResult:
 
         assert (rating.run_id, rating.scale, rating.score) == ("run-7", "pass_fail", 0)
         assert storage.query_calibration_ratings("uni-1", run_id="run-7") == [rating]
+        # The run is not stored, so what its judge read cannot be rebuilt: the person's rating is stored anyway,
+        # saying why it carries no content.
+        assert rating.rated is None and rating.rated_withheld is not None
+        assert "carries no label key" in rating.rated_withheld
 
     def test_rating_again_replaces_the_raters_earlier_rating(self) -> None:
         storage = self._stored(_tone(3))

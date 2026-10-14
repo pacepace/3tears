@@ -36,7 +36,9 @@ _SCOPE = "scope-a"
 _ROUTING = "evals-routing"
 
 #: Evidence in one store, what the engine can remake in another; a host's own documents with the evidence.
-_BY_LIFECYCLE = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="evidence")
+_BY_LIFECYCLE = DocTypeRoute(
+    by="lifecycle", to={"kept": "evidence", "durable": "evidence", "regenerable": "scratch"}, unregistered="evidence"
+)
 
 
 def _stores() -> dict[str, InMemoryDocumentStore]:
@@ -79,7 +81,9 @@ def test_the_engine_type_case_spread_over_both_stores() -> None:
 
     held = {name: {doc_id for scope, doc_id in store.documents if scope != _ROUTING} for name, store in stores.items()}
     assert held["scratch"] == {f"kit-{t}" for t, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "regenerable"}
-    assert held["evidence"] == {f"kit-{t}" for t, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "kept"}
+    assert held["evidence"] == {
+        f"kit-{t}" for t, facts in DOC_TYPE_FACTS.items() if facts.lifecycle in {"kept", "durable"}
+    }
 
 
 def test_the_engine_reads_and_writes_through_a_router() -> None:
@@ -252,9 +256,13 @@ def test_the_record_is_written_under_the_doc_type_the_package_exports() -> None:
     ("route", "refusal"),
     [
         (dict(by="origin", to={"input": "a", "record": "a"}, unregistered="a"), r"missing \['derived'\]"),
-        (dict(by="lifecycle", to={"kept": "a", "regenerable": "a", "cached": "a"}, unregistered="a"), "unknown"),
+        (dict(by="lifecycle", to={"kept": "a", "regenerable": "a"}, unregistered="a"), r"missing \['durable'\]"),
+        (
+            dict(by="lifecycle", to={"kept": "a", "durable": "a", "regenerable": "a", "cached": "a"}, unregistered="a"),
+            "unknown",
+        ),
         (dict(by="doc_type", to={}, unregistered="a"), "keys on one of"),
-        (dict(by="lifecycle", to={"kept": "a", "regenerable": ""}, unregistered="a"), "never blank"),
+        (dict(by="lifecycle", to={"kept": "a", "durable": "a", "regenerable": ""}, unregistered="a"), "never blank"),
     ],
 )
 def test_a_rule_that_misses_or_invents_a_value_is_refused(route: dict[str, Any], refusal: str) -> None:
@@ -263,7 +271,9 @@ def test_a_rule_that_misses_or_invents_a_value_is_refused(route: dict[str, Any],
 
 
 def test_a_rule_naming_a_store_that_is_not_there_is_refused() -> None:
-    route = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "cache"}, unregistered="evidence")
+    route = DocTypeRoute(
+        by="lifecycle", to={"kept": "evidence", "durable": "evidence", "regenerable": "cache"}, unregistered="evidence"
+    )
     with pytest.raises(ValueError, match=r"names stores \['cache'\]"):
         RoutedDocumentStore.relocate(_stores(), route, scope_ids=[], routing_scope=_ROUTING)
     with pytest.raises(ValueError, match=r"names stores \['cache'\]"):
@@ -302,11 +312,29 @@ def test_a_rule_keeping_a_tombstone_apart_from_what_it_suppresses_is_refused() -
 
     with pytest.raises(ValueError, match="rubric_dim_tombstone in 'b' and the rubric_dim it suppresses in 'a'"):
         route.placements(facts)
-    assert DocTypeRoute(by="lifecycle", to={"kept": "a", "regenerable": "b"}, unregistered="a").placements(facts)
+    assert DocTypeRoute(
+        by="lifecycle", to={"kept": "a", "durable": "b", "regenerable": "b"}, unregistered="a"
+    ).placements(facts)
+
+
+def test_a_lifecycle_rule_places_what_people_author_in_a_store_of_its_own() -> None:
+    """The durable lifecycle is a value a rule maps like any other: the eight authored types go where it says."""
+    stores = {**_stores(), "authored": InMemoryDocumentStore()}
+    route = DocTypeRoute(
+        by="lifecycle", to={"kept": "evidence", "durable": "authored", "regenerable": "scratch"}, unregistered="evidence"
+    )
+    router, _ = _router(stores, route)
+
+    assert {t for t, store in router.placements.items() if store == "authored"} == {
+        t for t, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "durable"
+    }
+    router.upsert(_doc("t1", "eval_template"))
+    router.upsert(_doc("r1", "eval_run"))
+    assert (_held(stores["authored"]), _held(stores["evidence"])) == ({"t1"}, {"r1"})
 
 
 def test_every_real_tombstone_is_kept_with_what_it_suppresses_under_every_rule() -> None:
-    for by, values in (("origin", ("input", "record", "derived")), ("lifecycle", ("kept", "regenerable"))):
+    for by, values in (("origin", ("input", "record", "derived")), ("lifecycle", ("kept", "durable", "regenerable"))):
         for split in values:
             route = DocTypeRoute(by=by, to={v: ("b" if v == split else "a") for v in values}, unregistered="a")  # type: ignore[arg-type]
             placements = route.placements(DOC_TYPE_FACTS)
@@ -320,7 +348,7 @@ _BY_ORIGIN = DocTypeRoute(
     by="origin", to={"input": "evidence", "record": "evidence", "derived": "scratch"}, unregistered="evidence"
 )
 _EVERYTHING_IN_EVIDENCE = DocTypeRoute(
-    by="lifecycle", to={"kept": "evidence", "regenerable": "evidence"}, unregistered="evidence"
+    by="lifecycle", to={"kept": "evidence", "durable": "evidence", "regenerable": "evidence"}, unregistered="evidence"
 )
 
 
@@ -386,7 +414,9 @@ def test_records_that_disagree_refuse_to_start() -> None:
 
 def test_a_changed_unregistered_store_refuses_to_start() -> None:
     _, stores = _router()
-    route = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="scratch")
+    route = DocTypeRoute(
+        by="lifecycle", to={"kept": "evidence", "durable": "evidence", "regenerable": "scratch"}, unregistered="scratch"
+    )
 
     with pytest.raises(RouteChanged, match="unregistered types"):
         RoutedDocumentStore(stores, route, routing_scope=_ROUTING)
@@ -459,7 +489,9 @@ def test_relocate_moves_every_document_to_its_new_store_and_then_starts() -> Non
 def test_relocate_moves_a_host_type_it_is_told_of() -> None:
     router, stores = _router()
     router.upsert(_doc("n1", "host_note"))
-    to_scratch = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="scratch")
+    to_scratch = DocTypeRoute(
+        by="lifecycle", to={"kept": "evidence", "durable": "evidence", "regenerable": "scratch"}, unregistered="scratch"
+    )
 
     assert RoutedDocumentStore.relocate(
         stores, to_scratch, scope_ids=[_SCOPE], host_doc_types=["host_note"], routing_scope=_ROUTING
@@ -584,7 +616,7 @@ def test_the_router_keeps_no_clock_when_any_store_has_none() -> None:
 
 def test_every_job_record_type_is_kept_with_runs_under_every_rule() -> None:
     """The clocked router reads the runs' store; every leased record must be stamped by that same clock."""
-    for by, values in (("origin", ("input", "record", "derived")), ("lifecycle", ("kept", "regenerable"))):
+    for by, values in (("origin", ("input", "record", "derived")), ("lifecycle", ("kept", "durable", "regenerable"))):
         for split in values:
             route = DocTypeRoute(by=by, to={v: ("b" if v == split else "a") for v in values}, unregistered="a")  # type: ignore[arg-type]
             placements = route.placements(DOC_TYPE_FACTS)

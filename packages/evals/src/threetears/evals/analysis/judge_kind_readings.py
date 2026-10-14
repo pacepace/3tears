@@ -278,6 +278,8 @@ def _reading_of_case(
             scale=first.scale,
             score=label.score,
             reason=label.reason,
+            # Restated in memory for this readout and never stored: the content is on the frozen case it came from.
+            rated_withheld="a judge case's label restated for its readout; the frozen case carries what was rated",
         )
         for label in first.labels
     ]

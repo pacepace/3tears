@@ -27,7 +27,9 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
   cannot be.
 - **A frozen fixture's digest moved.** Someone edited a stored document of the past. Restore it.
 - **The core's membership moved.** A type became core or stopped being core; that is a decision about
-  what is kept, recorded in ``CORE_DOC_TYPES`` and here together.
+  what is kept, recorded in ``CORE_DOC_TYPES`` and here together. The eight types people author left the core
+  for the durable space at ``.26`` (``tests/test_durable_schema_pins.py``), and their ``.25`` fixtures moved with
+  them, unedited, to ``tests/fixtures/durable_documents/v15/``.
 
 The v15 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
 v15 document yet, so while that is true a baseline change regenerates it in place rather than copying it. (The v14
@@ -69,6 +71,7 @@ from threetears.evals.schema.versioning import (
     CORE_SCHEMA_MINOR,
     CORE_SCHEMA_VERSION,
     CORE_UPGRADERS,
+    CORE_VERSION_SPACE,
     MINOR_ADDITIVITY_SENTENCE,
 )
 
@@ -80,8 +83,6 @@ PINNED_CORE_SCHEMA_MINOR = 1
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "06d6ad5f49eaca78e679bd187748674042249d47e20cde42c51b37e7121b69bb",
-    "case_set": "73215bf96f3e1162628f0291eb019aab03a9f89342ed92b797acc6f7ab396593",
     "eval_action_job": "08dde0e492e98335d953dca2198983899a70960b5bfd52b82ba1cbb64d6f3e75",
     "eval_analysis_attempt": "28cbb946c28429589a90688b593275af8278820ba6f3bc3ee414a088a67f330d",
     "eval_campaign": "62dbc461d3dc9fd40d05a255aa2446390dee7df6b04ae653109349429327f5bb",
@@ -93,19 +94,12 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_run": "e44d44f881a2e9c91825dfd5def7fd5414a39979ef1c4c08aae4bda49e01f52e",
     "eval_second_judge_pass": "118f451f6e13ef3bab1c551419d3fb4daafc8603f5ca6484c42d2b0b8fd55590",
     "eval_sweep": "bb9ca087b2023cf639e413b53d70f224f72a0b6dbed690cda60876852ae13976",
-    "eval_template": "f267c311333029ca4a58b3334393c7644b3c205c7f3f911ea9d7b25e64562e32",
-    "eval_test_case": "43f0234687b956e73f9c858fecb19c5e3e78b09fef6c880dec8a9b78bad9c6b8",
     "eval_trace": "c8fb190d1f49e8c7b83e81ed9fe31598b910341891eb7d7721168b10453a753f",
-    "judge_config": "a81b6a373d7e9b247c2f20709de345de821d0c412d83dbacd2c44fdc5792f348",
-    "judge_config_tombstone": "cdb415348bffd7b1b997639da367567c2a84c84c9a3a69f5df6a8c616dcaad93",
-    "rubric_dim": "cafe6253eb3b788bdf33680491c2b09ecbd733a60c85bd3e1d0012cb50dae26e",
-    "rubric_dim_tombstone": "c9a4dc812590a5e339c04c4a577d4267549aa944cf837dce4e3e156815ed2801",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
 #: is a decision about the store, never a side effect.
 PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
-    "eval_test_case": frozenset({"id", "doc_type", "schema_version", "scope_id", "template_id", "stratum"}),
     "eval_run": frozenset(
         {
             "id",
@@ -121,30 +115,9 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     ),
     "eval_result": frozenset({"id", "doc_type", "schema_version", "scope_id", "eval_run_id", "test_case_id", "model"}),
     "eval_trace": frozenset({"id", "doc_type", "schema_version", "scope_id"}),
-    "calibration_rating": frozenset(
-        {
-            "id",
-            "doc_type",
-            "schema_version",
-            "scope_id",
-            "run_id",
-            "result_id",
-            "rated_at",
-            "output_fingerprint",
-            "criterion_fingerprint",
-        }
-    ),
     "eval_out_of_run_spend": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "purpose", "launch_group_id", "template_id", "created_at"}
     ),
-    "eval_template": frozenset({"id", "doc_type", "schema_version", "scope_id", "name", "archived", "universal"}),
-    "judge_config": frozenset(
-        {"id", "doc_type", "schema_version", "scope_id", "rubric_dim_id", "archived", "created_at"}
-    ),
-    "rubric_dim": frozenset({"id", "doc_type", "schema_version", "scope_id", "key", "archived", "created_at"}),
-    "rubric_dim_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
-    "judge_config_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
-    "case_set": frozenset({"id", "doc_type", "schema_version", "scope_id", "name", "version"}),
     "eval_campaign": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
     ),
@@ -196,8 +169,6 @@ FIRST_STORED_AT: dict[str, int] = {}
 
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
-    "v15/calibration_rating.json": "333fbf1e96422b1d39b7ee668f5b8d0ac9b3d2b84dddfb2ee3a3e7a53c427bbe",
-    "v15/case_set.json": "53d0200175bde582ca314576e24572887efa2bc457b1a685270bbcd9c3596175",
     "v15/eval_action_job.json": "5283f8ce71dfb97876c55ea602877f738bbf7135c976fbcd1904aa1716e66c05",
     "v15/eval_analysis_attempt.json": "855f51c733b8275beabf97b520dd752765865a8c307c78ed8642a1c669ab32a9",
     "v15/eval_campaign.json": "c9152ddab88b638891590f3909b5917629c2ff21766a54f62362703560881645",
@@ -209,13 +180,7 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v15/eval_run.json": "e90dbc59bb11c2fcdd21880e8892446070d49284cc76298a39d019cd472685fb",
     "v15/eval_second_judge_pass.json": "a3d1b663aa127e77e6056849a8b046e63d1ad5ab87f9791eef67fd5589d8de53",
     "v15/eval_sweep.json": "1ac1d31e40f730f47a8e8591de9f7f7f712f4c50d56322573e8a5c4e112ca4a3",
-    "v15/eval_template.json": "4ffe5e19b95d2197eccd06f94fbac03dacd1ce3ee52722bfd9cfbdb3d54933ad",
-    "v15/eval_test_case.json": "fd66c87220a5769f26221d43d9fbca830e70bcb27f1ef79c4137db01bcc13d66",
     "v15/eval_trace.json": "703f57f22421d3da09ed45bcf165b05e4d1b07b190ea47990c4cdce03eabe024",
-    "v15/judge_config.json": "7c7eeb6e55026a4d03769f5256368d88f7331d9468e661fe041254e90e5f9cdd",
-    "v15/judge_config_tombstone.json": "1b140241aac242aaaa427dc3aaa99da7f39def10ebff175681618082c8fecd87",
-    "v15/rubric_dim.json": "f0bb5c7be5e97393bb95e9b481a70f174a80ae7f1747c3f32ca9aafd465ae9af",
-    "v15/rubric_dim_tombstone.json": "d429714b9ed3e3643377451ea53507c21c7daad72ba12b33a389197d770bb300",
 }
 
 #: Keys whose dict values are maps of names to schemas, not schema nodes: their own keys are field or
@@ -261,7 +226,12 @@ def core_shape_digest(model: type[EvalBaseModel]) -> str:
 
 
 def _core_models() -> dict[str, type[EvalBaseModel]]:
-    return {doc_type_of(model): model for model in stored_models() if issubclass(model, CoreDocumentModel)}
+    """The stored models read in the core's version space: the core base, less the durable types on it."""
+    return {
+        doc_type_of(model): model
+        for model in stored_models()
+        if issubclass(model, CoreDocumentModel) and model.version_space is CORE_VERSION_SPACE
+    }
 
 
 def _fixture_files() -> list[Path]:

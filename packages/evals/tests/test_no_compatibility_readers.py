@@ -160,6 +160,7 @@ def _rescore(**fields: Any) -> JudgeRescore:
                 scale="ordinal",
                 score=3,
                 reason="why",
+                rated_withheld="not rebuilt in this test",
             ),
             id="CalibrationRating.rubric_dim",
         ),
