@@ -43,7 +43,7 @@ from threetears.evals.analysis.report.decision import (
     rule_readings,
 )
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
-from threetears.evals.analysis.style import humanize, lint_prose
+from threetears.evals.analysis.style import humanize, lint_prose, measure_name
 from threetears.evals.kernel.declaration import Question, preregistered_questions
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 
@@ -571,7 +571,7 @@ def _separated(
         for comparison in family.comparisons:
             if comparison.verdict in _SEPARATED_WORDS:
                 heading = bundle.measure_catalog.get(comparison.name)
-                reading = (heading.reader_name if heading is not None else None) or comparison.name
+                reading = measure_name(comparison.name, heading.reader_name if heading is not None else None)
                 if comparison.reading == "judged":
                     reading = f"{humanize('dimension', comparison.name)} (judged)"
                 line = f"{arm(comparison.contrast.variant_key)} {_SEPARATED_WORDS[comparison.verdict]} {reading}"

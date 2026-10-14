@@ -33,6 +33,7 @@ from threetears.evals.analysis.report.decision import (
     parse_decision_rule,
 )
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
+from threetears.evals.analysis.bundle.schema import TrialCheck
 from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
 from packages.evals.tests.g2_support import (
     CANDIDATE,
@@ -183,6 +184,28 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
     assert len(table.rows) == len(trials)
     assert all("{" not in str(value) for row in table.values() for value in row.values())
+
+
+async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_ruled: tuple[Result, Report]) -> None:
+    _, coded = g2_ruled
+    expression = 'call_count("music.queue_track") >= 2'
+    trials = list(coded.bundle.trials)
+    first = next(index for index, trial in enumerate(trials) if trial.state == "failed")
+    trials[first] = trials[first].model_copy(
+        update={
+            "cause": "check",
+            "failed_checks": [TrialCheck(name=f"Pass rate of {expression}", expression=expression)],
+        }
+    )
+    bundle = coded.bundle.model_copy(update={"trials": trials})
+    report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")
+    (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
+    whys = [row["why"] for row in table.values()]
+    # Code, as written: no underscores or dots stripped, and no "Pass rate of" on one trial's failure.
+    assert f"check: `{expression}`" in whys
+    markdown = report_markdown(report)
+    assert "Pass rate of" not in markdown and "call count(" not in markdown
+    assert f"- `{expression}`" in markdown
 
 
 # =============================================================================

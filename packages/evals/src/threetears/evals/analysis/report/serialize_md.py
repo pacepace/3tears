@@ -156,7 +156,15 @@ def _trial(block: TrialBlock) -> list[str]:
     if block.excerpt:
         lines += ["What the judge saw (its last part):", "", *_fenced(block.excerpt), ""]
     if block.failed_checks:
-        lines += ["Failed checks:", *(f"- {check.name}: `{check.expression}`" for check in block.failed_checks), ""]
+        # A name that only restates the expression ("Pass rate of <expression>") adds nothing beside it.
+        lines += [
+            "Failed checks:",
+            *(
+                f"- `{check.expression}`" if check.expression in check.name else f"- {check.name}: `{check.expression}`"
+                for check in block.failed_checks
+            ),
+            "",
+        ]
     if block.judge:
         lines += ["What the judge said:"]
         for entry in block.judge:

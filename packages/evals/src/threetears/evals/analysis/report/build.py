@@ -94,11 +94,12 @@ from threetears.evals.analysis.report.words import (
     GUARDRAIL_DECISION_WORDS,
     evidence_rows,
     positions,
+    reading_heading,
     reading_name,
     stands_on_words,
 )
 from threetears.evals.analysis.reporting import self_judging_text
-from threetears.evals.analysis.style import ArmName, arm_name, humanize, lint_prose, sentences
+from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, lint_prose, measure_name, sentences
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.quantities import with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
@@ -114,6 +115,7 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.kernel.metrics import (
     METRIC_DESCRIPTORS,
+    goal_check_of,
     RUN_MARGIN_MEASURES,
     ClassifierStatistic,
     classifier_label_of,
@@ -1012,7 +1014,7 @@ def _finding_charts(
             cells.append(row.cell_ref)
     for (name, reading), refs in cited.items():
         ruler = rulers.get(name, UNITLESS) if reading == "measure" else UNITLESS
-        what = reading_name(surface.measure_heading(name, reading))
+        what = reading_heading(surface, name, reading)
         rows = []
         for ref in refs:
             try:
@@ -1221,6 +1223,8 @@ def _guardrail_standing_blocks(bundle: AnalysisContextBundle, arm: Callable[[str
 def _guardrail_heading(bundle: AnalysisContextBundle, name: str, reading: str) -> str:
     """A guardrail as a reader reads it: a measure by its reader name, a judged dimension by its own."""
     descriptor = bundle.measure_catalog.get(name) if reading == "measure" else None
+    if reading == "measure" and goal_check_of(name) is not None:
+        return measure_name(name)
     return (descriptor.reader_name if descriptor is not None else None) or reading_name(name)
 
 
@@ -1316,7 +1320,7 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
     verdicts = []
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
-            heading = reading_name(surface.measure_heading(comparison.name, comparison.reading))
+            heading = reading_heading(surface, comparison.name, comparison.reading)
             margin = _contrast_margin(bundle, comparison)
             ruler = rulers.get(comparison.name, UNITLESS) if comparison.reading == "measure" else UNITLESS
             reason, detail = _contrast_reason(comparison)
@@ -1537,7 +1541,7 @@ def _comparison_blocks(
     blocks.extend(_note(family.disclosure) for family in comparisons.families)
     unranged = sorted(
         {
-            reading_name(surface.measure_heading(comparison.name, comparison.reading))
+            reading_heading(surface, comparison.name, comparison.reading)
             for family in comparisons.families
             for comparison in family.comparisons
             if comparison.equivalence_untested_reason is not None
@@ -1659,7 +1663,7 @@ def guardrail_verdicts(
                 reason_detail=check.undecided_reason,
                 reading=check.reading,
                 name=check.name,
-                heading=reading_name(surface.measure_heading(check.name, check.reading)),
+                heading=reading_heading(surface, check.name, check.reading),
                 arm=arm(check.contrast.variant_key, check.contrast.apparatus_class_id),
                 variant_key=check.contrast.variant_key,
                 apparatus_class_id=check.contrast.apparatus_class_id,
@@ -1702,7 +1706,7 @@ def bar_verdicts(surface: DecisionSurface, arm: Callable[[str, str], str]) -> li
                     reason=reasons[read.decision],
                     reading=reading,
                     name=bar.measure_id,
-                    heading=reading_name(surface.measure_heading(bar.measure_id, reading)),
+                    heading=reading_heading(surface, bar.measure_id, reading),
                     arm=arm(read.variant_key, read.apparatus_class_id),
                     variant_key=read.variant_key,
                     apparatus_class_id=read.apparatus_class_id,
@@ -1959,7 +1963,7 @@ def _measure_rows(
                 return _summary_text(summaries[measure], factor)
             return NO_SUCCESSFUL_RESULTS if facts_of.all_failed else None
 
-        heading = surface.measure_heading(measure)
+        heading = reading_heading(surface, measure)
         row: dict[str, CellValue] = {
             "arm": arm,
             "reading": f"{heading} ({unit})" if unit else heading,
@@ -2231,7 +2235,8 @@ def _trial_why(trial: TrialRow) -> str | None:
     if trial.state == "lost":
         return f"lost: {cause_short(trial.cause or 'unknown')}"
     if trial.cause == "check" and trial.failed_checks:
-        return "check: " + ", ".join(humanize("dimension", check.name) for check in trial.failed_checks)
+        # A check is code: named by its expression, never humanized, and never a "pass rate" on one trial.
+        return "check: " + ", ".join(code(check.expression) for check in trial.failed_checks)
     if trial.cause == "judged":
         under = [entry.dim for entry in trial.judge if entry.scale == "pass_fail" and entry.score == 0]
         return "judge: " + (", ".join(humanize("dimension", dim) for dim in under) or "scored below the bar")
@@ -2381,7 +2386,7 @@ def _calibration_sentences(tiers: Sequence[JudgeEvidenceTier]) -> list[str]:
 
 def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
     """A goal check not shown to beat doing nothing: what it is, and what its pass rate is not."""
-    check = humanize("dimension", proof.check)
+    check = code(proof.check)
     if proof.refused is not None:
         return (
             f"Goal check {check} is {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({proof.refused}), so no arm was graded on "
@@ -2418,7 +2423,7 @@ def _no_margin_sentence(bundle: AnalysisContextBundle) -> str | None:
     fixed = [name for name in names if name in METRIC_DESCRIPTORS and name not in RUN_MARGIN_MEASURES]
 
     def heading(group: list[str]) -> str:
-        return ", ".join(catalog[name].reader_name or humanize("dimension", name) for name in group)
+        return ", ".join(measure_name(name, catalog[name].reader_name) for name in group)
 
     advice = []
     if scorers:
@@ -2599,9 +2604,7 @@ def _uncarried(bundle: AnalysisContextBundle) -> list[str]:
     ]
     catalog = bundle.measure_catalog
     return list(
-        dict.fromkeys(
-            (catalog[name].reader_name if name in catalog else None) or humanize("dimension", name) for name in names
-        )
+        dict.fromkeys(measure_name(name, catalog[name].reader_name if name in catalog else None) for name in names)
     )
 
 

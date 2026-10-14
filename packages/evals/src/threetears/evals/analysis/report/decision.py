@@ -32,6 +32,7 @@ from typing import Literal
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
+from threetears.evals.analysis.style import measure_name
 
 #: What a clause reads: a pass rate that must not drop by more than a margin, or a cost that must be lower.
 ClauseKind = Literal["rate_drop", "cost_lower", "unread"]
@@ -321,7 +322,7 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
     for name, by_arm in sorted(measures.items()):
         if control in by_arm and candidate in by_arm:
             descriptor = bundle.measure_catalog.get(name)
-            heading = (descriptor.reader_name if descriptor is not None else None) or name
+            heading = measure_name(name, descriptor.reader_name if descriptor is not None else None)
             rates.append(
                 RateReading(
                     heading,

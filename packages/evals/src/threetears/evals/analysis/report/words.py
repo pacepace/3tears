@@ -26,7 +26,9 @@ from threetears.evals.analysis.references import cell_index, resolve_reading, re
 from threetears.evals.analysis.report.figures import UNITLESS, measure_rulers
 from threetears.evals.analysis.report.model import CellValue, TableCell
 from threetears.evals.kernel.analysis_measures import BarDecision
+from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier, VariantIndexEntry
+from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
 
 
@@ -152,6 +154,25 @@ def reading_name(name: str) -> str:
     return ENGINE_WORDS.get(name, name)
 
 
+def reading_heading(surface: DecisionSurface, name: str, reading: str = "measure") -> str:
+    """A reading as the page heads it, in a column, a row or a chart's title.
+
+    A goal check by its expression, verbatim as code (:func:`~threetears.evals.analysis.style.measure_name`); any
+    other reading by the surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
+
+    Args:
+        surface: The decision surface the reading is on.
+        name: The measure's key, or a judged dimension's name.
+        reading: ``judged`` for a judged dimension; anything else reads a measure.
+
+    Returns:
+        The heading.
+    """
+    if reading != "judged" and goal_check_of(name) is not None:
+        return measure_name(name)
+    return reading_name(surface.measure_heading(name, reading))
+
+
 def cell_arm_labels(surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry]) -> dict[str, str]:
     """Name every cell on the surface by its arm, adding the test setup only where one arm ran under two.
 
@@ -234,7 +255,7 @@ def evidence_rows(
         ruler = rulers.get(row.measure_id, UNITLESS) if row.reading == "measure" else UNITLESS
         values: dict[str, CellValue] = {
             "arm": arm(row.cell_ref),
-            "measure": reading_name(surface.measure_heading(row.measure_id, row.reading)),
+            "measure": reading_heading(surface, row.measure_id, row.reading),
             # Cases, never trials: the count every interval is read over.
             "cases": row.n_cases,
             "spread": _restated_spread(analysis, row, ruler.factor),
@@ -282,6 +303,7 @@ __all__ = [
     "counted",
     "evidence_rows",
     "positions",
+    "reading_heading",
     "reading_name",
     "stands_on_words",
     "worded",
