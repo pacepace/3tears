@@ -271,7 +271,8 @@ def idle_end_state(seed: WorldSeed, *, world: WorldRegistry | None) -> ControlEn
     idle = {name: value if not _is_triggered(world, name) or name in clock else None for name, value in seeded.items()}
     return ControlEnd(
         end_state=idle,
-        ledger=CallLedger(),
+        # A candidate that did nothing made no call, so no tool refused one: an empty refusal record, not none kept.
+        ledger=CallLedger(refused=[]),
         fired=Firings(dimensions=clock, armed=clock & frozenset(seeded)),
     )
 
@@ -327,7 +328,9 @@ def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, wor
     """
     idle = do_nothing_end_state(template, world=world)
     named = {**idle.end_state, **_named(world, end_state.world)}
-    ledger = CallLedger()
+    # A control states the calls its candidate made and none refused (``ControlEndState`` has no refusals to state),
+    # so its refusal record is empty rather than not kept.
+    ledger = CallLedger(refused=[])
     for call in end_state.calls:
         ledger.record(call.tool, call.action, call.params)
     armed = idle.fired.armed | frozenset(end_state.fired_armed)

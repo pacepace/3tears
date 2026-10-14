@@ -2805,7 +2805,7 @@ def assert_preconditions(
         seeded: The seeded world, immediately after seeding and before any turn, keyed by declared
             dimension name — read back through the dimensions' ``read`` handles, or named from the
             seed by :meth:`~threetears.evals.kernel.host.world.WorldRegistry.named`. Read with an
-            empty call ledger: at t=0 the candidate has made no call.
+            empty call ledger: at t=0 the candidate has made no call, and no tool has refused one.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.
 
@@ -2818,7 +2818,7 @@ def assert_preconditions(
             held, detail = evaluate_with_detail(
                 precondition.expression,
                 end_state=seeded,
-                ledger=CallLedger(),
+                ledger=CallLedger(refused=[]),
                 world=world,
                 variation=dict(test_case.variation_params),
             )
@@ -2977,7 +2977,8 @@ def grade_goal_checks(
 
     Args:
         expressions: The goal checks, in order.
-        ledger: The calls the candidate made that succeeded — a cell's, or a control's stated calls.
+        ledger: The calls the candidate made that succeeded, and those a tool refused — a cell's, or a control's
+            stated calls.
         end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
             control end state.
         fired: What fired, read by ``fired()`` and ``fired_armed()`` — a cell's

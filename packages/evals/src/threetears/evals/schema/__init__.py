@@ -21,7 +21,14 @@ being exported from a public root. Code inside the package imports its own modul
 from __future__ import annotations
 
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
-from threetears.evals.schema.call_ledger import PASS_ACTION, PASS_TOOL, CallLedger, RecordedCall, is_pass
+from threetears.evals.schema.call_ledger import (
+    PASS_ACTION,
+    PASS_TOOL,
+    CallLedger,
+    RecordedCall,
+    RefusedCall,
+    is_pass,
+)
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.completion import (
     BoundCompletionClient,
@@ -377,6 +384,7 @@ __all__ = [
     "ProviderFailure",
     "ProviderFailureDescriber",
     "RecordedCall",
+    "RefusedCall",
     "RequestCeiling",
     "RoleUsage",
     "RubricAxis",

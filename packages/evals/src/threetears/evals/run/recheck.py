@@ -24,6 +24,8 @@ expression is a goal-state expression whose every input is stored. It leaves as 
 
 * an expression that reads the call ledger, for a cell whose kind kept none (or whose trace did not
   land);
+* an expression that reads the calls a tool refused (``refused()``, ``refused_count()``), for a cell whose
+  ledger keeps no refusal record — its kind records none, or it was stored before refusals were recorded;
 * an expression that reads world state, for a cell whose end state was not stored, or a re-check given
   no world registry to resolve ``state.<dimension>`` through;
 * an expression reading a world path that today's registry no longer resolves, or resolves to a
@@ -59,6 +61,7 @@ from threetears.evals.schema.goal_grammar import (
     DSLError,
     extract_paths,
     reads_call_ledger,
+    reads_refusals,
     referenced_fires,
     speaks_the_goal_language,
 )
@@ -194,6 +197,7 @@ def recheck_result(
         ), None
     stored_inputs = _StoredInputs(
         has_ledger=ledger is not None,
+        has_refusals=ledger is not None and ledger.refused is not None,
         has_end_state=end_state is not None,
         has_world=world is not None,
         has_events=result.world_events is not None,
@@ -243,6 +247,7 @@ class _StoredInputs(EvalBaseModel):
     """Which of a goal check's inputs one stored result can supply."""
 
     has_ledger: bool
+    has_refusals: bool
     has_end_state: bool
     has_world: bool
     has_events: bool
@@ -262,6 +267,7 @@ def _kept_reason(expression: str, inputs: _StoredInputs) -> str | None:
     try:
         paths = extract_paths(expression)
         reads_calls = reads_call_ledger(expression)
+        reads_refused = reads_refusals(expression)
         reads_fired = bool(referenced_fires(expression))
     except DSLError as refused:
         if speaks_the_goal_language(expression):
@@ -269,6 +275,11 @@ def _kept_reason(expression: str, inputs: _StoredInputs) -> str | None:
         return "not a goal-state expression — a fact its kind computed and reported in its own words"
     if reads_calls and not inputs.has_ledger:
         return "it reads the call ledger, and no call ledger is stored for its cell — its kind keeps none"
+    if reads_refused and not inputs.has_refusals:
+        return (
+            "it reads the calls a tool refused, and its cell's ledger keeps no refusal record — its kind records "
+            "none, or it was stored before refusals were recorded"
+        )
     if paths.world and not inputs.has_end_state:
         return "it reads world state, and its cell's end state was not stored"
     if paths.world and not inputs.has_world:

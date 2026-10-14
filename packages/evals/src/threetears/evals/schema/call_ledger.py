@@ -1,4 +1,4 @@
-"""The call ledger: every action a candidate took that succeeded, in the order it took them.
+"""The call ledger: every action a candidate took that succeeded, in the order it took them, and every one refused.
 
 A goal check reads two things about a finished cell: the world the candidate left behind, and what
 it did to get there. They are different facts with different owners. The world is the host's —
@@ -14,8 +14,19 @@ tool actually returned — never what a simulation reported — and hands the le
 beside the cell's output, which is what lets a stored result be re-graded later under today's rule
 without re-running it (:mod:`threetears.evals.run.recheck`).
 
-**A refused call is not recorded.** A call the tool refused changed nothing, and a check that
-counted it would grade an attempt as an effect.
+**A refused call is recorded apart, never among the calls.** A call the tool refused changed nothing, and a
+check that counted it would grade an attempt as an effect, so :attr:`CallLedger.calls` holds successes only and
+every call builtin (``call_count``, ``calls``, the ordering predicates) reads only them. What was refused is still
+something the candidate did, and a candidate whose every call was refused must not read as one that did nothing: a
+kind records each refusal with :meth:`CallLedger.record_refusal` (the tool, the parameters, the refusal's own
+reason, and where it fell among the calls), into :attr:`CallLedger.refused`, which ``refused()`` and
+``refused_count()`` read and nothing else does. A refusal is the candidate's to be graded on; a tool that RAISED
+is the rig's fault and excludes the cell, and is not a refusal.
+
+**A ledger that keeps no refusal record says so.** ``refused`` is ``None`` on a ledger whose kind does not record
+refusals, and on every ledger stored before refusals were recorded (core v15.0); a refusal check reading one
+raises rather than answer "none refused" for refusals nobody recorded. A kind that records them starts its ledger
+with ``CallLedger(refused=[])``, or records the first with :meth:`CallLedger.record_refusal`, which starts the list.
 
 **A deliberate pass is the engine's entry, not a host's spelling.** A candidate that decides to do nothing
 is recorded with :meth:`CallLedger.record_pass` as one reserved entry (:data:`PASS_TOOL`.:data:`PASS_ACTION`),
@@ -49,8 +60,24 @@ class RecordedCall(EvalDocumentModel, CoreShapeModel):
     params: dict[str, Any] = Field(default_factory=dict, description="The parameters the call passed.")
 
 
+class RefusedCall(EvalDocumentModel, CoreShapeModel):
+    """One call a candidate made that its tool refused: nothing changed, and the refusal said why."""
+
+    tool: str = Field(min_length=1, description="The tool the call went to, as the host's tools name it.")
+    action: str = Field(min_length=1, description="The action called.")
+    params: dict[str, Any] = Field(default_factory=dict, description="The parameters the call passed.")
+    reason: str = Field(min_length=1, description="Why the tool refused it, in the refusal's own words.")
+    position: int = Field(
+        ge=0,
+        description=(
+            "Where it fell among the calls: how many entries the ledger's `calls` held when it was refused, so "
+            "0 is before any call succeeded and a refusal at position n came after `calls[n - 1]`."
+        ),
+    )
+
+
 class CallLedger(EvalDocumentModel, CoreShapeModel):
-    """The calls one cell's candidate made that succeeded, across every tool, in recorded order.
+    """The calls one cell's candidate made that succeeded, across every tool, in recorded order, and those refused.
 
     One ledger across tools rather than one per tool, because the goal language's ordering
     predicates (``called_before``, ``called_after``, ``last_call_was``) ask about order ACROSS tools,
@@ -59,6 +86,14 @@ class CallLedger(EvalDocumentModel, CoreShapeModel):
 
     calls: list[RecordedCall] = Field(
         default_factory=list, description="Every recorded call, in the order the candidate made them."
+    )
+    refused: list[RefusedCall] | None = Field(
+        default=None,
+        description=(
+            "Every call a tool refused, in the order the candidate made them; never among `calls`. None when "
+            "no refusal record was kept — a kind that does not record refusals, or a ledger stored before core "
+            "v15.1 — which a refusal check refuses to read as none refused."
+        ),
     )
 
     def record(self, tool: str, action: str, params: dict[str, Any] | None = None) -> None:
@@ -73,6 +108,26 @@ class CallLedger(EvalDocumentModel, CoreShapeModel):
             params: The parameters it passed; ``None`` records a call that passed none.
         """
         self.calls.append(RecordedCall(tool=tool, action=action, params=copy.deepcopy(params or {})))
+
+    def record_refusal(self, tool: str, action: str, params: dict[str, Any] | None, *, reason: str) -> None:
+        """Append one call its tool refused, at its place among the calls; starts the refusal record if none is kept.
+
+        Recorded where the refusal is decided, before it is raised to the candidate, so no refusal leaves the
+        cell unrecorded. The parameters are deep-copied, as :meth:`record` copies them.
+
+        Args:
+            tool: The tool the call went to.
+            action: The action called.
+            params: The parameters it passed; ``None`` records a call that passed none.
+            reason: Why the tool refused it.
+        """
+        refusal = RefusedCall(
+            tool=tool, action=action, params=copy.deepcopy(params or {}), reason=reason, position=len(self.calls)
+        )
+        if self.refused is None:
+            self.refused = [refusal]
+        else:
+            self.refused.append(refusal)
 
     def record_pass(self, reason: str | None = None) -> None:
         """Record that the candidate deliberately did nothing here: the engine's one spelling of a pass.
@@ -91,4 +146,4 @@ def is_pass(call: RecordedCall) -> bool:
     return call.tool == PASS_TOOL and call.action == PASS_ACTION
 
 
-__all__ = ["PASS_ACTION", "PASS_TOOL", "CallLedger", "RecordedCall", "is_pass"]
+__all__ = ["PASS_ACTION", "PASS_TOOL", "CallLedger", "RecordedCall", "RefusedCall", "is_pass"]

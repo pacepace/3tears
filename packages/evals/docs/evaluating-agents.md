@@ -102,8 +102,9 @@ never scored. The quick path states none: each case's seed already sets every di
 ## Step 3: write goal checks
 
 A goal check is an expression over the world the agent left (`state.<dimension>`), the calls it made
-(`calls("<world>.<tool>")`, `call_count`, `called_before`, `called_after`, `last_call_was`), whether it
-deliberately passed (`passed()`), what fired (`fired`), and the case's own parameters (`variation.<name>`). It also has `any`/`all` generators, `contains`,
+(`calls("<world>.<tool>")`, `call_count`, `called_before`, `called_after`, `last_call_was`), the calls a tool
+refused (`refused`, `refused_count`), whether it deliberately passed (`passed()`), what fired (`fired`), and the case's
+own parameters (`variation.<name>`). It also has `any`/`all` generators, `contains`,
 `intersects` and `length`. A path that holds nothing is *not established*, and a check resting on one fails. The
 full grammar is in the `threetears.evals.kernel.dsl` docstring.
 
@@ -169,7 +170,7 @@ template = await run_blocking(  # a store write, so it runs off the event loop
 Seed the same template with the lamp already on, and `LIGHT_ON` is refused: it "passes (True) when the
 candidate did nothing and passes (True) on control" — the same verdict on both.
 
-Three pitfalls:
+Pitfalls:
 
 - `called_before(a, b)` and `called_after(a, b)` are **false when either action never happened**. "Never
   order before searching" is `call_count("shop.order") == 0 or called_before("shop.search", "shop.order")`.
@@ -177,6 +178,12 @@ Three pitfalls:
 - **A deliberate pass is `passed()`, not a host's spelling.** Your kind records a pass with
   `CallLedger.record_pass()`, and `passed()` holds when the cell recorded a pass and no call. Acting and then
   passing is not a pass. The call builtins never see the pass entry.
+- **The call builtins count only calls that succeeded.** A call the tool refused is recorded apart, and only
+  `refused()` and `refused_count()` read it, so an agent whose every `queue_track` was refused passes
+  `call_count("player.queue_track") == 0` exactly as one that never tried. Pair an action check with
+  `refused_count(...) == 0` where trying and being refused is a failure of its own. A host kind records its tools'
+  refusals with `CallLedger.record_refusal()` (or starts its ledger with `CallLedger(refused=[])`); against a ledger
+  that keeps no refusal record, a refusal check cannot be graded rather than reading "none refused".
 - A string comparison over a call parameter is allowed only where the tool's own schema closes the value
   (`enum`, `const` or `pattern`). Anything else compares text the model wrote, which belongs to a judge. The
   authoring gate refuses it; `run_eval` does not check this today, so hold yourself to it.

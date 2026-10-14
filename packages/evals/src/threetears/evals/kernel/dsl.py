@@ -751,6 +751,10 @@ def _eval_call(node: ast.Call, ctx: _EvalContext) -> Any:
         return _builtin_last_call_was(ctx.ledger, *_check_arity("last_call_was", args, 1))
     if func_name == "calls":
         return _builtin_calls(ctx.ledger, *_check_arity("calls", args, 1))
+    if func_name == "refused":
+        return _builtin_refused(ctx.ledger, *_check_arity("refused", args, 1))
+    if func_name == "refused_count":
+        return _builtin_refused_count(ctx.ledger, *_check_arity("refused_count", args, 1))
     if func_name == "passed":
         _check_arity("passed", args, 0)
         return _builtin_passed(ctx.ledger)
@@ -908,6 +912,32 @@ def _builtin_calls(ledger: CallLedger, spec: Any) -> list[dict[str, Any]]:
         for call in ledger.calls
         if call.tool == tool and call.action == action and not is_pass(call)
     ]
+
+
+def _refusals_of(ledger: CallLedger, spec: Any, predicate: str) -> int:
+    """How many refused calls match ``tool.action``, read off the ledger's refusal record.
+
+    Raises:
+        DSLError: The ledger keeps no refusal record. Answering 0 there would grade refusals nobody recorded as
+            none made — the candidate whose every call was refused reading as one that was never refused.
+    """
+    tool, action = parse_tool_action(spec)
+    if ledger.refused is None:
+        raise DSLError(
+            f"{predicate}({spec!r}) reads the calls a tool refused, and this cell's ledger keeps no refusal record — "
+            "its kind does not record refusals (CallLedger.record_refusal), or it was stored before they were recorded"
+        )
+    return sum(1 for refusal in ledger.refused if refusal.tool == tool and refusal.action == action)
+
+
+def _builtin_refused(ledger: CallLedger, spec: Any) -> bool:
+    """True when a tool refused at least one call matching ``tool.action``; reads only refused calls."""
+    return _refusals_of(ledger, spec, "refused") >= 1
+
+
+def _builtin_refused_count(ledger: CallLedger, spec: Any) -> int:
+    """Return the count of refused calls matching ``tool.action``; a call that succeeded is never counted here."""
+    return _refusals_of(ledger, spec, "refused_count")
 
 
 def _eval_any_all(func_name: str, node: ast.Call, ctx: _EvalContext) -> Any:

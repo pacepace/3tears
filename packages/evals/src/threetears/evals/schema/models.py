@@ -4706,9 +4706,9 @@ class EvalTrace(CoreDocumentModel):
     judge_evidence: JudgeEvidence | None = None
     #: The kind's declaration that picked the judged axes, stored with the evidence it applies to.
     judged_artifact: JudgedArtifact | None = None
-    #: The calls the candidate made that succeeded, as its kind recorded them and graded its goal
-    #: checks against. Stored so a re-check re-grades from what the candidate did rather than from
-    #: the verdicts alone. ``None`` when the kind keeps no ledger.
+    #: The calls the candidate made that succeeded, and apart from them those a tool refused, as its kind
+    #: recorded them and graded its goal checks against. Stored so a re-check re-grades from what the candidate
+    #: did rather than from the verdicts alone. ``None`` when the kind keeps no ledger.
     call_ledger: CallLedger | None = None
     #: The world the cell left behind, keyed by declared dimension name: every dimension of every carrier
     #: the cell attached, read back through its ``read`` handle once the kind's ``invoke`` returned (or
