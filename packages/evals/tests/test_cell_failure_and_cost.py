@@ -1048,9 +1048,8 @@ def test_the_analysis_bundle_counts_unpriced_results_and_never_reads_their_rows_
 
 
 def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_cost():
-    """$0.02 of candidate and $0.05 of judge a result: the arm costs $0.02, and the cost column says so."""
+    """$0.02 of candidate and $0.05 of judge a result: the arm costs $0.02 a reply, and the scoreboard says so."""
     from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-    from threetears.evals.analysis.surface_table import surface_table_of
     from threetears.evals.schema.models import RoleUsage as Row
 
     run = make_eval_run(status="completed")
@@ -1086,5 +1085,6 @@ def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_co
     assert means["production_replicating_cost"] == pytest.approx(0.02)
     assert means["cost_usd"] == pytest.approx(0.07)
     assert surface.measures["production_replicating_cost"].merit_axis == "cost"
-    cost_columns = [c for c in surface_table_of(surface, bundle.variant_index).columns if c.axis == "cost"]
-    assert [c.measure_id for c in cost_columns] == ["production_replicating_cost"]
+    (board,) = bundle.scoreboard
+    assert board.reply_cost_usd == pytest.approx(0.02), "what the model costs a reply, the judge's spend apart"
+    assert board.test_cost_usd == pytest.approx(0.21), "what running the test cost, every role"

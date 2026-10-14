@@ -34,6 +34,7 @@ from threetears.evals.schema import (
     EvalResult,
     EvalRun,
     EvalTemplate,
+    EvalTrace,
     GoalStateOutcome,
     LatencyMetrics,
     RoleUsage,
@@ -384,6 +385,10 @@ class ToyhostStorage:
             (profile for profile in self._judge_profiles.values() if profile.scope_id == scope_id),
             key=lambda profile: profile.recorded_at,
         )
+
+    def load_eval_trace(self, result_id: str, scope_id: str) -> EvalTrace | None:
+        """No observation's trace: the toy host's batches store none, and none of their results says it has one."""
+        return None
 
 
 def toyhost_batch(**toyhost_values: Any) -> EvalRun:

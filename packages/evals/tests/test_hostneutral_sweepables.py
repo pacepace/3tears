@@ -134,6 +134,19 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 54/13: the bundle gains each arm's census of its trials (`scoreboard`, `exclusions`), the trials themselves
+    # and the build that assembled it. Shape-only: the set and the cell model hold.
+    (
+        (54, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 

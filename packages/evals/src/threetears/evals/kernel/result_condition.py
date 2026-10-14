@@ -52,7 +52,9 @@ from threetears.evals.schema.models import (
 )
 
 __all__ = [
+    "DIFFERENTIAL_EXCLUSION_SHARE",
     "CandidateFailureCause",
+    "ExclusionCause",
     "JudgingState",
     "ResultCondition",
     "ResultOutcome",
@@ -462,9 +464,16 @@ _JUDGING_DISCLOSURE: dict[JudgingState, str | None] = {
 #: Why a result is left out of a measure. ``infra``: the harness faulted it (``classify_result``
 #: says ``INFRA_EXCLUDE``), which leaves it out of every measure. ``judge_cannot_tell``: the judge
 #: answered it could not score a dim, which leaves it out of that dim's measure and out of the
-#: measures needing every dim (pass^k, the composite), and nowhere else. Counted per cause wherever
+#: measures needing every dim (pass^k, the composite), and nowhere else. ``truncated``: the judge's
+#: reply was cut off at its output cap, a fault of the test setup the report names apart from the
+#: rest, since its remedy (raise the judge's cap) is its own. Counted per cause wherever
 #: exclusions are counted, so a shrunken ``n`` always says why.
-ExclusionCause = Literal["infra", "judge_cannot_tell"]
+ExclusionCause = Literal["infra", "judge_cannot_tell", "truncated"]
+
+#: The share of an arm's trials one exclusion cause may take before the arms are flagged as not compared on the same
+#: trials (``AnalysisContextBundle.differential_exclusions``): above it, a difference between the arms can come from
+#: which trials each lost rather than from the arms.
+DIFFERENTIAL_EXCLUSION_SHARE = 0.10
 
 #: The ``outcome`` a projected score row carries when the judge could not tell on what the row
 #: measures — a dim it named, or the composite that needs every dim. Distinct from every
