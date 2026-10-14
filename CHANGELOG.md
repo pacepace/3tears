@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.68.0 -- 2026-10-14
+
 ### Media and the small tools: a question gets a new look, an image can be changed by its id, and the converters read what people write
 
 `media_analyze` answered every question about an image with its stored description, and stored any
