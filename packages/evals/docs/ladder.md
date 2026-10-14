@@ -242,27 +242,40 @@ if __name__ == "__main__":
 - **Two levers at once?** The file's closing comment names arms as `k=v` pairs (`"prompt=v2, effort=high"`), so each
   pair is a factor of the design, and `result.against(...)` reads the same runs against another control.
 
-What the recording at this tag printed, first lines and errors:
+What the recording printed (made at `max_tokens=8192`), first lines and errors; it exits 4:
 
 ```text
 invoices: no arm separated from the control 'v1'
 v1 (control): 90 result(s): 90 scored
-  number: mean 0.8444 (n=90, min 0, max 1)
+  number: mean 0.8333 (n=90, min 0, max 1)
   ...
-v2: 90 result(s): 88 scored, 2 failed by the candidate
-  number: mean 1 (n=88, min 1, max 1)
+v2: 90 result(s): 89 scored, 1 failed by the candidate
+  number: mean 1 (n=89, min 1, max 1)
   ...
-  error: case n04: the candidate raised ValueError: the reply did not finish: it stopped at max_tokens
-  error: case n09: the candidate raised ValueError: the reply did not finish: it stopped at max_tokens
+  error: case c02: the candidate raised ValidationError: 1 validation error for Invoice
+  Invalid JSON: expected `:` at line 1 column 7 [type=json_invalid, input_value='{"{  "currency": "GBP", ...7",  "total": 270.00  }', input_type=str]
 ```
 
-**The lesson: a better mean is not a verdict.** v2 read every invoice number it answered where v1 missed half of the
-noisy ones, and still the first line says no arm separated: the five readings tested together share one correction,
-and on 30 invoices the corrected interval on that gain (+0.16) still reaches just below zero. The guardrail reads undecided (v2 invented no total, but 30
-invoices cannot show it would not), and an undecided guardrail is never read as held, so the gate fails. Two of v2's
-replies were cut off at the output cap and count against v2, not for nothing: a truncation is the candidate's
-failure, stated, never excluded. The way forward is more cases where the arms disagree, above all hard ones; the
-report says which. [Reading reports](reading-reports.md#reading-a-comparison) explains each verdict, and
+And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said, line for line:
+
+```text
+**Leads only: no arm separated from the control.**
+> Arm candidate=v2 is undecided on the guardrail No invented total score, so it is not known to be safe; the guardrails table says why.
+| Number score | candidate=v1 | candidate=v2 | 0.1667 [-0.01363, 0.347] at 99% | not separated from the control | 30 paired |
+| No invented total score | candidate=v2 | 0.9889 | 0.9889 | 30 paired | 0 | [-0.1343, 0.1343] at 95% | 0.02 | undecided: not shown held, so not known to be safe (the interval on the difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within it nor beyond it) |
+### T11 — clean: eval-05c13d989b1d067b-1 · candidate=v2 · repeat 2 · failed: a model the candidate runs failed or refused. Read the failed trials' errors below: a different model or provider is the lever.
+> Guardrails left undecided, so not known to be safe: No invented total score for candidate=v2.
+```
+
+**The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
+rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones, and still
+no arm separated: on 30 invoices the corrected interval on that gain reaches just below zero. The guardrail is the
+question the report names as unanswered: each arm stated a total on one noisy invoice that prints none, the interval
+on the difference is ±0.13 against a margin of 0.02, and an undecided guardrail is never read as held, so the gate
+fails and the run exits 4. What would answer it is a narrower interval on that guardrail, and only an invoice that
+prints no amount due can fail it (7 of the 30 do): more of those hard-negative cases. One v2 trial failed on malformed
+JSON from the model, and it counts against v2, stated, never excluded: a model's unusable answer is the candidate's
+failure. [Reading reports](reading-reports.md#reading-a-comparison) explains each verdict, and
 [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) how many cases a question needs.
 
 ## Rung 4: an agent, graded on the world it leaves

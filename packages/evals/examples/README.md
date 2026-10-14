@@ -101,6 +101,21 @@ expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail d
 fails the run in CI on a regression or a guardrail not shown held. Its closing comment names arms as `k=v` pairs for a
 grid of factors, read against another control with `result.against()`.
 
+What the recorded run said: no arm separated, and it exits 4. The report reads
+
+```text
+**Leads only: no arm separated from the control.**
+> Guardrails left undecided, so not known to be safe: No invented total score for candidate=v2.
+```
+
+with the guardrail's row saying why: `undecided: not shown held, so not known to be safe (the interval on the
+difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within
+it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
+answer, and what would answer it is more hard-negative cases, invoices that print no amount due (7 of the 30). One
+v2 trial is `failed: a model the candidate runs failed or refused`, its recorded error `the candidate raised
+ValidationError: 1 validation error for Invoice` on `Invalid JSON`: malformed JSON from the model, counted against v2.
+[The ladder](../docs/ladder.md#rung-3-two-prompts-compared) quotes the rest.
+
 Recorded on `deepseek/deepseek-v4-flash` at `max_tokens=8192`: 180 calls, $0.0105 (`recordings/invoices.jsonl`).
 
 ### Rung 4: an agent graded on the world it leaves, `4-booking/`
