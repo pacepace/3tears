@@ -713,6 +713,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.Model",
         "threetears.evals.Answer",
         "threetears.evals.quick.as_host",
+        # Rung 4 serves its runs with one call over as_host(...) (examples/4-booking/serve.py).
+        "threetears.evals.transports.fastmcp.mount_fastmcp",
         # A judge's rubric dimension, which states a scale other than pass/fail.
         "threetears.evals.schema.RubricDim",
         "threetears.evals.analysis.EvalSummary",
@@ -921,7 +923,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.transports.fastmcp.CallerResolver",
         "threetears.evals.transports.fastmcp.HostResolution",
         "threetears.evals.transports.fastmcp.ToolCall",
-        "threetears.evals.transports.fastmcp.mount_fastmcp",
         # The shipped client's reply and its provider names, beside the host-contract client names.
         "threetears.evals.providers.Completion",
         "threetears.evals.providers.Provider",

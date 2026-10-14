@@ -41,7 +41,6 @@ import re
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from pathlib import Path
 from typing import Any, NoReturn, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, PydanticSchemaGenerationError, TypeAdapter, ValidationError
@@ -65,6 +64,7 @@ from threetears.evals.kernel import (
     VariantConfig,
     WorldSession,
 )
+from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import SeedRefused, WorldDimension, WorldRegistry, check_seed, schema_violations
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state, grade_goal_checks
@@ -259,7 +259,8 @@ class World:
                 functions of their keyword arguments returning JSON.
             recording: For a world of lookups: a file their answers are recorded to on the first run and replayed
                 from after (``RECORD=1`` records it again). A world with state takes none: its tools move the state
-                they are graded on, so they run in every cell.
+                they are graded on, so they run in every cell. A relative path is read beside the eval file being
+                loaded, else in the working directory.
 
         Raises:
             ValueError: A state that is not a pydantic model, a field with no description, no tools for a world of
@@ -277,7 +278,7 @@ class World:
             )
         self.state = state
         self.name = "tools" if state is None else _snake(state.__name__)
-        self.recording = None if recording is None else Path(recording)
+        self.recording = None if recording is None else beside_eval_file(recording)
         declared = [WorldTool(tool, state=state) for tool in tools]
         names = [tool.name for tool in declared]
         if repeated := sorted({tool for tool in names if names.count(tool) > 1}):

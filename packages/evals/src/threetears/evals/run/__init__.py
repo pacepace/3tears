@@ -210,7 +210,7 @@ from threetears.evals.run.ceilings import (
     resolve_effective_ceiling,
 )
 from threetears.evals.run.curation import CurationStore, UnreadableRunDeleteStore
-from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome
+from threetears.evals.run.definition_seed import SeedCorpus, SeedJudgeCase, SeedOutcome
 from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
@@ -294,6 +294,7 @@ __all__ = [
     "RunJudge",
     "RunnerOptions",
     "SeedCorpus",
+    "SeedJudgeCase",
     "SeedOutcome",
     "SimulatorCall",
     "SimulatorReplyInvalid",

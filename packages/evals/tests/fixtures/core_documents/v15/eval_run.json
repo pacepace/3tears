@@ -18,7 +18,7 @@
   "completeness": null,
   "context_components": null,
   "context_key": null,
-  "created_at": "2026-10-14T04:44:45.555389+00:00",
+  "created_at": "2026-10-14T18:49:44.752621+00:00",
   "declared_margins": {},
   "declared_measures": {},
   "doc_type": "eval_run",
@@ -36,13 +36,14 @@
     "state.shop.cart.length >= 1": "proven"
   },
   "host_payload": {},
-  "id": "01a138ba-2471-7194-b12b-15c1ad776d84",
+  "id": "01a13bbf-c030-73ad-870c-02397b7dbbb8",
   "identity_version": null,
   "judge_asked_settings": {
     "max_tokens": 4096,
     "reasoning_effort": null,
     "reasoning_max_tokens": null,
-    "strict_output": false
+    "strict_output": false,
+    "unsent_reasoning_max_tokens": null
   },
   "judge_config_ids": {},
   "judge_config_provenance": {},
@@ -71,7 +72,7 @@
   "resolved_tools_allowed": null,
   "resolved_world_seed": {},
   "rubric_scales": {},
-  "schema_minor": 1,
+  "schema_minor": 2,
   "schema_version": 15,
   "scope_id": "uni-1",
   "simulator_asked_settings": null,

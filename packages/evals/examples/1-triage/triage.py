@@ -1,4 +1,4 @@
-"""Rung 1: point it at your own function. Run ``python -m threetears.evals triage.py`` from this directory.
+"""Rung 1: point it at your own function. Run ``python -m threetears.evals examples/1-triage/triage.py``.
 
 The same eval as ``triage.toml`` (rung 0), with your own function as the runner and one grader TOML cannot say:
 ``escalates``, an asymmetric rule. Each email is triaged k=3 times; it replays ``recordings/triage.jsonl`` offline,

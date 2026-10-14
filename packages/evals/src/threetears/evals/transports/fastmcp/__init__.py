@@ -7,7 +7,17 @@ each tool's name, description, input schema and behaviour hints are read off a
 parameter, generating help and rendering the result all happen in the catalogue, so this transport and
 any other answer a call identically.
 
-A host mounts it with its own server, its catalogue (the engine's actions plus its own), its
+Serving an eval host's runs is one line: handed the :class:`~threetears.evals.kernel.host.EvalHost`
+:func:`~threetears.evals.quick.as_host` builds, and the scope its calls act in, it builds the server, the
+:class:`~threetears.evals.ops.OpsHost` (:meth:`~threetears.evals.ops.OpsHost.reading`: every read, nothing
+launched) and the read-only tool, and returns the server::
+
+    from threetears.evals.quick import as_host
+    from threetears.evals.transports.fastmcp import mount_fastmcp
+
+    mount_fastmcp(as_host([my_eval], store=".evals/evals.sqlite"), scope="dev").run()
+
+A host of the full shape mounts it with its own server, its catalogue (the engine's actions plus its own), its
 :class:`~threetears.evals.ops.OpsHost` and a caller resolver — who is calling and the scope they act in,
 asked once per call::
 
@@ -62,7 +72,7 @@ import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 # ``FastMCP`` is named only in ``mount_fastmcp``'s annotation, so it is imported for the type checker alone: importing
 # it loads FastMCP's whole server stack (its context, sampling, HTTP app and event store), about as long again as the
@@ -82,8 +92,18 @@ except ModuleNotFoundError as missing:
     ) from missing
 from pydantic import ConfigDict, Field
 
-from threetears.evals.actions import ActionCatalogue, ActionOutcome, Caller, MountedTool, ToolSpec, standard_tools
+from threetears.evals.actions import (
+    ActionCatalogue,
+    ActionOutcome,
+    Caller,
+    MountedTool,
+    ToolSpec,
+    eval_catalogue,
+    read_only_tools,
+    standard_tools,
+)
 from threetears.evals.kernel import EvalServiceError
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import OpsHost
 from threetears.evals.schema.logs import get_logger
 
@@ -723,53 +743,138 @@ class CatalogueTool(Tool):
         return ToolResult(content=content, structured_content=structured, is_error=outcome.is_error)
 
 
+#: What :func:`mount_fastmcp` names the server it builds around a host it is handed alone.
+_SERVER_NAME = "evals"
+
+
+@overload
+def mount_fastmcp(
+    server: EvalHost | OpsHost,
+    /,
+    *,
+    scope: str,
+    identity: str = "mcp",
+    tools: Sequence[ToolSpec] | None = None,
+    call_timeout_s: CallTimeout = DEFAULT_CALL_TIMEOUT_S,
+) -> FastMCP: ...
+
+
+@overload
 def mount_fastmcp(
     server: FastMCP,
-    catalogue: ActionCatalogue,
+    catalogue: ActionCatalogue | None = None,
     *,
-    host: OpsHost | None = None,
+    host: EvalHost | OpsHost | None = None,
     host_resolver: HostResolver | None = None,
-    caller: CallerResolver,
+    caller: CallerResolver | None = None,
+    scope: str | None = None,
+    identity: str = "mcp",
     around: CallHook | None = None,
     annotate: CallAnnotator | None = None,
     tools: Sequence[ToolSpec] | None = None,
     call_timeout_s: CallTimeout = DEFAULT_CALL_TIMEOUT_S,
-) -> tuple[str, ...]:
-    """Add the catalogue's tools to a FastMCP server.
+) -> tuple[str, ...]: ...
+
+
+def mount_fastmcp(
+    server: FastMCP | EvalHost | OpsHost,
+    catalogue: ActionCatalogue | None = None,
+    *,
+    host: EvalHost | OpsHost | None = None,
+    host_resolver: HostResolver | None = None,
+    caller: CallerResolver | None = None,
+    scope: str | None = None,
+    identity: str = "mcp",
+    around: CallHook | None = None,
+    annotate: CallAnnotator | None = None,
+    tools: Sequence[ToolSpec] | None = None,
+    call_timeout_s: CallTimeout = DEFAULT_CALL_TIMEOUT_S,
+) -> FastMCP | tuple[str, ...]:
+    """Add the catalogue's tools to a FastMCP server; or, handed a host alone, build the server and return it.
+
+    **In one line**, ``mount_fastmcp(as_host([...], store=...), scope="dev").run()`` serves an eval host's runs: a
+    server named ``evals``, the engine's catalogue, :func:`~threetears.evals.actions.read_only_tools` (nothing
+    launches over it: :meth:`~threetears.evals.ops.OpsHost.reading`), and every call in ``scope`` as ``identity``. A
+    host of the full shape mounts on its own server with every hook below.
 
     Args:
-        server: The host's server.
-        catalogue: The actions to serve — :func:`~threetears.evals.actions.eval_catalogue`, with the host's own.
-        host: The one host every action works in; or
+        server: The host's server; or the one host every action works in, an
+            :class:`~threetears.evals.kernel.host.EvalHost` or an :class:`~threetears.evals.ops.OpsHost`, to serve
+            on a server built here, which is returned.
+        catalogue: The actions to serve — :func:`~threetears.evals.actions.eval_catalogue`, with the host's own;
+            ``None`` for the engine's alone.
+        host: The one host every action works in: an :class:`~threetears.evals.ops.OpsHost`, or an
+            :class:`~threetears.evals.kernel.host.EvalHost`, served through :meth:`~threetears.evals.ops.OpsHost.reading`;
+            or
         host_resolver: Resolves the host per call, for a server serving several. Exactly one of ``host``
             and ``host_resolver``.
-        caller: Resolves who is calling and their scope, once per call.
+        caller: Resolves who is calling and their scope, once per call; or
+        scope: The one scope every call acts in, as ``identity``. Exactly one of ``caller`` and ``scope``.
+        identity: Who the caller is, with ``scope``: recorded where a write records an author.
         around: Wraps every call to every tool, for the host's tracing, metrics or audit
             (:data:`CallHook`); ``None`` for none.
         annotate: Adds the host's note to what a call to any tool returns — a text block after the outcome's,
             never in its place (:data:`CallAnnotator`); ``None`` for none.
         tools: The tools to cut; ``None`` for :func:`~threetears.evals.actions.standard_tools` under the
-            default prefix. Pass :func:`~threetears.evals.actions.read_only_tools` for an agent that may
-            only read, or either with the host's own prefix.
+            default prefix, or :func:`~threetears.evals.actions.read_only_tools` over an eval host, which
+            launches nothing. Pass ``read_only_tools()`` for an agent that may only read, or either with the
+            host's own prefix.
         call_timeout_s: The one timeout every call is held to, in seconds, or a function read once as each call
             starts, for a host that retunes it from live configuration (:data:`CallTimeout`).
 
     Returns:
-        The names of the tools added.
+        The names of the tools added; or, handed a host alone, the server built, ready to ``run()``.
 
     Raises:
         ValueError: The catalogue refuses a tool (see :meth:`~threetears.evals.actions.ActionCatalogue.mount`),
-            or both or neither of ``host`` and ``host_resolver`` were given, or ``call_timeout_s`` is a number that
-            is not positive — before any tool is added. A function's value is checked per call instead.
+            or both or neither of ``host`` and ``host_resolver``, or of ``caller`` and ``scope``, were given, or
+            ``call_timeout_s`` is a number that is not positive — before any tool is added. A function's value is
+            checked per call instead.
         TypeError: ``around`` is not an async generator function, before any tool is added.
     """
-    mounted = catalogue.mount_all(tools if tools is not None else standard_tools())
+    if isinstance(server, EvalHost | OpsHost):
+        if host is not None or host_resolver is not None:
+            raise ValueError("mount_fastmcp(host, ...) serves the host it is handed; pass no host= or host_resolver=")
+        from fastmcp import FastMCP  # the server stack, loaded only when a server is built here
+
+        built = FastMCP(_SERVER_NAME)
+        mount_fastmcp(
+            built,
+            catalogue,
+            host=server,
+            caller=caller,
+            scope=scope,
+            identity=identity,
+            around=around,
+            annotate=annotate,
+            tools=tools,
+            call_timeout_s=call_timeout_s,
+        )
+        return built
+    if (caller is None) == (scope is None):
+        raise ValueError("mount_fastmcp takes a caller resolver (caller=) or the one scope every call acts in (scope=)")
+    resolve: CallerResolver
+    if caller is not None:
+        resolve = caller
+    else:
+        acting = Caller(scope_id=str(scope), identity=identity)
+
+        def in_scope() -> Caller:
+            return acting
+
+        resolve = in_scope
+    reading = isinstance(host, EvalHost)
+    if isinstance(host, EvalHost):
+        host = OpsHost.reading(host)
+    mounted = (catalogue if catalogue is not None else eval_catalogue()).mount_all(
+        tools if tools is not None else read_only_tools() if reading else standard_tools()
+    )
     served = [
         CatalogueTool.over(
             tool,
             host=host,
             host_resolver=host_resolver,
-            caller=caller,
+            caller=resolve,
             around=around,
             annotate=annotate,
             call_timeout_s=call_timeout_s,

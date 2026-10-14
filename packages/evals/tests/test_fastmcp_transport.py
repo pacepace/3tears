@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 
-from threetears.evals.actions import Caller, eval_catalogue, read_only_tools
+from threetears.evals.actions import Caller, eval_catalogue, read_only_tools, standard_tools
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SUBJECT, OpsFixture, ops_fixture
@@ -219,6 +219,60 @@ async def test_a_model_calling_actions_refusal_in_the_call_reaches_the_client_as
         )
     assert is_error and structured == {"ending": "refused", "refusal": {"kind": "not_found", "status": 404}}
     assert "no-such-run" in text
+
+
+async def test_an_eval_host_is_served_in_one_line_read_only_in_one_scope() -> None:
+    """``mount_fastmcp(as_host(...), scope=...)``: the server, the catalogue, a reading OpsHost and the read-only tool."""
+    fixture = off_loop(ops_fixture)
+    server = mount_fastmcp(fixture.host.eval_host, scope=CALLER.scope_id)
+    async with Client(server) as client:
+        (tool,) = await client.list_tools()
+        listed, _, _ = await _text(client, "evals", {"action": "templates_list"})
+        refused, _, is_error = await _text(
+            client, "evals", {"action": "run_launch", "template_id": "t", "subject_id": "s"}
+        )
+    assert server.name == "evals" and tool.name == "evals" and tool.annotations is not None
+    assert tool.annotations.readOnlyHint is True
+    assert toyhost_template().id in listed, "the scope named, over the eval host's own storage"
+    assert is_error and "carries read actions only" in refused
+
+
+async def test_a_reading_host_refuses_a_launch_by_name_under_the_full_tools() -> None:
+    fixture = off_loop(ops_fixture)
+    server = FastMCP("toyhost")
+    mount_fastmcp(server, host=fixture.host.eval_host, scope=CALLER.scope_id, tools=standard_tools())
+    launch = {
+        "action": "run_launch",
+        "template_id": toyhost_template().id,
+        "subject_id": TOYHOST_SUBJECT.subject_id,
+        "models": [RUN_MODELS[0]],
+    }
+    async with Client(server) as client:
+        text, structured, is_error = await _text(client, "evals", launch)
+    assert is_error and structured is not None and structured["ending"] == "refused", text
+
+
+async def test_an_ops_host_handed_alone_keeps_its_launch_tools() -> None:
+    async with Client(mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id)) as client:
+        assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
+
+
+@pytest.mark.parametrize(
+    ("mount", "refusal"),
+    [
+        ({"caller": lambda: CALLER, "scope": "dev"}, "a caller resolver .caller=. or the one scope"),
+        ({}, "a caller resolver .caller=. or the one scope"),
+    ],
+)
+def test_a_mount_names_its_caller_once(mount: dict[str, Any], refusal: str) -> None:
+    with pytest.raises(ValueError, match=refusal):
+        mount_fastmcp(FastMCP("toyhost"), host=ops_fixture().host, **mount)
+
+
+def test_a_host_handed_alone_takes_no_other_host() -> None:
+    fixture = ops_fixture()
+    with pytest.raises(ValueError, match="serves the host it is handed"):
+        mount_fastmcp(fixture.host.eval_host, scope="dev", host=fixture.host)  # type: ignore[call-overload]
 
 
 def test_importing_the_transport_leaves_fastmcps_server_stack_unloaded() -> None:

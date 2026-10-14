@@ -47,12 +47,12 @@ import json
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Self
 
 from pydantic import ValidationError
 
 from threetears.evals.schema import SCALES, CompletionClient, CompletionResult, JudgeEvidence, RubricDim
+from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CompletionClients, CompletionRole
 from threetears.evals.kernel import AuthoredJudgeCase, AuthoredVerdict
 
@@ -138,7 +138,8 @@ class Judge:
             labels: A CSV of a person's verdicts on judged answers, in the columns
                 :meth:`~threetears.evals.quick.contract.Result.write` writes ``to_label.csv`` in: the result reports
                 how far the judge agrees with them (kappa, its lower bound and the evidence tier). A file that is not
-                there yet reads as no labels, said by name.
+                there yet reads as no labels, said by name. A relative path is read beside the eval file being
+                loaded, else in the working directory.
             case_material: Renders what an answer is judged against from its case. ``None`` shows the judge the case
                 as JSON, less every top-level field holding the classifier's expected label.
             guard: Each dimension no arm may get worse on than the control by more than its margin, by rubric key
@@ -152,7 +153,7 @@ class Judge:
         self.client, self.model = judge_client(model)
         self.rubric = rubric
         self.examples = tuple(examples)
-        self.labels = None if labels is None else Path(labels)
+        self.labels = None if labels is None else beside_eval_file(labels)
         self.case_material = case_material
         self.guard = dict(guard or {})
         dims = self._build_dims()

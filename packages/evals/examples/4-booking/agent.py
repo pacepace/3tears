@@ -1,7 +1,7 @@
 """Rung 4: is your agent doing the right thing to the world, not only saying it?
 
 Each request seeds one day's calendar; the agent books through two tools, and the graders read the day it left.
-From this directory, ``python -m threetears.evals agent.py`` replays ``recordings/agent.jsonl`` offline, and
+``python -m threetears.evals examples/4-booking/agent.py`` replays ``recordings/agent.jsonl`` offline, and
 ``RECORD=1`` with ``OPENROUTER_API_KEY`` set records it again. As recorded on deepseek/deepseek-v4-flash:
 100 calls, $0.0080 (the recording's own cost_usd fields, summed).
 """

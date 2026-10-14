@@ -155,18 +155,18 @@ FIRST_STORED_AT: dict[str, int] = {}
 
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
-    "v15/eval_action_job.json": "5283f8ce71dfb97876c55ea602877f738bbf7135c976fbcd1904aa1716e66c05",
-    "v15/eval_analysis_attempt.json": "855f51c733b8275beabf97b520dd752765865a8c307c78ed8642a1c669ab32a9",
-    "v15/eval_campaign.json": "c9152ddab88b638891590f3909b5917629c2ff21766a54f62362703560881645",
-    "v15/eval_generation_slot.json": "9a04af073babbd91668b2b294d7d20ba8c62fba6d430abcdecfcd1313b2d4c98",
-    "v15/eval_judge_temperature_check.json": "4dab8c1462b5cd3dab1945624c73061677fe292f03c8fad2509dc96ef72b955b",
-    "v15/eval_launch.json": "8fa9e3d0060c1f43a0717536c4a473d2cb981ba01170c277ecbe9ce8e1d97519",
-    "v15/eval_out_of_run_spend.json": "0919885afaf82372b7f4bc900fb5965a7bc0e09c6d9504cbbae99633a3c79ab3",
-    "v15/eval_result.json": "4524e9cecdb45740fbf7f200c4fa21e0e87484af5d316344fa2faf254607b823",
-    "v15/eval_run.json": "e90dbc59bb11c2fcdd21880e8892446070d49284cc76298a39d019cd472685fb",
-    "v15/eval_second_judge_pass.json": "a3d1b663aa127e77e6056849a8b046e63d1ad5ab87f9791eef67fd5589d8de53",
-    "v15/eval_sweep.json": "1ac1d31e40f730f47a8e8591de9f7f7f712f4c50d56322573e8a5c4e112ca4a3",
-    "v15/eval_trace.json": "703f57f22421d3da09ed45bcf165b05e4d1b07b190ea47990c4cdce03eabe024",
+    "v15/eval_action_job.json": "e1f2e92c5bf8962345488c5791f93e4698c221af53831f06aba5934a73b73e95",
+    "v15/eval_analysis_attempt.json": "bd1015905b2a71c3d1d3efebbb15ce313d1c64a5281a20558fe2e685bcfc85e0",
+    "v15/eval_campaign.json": "b000affa5e9c0bbea26f272ba0024270cceb1fe1720a06ed64c7916f4f9bf0a3",
+    "v15/eval_generation_slot.json": "18efd267b51051a943a4edc53aeb0f57f11efd6f54fa9996791e15b5a25e9991",
+    "v15/eval_judge_temperature_check.json": "178f1a5afc01c064ae7013a35bcf6528a907906e2764689a0784924aa4b70cb3",
+    "v15/eval_launch.json": "3d92be4c4c5d701841ff9ab4b4192879888902d6626ab9e35cad016a9abf53e9",
+    "v15/eval_out_of_run_spend.json": "b8ae34c1bb023f0c5694ad81b31345fd0be19b4d41655e4f3c1d5173d126109d",
+    "v15/eval_result.json": "185ebd15dd452e4ba84527d9750caaa4ccc971055b7280b8124a6f9afb9f690e",
+    "v15/eval_run.json": "05d4b8d8ab2c79d288fc952eb768d820f471fd0038476a5092ca36d0599c7474",
+    "v15/eval_second_judge_pass.json": "6a3e6a6e0bdb25e904e4ee48c941b3c6366deaa1dd0373c62d43d1c8f799ed12",
+    "v15/eval_sweep.json": "4b51f9b19f3cc56c2928413fe2f8314af40d00d615bf17d37b99e49f50e60cc7",
+    "v15/eval_trace.json": "8fe80d888a150823a845e20750d259df302a9559a0b94fc43fa9967156a26445",
 }
 
 #: Keys whose dict values are maps of names to schemas, not schema nodes: their own keys are field or

@@ -6,6 +6,12 @@ The command line's first argument decides what it does. A ``.py`` or ``.toml`` f
 - **A Python file** is imported as a module, and every :class:`~threetears.evals.quick.contract.Eval` it defines at
   module level is run, in the order it defines them. No ``asyncio.run`` is needed in it.
 
+Either file names its cases, recordings and labels relative to itself, so
+``python -m threetears.evals examples/1-triage/triage.py`` runs the same from any directory: while a Python file is
+imported, every relative path ``Eval``, ``Model``, ``World``, ``Judge`` and ``Log`` are handed is read beside it,
+never by changing directory. A path the file's own code opens is its own to place
+(``Path(__file__).with_name("policy.md")``). The store and the reports stay under the working directory.
+
 Each eval runs into its default store, prints its result quietly (``--verbose`` prints it whole), and writes its
 report to ``.evals/reports/<name>/``. The exit code is the worst of the evals': 0 done, 1 a run did not complete,
 2 refused (the file, or what it declares), 3 an error nothing anticipated (its traceback printed), 4 a comparison's
@@ -22,6 +28,7 @@ import traceback
 from collections.abc import Sequence
 from pathlib import Path
 
+from threetears.evals.kernel.eval_file import loading_eval_file
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
     EXIT_FAILED,
@@ -64,7 +71,8 @@ def load_evals(path: Path) -> list[Eval]:
     if spec is None or spec.loader is None:
         raise ValueError(f"{path} cannot be imported as a module")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with loading_eval_file(path):  # the paths it names are read beside it, as a TOML file's are
+        spec.loader.exec_module(module)
     found = [value for value in vars(module).values() if isinstance(value, Eval)]
     if not found:
         raise ValueError(f"{path} defines no Eval at module level; assign one (my_eval = Eval(...)) to run it")

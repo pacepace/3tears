@@ -15,8 +15,22 @@ from dataclasses import dataclass
 
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.job_timeout import default_job_timeout
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
-from threetears.evals.run.launch import LaunchHost
+from threetears.evals.run.launch import LaunchHost, LaunchSettings
+from threetears.evals.schema import EvalRun, WorldPlacement
+
+#: The settings of a host that launches nothing (:meth:`OpsHost.reading`): one run at a time, uncapped, no metered
+#: tools. Read only by the launch and the out-of-run cap, and a reading host has no kind to launch.
+_READING_SETTINGS = LaunchSettings(
+    max_launch_arms=1,
+    max_admitted_runs=1,
+    judge_concurrency=1,
+    enforcement_enabled=False,
+    max_cost_usd=1.0,
+    max_metered_calls=None,
+    max_out_of_run_cost_usd=1.0,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -67,6 +81,11 @@ class AnalysisGeneration:
             raise ValueError(f"AnalysisGeneration.budget_s must be positive; got {self.budget_s}")
 
 
+def _placed_nowhere(run: EvalRun) -> dict[str, WorldPlacement]:
+    """No placement: a reading host's world is declared for its runs' reads, and it launches none to place."""
+    return {}
+
+
 @dataclass(frozen=True, kw_only=True)
 class OpsHost:
     """The host the operations, and the actions over them, work in.
@@ -80,6 +99,29 @@ class OpsHost:
 
     launch: LaunchHost
     generation: AnalysisGeneration | None = None
+
+    @classmethod
+    def reading(cls, eval_host: EvalHost) -> OpsHost:
+        """The host an eval host's runs are read through, and nothing launched: what serving ``as_host(...)`` needs.
+
+        Its launching host declares no kind, so a launch is refused by name, and it generates no analysis. Every read
+        (templates, runs, campaigns, reports, gates) works over ``eval_host``'s storage.
+
+        Args:
+            eval_host: The host whose runs are read, as :func:`~threetears.evals.quick.as_host` builds one.
+
+        Returns:
+            The host.
+        """
+        launch = LaunchHost(
+            eval_host=eval_host,
+            kinds={},
+            settings=lambda: _READING_SETTINGS,
+            job_timeout_factory=default_job_timeout,
+            # A world's placement is stamped on a launched run, and nothing launches here.
+            world_placements=None if eval_host.profile.world is None else _placed_nowhere,
+        )
+        return cls(launch=launch)
 
     @property
     def eval_host(self) -> EvalHost:

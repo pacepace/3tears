@@ -14,21 +14,23 @@ idea to the one before.
 | 3 | [`3-invoices/extract.py`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer. |
 | 4 | [`4-booking/agent.py`](4-booking/agent.py), then [`serve.py`](4-booking/serve.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals to the team. |
 
-Each rung runs from inside its own directory, so the paths it names are read beside it; the store
-(`.evals/evals.sqlite`) and the report (`.evals/reports/<name>/report.html`) are written under the directory you run
-from. In a checkout, from the repo root, after `uv sync`:
+One door runs every rung: `python -m threetears.evals <file>`, from any directory. The paths a rung names (its
+cases, its recordings, a judge's labels) are read beside its file; the store (`.evals/evals.sqlite`) and the report
+(`.evals/reports/<name>/report.html`) are written under the directory you run from. In a checkout, from
+`packages/evals/`, after `uv sync`:
 
 ```bash
-cd packages/evals/examples/1-triage
-uv run python -m threetears.evals triage.toml   # rung 0
-uv run python -m threetears.evals triage.py     # rung 1
-cd ../2-replies && uv run python -m threetears.evals replies.py   # rung 2
-cd ../3-invoices && uv run python extract.py                      # rung 3
-cd ../4-booking && uv run python -m threetears.evals agent.py     # rung 4
+uv run python -m threetears.evals examples/1-triage/triage.toml    # rung 0
+uv run python -m threetears.evals examples/1-triage/triage.py      # rung 1
+uv run python -m threetears.evals examples/2-replies/replies.py    # rung 2
+uv run python -m threetears.evals examples/3-invoices/extract.py   # rung 3
+uv run python -m threetears.evals examples/4-booking/agent.py      # rung 4
 ```
 
+Rung 4's [`serve.py`](4-booking/serve.py) imports `agent.py` beside it, so it runs from its own directory.
+
 A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
-again, live (`RECORD=1 uv run python -m threetears.evals triage.py`). A recording holds one model at one
+again, live (`RECORD=1 uv run python -m threetears.evals examples/1-triage/triage.py`). A recording holds one model at one
 temperature, and an email the recording does not hold is excluded from the run by name, never sent to a model.
 
 ### Rungs 0 and 1: email triage, `1-triage/`
@@ -94,21 +96,23 @@ Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 120 judge
 [`extract.py`](3-invoices/extract.py) reads 30 invoices ([`invoices.jsonl`](3-invoices/invoices.jsonl)) in three
 strata (clean, multi-currency, noisy OCR) with two prompts, as `runner={"v1": model.prompt(V1, Invoice), "v2": ...}`;
 the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict. A field
-grader per field, `grader(margin=0.05)` on `total` for equivalence, and `@grader(guard=0.02) no_invented_total`, a
-guardrail decided apart from the rest. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
+grader per field, `grader("total", margin=0.05)` declaring a margin for equivalence (a case whose `total` is `null`
+expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail decided apart from the rest. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
 fails the run in CI on a regression or a guardrail not shown held. Its closing comment names arms as `k=v` pairs for a
 grid of factors, read against another control with `result.against()`.
 
-Recorded on `deepseek/deepseek-v4-flash`: 180 calls, $0.0103 (`recordings/invoices.jsonl`).
+Recorded on `deepseek/deepseek-v4-flash` at `max_tokens=8192`: 180 calls, $0.0105 (`recordings/invoices.jsonl`).
 
 ### Rung 4: an agent graded on the world it leaves, `4-booking/`
 
 [`agent.py`](4-booking/agent.py) books meetings: each request ([`requests.jsonl`](4-booking/requests.jsonl)) seeds one
 day's calendar, `World(Day, tools=[find_free, book])` hands the agent two tools in a JSON tool loop over
 `model.json`, and the graders are goal checks on the day it left, beside the did-nothing control that only the first
-check beats. [`serve.py`](4-booking/serve.py) serves the eval's runs to the team: `as_host`, an MCP server
-(`mount_fastmcp`, the `[fastmcp]` extra; [Serving](../docs/serving.md#serving-the-runs-to-the-team)) and
-[the command line](../docs/serving.md#the-host-commands) (`python -m threetears.evals ls --host serve:host --scope booking`).
+check beats. [`serve.py`](4-booking/serve.py) serves the eval's runs to the team: `as_host`, an MCP server in one
+call (`mount_fastmcp(host(), scope="booking").run()`, the `[fastmcp]` extra, read-only;
+[Serving](../docs/serving.md#serving-the-runs-to-the-team)) and
+[the command line](../docs/serving.md#the-host-commands) (`python -m threetears.evals ls --host serve:host --scope booking`),
+both from `4-booking/`, where `agent.py`'s runs are stored when it is run there.
 
 Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.jsonl`).
 
@@ -126,9 +130,9 @@ git clone --depth 1 --branch <tag> --filter=blob:none --sparse https://github.co
 cd 3tears && git sparse-checkout set packages/evals/examples && cd packages/evals/examples
 ```
 
-Keep each rung's directory together: a rung reads its cases and replays its `recordings/` from beside itself. Then,
-from inside it, `cd 1-triage && python -m threetears.evals triage.py`, or with `export OPENROUTER_API_KEY=...` and
-`RECORD=1` first, any rung live.
+Keep each rung's directory together: a rung reads its cases and replays its `recordings/` from beside itself. Then
+`python -m threetears.evals 1-triage/triage.py`, or with `export OPENROUTER_API_KEY=...` and `RECORD=1` first, any
+rung live.
 
 **Your own client.** A client of your own, for another provider or a gateway, is anything with an async
 `generate(*, system, user, response_format=None)` that returns an object carrying ten attributes: `content`,
@@ -147,11 +151,11 @@ A recording is made once, live, with `OPENROUTER_API_KEY` set, and replaces the 
 (`RECORD=1` records afresh; it never appends to an old recording). From this directory:
 
 ```bash
-(cd 1-triage && RECORD=1 python -m threetears.evals triage.toml)  # 1-triage/recordings/triage-toml.jsonl
-(cd 1-triage && RECORD=1 python -m threetears.evals triage.py)    # 1-triage/recordings/triage.jsonl
-(cd 2-replies && RECORD=1 python -m threetears.evals replies.py)  # 2-replies/recordings/replies.jsonl and judge.jsonl
-(cd 3-invoices && RECORD=1 python extract.py)                     # 3-invoices/recordings/invoices.jsonl
-(cd 4-booking && RECORD=1 python -m threetears.evals agent.py)    # 4-booking/recordings/agent.jsonl
+RECORD=1 python -m threetears.evals 1-triage/triage.toml   # 1-triage/recordings/triage-toml.jsonl
+RECORD=1 python -m threetears.evals 1-triage/triage.py     # 1-triage/recordings/triage.jsonl
+RECORD=1 python -m threetears.evals 2-replies/replies.py   # 2-replies/recordings/replies.jsonl and judge.jsonl
+RECORD=1 python -m threetears.evals 3-invoices/extract.py  # 3-invoices/recordings/invoices.jsonl
+RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recordings/agent.jsonl
 ```
 
 `RECORD=1` with no key is refused: a recording is of a live run. Record again whenever a rung's prompt, cases or

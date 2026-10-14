@@ -1281,6 +1281,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.beside_eval_file": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.blended_cost_roles": {
       "kind": "function",
       "signature": "",
@@ -4095,6 +4100,11 @@
       "kind": "dataclass",
       "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = ())",
       "tier": "stable"
+    },
+    "threetears.evals.run.SeedJudgeCase": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.run.SeedOutcome": {
       "kind": "dataclass",
@@ -7303,8 +7313,8 @@
     },
     "threetears.evals.transports.fastmcp.mount_fastmcp": {
       "kind": "function",
-      "signature": "mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, annotate: CallAnnotator | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: CallTimeout = 60.0) -> tuple[str, ...]",
-      "tier": "stable"
+      "signature": "mount_fastmcp(server: FastMCP | EvalHost | OpsHost, catalogue: ActionCatalogue | None = None, *, host: EvalHost | OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver | None = None, scope: str | None = None, identity: str = 'mcp', around: CallHook | None = None, annotate: CallAnnotator | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: CallTimeout = 60.0) -> FastMCP | tuple[str, ...]",
+      "tier": "host-contract"
     },
     "threetears.evals.transports.fastmcp.ToolBinding": {
       "kind": "class",

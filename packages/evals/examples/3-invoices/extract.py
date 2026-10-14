@@ -1,9 +1,9 @@
 """Rung 3: changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer.
 
-Two prompts read 30 invoices (clean, multi-currency, noisy OCR); the first is the control. From this directory,
-``python extract.py`` (or ``python -m threetears.evals extract.py``) replays ``recordings/invoices.jsonl`` offline,
-and ``RECORD=1`` with ``OPENROUTER_API_KEY`` set records it again. As recorded on deepseek/deepseek-v4-flash:
-180 calls, $0.0103 (the recording's own cost_usd fields, summed).
+Two prompts read 30 invoices (clean, multi-currency, noisy OCR); the first is the control.
+``python -m threetears.evals examples/3-invoices/extract.py`` replays ``recordings/invoices.jsonl`` offline, and
+``RECORD=1`` with ``OPENROUTER_API_KEY`` set records it again; the block at the end is that run as your own script.
+As recorded on deepseek/deepseek-v4-flash: 180 calls, $0.0105 (the recording's own cost_usd fields, summed).
 """
 
 import asyncio
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from threetears.evals import Eval, Model, grader
 
-model = Model("deepseek/deepseek-v4-flash", max_tokens=4096, effort="low", recording="recordings/invoices.jsonl")
+model = Model("deepseek/deepseek-v4-flash", max_tokens=8192, effort="low", recording="recordings/invoices.jsonl")
 
 
 class Invoice(BaseModel):
@@ -31,14 +31,6 @@ V2 = V1 + (
 )
 
 
-@grader(margin=0.05)  # a difference under 5 points is too small to act on, so v2 can read "equivalent"
-def total(case: dict, out: Invoice) -> bool:
-    """The amount due to the cent, or none when the invoice prints none."""
-    if case["total"] is None or out.total is None:
-        return case["total"] == out.total
-    return abs(out.total - case["total"]) < 0.005
-
-
 @grader(guard=0.02)  # a guardrail: v2 must not do worse here by more than 2 points, whatever else it gains
 def no_invented_total(case: dict, out: Invoice) -> bool:
     """Never states a total the invoice does not print."""
@@ -48,7 +40,9 @@ def no_invented_total(case: dict, out: Invoice) -> bool:
 invoices = Eval(
     "invoices.jsonl",  # each case's stratum splits every reading by kind of invoice in the report
     runner={"v1": model.prompt(V1, Invoice), "v2": model.prompt(V2, Invoice)},  # the first key is the control
-    grader=["currency", "number", "due", total, no_invented_total],  # a field each, then two functions
+    # A field each; a case's null total means none may be stated. A difference under 5 points on total is too small
+    # to act on, so v2 can read "equivalent" there.
+    grader=["currency", "number", "due", grader("total", margin=0.05), no_invented_total],
 )
 
 if __name__ == "__main__":

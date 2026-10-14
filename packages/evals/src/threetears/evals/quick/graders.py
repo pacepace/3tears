@@ -221,6 +221,10 @@ def expected_label(case: Mapping[str, Any], name: str) -> str:
 def field_scorer(name: str) -> GraderFunction:
     """A field graded as a pass/fail of its own name: the answer's label in it is the case's.
 
+    A case whose field is ``null`` expects the field absent: an answer with no value there (``None``, or no such
+    field) passes, and any value fails, shown with the answer as every miss is. Only the classifier, which counts
+    labels, refuses a ``null``.
+
     Args:
         name: The field.
 
@@ -229,6 +233,9 @@ def field_scorer(name: str) -> GraderFunction:
     """
 
     def matches(case: Mapping[str, Any], out: Any) -> bool:
+        if name in case and case[name] is None:
+            value = field_value(out, name)
+            return value is None or value is _MISSING
         return predicted_label(out, name) == expected_label(case, name)
 
     matches.__name__ = name

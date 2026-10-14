@@ -1,7 +1,7 @@
 {
   "archived": false,
   "behavior": "conversation",
-  "created_at": "2026-10-14T04:44:45.198421+00:00",
+  "created_at": "2026-10-14T18:49:44.541529+00:00",
   "created_by": "test:fixture",
   "declared_design": {
     "axes": [
@@ -34,7 +34,7 @@
       }
     },
     "crossing": null,
-    "declared_at": "2026-10-14T04:44:45.195218+00:00",
+    "declared_at": "2026-10-14T18:49:44.541097+00:00",
     "declared_by": "",
     "guardrail_margins": [],
     "held_fixed": {
@@ -50,10 +50,10 @@
   },
   "description": "",
   "doc_type": "eval_campaign",
-  "id": "01a138ba-230d-7406-9f1b-c5e7182fbef9",
+  "id": "01a13bbf-bf5d-7346-aea9-5cd66792354c",
   "name": "campaign",
   "run_ids": [],
-  "schema_minor": 1,
+  "schema_minor": 2,
   "schema_version": 15,
   "scope_id": "uni-1",
   "subject_id": "subject-1",
