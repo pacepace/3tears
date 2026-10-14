@@ -28,6 +28,7 @@ from threetears.agent.wake.collections import (
     WebhookSubscriptionCollection,
 )
 from threetears.agent.wake.manual import claim_manual_fire
+from threetears.agent.wake.tools.webhook_tools import SECRET_REDACTED
 from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tools import (
     WakeRegistryClient,
@@ -46,6 +47,7 @@ from threetears.agent.wake.tools import (
     load_webhook_subscription_pause_tool,
     load_webhook_subscription_resume_tool,
     next_fires,
+    redact_secret,
     load_webhook_subscription_rotate_secret_tool,
     load_webhook_subscription_update_tool,
 )
@@ -1070,6 +1072,11 @@ async def test_a_webhook_is_read_in_full_its_changes_are_said_and_its_refusals_a
         sub_id = UUID(made.split("[webhook:")[1].split("]")[0])
         secret = [line for line in made.splitlines() if "secret (copy now" in line][0].split(":")[-1].strip()
         assert made.endswith(f"endpoint: https://example.test/api/v1/webhooks/{sub_id}")
+        # a kept copy of the result holds no secret, and loses nothing else
+        kept = redact_secret(made)
+        assert secret not in kept
+        assert kept == made.replace(secret, SECRET_REDACTED)
+        assert redact_secret(kept) == kept
 
         # the same subscription again is refused and names the one that stands
         twice = await create.ainvoke(
@@ -1171,6 +1178,7 @@ async def test_a_webhook_is_read_in_full_its_changes_are_said_and_its_refusals_a
             endpoint_base_url=base,
         )[0].ainvoke({"subscription_id": str(sub_id)})
         assert rotated.endswith(f"endpoint: https://example.test/api/v1/webhooks/{sub_id}")
+        assert SECRET_REDACTED in redact_secret(rotated) and SECRET_REDACTED not in rotated
         gone = await load_webhook_subscription_delete_tool(agent_id=agent_id, subscriptions_collection=subs)[0].ainvoke(
             {"subscription_id": str(sub_id)}
         )

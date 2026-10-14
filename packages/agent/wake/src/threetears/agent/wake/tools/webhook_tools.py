@@ -61,6 +61,9 @@ __all__ = [
     "load_webhook_subscription_resume_tool",
     "load_webhook_subscription_rotate_secret_tool",
     "load_webhook_subscription_update_tool",
+    "redact_secret",
+    "SECRET_REDACTED",
+    "SECRET_SHOWN_ONCE",
     "standing_same_subscription",
 ]
 
@@ -73,6 +76,31 @@ PAYLOAD_TEMPLATE_MAX_BYTES: Final[int] = 4 * 1024  # 4 KB
 SECRET_BYTE_LEN: Final[int] = 32  # 32 bytes -> 64 hex chars
 
 _VALID_VERIFICATION_SCHEMES: frozenset[str] = frozenset({"generic_hmac_sha256"})
+
+#: The words a plaintext secret follows in a create or rotate result: the one place it is shown.
+SECRET_SHOWN_ONCE: Final[str] = "(copy now; shown only once):"
+
+#: What stands in for the secret in any copy of that result that is kept.
+SECRET_REDACTED: Final[str] = "[not kept: it was shown once, in this result]"
+
+_SECRET_IN_TEXT = re.compile(re.escape(SECRET_SHOWN_ONCE) + r"\s*[0-9a-f]{" + str(SECRET_BYTE_LEN * 2) + r"}")
+
+
+def redact_secret(text: str) -> str:
+    """The text with any plaintext webhook secret a create or rotate result showed replaced.
+
+    The secret is shown once, in the result the caller reads, so it can be
+    handed to the sender. A host that keeps a copy of a tool's result -- a
+    ledger, a store read back by handle, an audit trail -- keeps this instead,
+    or "shown only once" is false.
+
+    :param text: a tool's result, or any text that may hold one
+    :ptype text: str
+    :return: the text with every shown secret replaced by :data:`SECRET_REDACTED`
+    :rtype: str
+    """
+    return _SECRET_IN_TEXT.sub(f"{SECRET_SHOWN_ONCE} {SECRET_REDACTED}", text)
+
 
 # SandboxedEnvironment is thread-safe + cheap to share. ``autoescape``
 # defaults to False because the rendered output is consumed as plain
@@ -586,7 +614,7 @@ def load_webhook_subscription_create_tool(
 
         catalog = _format_subscription_line(entity, skill_name=skill_name, zone=zone)
         return (
-            f"{catalog}\nsecret (copy now; shown only once): {plaintext_secret}"
+            f"{catalog}\nsecret {SECRET_SHOWN_ONCE} {plaintext_secret}"
             f"\nendpoint: {_endpoint(endpoint_base_url, new_id)}"
         )
 
@@ -1191,7 +1219,7 @@ def load_webhook_subscription_rotate_secret_tool(
         )
         return (
             f"Rotated secret for [webhook:{parsed}] ({entity.name or 'untitled'}). The old secret stopped "
-            f"working. New secret (copy now; shown only once): {plaintext_secret}"
+            f"working. New secret {SECRET_SHOWN_ONCE} {plaintext_secret}"
             f"\nendpoint: {_endpoint(endpoint_base_url, parsed)}"
         )
 

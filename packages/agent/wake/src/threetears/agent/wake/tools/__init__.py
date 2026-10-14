@@ -74,6 +74,7 @@ from threetears.agent.wake.tools.webhook_tools import (
     load_webhook_subscription_resume_tool,
     load_webhook_subscription_rotate_secret_tool,
     load_webhook_subscription_update_tool,
+    redact_secret,
     standing_same_subscription,
 )
 
@@ -119,6 +120,7 @@ __all__ = [
     "parse_conversation_id",
     "parse_schedule_id",
     "parse_subscription_id",
+    "redact_secret",
     "standing_same_subscription",
     "validate_context_from_chain",
     "validate_schedule_config",

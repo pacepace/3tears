@@ -152,6 +152,10 @@ tools' results left out how often a wake fires and when it last did.
   that changes nothing is `[NO CHANGE]`, and `clear_rate_limit_per_minute` puts the limit back to
   the default. Create, rotate and list say the address, or that none is configured (list and rotate
   take `endpoint_base_url=`). Pause, resume and delete say what the subscription was.
+- **Added, `redact_secret(text)`, `SECRET_SHOWN_ONCE` and `SECRET_REDACTED`** (`tools.webhook_tools`,
+  exported from `threetears.agent.wake.tools`): the create and rotate results show the plaintext
+  secret after `SECRET_SHOWN_ONCE`, and a host that keeps a copy of a tool result (a ledger, a store
+  read back by handle, an audit trail) keeps `redact_secret(result)`, so "shown only once" holds.
 
 ### Wake: the same wake made twice is made once
 
