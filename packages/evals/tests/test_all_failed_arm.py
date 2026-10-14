@@ -525,10 +525,10 @@ class TestAnArmWhereNoResultTookATurn:
         table = _table(_code_only(bundle), "scoreboard")
         refusing, flaky, steady = _row(table, _REFUSING), _row(table, _FLAKY), _row(table, _STEADY)
 
-        assert (refusing["passed"], refusing["failed"]) == ("0 of 4 usable passed", "4 (model failed 4)")
-        assert refusing["reply"] is None, "no turn was taken, so there is no reply to cost"
-        assert flaky["failed"].startswith("2 (model failed 2")
-        assert steady["failed"] == "0" and steady["reply"] is not None
+        assert (refusing["usable"], refusing["passed"], refusing["other"]) == (4, 0, 4)
+        assert refusing["cost"] is None, "no turn was taken, so there is no reply to cost"
+        assert flaky["other"] == 2
+        assert steady["other"] == 0 and steady["cost"] is not None
 
     def test_a_stored_analysis_counts_it_from_its_frozen_bundle_alone(self) -> None:
         bundle = _bundle()
@@ -543,8 +543,8 @@ class TestAnArmWhereNoResultTookATurn:
         assert loaded is not None
 
         table = _table(build_report(loaded), "scoreboard")
-        assert _row(table, _REFUSING)["failed"] == "4 (model failed 4)"
-        assert _row(table, _REFUSING)["reply"] is None
+        assert _row(table, _REFUSING)["other"] == 4
+        assert _row(table, _REFUSING)["cost"] is None
 
     def test_no_sentence_when_every_arm_took_a_turn(self) -> None:
         arms = _three_arms()

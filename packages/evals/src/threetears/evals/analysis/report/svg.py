@@ -55,13 +55,15 @@ _SEGMENT_GAP = 2
 #: dashed outline, the convention for "not measured", so it never reads as a third series.
 SVG_STYLE = """
 :root { --viz-passed: #2a78d6; --viz-failed: #eb6834; --viz-lost: #b9b8b3; --viz-lost-edge: #6f6e69;
-  --viz-ink: #0b0b0b; --viz-muted: #52514e; --viz-rule: #c9c8c2; --viz-band: #e9e8e3; }
+  --viz-ink: #0b0b0b; --viz-muted: #52514e; --viz-rule: #c9c8c2; --viz-band: #e9e8e3; --viz-on-fill: #ffffff; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) { --viz-passed: #3987e5; --viz-failed: #d95926; --viz-lost: #4a4a46;
-    --viz-lost-edge: #a8a7a0; --viz-ink: #f0efec; --viz-muted: #c3c2b7; --viz-rule: #4a4a46; --viz-band: #2c2c29; }
+    --viz-lost-edge: #a8a7a0; --viz-ink: #f0efec; --viz-muted: #c3c2b7; --viz-rule: #4a4a46; --viz-band: #2c2c29;
+    --viz-on-fill: #ffffff; }
 }
 :root[data-theme="dark"] { --viz-passed: #3987e5; --viz-failed: #d95926; --viz-lost: #4a4a46;
-  --viz-lost-edge: #a8a7a0; --viz-ink: #f0efec; --viz-muted: #c3c2b7; --viz-rule: #4a4a46; --viz-band: #2c2c29; }
+  --viz-lost-edge: #a8a7a0; --viz-ink: #f0efec; --viz-muted: #c3c2b7; --viz-rule: #4a4a46; --viz-band: #2c2c29;
+  --viz-on-fill: #ffffff; }
 svg.viz { width: 100%; height: auto; display: block; font: 13px/1.3 var(--font-sans, system-ui, sans-serif); }
 svg.viz text { fill: var(--viz-ink); }
 svg.viz text.viz-muted { fill: var(--viz-muted); }
@@ -69,7 +71,7 @@ svg.viz .viz-passed { fill: var(--viz-passed); }
 svg.viz .viz-failed { fill: var(--viz-failed); }
 svg.viz .viz-lost { fill: var(--viz-lost); stroke: var(--viz-lost-edge); stroke-width: 1; stroke-dasharray: 3 2; }
 svg.viz .viz-lost.viz-alt { stroke-dasharray: 1 2; }
-svg.viz text.viz-on-fill { fill: #ffffff; font-variant-numeric: tabular-nums; }
+svg.viz text.viz-on-fill { fill: var(--viz-on-fill); font-variant-numeric: tabular-nums; }
 svg.viz .viz-rule { stroke: var(--viz-rule); stroke-width: 1; }
 svg.viz .viz-zero { stroke: var(--viz-muted); stroke-width: 1; }
 svg.viz .viz-band { fill: var(--viz-band); }

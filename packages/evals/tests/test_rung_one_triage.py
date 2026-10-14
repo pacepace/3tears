@@ -7,6 +7,8 @@ Nothing here assumes what the model said beyond what its recording holds: the fi
 
 from __future__ import annotations
 
+import re
+
 import ast
 import importlib.util
 import json
@@ -14,6 +16,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from threetears.evals.analysis.style import lint_page
 
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
@@ -107,6 +111,10 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     assert "total spend: $0.00192, the results' cost" in printed
     assert "stored in .evals/evals.sqlite, scope 'emails'" in printed
     assert (triage_dir / ".evals" / "reports" / "emails" / "report.html").is_file()
+    page = (triage_dir / ".evals" / "reports" / "emails" / "report.md").read_text(encoding="utf-8")
+    # One arm's verdict is how its cases came out, first, under the title and the arm.
+    assert re.fullmatch(r"\*\*emails: \d+/\d+ cases passed; \d+ misses: .+\*\*", page.splitlines()[3])
+    assert lint_page(page, names={page.splitlines()[1].split(" · ")[0]}) == []
 
 
 def test_the_toml_file_runs_from_another_directory_and_its_symmetric_field_misses_what_escalates_forgives(

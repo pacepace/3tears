@@ -77,8 +77,7 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
 from threetears.evals.analysis.summary import CaseResult, EvalSummary
-from threetears.evals.analysis.report.figures import REFERENCE_MARK
-from threetears.evals.analysis.report.words import cell_arm_labels
+from threetears.evals.analysis.report.build import contrast_rows, report_cell_labels
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
@@ -209,7 +208,7 @@ class Result:
         kind: The kind every arm ran — the callable kind, or the judged one — whose levers the campaign's axes name.
         guardrail_readings: Every guardrail, decided for each arm against the control; empty when none is declared.
         arm_variants: Each arm's variant key, by name: what the bundle names the arm by.
-        labelled_arms: Each arm's name, by the words the report names it by (``candidate=baseline``).
+        labelled_arms: Each arm's name, by the words the report names it by (``baseline``).
     """
 
     name: str
@@ -412,12 +411,14 @@ class Result:
         """Each measure's line, the classifier's ``match`` under its field's name and its matrix's count left out."""
         texts: list[str] = []
         for measure in summary.measure_lines:
-            if measure.name == CONFUSION_CELL_MEASURE:
+            if measure.name == CONFUSION_CELL_MEASURE or measure.state == "not_carried":
                 continue
             text = measure.text
             if measure.name == MATCH_MEASURE and self.fields:
                 text = f"{self.fields[0]}{text.removeprefix(MATCH_MEASURE)}"
             texts.append(text)
+        if (omitted := summary.uncarried_text) is not None:
+            texts.append(omitted)
         return texts
 
     def _verdict_line(self) -> str:
@@ -460,7 +461,7 @@ class Result:
         return 0
 
     def contrasts(self, reading: str | None = None) -> list[dict[str, Any]]:
-        """The rows of the report's "Contrasts against the control" table, each arm tested against the control.
+        """Every contrast against the control the report tested, the ones its page leaves out under the case floor too.
 
         Args:
             reading: Only the rows on this reading, by its key (``"accuracy"``) or as the report heads it
@@ -478,19 +479,7 @@ class Result:
             typed verdict: ``improved``, ``regressed``, ``equivalent``, ``not_separated`` or ``untested``, which
             code branches on); empty when the report tested nothing.
         """
-        shown = [
-            row
-            for block in self.report.blocks
-            if isinstance(block, TableBlock) and block.name == "comparisons"
-            for row in block.values()
-        ]
-        statistics = [
-            row
-            for block in self.report.blocks
-            if isinstance(block, TableBlock) and block.name == "comparison_statistics"
-            for row in block.values()
-        ]
-        rows = [{**figures, **row} for row, figures in zip(shown, statistics, strict=True)]
+        rows = contrast_rows(self.report.bundle)
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
         keys = self.contrast_measures if len(self.contrast_measures) == len(rows) else (None,) * len(rows)
@@ -568,7 +557,7 @@ class Result:
         for table in tables:
             headers = {column.key: column.header for column in table.columns}
             for row in table.values():
-                label = str(row["arm"]).removesuffix(f" {REFERENCE_MARK}")
+                label = str(row["arm"]).removeprefix("▸ ")
                 key = self.labelled_arms.get(label)
                 if (arm is not None and key != arm) or (reading is not None and row["reading"] != reading):
                     continue
@@ -588,7 +577,7 @@ class Result:
         return rows
 
     def guardrails(self, arm: str | None = None) -> list[dict[str, Any]]:
-        """The rows of the report's "Guardrails against the control" table: each guardrail, for each arm.
+        """The rows of the report's "Guardrails" table: each guardrail, for each arm.
 
         A guardrail (``grader(guard=...)``, ``Judge(guard=...)``) is decided on its own for each arm against the
         control, never in the contrasts: ``held`` when the arm is shown no worse than the control by more than the
@@ -990,7 +979,7 @@ def declare(
     }
     arm_of_variant = {variant: arm for arm, variant in arm_variants.items()}
     surface = bundle_decision_surface(bundle)
-    labels = cell_arm_labels(surface, bundle.variant_index)
+    labels = report_cell_labels(bundle)
     labelled_arms = {
         labels[cell_ref(cell.variant_key, cell.apparatus_class_id)]: arm_of_variant.get(cell.variant_key)
         for cell in surface.cells

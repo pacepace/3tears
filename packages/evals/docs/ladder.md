@@ -254,12 +254,13 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said, line for line:
 
 ```text
-**Leads only: no arm separated from the control.**
-> Arm candidate=v2 is undecided on the guardrail No invented total score, so it is not known to be safe; the guardrails table says why.
-| Number score | candidate=v1 | candidate=v2 | 0.1667 [-0.01363, 0.347] at 99% | not separated from the control | 30 paired |
-| No invented total score | candidate=v2 | 0.9889 | 0.9889 | 30 paired | 0 | [-0.1343, 0.1343] at 95% | 0.02 | undecided: not shown held, so not known to be safe (the interval on the difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within it nor beyond it) |
-### T11 — clean: eval-05c13d989b1d067b-1 · candidate=v2 · repeat 2 · failed: a model the candidate runs failed or refused. Read the failed trials' errors below: a different model or provider is the lever.
-> Guardrails left undecided, so not known to be safe: No invented total score for candidate=v2.
+# invoices: does v2 do better than v1?
+v1 (control) vs v2 · 14 Oct 2026
+**Exploratory: v2 separated from v1 on no reading. Guardrail undecided for v2: no invented total.**
+v2 is not known to be safe on the guardrail No invented total score.
+| Number score | v2 | 0.1667 | [-0.01363, 0.347] at 99% | not separated from the control | 30 paired |
+| No invented total score | v2 | 0.9889 | 0.9889 | 30 paired | 0 | [-0.1343, 0.1343] at 95% | 0.02 | undecided: not shown held, so not known to be safe (the interval on the difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within it nor beyond it) |
+| T12 | case 2 | v2 | failed | model failed |
 ```
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,

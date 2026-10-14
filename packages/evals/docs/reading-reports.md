@@ -5,7 +5,7 @@ embed it in a host. **Answers:** what each screen of a report says and where its
 statistical method produced each number, how arms are named, and how far a judged score can be trusted (evidence
 tiers). Terms such as campaign, arm and analysis are defined in [Concepts](concepts.md).
 
-## The report: one page, verdict first
+## The report: one page, result first
 
 Every campaign is read through one **report**, and every door into it returns the same page: the quick path's
 `comparison.report`, the command line's `report`, the `report_read` operation behind the MCP action, and
@@ -28,104 +28,68 @@ file returns the same one. **The bundle is the machine form**: there is no publi
 that wants its own pictures reads the bundle. `report_read(format="json")` and the command line's `--format json`
 return it too. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
 
-### Words a reader is told
+### The first screen
 
-A **trial** is one case run once on one arm. It ends in exactly one of three states: **passed**; **failed**, the
-candidate's failure (its model failed, its turn budget or its output cap ended a turn, a check failed, or a judged
-dimension scored under the bar); or **lost**, the test setup's failure (the harness faulted, the judge could not tell
-on a dimension the trial needs, or the judge's reply was cut off at its output cap). A lost trial says nothing about
-the candidate. The first two screens never use the engine's own nouns for these things (cell, observation,
-excluded, rig, harness, apparatus) and never call an arm a winner: arms are named by the lever that differs, and an
-arm's standing is a code verdict or nothing.
+The invoices example (rung 3) renders this, verbatim:
 
-A count of usable trials is never printed alone ("8 of 12 trials usable (4 lost to the test setup)") and never
-beside a pass rate. **Below `MIN_CASES` (5) cases with a usable trial, a rate is printed as a count** ("1 of 2"),
-never as a percentage, a difference or an interval, and a contrast reads `not tested (n=2)` with no Δ.
+```markdown
+# invoices: does v2 do better than v1?
+v1 (control) vs v2 · 14 Oct 2026
 
-### Screen 1: the title, the basis, the verdict and the scoreboard
+**Exploratory: v2 separated from v1 on no reading. Guardrail undecided for v2: no invented total.**
 
-The page's `<header>`. Line 1 is the **title**: the campaign, its arms (the control first), the date, and whether an
-analysis was written and by which model. Line 2 is the **basis**, always: `Question declared before the run: "..."`,
-or `EXPLORATORY — no question was declared before the run, so nothing below is a decision.` (and which questions
-were declared after the run began, when any were: the bundle's `post_hoc_questions`). It ends `· design frozen
-<date>`, the day the campaign's first run froze its design (`design_frozen_at`, the instant every question is read
-against).
+**Scoreboard**
 
-Line 3 is the **verdict**, written by code, never by a memo. It is the first rule that fires:
+| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Failed otherwise | Cost per reply |
+|---|---|---|---|---|---|---|---|
+| ▸ v1 | 90 | 90 | 90 | 0 | 0 | 0 | $0.0000459 |
+| v2 | 90 | 90 | 89 | 0 | 0 | 1 | $0.00007036 |
+```
 
-1. **The setup gate.** An arm lost more than a third of its trials to the test setup, or the arms' loss shares
-   differ by more than a third: `NO VERDICT. The test setup failed, not the models: <arm> lost N of M trials, most
-   because <cause>. Fix: <remedy>.` Every loss cause has its words and remedy (`LOSS_CAUSE_WORDS`); a judge cut off
-   at its cap is named with the cap it was sent (`max_tokens=10240`), and its remedy is to raise it and rerun.
-2. **Too small.** An arm has fewer than `MIN_CASES` cases with a usable trial: the run can show failures, not
-   differences.
-3. **A declared question.** One clause per question declared before the run, in the contrasts' and guardrails' own
-   words.
-4. **Exploratory.** `Leads only:` and the contrasts that separated, or that none did.
+- **Title**: the declared question in plain words, or the campaign's name and what it compares.
+- **Line 2**: each arm named in full once (`deepseek-v4.1-flash (production, control)`), then the date. After that
+  an arm is its given label (`production`), the control marked `▸` in a table.
+- **Verdict**, written by code and never by a memo, result first. The first rule that fires: the test setup lost too
+  much (`No verdict: the test setup failed, not the models.`, the arm, the cause, the fix); one arm
+  (`emails: 27/30 cases passed; 3 misses: …`); a declared decision rule, read clause by clause (`Keep production: …`);
+  which arm passed more, when an arm is under the case floor; a declared question's contrasts; `Exploratory:` and
+  what separated.
+- **Scoreboard**: a bare table of counts and the cost per reply. Then the outcome bar, then the caveats in normal
+  weight (the case floor: five usable cases before a rate is estimated), never bold, never first.
 
-Then the **scoreboard**: per arm, the trials it ran, those lost to the test setup by cause (largest first), the
-usable ones, those that passed, those that failed by cause, what this test cost across every role, and what a reply
-cost in production's roles. Below it the **outcome bar** — one stacked bar per arm, passed, failed and lost cause by
-cause, every count written as text — then one line on the design (`4 cases × 3 repeats`) and one sentence naming
-every chart that was not drawn and why.
+### The rest of the page
 
-### Screen 2: what it means
+- **Decision**: a declared decision rule (`Decision rule: switch … only if … AND …; otherwise keep …`), one row per
+  clause and reading, `settled: keep`, `settled: switch` or `unsettled` with the reason. A measured cost needs no case
+  floor; a pass rate is settled once the losing arm cannot close the gap with the trials still to run.
+- **What it means**: each finding as one sentence its writer wrote and a table code built from the readings it
+  chose; its confidence, trials and caveats sit in a closed `Evidence` fold. The memo's words are held to the page's
+  style (below).
+- **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size and
+  the adjusted p folded; the guardrails; strata and per-label tables, folded.
+- **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`); one row per trial, its record folded
+  under `T4 · case 1 · cheaper candidate · failed`, never the start of what the case asked.
+- **Not tested**, then **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the
+  bundle) and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of art the page links,
+  in one plain sentence.
 
-With an analysis, its **memo**: the answers to the declared questions, the findings (`F1`, `F2`, …, each with its
-confidence, what it stands on, the trials it is drawn from, its evidence table, an interval chart per reading where
-an arm has the cases for one, and its caveats), the **recommendations** (each naming the findings it rests on and
-linking the cases their trials show), what to run next, and the coverage map joined to the findings and next steps.
-The section opens by saying who wrote it, and that every number is code's. Without an analysis it is one line saying
-none was written, and the declared questions standing unanswered.
+### Style
 
-Then the **contrasts against the control**: reading, control, arm, Δ with its interval, verdict and cases; the
-standardized effect, the pairing correlation and the Holm-adjusted p fold away in a `<details>`. Under it, one
-interval chart per reading, each arm minus the control with its interval, a zero line and the margin as a band. Then
-the guardrails, the readings by stratum and a classifier's per-label table, each in its own fold.
-
-### Screen 3: cases
-
-One row per case: its label (its stratum and the first words its first trial's transcript recorded, else its id),
-then each arm's trials as marks (`✓ ✓ ✗`, `– – – (lost: judge truncated ×3)`), and the trials to open. Regressions
-come first (the control passed and an arm failed), then cases an arm has no usable trial of, then the rest.
-
-### Screen 4: trials
-
-One drill-down per trial: what the case asked, the last part of what the judge was handed (at most 2,000
-characters, with how many came before), each failed check by its name with its expression, each judged dimension's
-criterion, score and reason, the recorded error for a lost or failed trial with the cause in words, and the stored
-result's id for `result_get`. The first 20 lost or failed trials start open. A bundle carries at most 500 trials,
-the lost and failed kept first; the scoreboard counts every one.
-
-### Screen 5: not tested
-
-A list, never a score: levers declared and not swept, cases an arm has no usable trial of, goal checks not shown to
-beat doing nothing, measures tested with no margin (so nothing on them can read `equivalent`, with how to declare one),
-guardrails left undecided, uncontrolled stimuli, and cost not measured.
-
-Last, each judge not yet calibrated against people, as a state and its next step: "Judge … is uncalibrated on …: no
-human labels yet, so its numbers are directional. Rate about 20 of its outputs to calibrate it." A new judge has no
-labels, so a first campaign's report says this for every judge it used. It is where the judge stands, not something
-that went wrong, and it sits here rather than beside the trials the test setup lost.
-
-### Screen 6: methods and disclosures
-
-The judge (served model, configuration, temperature and the settings it was sent, its evidence tier), how many trials
-each arm lost to a truncated judge and the cap it was sent, any differential loss between arms, the candidates as
-served, the request settings, when each arm ran, member runs left out or short, the design's own confounds, the
-dataset (its case sets), whether the design was declared before the run and frozen, who wrote the memo, and the
-bundle's shape, fingerprint and the package version that built it. Every disclosure is computed from the bundle, so
-every door carries the same set — the self-judging, no-margin and guardrail-standing lines `compare` once added on
-its own included.
+`threetears.evals.analysis.style` holds every rendered sentence to one set of rules, `lint_prose`: no meta-prose
+about the page ("rests on", "written by", "a count, not a ranking"), no hedge on a measured fact ("no measurable"),
+no `key=value`, no chain of dashes, no sentence over 28 words or with more than three numbers (that is a table), no
+header over three words, and the declared question only in the title. `humanize` is the one seam an identifier
+passes on its way to a reader. A memo's sentence breaking a rule code can fix is dropped or replaced (a title
+restating a measured number becomes the table's own row); one contradicting a settled decision rule becomes the
+verdict line's sentence, disclosed in Methods; what is left is counted there (`style: N violations`) and listed.
 
 ### The two charts
 
 Two shapes, drawn by the package as inline SVG with no dependency: the **outcome bar** on the scoreboard (a census,
 always drawn) and **interval rows** (a dot and its interval per row, value, interval and cases written at the right,
 a zero line for a difference and a band for a declared margin). A row is drawn only for an arm with `MIN_CASES`
-usable cases and an interval; a chart with no such row is not built at all — no figure, no stub — and the
-scoreboard's one sentence says what was left out. Colours come from the page's CSS variables, stepped for light and
-dark; no colour is the only encoding, every count is text, each chart has a `<title>` and a `<desc>` stating its
+usable cases and an interval; a chart with no such row is not built at all — no figure, no stub. Colours come from
+the page's CSS variables, each defined for light and dark alike; no colour is the only encoding, every count is text, each chart has a `<title>` and a `<desc>` stating its
 values, and a visually hidden table beside it holds them for a screen reader.
 
 ### Embedding the page in a host

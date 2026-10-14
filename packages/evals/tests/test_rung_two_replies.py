@@ -21,6 +21,7 @@ from threetears.evals import Example, Judge
 from threetears.evals.quick.files import main
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
 from packages.evals.tests.example_loader import EXAMPLES
+from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.rung_support import (
     program_lines,
     recorded,
@@ -141,6 +142,7 @@ async def test_the_judge_s_spend_is_its_own_and_its_model_judged_none_of_its_own
     assert summary.role_spend("judge").calls == 120, "20 emails x 2 repeats x 3 dimensions, one call each"
     assert summary.judge_shares_candidate_model == [] and summary.self_judging_warning is None
     assert result.calibration_lines() == [UNCALIBRATED]
+    assert page_violations(result.report) == []
 
 
 def test_a_filled_in_to_label_is_read_back_as_the_judge_s_calibration(

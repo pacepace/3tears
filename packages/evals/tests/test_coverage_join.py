@@ -105,7 +105,4 @@ def test_a_lever_no_finding_names_reads_no_finding_and_is_counted_beside_the_tab
         "extraction_schema",
         "ocr_engine_version",
     }
-    assert (
-        "3 of the 4 lever(s) in the coverage map are named by no finding: retriever_top_k, extraction_schema, "
-        "ocr_engine_version."
-    ) in memo
+    assert "Levers no finding names: retriever_top_k, extraction_schema, ocr_engine_version." in memo

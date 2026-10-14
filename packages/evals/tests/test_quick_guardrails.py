@@ -105,7 +105,7 @@ def _standing(comparison: Result) -> list[str]:
     return [
         block.text
         for block in comparison.report.blocks
-        if isinstance(block, DisclosureBlock) and block.source == "guardrails" and block.text.startswith("Arm ")
+        if isinstance(block, DisclosureBlock) and block.source == "guardrails" and block.section == "contrasts"
     ]
 
 
@@ -146,17 +146,12 @@ class TestAScorerGuardrail:
     async def test_the_printed_report_shows_the_table_and_names_the_breach_above_the_contrasts(self) -> None:
         comparison = await _compare()
         markdown = report_markdown(comparison.report)
-        assert "**Guardrails against the control**" in markdown
+        assert "**Guardrails**" in markdown
         for outcome in ("held", "breached", "undecided"):
             assert f"| {outcome}: " in markdown
         breach, undecided = _standing(comparison)
-        assert breach == (
-            "Arm candidate=leaky breached the guardrail No leak score: it is shown worse than the control by more "
-            "than the margin, so it is not adopted, whatever the contrasts below show it gained."
-        )
-        assert undecided.startswith(
-            "Arm candidate=slip is undecided on the guardrail No leak score, so it is not known"
-        )
+        assert breach == "leaky breached the guardrail No leak score, so it is not adopted."
+        assert undecided == "slip is not known to be safe on the guardrail No leak score."
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
@@ -168,9 +163,7 @@ class TestAScorerGuardrail:
         blocks = comparison.report.blocks
         assert comparison.contrasts() == [], "nothing but the guardrail is graded"
         named = [
-            i
-            for i, b in enumerate(blocks)
-            if isinstance(b, DisclosureBlock) and b.text.startswith("Arm candidate=leaky breached")
+            i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breached")
         ]
         assert len(named) == 1 and blocks[named[0]].section == "contrasts"
         assert blocks[named[0]].text.endswith("so it is not adopted.")

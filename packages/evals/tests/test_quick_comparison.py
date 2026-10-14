@@ -111,36 +111,38 @@ async def test_the_control_resolves_to_the_variant_the_control_arm_ran() -> None
 
 async def test_every_other_arm_is_tested_against_the_control_and_the_better_one_separates() -> None:
     comparison = await _compare()
-    rows = _comparisons(comparison).values()
+    rows = comparison.contrasts()
     by_reading = {row["reading"]: row for row in rows}
     accuracy = by_reading["Accuracy"]
-    assert (accuracy["contrast"], accuracy["control"]) == ("candidate=careful", "candidate=hasty")
+    assert (accuracy["contrast"], accuracy["control"]) == ("careful", "hasty")
     assert accuracy["verdict"] == "improved on the control"
-    statistics = {row["reading"]: row for row in _comparisons(comparison, "comparison_statistics").values()}
-    assert statistics["Accuracy"]["delta"] == pytest.approx(0.5)
-    assert {row["control"] for row in rows} == {"candidate=hasty"}
+    assert accuracy["delta"] == pytest.approx(0.5)
+    assert {row["control"] for row in rows} == {"hasty"}
+    assert [row["reading"] for row in _comparisons(comparison).values()] == [row["reading"] for row in rows]
     markdown = report_markdown(comparison.report)
     assert comparison.render(full=True).endswith(markdown)
     assert "No control resolved" not in markdown
-    assert "candidate=hasty (control)" in markdown
+    assert "hasty (control) vs careful" in markdown
 
 
-async def test_the_report_is_titled_by_the_campaign_s_name_and_names_its_id_below() -> None:
+async def test_the_report_is_titled_by_the_question_its_campaign_asks() -> None:
     comparison = await _compare()
     assert comparison.name == "hasty vs careful"
     assert comparison.report.source.campaign_name == "hasty vs careful"
     lines = report_markdown(comparison.report).splitlines()
-    assert lines[0].startswith("# hasty vs careful · ") and lines[0].endswith(" · no analysis written")
+    # A name that only lists the arms adds nothing to the question it asks.
+    assert lines[0] == "# Does careful do better than hasty?"
+    assert lines[1].startswith("hasty (control) vs careful · ")
 
     named = await _compare(name="triage rules", scope="compare-named")
-    assert report_markdown(named.report).startswith("# triage rules · ")
+    assert report_markdown(named.report).startswith("# triage rules: does careful do better than hasty?\n")
 
 
 async def test_a_report_without_the_campaign_s_name_is_titled_by_its_id() -> None:
     comparison = await _compare()
     report = comparison.report
     nameless = build_code_only_report(report.bundle, assembled_at=report.source.generated_at)
-    assert report_markdown(nameless).startswith(f"# Campaign {comparison.campaign_id} · ")
+    assert report_markdown(nameless).startswith(f"# Campaign {comparison.campaign_id}: does careful do better")
 
 
 async def test_the_arms_share_a_host_the_caller_hands_over() -> None:

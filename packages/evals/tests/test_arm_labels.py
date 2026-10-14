@@ -41,7 +41,7 @@ from threetears.evals.analysis.arms import (
     writer_arms,
 )
 from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.report import TableBlock, TextBlock
+from threetears.evals.analysis.report import TableBlock
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel import EvalCampaign
@@ -294,7 +294,7 @@ def _table(report: Report, name: str) -> TableBlock:
 
 def _arm_column(report: Report, name: str, column: str = "arm") -> list[str]:
     """The named table's arm column, as served, without the control's marker."""
-    return [str(row[column]).removesuffix(" (control)") for row in _table(report, name).values()]
+    return [str(row[column]).removeprefix("▸ ") for row in _table(report, name).values()]
 
 
 def _assert_every_output_prints(report: Report, names: set[str]) -> None:
@@ -302,8 +302,8 @@ def _assert_every_output_prints(report: Report, names: set[str]) -> None:
     markdown, page = report_markdown(report), report_html(report)
     assert set(_arm_column(report, "scoreboard")) == names
     for name in names:
-        assert f"| {name} |" in markdown, name
-        assert f"<td>{html.escape(name)}</td>" in page, name
+        assert f"| {name} |" in markdown or f"| ▸ {name} |" in markdown, name
+        assert f"<td>{html.escape(name)}</td>" in page or f"<td>▸ {html.escape(name)}</td>" in page, name
 
 
 @pytest.fixture(scope="module")
@@ -314,7 +314,8 @@ def rig_only() -> Report:
 
 
 class TestARigOnlyCampaignIsNamedByItsModel:
-    _ARM = f"candidate_kind={TOY_EXTRACTOR_KIND}, model=extractor-v2"
+    # The page reads the name's levers as words, never ``axis=level``.
+    _ARM = "extractor-v2"
 
     def test_the_arm_is_named_by_its_kind_and_model(self, rig_only: Report) -> None:
         assert _arm_column(rig_only, "scoreboard") == [self._ARM]
@@ -347,11 +348,11 @@ def cut_alike() -> Report:
 
 class TestArmsDifferingOnOneLeverAreNamedByIt:
     def test_every_block_names_each_arm_by_that_lever_alone(self, one_lever: Report) -> None:
-        _assert_every_output_prints(one_lever, {"chunk_tokens=256tok", "chunk_tokens=1024tok"})
+        _assert_every_output_prints(one_lever, {"256tok", "1024tok"})
 
     def test_the_cases_table_heads_each_arm_s_column_by_the_same_name(self, one_lever: Report) -> None:
-        headers = {column.header for column in _table(one_lever, "cases").columns}
-        assert {"chunk_tokens=256tok", "chunk_tokens=1024tok"} <= headers
+        headers = {column.header.removeprefix("▸ ") for column in _table(one_lever, "cases").columns}
+        assert {"256tok", "1024tok"} <= headers
 
 
 class TestTheCutNeverMergesTwoArms:
@@ -460,7 +461,7 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
 def _rig_only_analysis() -> tuple[EvalAnalysis, list[str]]:
     (arm,) = _rig_only_index()
     rigs = [RIG, RIG_B, RIG_C]
-    names = [f"candidate_kind=assistant, model=openai/gpt-5-mini (test setup {rig[:12]})" for rig in rigs]
+    names = [f"gpt-5-mini (test setup {rig[:12]})" for rig in rigs]
     return _analysis_naming([(arm.variant_key, rig) for rig in rigs], [arm]), names
 
 
@@ -468,7 +469,7 @@ def _mixed_analysis() -> tuple[EvalAnalysis, list[str]]:
     assistant, classifier = index = _mixed_index()
     return (
         _analysis_naming([(assistant.variant_key, RIG), (classifier.variant_key, RIG)], index),
-        ["candidate_kind=assistant", "candidate_kind=classifier"],
+        ["assistant", "classifier"],
     )
 
 
@@ -482,16 +483,13 @@ def named(request: pytest.FixtureRequest) -> tuple[Report, list[str]]:
 class TestAnAnalysisReportNamesArmsByTheRule:
     def test_the_recommendation_names_each_arm_and_nothing_else(self, named: tuple[Report, list[str]]) -> None:
         report, names = named
-        (recommendation,) = [
-            block for block in report.blocks if isinstance(block, TextBlock) and block.role == "recommendation"
+        (facts,) = [
+            block for block in report.blocks if isinstance(block, TableBlock) and block.name == "recommendation_facts"
         ]
-        assert {fact.name: fact.value for fact in recommendation.facts}["Arms"] == "; ".join(names)
-        line = next(line for line in report_markdown(report).splitlines() if "Disposition: deferred" in line)
-        assert line == (
-            "- **Recommendation:** Keep the current assistant prompt. — Disposition: deferred · Confidence: high · "
-            "Arms: " + "; ".join(names) + ". Rests on F1."
-        )
-        assert f"Arms: {html.escape('; '.join(names))}" in report_html(report)
+        assert {"item": "Arms", "value": "; ".join(names)} in facts.values()
+        assert "**Deferred:** Keep the current assistant prompt." in report_markdown(report).splitlines()
+        assert f"| Arms | {'; '.join(names)} |" in report_markdown(report)
+        assert f"<td>{html.escape('; '.join(names))}</td>" in report_html(report)
 
     def test_the_evidence_names_the_cells_alike(self, named: tuple[Report, list[str]]) -> None:
         report, names = named

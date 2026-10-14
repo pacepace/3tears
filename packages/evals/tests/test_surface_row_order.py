@@ -28,6 +28,12 @@ from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.report import build_code_only_report, report_markdown
 from threetears.evals.analysis.report.model import TableBlock
 from threetears.evals.analysis.arms import arm_label
+from threetears.evals.analysis.style import humanize
+
+
+def _label(variant_key: str, names: dict[str, str]) -> str:
+    """An arm as the page names it: its given label, never ``axis=level``."""
+    return humanize("arm", arm_label(variant_key, names))
 
 
 def _bundle(*, control: int | None) -> AnalysisContextBundle:
@@ -46,7 +52,8 @@ def _bundle(*, control: int | None) -> AnalysisContextBundle:
 def _table(bundle: AnalysisContextBundle, name: str) -> TableBlock:
     report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == name]
-    assert f"({table.order})" in report_markdown(report)
+    # The order is the table's data, for a program; the page never describes itself.
+    assert table.order not in report_markdown(report)
     return table
 
 
@@ -83,22 +90,19 @@ class TestTheCodeOnlyReportFollowsTheRule:
         names = arm_names(bundle.variant_index)
         narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
         table = _table(bundle, "scoreboard")
-        assert table.order == "the control first, then the other arms by name; a count, not a ranking"
-        assert [row["arm"] for row in table.values()] == [
-            f"{arm_label(narrow, names)} (control)",
-            arm_label(wide, names),
-        ]
+        assert table.order == "the control first, then the other arms by name"
+        assert [row["arm"] for row in table.values()] == [f"▸ {_label(narrow, names)}", _label(wide, names)]
 
     def test_with_no_control_no_row_is_marked_and_the_arms_are_in_name_order(self) -> None:
         bundle = _bundle(control=None)
         names = arm_names(bundle.variant_index)
         narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
         table = _table(bundle, "scoreboard")
-        assert [row["arm"] for row in table.values()] == [arm_label(wide, names), arm_label(narrow, names)]
+        assert [row["arm"] for row in table.values()] == [_label(wide, names), _label(narrow, names)]
 
     def test_the_cases_table_lays_its_arms_out_in_the_scoreboard_s_order(self) -> None:
         bundle = _bundle(control=TOYHOST_NARROW)
         names = arm_names(bundle.variant_index)
         narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
         headers = [column.header for column in _table(bundle, "cases").columns]
-        assert headers.index(f"{arm_label(narrow, names)} (control)") < headers.index(arm_label(wide, names))
+        assert headers.index(f"▸ {_label(narrow, names)}") < headers.index(_label(wide, names))

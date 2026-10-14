@@ -357,8 +357,7 @@ class TestAGuardrailOnTheAdoptedArm:
         assert analysis.decision_surface.guardrails == bundle.guardrails, "frozen with the analysis"
         report = build_report(analysis)
         assert any(
-            isinstance(b, DisclosureBlock)
-            and "is undecided on the guardrail boundary.correct, so it is not known to be safe" in b.text
+            isinstance(b, DisclosureBlock) and "not known to be safe" in b.text and "boundary.correct" in b.text
             for b in report.blocks
         )
         assert any(isinstance(b, TableBlock) and b.name == "guardrails" for b in report.blocks)

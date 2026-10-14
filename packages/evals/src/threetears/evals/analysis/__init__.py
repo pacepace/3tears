@@ -363,6 +363,7 @@ from threetears.evals.analysis.out_of_run_spend import (
     scope_out_of_run_spend,
 )
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
+from threetears.evals.analysis.style import GLOSSARY, HumanizeKind, StyleViolation, humanize, lint_prose
 from threetears.evals.analysis.summary import (
     CaseOutcome,
     CaseResult,
@@ -382,6 +383,11 @@ from threetears.evals.analysis.summary import (
 )
 
 __all__ = [
+    "GLOSSARY",
+    "HumanizeKind",
+    "StyleViolation",
+    "humanize",
+    "lint_prose",
     "frontier_text",
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",

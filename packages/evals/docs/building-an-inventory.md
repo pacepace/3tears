@@ -74,7 +74,7 @@ criterion's wording, so a reworded dimension is a new criterion that no earlier 
 Every report carries a **Not tested** section. It lists what the campaign could not
 speak to: levers declared and not swept, cases an arm has no usable trial of, goal checks not shown to beat doing
 nothing, measures tested with no margin declared, guardrails left undecided, cost not measured, and each judge not yet
-calibrated against people ([reading reports](reading-reports.md#screen-5-not-tested)). The behaviour tree's untested
+calibrated against people ([reading reports](reading-reports.md#the-rest-of-the-page)). The behaviour tree's untested
 leaves are not in that list, because the package does not hold the tree: publish them yourself, beside the report. A
 reader should learn what the eval cannot see before they learn what it found.
 

@@ -125,4 +125,4 @@ async def test_compare_s_disclosures_are_the_builder_s(comparison: Result) -> No
     by_service = off_loop(campaign_report, comparison.host, comparison.campaign_id, comparison.scope_id)
     said = [text for text in _disclosures(by_service.blocks) if text.startswith("No margin is declared on Accuracy")]
     assert len(said) == 1
-    assert "not separated never means the arms are alike" in said[0]
+    assert "Not separated never means the arms are alike" in said[0]
