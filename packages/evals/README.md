@@ -17,7 +17,7 @@ the open tickets it closed, the meeting it booked, the light it switched on.
    docs name that tag, and every other page's install line points here:
 
    ```bash
-   TAG=v0.67.0-evaladopt.24
+   TAG=v0.67.0-evaladopt.25
    pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@$TAG#subdirectory=packages/evals"
    # adds SVG and PNG chart rendering
    pip install "3tears-evals[vega] @ git+https://github.com/pacepace/3tears.git@$TAG#subdirectory=packages/evals"

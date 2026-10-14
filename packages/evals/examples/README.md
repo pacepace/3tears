@@ -68,7 +68,8 @@ judge is asked as a judged run records it (`JUDGE_REQUEST_SETTINGS`: an output c
 **Your own client.** A client of your own, for another provider or a gateway, is anything with an async
 `generate(*, system, user, response_format=None)` that returns an object carrying ten attributes: `content`,
 `input_tokens`, `output_tokens`, `reasoning_tokens`, `cost_usd`, `price_source`, `model`, `served_model`,
-`stop_reason` and `temperature` (a `SimpleNamespace` with the ten is one). `check_completion_conformance` (from
+`stop_reason` and `temperature` (a `SimpleNamespace` with the ten is one), and optionally `sent_settings`, what the
+request actually carried, which the engine records as unverified when it is absent. `check_completion_conformance` (from
 `threetears.evals.testing`) is the check: hand it one completion your client returned, and it names each attribute
 missing and a `stop_reason` the engine does not know (`end_turn`, `max_tokens`, `content_filter`, `truncated` or
 `error`). An absent or unknown finish reason is `truncated` (output that stopped early, cause unnamed); `error` is for

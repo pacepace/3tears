@@ -81,7 +81,7 @@ names it. A `thin` or `unswept` lever no step names reads "no next step names it
 no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
 a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 9.
+`Report.basis` says which a report is; `REPORT_VERSION` is 10.
 
 ## Reading the arm table
 
@@ -488,9 +488,9 @@ The fix is in the host's completion client ([Adopting a host](adopting-a-host.md
 
 A run records what the engine asked its judge and its simulated user for (`judge_asked_settings`,
 `simulator_asked_settings`). What each call actually carried is the client's to report (`sent_settings` on its
-completion): a client may send the closest setting a model accepts (a reasoning budget as an effort word), or resend
-a strict call without enforcement when a router could not place it, and one that reports nothing leaves the call
-unverified. Each score stores what its call was sent with, and each simulator usage row what its calls were. Cells
+completion): a client may send the closest setting a model accepts (an effort word as a reasoning budget, to a model
+that takes only budgets), or resend a strict call without enforcement when a router could not place it, and one that
+reports nothing leaves the call unverified. Each score stores what its call was sent with, and each simulator usage row what its calls were. Cells
 pool only when a role was both asked and sent alike, so unverified never pools with verified, and a judge sent other
 settings is another judge for agreement and evidence tiers; each tier's sentence names what its judge was sent, or
 says `request settings unconfirmed`.
@@ -609,8 +609,9 @@ because no valid bound can show a kappa of 0.8 from 20 results: even twenty perf
 kappa on 1-5, kappa on pass/fail, per rater (each person; each round of repeats) and pooled by result.
 Every distinct result weighs 1, split across the raters that measured it, so many raters re-measuring a few
 shared results cannot carry the figure, or the floor, over the bar. A repeat that answers "can't tell" where the judge had scored is a
-disagreement, never set aside. A judge is a served model, a judge config and the temperature its calls were
-sent at, so a tier measured under one prompt or one temperature never sets another's.
+disagreement, never set aside. A judge is a served model, a judge config, the temperature its calls were
+sent at and the request settings they were sent with, so a tier measured under one prompt, one temperature or one
+set of sent settings never sets another's.
 
 **What temperature a judge samples at.** Every judge call is requested at `DEFAULT_JUDGE_TEMPERATURE` (0)
 unless the dimension's `JudgeConfig` states another, so no dimension is judged at a provider's default beside
@@ -636,7 +637,7 @@ with the numbers behind it. Tiers are flagged, never a reason to drop a reading.
 judge campaign recorded a profile of that very judge and criterion that decides a tier, the tier is the profile's.
 The entry's `from_profile` names the profile, when and on how many frozen cases it was measured, and the campaign's
 own criteria, and the tier sentence says "read from the judge's stored profile". A changed model, prompt config,
-temperature or criterion wording reads no profile
+temperature, sent request settings or criterion wording reads no profile
 ([storing a judge's profile](judges-and-calibration.md#storing-a-judges-profile-for-other-campaigns)).
 
 **Measuring self-agreement: judge repeats.** Self-agreement is measured by **repeating** a finished run's

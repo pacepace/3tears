@@ -1934,10 +1934,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # changed shape reads as evidence that moved, which is the one thing this number separates. A
     # HOST editing its own declarations is not a reason to bump it, and a host has no way to: that
     # move is carried by `host_declarations_digest`, derived from the declarations themselves. An
-    # A/B set spanning a bump must be read as spanning it. 52 is the first public release's bundle
-    # shape (50 plus `RealizedDesign.earlier_control` and `FrontierPoint.earlier_control` at 51, then the earlier
-    # control's disclosure saying a marginal row counts its cells, all before the release); the shapes before it
-    # were pre-release. 53: `judge_sent_settings` and `simulator_sent_settings` join the apparatus partition, a judge
+    # A/B set spanning a bump must be read as spanning it. 53 is the first public release's bundle
+    # shape (from `v0.67.0-evaladopt.25`); the shapes before it were pre-release: 50 plus
+    # `RealizedDesign.earlier_control` and `FrontierPoint.earlier_control` at 51, then the earlier control's
+    # disclosure saying a marginal row counts its cells at 52. 53: `judge_sent_settings` and `simulator_sent_settings` join the apparatus partition, a judge
     # change level and every judge-identity row carry the settings a judge was sent with, and
     # `request_settings_disclosure` is fingerprinted.
     schema_version: int = Field(

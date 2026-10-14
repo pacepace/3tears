@@ -177,8 +177,11 @@ arm adds observations to the same arm rather than creating a new one. *Example:*
 #### Apparatus, rig
 The **rig** is the measuring setup around the thing under test; each of its inputs is an **apparatus**
 sweepable (role `apparatus`). It is supposed to hold still, and when it moves, a comparison stops being
-about the lever. The engine's own: the judge model and its settings, which judge each dimension was actually
-scored by (`judge_dim_divergence`), the temperature each judge call was sent at, the judge configs, the simulator model and its settings, and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
+about the lever. The engine's own: the judge model, which judge each dimension was actually
+scored by (`judge_dim_divergence`), the temperature each judge call was sent at, the request settings the judge was
+asked for and those its calls were sent with (`judge_request_settings`, `judge_sent_settings`), the judge configs,
+the simulator model and the request settings it was asked for and sent with (`simulator_request_settings`,
+`simulator_sent_settings`), and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
 judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool them as one condition.
 
 #### Apparatus class

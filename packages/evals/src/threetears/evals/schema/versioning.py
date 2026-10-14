@@ -220,10 +220,11 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #: The version every regenerable document is written under, the cassette apart (:data:`CASSETTE_SCHEMA_VERSION`),
 #: and the only one a read of one accepts.
 #:
-#: - **v9** — the baseline: the first public release's regenerable shapes.
-#: - **v10** — a judge's identity includes the request settings its calls were sent with: a stored judge profile
-#:   carries ``judge_sent_settings`` and its id derives from it, and an analysis's evidence tiers, agreements and
-#:   bundle carry it on every judge they name. Profiles and analyses regenerate from the core; nothing is upgraded.
+#: - **v9** — the pre-release baseline (``.21`` to ``.24``); no release reads it.
+#: - **v10** — the first public release's regenerable shapes (from ``v0.67.0-evaladopt.25``): a judge's identity
+#:   includes the request settings its calls were sent with, so a stored judge profile carries
+#:   ``judge_sent_settings`` and its id derives from it, and an analysis's evidence tiers, agreements and bundle carry
+#:   it on every judge they name. Profiles and analyses regenerate from the core; nothing is upgraded.
 REGENERABLE_SCHEMA_VERSION: int = 10
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
