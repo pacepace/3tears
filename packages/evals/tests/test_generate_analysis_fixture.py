@@ -1,4 +1,4 @@
-"""``examples/llm_analysis.py`` freezes a campaign's bundle to a file a reload reproduces, and a writer reads only one.
+"""The ``generate_analysis`` fixture (``fixtures/generate_analysis/llm_analysis.py``) freezes a campaign's bundle to a file a reload reproduces, and a writer reads only one.
 
 The campaign's classifiers are keyword rules, so it is deterministic in everything but its ids and times. The
 writer's first draft is canned, and cites a reading the bundle lacks, so the generator's own check refuses it; the
@@ -9,6 +9,7 @@ the recording, and the analysis cites its fingerprint, not this run's.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 from types import ModuleType
@@ -17,13 +18,21 @@ import pytest
 
 from threetears.evals import Eval
 from threetears.evals.analysis import AnalysisContextBundle, inspect_campaign_bundle
-from packages.evals.tests.example_loader import EXAMPLES, load_example, replaying
+from packages.evals.tests.example_loader import replaying
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 
+#: The fixture: a campaign, its frozen bundle and a writer's repair, over a recording of claude-haiku-5-5.
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "generate_analysis" / "llm_analysis.py"
+
+
 def _load() -> ModuleType:
-    return load_example("llm_analysis.py")
+    spec = importlib.util.spec_from_file_location("llm_analysis_fixture", FIXTURE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 async def test_with_no_api_key_the_writer_repairs_the_canned_draft_from_the_recorded_bundle(
@@ -78,6 +87,5 @@ async def test_assembling_the_same_campaign_twice_gives_the_same_fingerprint() -
     assert AnalysisContextBundle.from_json(once.to_json(indent=2)).fingerprint() == once.fingerprint()
 
 
-def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
-    path = EXAMPLES / "llm_analysis.py"
-    assert public_root_violations(SOURCE_ROOT, [("llm_analysis.py", path)], consumer_root=REPO_ROOT) == []
+def test_the_fixture_reaches_the_engine_only_through_public_roots() -> None:
+    assert public_root_violations(SOURCE_ROOT, [(FIXTURE.name, FIXTURE)], consumer_root=REPO_ROOT) == []

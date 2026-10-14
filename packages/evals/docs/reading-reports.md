@@ -378,7 +378,7 @@ The bundle stays closed: the generator has no tools to fetch more context, such 
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
 be fingerprinted before generation and two prompts could no longer be compared on one bundle. A question the
 bundle cannot answer is answered by adding a field to it.
-[`examples/llm_analysis.py`](../examples/llm_analysis.py) does all of it in one file.
+[`tests/fixtures/generate_analysis/llm_analysis.py`](../tests/fixtures/generate_analysis/llm_analysis.py) does all of it in one file.
 
 ## How a measure and a question are named
 

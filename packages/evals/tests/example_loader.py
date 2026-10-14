@@ -25,15 +25,7 @@ from threetears.evals.testing import RecordedCompletions, RecordedPrompt, Record
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 #: Every example that calls a model, and so builds its clients live or from its recording.
-MODEL_CALLING = (
-    "compare_two_efforts.py",
-    "compare_two_prompts.py",
-    "guardrails.py",
-    "llm_analysis.py",
-    "llm_judge.py",
-    "prompt_x_effort.py",
-    "world.py",
-)
+MODEL_CALLING = ("llm_judge.py",)
 
 
 def load_example(name: str) -> ModuleType:

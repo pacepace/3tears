@@ -87,19 +87,14 @@ A recording is made once, live, with the key set, and replaces the example's fil
 
 ```bash
 RECORD=1 python llm_judge.py            # recordings/llm_judge.jsonl
-RECORD=1 python compare_two_prompts.py  # recordings/compare_two_prompts.jsonl
-RECORD=1 python compare_two_efforts.py  # recordings/compare_two_efforts.jsonl
-RECORD=1 python prompt_x_effort.py      # recordings/prompt_x_effort.jsonl
-RECORD=1 python world.py                # recordings/world.jsonl
-RECORD=1 python llm_analysis.py         # recordings/llm_analysis.jsonl and recordings/llm_analysis.bundle.json
-RECORD=1 python guardrails.py           # recordings/guardrails.jsonl
+(cd 3-invoices && RECORD=1 python extract.py)                   # 3-invoices/recordings/invoices.jsonl, on OPENROUTER_API_KEY
+(cd 4-booking && RECORD=1 python -m threetears.evals agent.py)  # 4-booking/recordings/agent.jsonl, on OPENROUTER_API_KEY
 ```
 
 The whole ladder, in a checkout, from the repo root:
 
 ```bash
-cd packages/evals/examples && for example in llm_judge compare_two_prompts compare_two_efforts prompt_x_effort \
-  world llm_analysis guardrails; do RECORD=1 uv run --env-file .env python "$example.py" || break; done
+cd packages/evals/examples && for example in llm_judge; do RECORD=1 uv run --env-file .env python "$example.py" || break; done
 ```
 
 `RECORD=1` with no key is refused: a recording is of a live run. Record again whenever an example's prompt, cases or
@@ -118,14 +113,8 @@ numbers. `cassettes.py`, `reports.py` and `llm_analysis.py` grade nothing new: t
 |---|---|---|---|
 | 0 | [`rung_zero.py`](rung_zero.py) | Does my function give the right answer on my cases? | `Eval(cases, runner, grader)`; a field grader and a function; `summary.misses()` |
 | 1 | [`llm_judge.py`](llm_judge.py) | Is each answer helpful, and does it say only what its source supports? | `Judge`, among the graders: a model grades each answer against a rubric |
-| 2 | [`compare_two_prompts.py`](compare_two_prompts.py) | What does the new prompt change, and is the difference real or noise? | a mapping of runners: arms, the first the control, delta, its interval, a verdict; each arm per kind of case (each case's `stratum`, `comparison.strata()`); the cases kept as a file, [`tickets.jsonl`](tickets.jsonl), that every prompt version runs against |
-| 3 | [`compare_two_efforts.py`](compare_two_efforts.py) | Is less effort good enough for this prompt, given what it saves? Two arms that differ in one setting, `low` against `medium` reasoning effort | `Answer` (each arm's spend), `grader("label", margin=...)`: only `equivalent` says "good enough"; typed verdicts |
-| 4 | [`prompt_x_effort.py`](prompt_x_effort.py) | What does changing the prompt do at each effort? | arms named by `k=v` factors, and `Result.against` for a second control |
-| 5 | [`cassettes.py`](cassettes.py) | How do I compare candidates fairly when the tool they call answers differently every time? | `World(tools=[...], recording=...)`: recording and replaying tool results |
-| 6 | [`world.py`](world.py) | Does the model turn the light on when the room is dark? | `World(State, tools=[...])`, each case's `world`, goal checks as graders: grade what the model did to a world |
-| 7 | [`reports.py`](reports.py) | How do I turn a finished campaign into files people read? | `Result.write`, `Result.gate` |
-| 8 | [`llm_analysis.py`](llm_analysis.py) | Can a model write the analysis from a frozen copy of the evidence? | `generate_analysis` over a fingerprinted bundle; a canned first draft the check refuses, and the model's repair |
-| 9 | [`guardrails.py`](guardrails.py) | The new prompt answers more questions. Does it still keep the customer's card private? | `grader(..., guard=...)`: a guardrail with its margin, held / breached / undecided per arm, apart from the contrasts |
+| 3 | [`3-invoices/`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer. | two prompts as `runner={"v1": model.prompt(V1, Invoice), "v2": ...}`, the first the control (delta, interval, verdict); a field grader per field, `grader(margin=0.05)` for equivalence and `@grader(guard=0.02) no_invented_total`; strata; `result.write()` for the HTML report; `gate()` in CI; `result.against()` and `k=v` arm names in its closing comment |
+| 4 | [`4-booking/`](4-booking/agent.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals to the team. | `World(Day, tools=[find_free, book])` and a JSON tool loop over `model.json`; goal checks and the did-nothing control; [`serve.py`](4-booking/serve.py): `as_host`, MCP (`mount_fastmcp`) and the command line |
 
 The [tutorial](../docs/tutorial.md) covers rungs 0 to 3 and 9 (in its own order, the judge after the comparison),
 and keeping your runs in a file. The other rungs are here alone.
@@ -135,7 +124,7 @@ and keeping your runs in a file. The other rungs are here alone.
 These are documented in the guides:
 
 - Judge reliability and evidence tiers: [Reading reports](../docs/reading-reports.md). Results by kind of case
-  (strata) are read in [`compare_two_prompts.py`](compare_two_prompts.py), and explained in
+  (strata) are read in [`3-invoices/`](3-invoices/extract.py), and explained in
   [Reading reports](../docs/reading-reports.md#results-by-kind-of-case-strata).
 - Declaring a campaign's design (axes, question, bar), and when exploring without one is the right call:
   [Choosing a design](../docs/choosing-a-design.md).

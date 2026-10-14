@@ -4,16 +4,13 @@ Two classifiers over one case list: ``careful`` reads every case right and ``has
 cases that carry a second label's words. Compared with ``hasty`` as the control (the mapping's first key), the campaign
 declares one axis at the two arm names, its control resolves to the variant key ``hasty``'s run
 carries, and the code-only report tests ``careful`` against it and finds it improved — under the
-campaign's name, or by its id when it has none.
-
-``examples/compare_two_prompts.py`` is run here with no API key, so it replays its recording.
+campaign's name, or by its id when it has none. Two prompts compared on a model's recorded answers are rung 3
+(``examples/3-invoices/``), held by ``test_invoices_rung.py``.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,13 +25,7 @@ from threetears.evals.analysis import (
 from threetears.evals import Eval, Result
 from threetears.evals.quick import as_host
 from threetears.evals.quick.one_call import ARM_LEVER, SHARED_ARM_MODEL
-from threetears.evals.testing import RecordedPrompt
-from packages.evals.tests.example_loader import check_covers, load_example, replaying
-from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.off_loop import off_loop
-
-#: The example under test.
-EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "compare_two_prompts.py"
 
 SCOPE = "compare-test"
 
@@ -227,44 +218,3 @@ async def test_a_mapping_of_one_is_one_arm_named_not_a_comparison() -> None:
     result = await _compare({"only": careful})
     assert list(result.arms) == ["only"] and result.control == "only"
     assert result.summary.candidate_model == "only"
-
-
-async def test_the_example_replays_its_recording_and_prints_the_verdict(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """With no API key the example replays what Claude answered, says so, and ends on the contrast's verdict."""
-    module = load_example(EXAMPLE.name)
-    asked = [
-        RecordedPrompt(prompt, case["ticket"])
-        for prompt in (module.BASELINE_PROMPT, module.CANDIDATE_PROMPT)
-        for case in module.CASES
-        for _ in range(2)
-    ]
-    check_covers(module, asked, settings=module.SETTINGS)
-    replay = replaying(module, monkeypatch)
-
-    comparison = await module.main()
-
-    assert replay.served() == 48, "12 tickets x 2 repeats x 2 prompts, as the docstring says"
-    assert isinstance(comparison, Result)
-    assert comparison.control == "baseline" and list(comparison.arms) == ["baseline", "candidate"]
-    assert all(summary.status == "completed" and summary.n_scored == 24 for summary in comparison.arms.values())
-    out = capsys.readouterr().out
-    assert out.startswith("ANTHROPIC_API_KEY is not set: replaying recordings/compare_two_prompts.jsonl, Claude (")
-    accuracy = {row["reading"]: row for row in _comparisons(comparison).values()}["Accuracy"]
-    assert accuracy["contrast"] == "candidate=candidate"
-    assert re.search(
-        r"\ncandidate vs baseline on Accuracy: [\d.]+ -> [\d.]+, delta [+-][\d.]+, interval (\[[-\d.e]+, [-\d.e]+\] at "
-        r"[\d.]+%|None)(, Holm-adjusted p [\d.e-]+)?: " + re.escape(accuracy["verdict"]) + r"\n",
-        out,
-    )
-    # Where the arms disagree: each ticket the two prompts answered differently, each arm's answer on every repeat.
-    for index, case in enumerate(module.CASES):
-        said = {arm: [r.answer for r in comparison.results(arm) if r.case == str(index)] for arm in comparison.arms}
-        printed = f"  {case['ticket']!r}, filed under {case['queue']} ({case['kind']}):\n" in out
-        assert printed == (said["baseline"] != said["candidate"])
-    assert report_markdown(comparison.report) not in out
-
-
-def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
-    assert public_root_violations(SOURCE_ROOT, [(EXAMPLE.name, EXAMPLE)], consumer_root=REPO_ROOT) == []
