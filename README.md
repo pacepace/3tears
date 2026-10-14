@@ -305,6 +305,9 @@ uv sync                      # install all packages in dev mode
 
 Use the scripts. Never invoke `pytest`, `ruff`, or `mypy` directly.
 
+Set `THREETEARS_TEST_REMOTE=<host>` to run the pytest step of `test.sh` / `check-all.sh` on a
+remote test host instead; see [docs/testing.md](docs/testing.md#the-remote-test-lane).
+
 `check-all.sh` runs lint, typecheck, the workspace suite and the sidecar suite.
 It does **not** run the integration tests: those need Docker, so folding them in
 would break the gate wherever Docker is absent. `test.sh` excludes them too

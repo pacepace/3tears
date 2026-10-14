@@ -77,6 +77,56 @@ already saw; this is the one that shows what a real model does. The release runs
 tagging anything that touches `packages/models`, and pastes the line the script records into
 the release PR (`docs/releasing.md`, "Cutting a release").
 
+## The remote test lane
+
+`check-all.sh` and `test.sh` can run their pytest step on a quiet remote host (`gpu-bozeman`,
+Linux x86_64; `14th-mbp`, macOS arm64) instead of a contended dev box. Opt-in, and off by default.
+
+**Setup, once per host, by the owner** from a checkout on any machine holding the host's
+unrestricted admin ssh alias (bash 3.2+ and ssh; docker only on the host):
+
+```bash
+scripts/remote-setup.sh gpu-bozeman-admin path/to/threetears-testlane.pub
+```
+
+The second argument (or `THREETEARS_LANE_PUBKEY_FILE`) is the PUBLIC half of the dispatcher's
+`~/.ssh/threetears-testlane`; setup never generates or reads a private key. It builds the image
+from `.devcontainer/Dockerfile`, (re)creates container `threetears-test` (bounded by
+`THREETEARS_LANE_CPUSET` / `THREETEARS_LANE_MEMORY`, defaulting to every CPU docker sees but two
+and 3/4 of its memory; on Docker Desktop both index the VM), bind-mounts `~/testruns-3tears` at
+`/testruns`, installs the forced command, replaces the key's one `authorized_keys` line, and
+verifies the probe answers `true` and a shell command is refused. Re-running is safe, but it
+recreates the container, killing a run in flight.
+
+**Use.** Set `THREETEARS_TEST_REMOTE=<host>` (an alias `ssh -G` resolves; only its hostname, user
+and port are used). `test.sh` probes `docker inspect -f {{.State.Running}} threetears-test` with a
+5 s timeout, then:
+
+- probe answers `true`: the tree is rsynced to `~/testruns-3tears/<worktree>-<hash>/` (plus git
+  objects and tags, for the release gates), the suite runs there with the same arguments, the
+  first line is `remote-test: ran on <hostname> as <user>, <N> cores`, and the last is
+  `tests ran on <host> (remote)`. The exit status is pytest's.
+- anything else: `remote lane <host> unreachable: running locally` on stderr, then the local run.
+  An argument the lane cannot carry (outside `A-Za-z0-9 . _ / = : -` and space, e.g. a
+  `test_x[param]` id) prints `remote lane <host> cannot carry these arguments: running locally`.
+
+Unset prints nothing: silence means local. `scripts/test-remote.sh HOST [args]` runs the lane by
+hand with no fallback; `THREETEARS_TEST_REMOTE_DRY_RUN=1` prints its ssh/rsync commands instead.
+`THREETEARS_TEST_REMOTE_KEY` overrides the key path (a `.pub` alone works when an agent holds the
+private half).
+
+**What stays local.** Lint and typecheck (fast), `test-sidecar.sh` (its own AGPL venv) and
+`test-integration.sh` (testcontainers needs a Docker daemon; the lane container has none). The
+remote run is the unit + enforcement suite only.
+
+**Security shape.** The lane key is passphrase-less and lands in a forced command,
+`scripts/threetears-testlane-shim`, that splits the request into argv and execs it with no shell,
+admitting only `mkdir`/`rsync --server` under `~/testruns-3tears/<name>`, `docker exec` of
+`remote-test.sh` in `threetears-test`, and the probe; anything else exits 77 with `refused:`. rsync
+may not create links, ownership or devices, and the dispatcher connects with `-F none` and that
+key alone, so no other identity or multiplexed admin session can ride along. Code running inside
+the container is the lane's purpose and is not sandboxed further.
+
 ## Test fakes
 
 A test fake is any class named `Fake<Name>` or `_Fake<Name>` under a `tests/` directory. Every one
