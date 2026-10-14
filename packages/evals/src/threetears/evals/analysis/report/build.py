@@ -111,7 +111,11 @@ log = get_logger(__name__)
 
 
 def build_report(
-    analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None
+    analysis: EvalAnalysis,
+    *,
+    campaign_name: str | None = None,
+    model_identity: str | None = None,
+    request_settings: str | None = None,
 ) -> Report:
     """Lay one stored analysis out as a report.
 
@@ -123,6 +127,10 @@ def build_report(
             (:func:`~threetears.evals.analysis.reporting.model_identity_disclosure`), read off their results when
             the report is read, since a stored analysis keeps no such sentence; said once among the methods.
             ``None`` says nothing.
+        request_settings: That the member runs' judge or simulated-user calls were not shown to be sent as asked
+            (:func:`~threetears.evals.analysis.reporting.request_settings_disclosure`), read off their results when
+            the report is read, as ``model_identity`` is; said once among the methods, after it. ``None`` says
+            nothing.
 
     Returns:
         The report.
@@ -220,6 +228,8 @@ def build_report(
 
     if model_identity is not None:
         blocks.append(DisclosureBlock(section="methods", source="measurement", text=model_identity))
+    if request_settings is not None:
+        blocks.append(DisclosureBlock(section="methods", source="measurement", text=request_settings))
     blocks.extend(_method_blocks(analysis))
     blocks.extend(_unfound_lever_blocks(analysis))
     generation = analysis.generation
@@ -1913,6 +1923,7 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     say("measurement", bundle.launch_disclosure)
     say("measurement", bundle.measurement_window_disclosure)
     say("measurement", bundle.model_identity_disclosure)
+    say("measurement", bundle.request_settings_disclosure)
     for instability in bundle.subject_key_instabilities:
         if instability.kind == "one_key_many_labels":
             text = f"Subject key {instability.key} is labelled {len(instability.counterparts)} ways: "

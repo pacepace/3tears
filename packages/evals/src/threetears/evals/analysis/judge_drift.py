@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import Field
 
-from threetears.evals.analysis.agreement import JudgeKey
+from threetears.evals.analysis.agreement import JudgeKey, judge_sort_key, sent_settings_from_key, sent_settings_key
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
@@ -43,7 +43,7 @@ from threetears.evals.analysis.stats import (
     separation_p,
 )
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.models import SCALES, JudgeTemperature, RubricScale
+from threetears.evals.schema.models import SCALES, ClientRequestSettings, JudgeTemperature, RubricScale
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalResult
@@ -75,6 +75,13 @@ class JudgeDriftDimension(EvalDocumentModel):
     judge_temperature: JudgeTemperature | None = Field(
         default=None,
         description="The temperature the first scores were sent at; None = scores made outside a judge phase.",
+    )
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the first scores' calls were sent with, as each first score recorded them; None = "
+            "unverified (the client did not report them), a first judge of its own."
+        ),
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
     second_judge_config_id: str | None = Field(
@@ -204,6 +211,7 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
                     entry.first_served_model,
                     entry.first_judge_config_id,
                     entry.first_judge_temperature,
+                    sent_settings_key(entry.first_judge_sent_settings),
                 )
                 key = (first, judging.judge.model, judging.judge_config_ids.get(entry.dim), judging.judge.temperature)
                 cases = pairs.setdefault(key, {})
@@ -214,11 +222,7 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
     keys = sorted(
         pairs,
         key=lambda k: (
-            k[0].rubric_dim,
-            k[0].scale,
-            k[0].judge_model or "",
-            k[0].judge_config_id or "",
-            "" if k[0].judge_temperature is None else str(k[0].judge_temperature),
+            *judge_sort_key(k[0]),
             k[1],
             k[2] or "",
             "" if k[3] is None else str(k[3]),
@@ -257,6 +261,7 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
                 judge_model=first.judge_model,
                 judge_config_id=first.judge_config_id,
                 judge_temperature=first.judge_temperature,
+                judge_sent_settings=sent_settings_from_key(first.judge_sent_settings),
                 second_model=model,
                 second_judge_config_id=config_id,
                 second_temperature=temperature,

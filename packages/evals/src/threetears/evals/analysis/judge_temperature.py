@@ -246,6 +246,7 @@ def _repeats_of(answered: TemperatureCaseAnswers, judge_model: str) -> list[Judg
             first_served_model=anchor.score.served_model,
             first_judge_config_id=anchor.config_id,
             first_judge_temperature=anchor.score.judge_temperature,
+            first_judge_sent_settings=anchor.score.judge_sent_settings,
             repeat=answer.score,
             error=(answer.error or "no answer") if answer.score is None and answer.cannot_tell is None else None,
             cannot_tell=answer.cannot_tell,

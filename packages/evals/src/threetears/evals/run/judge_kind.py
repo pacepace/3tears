@@ -65,7 +65,7 @@ from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, defect_usage, sent_temperature
-from threetears.evals.schema.completion import CompletionProtocolDefect
+from threetears.evals.schema.completion import CompletionProtocolDefect, sent_settings_of
 from threetears.evals.run.judge_service import JudgeContext, JudgeRequest, JudgeService
 from threetears.evals.run.launch import (
     TEMPLATE_FIELDS,
@@ -272,6 +272,7 @@ def _cases_of_result(
                 first_served_model=first.served_model if first is not None else None,
                 first_judge_config_id=result.judge_config_ids.get(dim),
                 first_judge_temperature=first.judge_temperature if first is not None else None,
+                first_judge_sent_settings=first.judge_sent_settings if first is not None else None,
             ),
         )
         frozen.append((dim, case))
@@ -739,6 +740,11 @@ class JudgeKind:
         # A completion carrying no temperature is the host's defect (CompletionProtocolDefect), raised through invoke
         # to fail the run as it does on every other judge path, never folded into this one trial.
         sent = score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
+        # What the call was sent with, by the same rule: the score's record, else the last completion's report, else
+        # unverified. A wrong-typed member is the host's defect, raised like a missing temperature.
+        sent_settings = (
+            score.judge_sent_settings if score is not None else (sent_settings_of(last) if last is not None else None)
+        )
         trial = JudgeTrial(
             test_case_id=test_case.id,
             dim=case.dim,
@@ -756,6 +762,7 @@ class JudgeKind:
             served_model=(score.served_model if score is not None else (getattr(last, "served_model", None) or None)),
             judge_config_id=request.judge_config_id,
             judge_temperature=sent,
+            judge_sent_settings=sent_settings,
         )
         payload = trial.model_dump(mode="json")
         if outcome_kind == "no_reply":

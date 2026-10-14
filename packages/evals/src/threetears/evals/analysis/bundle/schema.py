@@ -65,6 +65,7 @@ from threetears.evals.kernel.metrics import (
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import (
     ApparatusProvenance,
+    ClientRequestSettings,
     GoalCheckProof,
     RubricAxis,
 )
@@ -986,6 +987,14 @@ class JudgeIdentityLevel(EvalDocumentModel):
     )
     judge_temperature: float | None = Field(
         default=None, description="The temperature unconfigured dims were requested at; None = not recorded."
+    )
+    judge_sent_settings: list[ClientRequestSettings] | None = Field(
+        default=None,
+        description=(
+            "The request settings the runs' scores' calls were sent with, each distinct value once in canonical order "
+            "(two when a run's calls were sent two ways); None = unverified: some score's client did not report what "
+            "it sent, or no score was read."
+        ),
     )
     run_ids: list[str] = Field(min_length=1, description="The member runs judged this way, sorted.")
     variant_keys: list[str] = Field(default_factory=list, description="The arms those runs measured, sorted.")
@@ -1928,9 +1937,11 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. 52 is the first public release's bundle
     # shape (50 plus `RealizedDesign.earlier_control` and `FrontierPoint.earlier_control` at 51, then the earlier
     # control's disclosure saying a marginal row counts its cells, all before the release); the shapes before it
-    # were pre-release.
+    # were pre-release. 53: `judge_sent_settings` and `simulator_sent_settings` join the apparatus partition, a judge
+    # change level and every judge-identity row carry the settings a judge was sent with, and
+    # `request_settings_disclosure` is fingerprinted.
     schema_version: int = Field(
-        default=52, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=53, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2343,6 +2354,19 @@ class AnalysisContextBundle(EvalDocumentModel):
             "and scores that covers, per role. Never name a requested id as the model that ran where this is "
             "set: `model_versions` and every arm's model are what was asked for, and `arm_served_models` says "
             "per arm what the responses named. None when every response named its model."
+        ),
+    )
+    request_settings_disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set when the member runs' judge or simulated-user calls were not shown to be sent as each run asked: "
+            "sent other settings than asked (a client may send the closest setting a model accepts), sent more than "
+            "one way (with the counts), sent without enforcement (the provider may have ignored any setting the "
+            "serving model does not take), or not reported at all (unverified). Says once, for the campaign, per "
+            "role. Never read a run's asked settings as what its judge or simulator was sent where this is set: "
+            "runs sent differently, or one reported and one not, are separate apparatus and are not pooled. Never "
+            "about the candidate, whose client the engine does not ask. None when every call of both roles reported "
+            "being sent, enforced, as asked."
         ),
     )
     measurement_window_disclosure: str | None = Field(

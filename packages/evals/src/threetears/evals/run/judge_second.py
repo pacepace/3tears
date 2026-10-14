@@ -717,6 +717,7 @@ def _judging_of(
                 first_served_model=first.served_model,
                 first_judge_config_id=result.judge_config_ids.get(dim),
                 first_judge_temperature=first.judge_temperature,
+                first_judge_sent_settings=first.judge_sent_settings,
                 second=outcome.score,
                 error=(outcome.error or "no answer") if outcome.score is None and outcome.cannot_tell is None else None,
                 cannot_tell=outcome.cannot_tell,

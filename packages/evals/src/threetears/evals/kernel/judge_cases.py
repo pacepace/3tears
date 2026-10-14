@@ -294,6 +294,14 @@ class JudgeTrial(EvalBaseModel):
             "to read it from (a trial with no reply). A scored trial always carries it."
         ),
     )
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the call was actually sent with, as its client reported them "
+            "(``sent_settings_of``); None = unverified: the client did not report them, or the call returned no "
+            "completion to read them from. Part of the judge's identity beside its temperature."
+        ),
+    )
 
     @model_validator(mode="after")
     def _a_score_says_what_it_was_sent_at(self) -> Self:

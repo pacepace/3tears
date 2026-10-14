@@ -265,7 +265,7 @@ class TestTheBundleEarnsATimeAxis:
         assert named <= set(surface.measures)
 
     def test_the_bundle_shape_version_moved(self) -> None:
-        assert _two_days().schema_version == 52
+        assert _two_days().schema_version == 53
 
 
 class TestTheTimeAxisContract:

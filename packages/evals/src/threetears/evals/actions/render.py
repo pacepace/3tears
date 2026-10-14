@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from threetears.evals.schema import GoalStateOutcome, is_builtin_judge_config_id
+from threetears.evals.schema.models import sent_settings_phrase
 from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
@@ -654,6 +655,7 @@ def _judge_profile_line(entry: JudgeProfileEntry) -> str:
     judge = profile.judge_model + (f", {what} {config}" if config else "")
     temperature = profile.judge_temperature
     judge += f", temperature {temperature if isinstance(temperature, str) else format_number(temperature)}"
+    judge += f", {sent_settings_phrase(profile.judge_sent_settings)}"
     measures = []
     for label, agreement in (("labels", profile.label_agreement), ("repeats", profile.self_agreement)):
         if agreement is None:

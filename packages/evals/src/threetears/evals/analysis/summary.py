@@ -68,8 +68,11 @@ from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import (
+    RequestSettingsReading,
     UnconfirmedModelIdentity,
     model_identity_disclosure,
+    request_settings_disclosure,
+    request_settings_readings,
     unconfirmed_model_identities,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
@@ -732,6 +735,10 @@ class EvalSummary(BaseModel):
             model (:class:`~threetears.evals.analysis.reporting.UnconfirmedModelIdentity`): the record holds only
             the id asked for there, so which model ran is unconfirmed. Empty when every response named its model,
             and for a run that called nothing.
+        request_settings: The judge's then the simulated user's request settings, as the run asked them and as
+            each call reported being sent (:class:`~threetears.evals.analysis.reporting.RequestSettingsReading`,
+            whose ``state`` and ``sent_display()`` are the run's derived "sent" value); each only where the role
+            made a call. Never the candidate's.
         case_results: Every result, read for a person (:class:`CaseResult`), in case order then repeat; ``None``
             when the run was summarised without its cases, as the CLI and ``run_get`` summarise one.
             :meth:`results` and :meth:`misses` read it.
@@ -773,6 +780,7 @@ class EvalSummary(BaseModel):
     max_cost_usd_origin: CostCapOrigin | None = None
     judge_shares_candidate_model: list[str] = []
     unconfirmed_models: list[UnconfirmedModelIdentity] = []
+    request_settings: list[RequestSettingsReading] = []
     case_results: list[CaseResult] | None = None
 
     def results(self) -> list[CaseResult]:
@@ -998,6 +1006,19 @@ class EvalSummary(BaseModel):
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
+            "That the judge's or the simulated user's calls were not shown to be sent as asked — sent other settings, "
+            "sent more than one way, sent without enforcement, or not reported; null when every call was reported "
+            "sent, enforced, as asked."
+        )
+    )
+    @property
+    def request_settings_warning(self) -> str | None:
+        """The request-settings line (:func:`~threetears.evals.analysis.reporting.request_settings_disclosure`), or
+        None."""
+        return request_settings_disclosure(self.request_settings)
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
             "Each role's spend line, in `spend` order: what it cost, or why that is unknown, over how many calls — an "
             "external API's units per provider beside it. Empty for a run whose results reported no spend."
         )
@@ -1072,6 +1093,8 @@ class EvalSummary(BaseModel):
             lines.append(f"  {self.self_judging_warning}")
         if self.model_identity_warning is not None:
             lines.append(f"  {self.model_identity_warning}")
+        if self.request_settings_warning is not None:
+            lines.append(f"  {self.request_settings_warning}")
         lines += [f"  {line}" for line in self.spend_lines]
         if self.total_spend_text is not None:
             lines.append(f"  {self.total_spend_text}")
@@ -1293,6 +1316,7 @@ def summarize_run(
         max_cost_usd_origin=run.max_cost_usd_origin,
         judge_shares_candidate_model=_self_judging(run, results),
         unconfirmed_models=unconfirmed_model_identities([run], results),
+        request_settings=request_settings_readings([run], results),
     )
 
 

@@ -40,13 +40,18 @@ from threetears.evals.analysis.agreement import (
     JudgeKey,
     SelfAgreementDimension,
     judge_agreement,
+    judge_key_of,
     judge_self_agreement,
+    judge_sort_key,
+    sent_settings_from_key,
+    sent_settings_key,
 )
 from threetears.evals.kernel.judge_cases import JudgeTrial, judge_trial_of
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
     CalibrationRating,
+    ClientRequestSettings,
     JudgeRepeat,
     JudgeTemperature,
     RepeatedScore,
@@ -97,6 +102,13 @@ class JudgeKindReading(EvalDocumentModel):
         default=None,
         description="The temperature the calls were sent at, as the client reported it; None = not reported.",
     )
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the calls were sent with, as the client reported them; None = unverified (not "
+            "reported). Part of the judge's identity: another value is another judge."
+        ),
+    )
     criterion_digest: str = Field(min_length=1, description="The criterion as the cases worded it (its digest).")
     case_set_fingerprint: str = Field(
         min_length=1,
@@ -126,7 +138,14 @@ class JudgeKindReading(EvalDocumentModel):
     @property
     def key(self) -> JudgeKey:
         """The judge this reading measured, as every judge reading is keyed."""
-        return JudgeKey(self.rubric_dim, self.scale, self.judge_model, self.judge_config_id, self.judge_temperature)
+        return JudgeKey(
+            self.rubric_dim,
+            self.scale,
+            self.judge_model,
+            self.judge_config_id,
+            self.judge_temperature,
+            sent_settings_key(self.judge_sent_settings),
+        )
 
 
 class UnreadJudgeTrial(EvalDocumentModel):
@@ -169,7 +188,14 @@ _GroupKey = tuple[JudgeKey, str]
 
 def _key_of(trial: JudgeTrial) -> JudgeKey:
     """The judge behind one trial's reply."""
-    return JudgeKey(trial.dim, trial.scale, trial.served_model, trial.judge_config_id, trial.judge_temperature)
+    return JudgeKey(
+        trial.dim,
+        trial.scale,
+        trial.served_model,
+        trial.judge_config_id,
+        trial.judge_temperature,
+        sent_settings_key(trial.judge_sent_settings),
+    )
 
 
 def _order(entry: tuple[EvalResult, JudgeTrial]) -> tuple[str, int, str]:
@@ -189,6 +215,7 @@ def _score_of(trial: JudgeTrial) -> RubricScore:
         reasoning=trial.reasoning or "",
         served_model=trial.served_model,
         judge_temperature=trial.judge_temperature,
+        judge_sent_settings=trial.judge_sent_settings,
     )
 
 
@@ -217,6 +244,7 @@ def _reading_of_case(
             first_served_model=first.served_model,
             first_judge_config_id=first.judge_config_id,
             first_judge_temperature=first_score.judge_temperature,
+            first_judge_sent_settings=first_score.judge_sent_settings,
             repeat=_score_of(trial) if trial.outcome == "scored" else None,
             cannot_tell=(trial.cannot_tell or "the judge gave no reason") if trial.outcome == "cannot_tell" else None,
             error=(trial.error or "the reply broke the protocol") if trial.outcome == "invalid" else None,
@@ -263,7 +291,7 @@ _Row = TypeVar("_Row", DimensionAgreement, SelfAgreementDimension)
 def _matching(rows: Iterable[_Row], key: JudgeKey) -> _Row | None:
     """The one agreement row measured for ``key``, or ``None``."""
     for row in rows:
-        if JudgeKey(row.rubric_dim, row.scale, row.judge_model, row.judge_config_id, row.judge_temperature) == key:
+        if judge_key_of(row) == key:
             return row
     return None
 
@@ -323,6 +351,7 @@ def judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings:
                 judge_model=key.judge_model,
                 judge_config_id=key.judge_config_id,
                 judge_temperature=key.judge_temperature,
+                judge_sent_settings=sent_settings_from_key(key.judge_sent_settings),
                 criterion_digest=criterion,
                 case_set_fingerprint=canonical_digest(
                     sorted({(trial.test_case_id, trial.case_digest) for trial in trials})
@@ -342,14 +371,5 @@ def judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings:
                 self_agreement=repeat,
             )
         )
-    readings.sort(
-        key=lambda r: (
-            r.rubric_dim,
-            r.scale,
-            r.judge_model or "",
-            r.judge_config_id or "",
-            "" if r.judge_temperature is None else str(r.judge_temperature),
-            r.criterion_digest,
-        )
-    )
+    readings.sort(key=lambda r: (*judge_sort_key(r.key), r.criterion_digest))
     return JudgeKindReadings(readings=readings, unread=unread)

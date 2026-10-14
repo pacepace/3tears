@@ -62,8 +62,10 @@ from threetears.evals.schema.models import ApparatusProvenance
 #: one of its own declarations moves the coordinate too, but it is not a reason to bump this and a
 #: host cannot: that move is recorded beside it, as the host declarations digest the bundle and the
 #: generation's provenance carry (``AnalysisContextBundle.host_declarations_digest``). 12 is the
-#: first public release's cell model; the versions before it were pre-release.
-CELL_MODEL_VERSION: int = 12
+#: first public release's cell model; the versions before it were pre-release. 13: what the judge and the
+#: simulated user were actually sent (``judge_sent_settings``, ``simulator_sent_settings``) joins the apparatus
+#: coordinate beside what they were asked, so cells pool only when both match.
+CELL_MODEL_VERSION: int = 13
 
 
 class ApparatusClass(EvalDocumentModel):

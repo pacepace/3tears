@@ -340,7 +340,7 @@ class TestTheServedWordsRoundTrip:
         schema = published_report_schema()
         assert schema == report_json_schema()
         assert schema["$id"] == SCHEMA_ID == f"urn:threetears-evals:report:v{REPORT_VERSION}"
-        assert schema["properties"]["report_version"]["const"] == REPORT_VERSION == 9
+        assert schema["properties"]["report_version"]["const"] == REPORT_VERSION == 10
 
 
 # =============================================================================

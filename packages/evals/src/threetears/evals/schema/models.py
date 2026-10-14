@@ -2902,6 +2902,44 @@ def request_settings_order(settings: ClientRequestSettings) -> str:
     return json.dumps(settings.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
 
+def request_settings_words(settings: ClientRequestSettings) -> str:
+    """Request settings as one brace-wrapped phrase a sentence can quote: the cap, the reasoning parameter, enforcement.
+
+    The one rendering every disclosure and tier sentence uses, so asked and sent read alike wherever both appear:
+    ``{max_tokens=10240, reasoning_effort=high, strict}``. No reasoning parameter is said as such (the provider's
+    default applied), and ``strict`` / ``not strict`` is always stated, since an enforced and an unenforced request are
+    two requests.
+
+    Args:
+        settings: The settings.
+
+    Returns:
+        The phrase.
+    """
+    parts = [f"max_tokens={settings.max_tokens}"]
+    if settings.reasoning_effort is not None:
+        parts.append(f"reasoning_effort={settings.reasoning_effort}")
+    elif settings.reasoning_max_tokens is not None:
+        parts.append(f"reasoning_max_tokens={settings.reasoning_max_tokens}")
+    else:
+        parts.append("no reasoning parameter")
+    parts.append("strict" if settings.strict_output else "not strict")
+    return "{" + ", ".join(parts) + "}"
+
+
+def sent_settings_phrase(settings: ClientRequestSettings | None) -> str:
+    """A judge's sent settings as the clause a sentence naming the judge carries.
+
+    Args:
+        settings: What its calls were sent with (``None`` = unverified).
+
+    Returns:
+        ``"sent {...}"`` (:func:`request_settings_words`), or ``"request settings
+        unconfirmed"`` when its client did not report them.
+    """
+    return "request settings unconfirmed" if settings is None else f"sent {request_settings_words(settings)}"
+
+
 #: Repeats per (case, model) a launch uses when the caller names none: one observation per case cannot
 #: tell a setting from the model's own variance. Every launch entrypoint
 #: defaults to this; ``EvalRun.k_runs`` has no default of its own, so whoever writes a run states it.

@@ -373,7 +373,7 @@ prompt lever alone (`ticket_router.prompt_version=v1` and `ticket_router.prompt_
 
 `schema.json` ships in the package beside the model (`SCHEMA_PATH`; `published_report_schema()` reads it). It is
 generated from the model, a test holds it equal to the model's, and its `$id` names the report version it validates
-(`urn:threetears-evals:report:v9`), as its `report_version` const does. It holds the report's shape, every served
+(`urn:threetears-evals:report:v10`), as its `report_version` const does. It holds the report's shape, every served
 word as required, and every cross-field rule JSON Schema can state:
 
 - a code-only report names no analysis or model and holds no headline, finding or text block;
@@ -483,6 +483,36 @@ which model produced them; a completion client that reports the model its provid
 A run whose responses all named their model prints nothing, and neither does one whose candidate called nothing.
 The fix is in the host's completion client ([Adopting a host](adopting-a-host.md)); a quick candidate passes
 `Answer(served_model=...)`.
+
+## How the judge and the simulated user were sent
+
+A run records what the engine asked its judge and its simulated user for (`judge_asked_settings`,
+`simulator_asked_settings`). What each call actually carried is the client's to report (`sent_settings` on its
+completion): a client may send the closest setting a model accepts (a reasoning budget as an effort word), or resend
+a strict call without enforcement when a router could not place it, and one that reports nothing leaves the call
+unverified. Each score stores what its call was sent with, and each simulator usage row what its calls were. Cells
+pool only when a role was both asked and sent alike, so unverified never pools with verified, and a judge sent other
+settings is another judge for agreement and evidence tiers; each tier's sentence names what its judge was sent, or
+says `request settings unconfirmed`.
+
+Where a role was not shown to be sent as asked, one sentence says so, printed verbatim by the same surfaces as the
+model-identity line (`request_settings_disclosure`): the run's summary (`run_get`, its `request_settings_warning`,
+and `request_settings`, each role's reading, whose derived sent value is `as_asked`, `sent_otherwise`, `mixed` or
+`unverified`), `run_summary`, the analysis bundle and the campaign report's methods. Per role, the judge (counted in
+scores) then the simulated user (counted in results), it says, each where it applies, that the role was sent other
+than asked, that its calls were sent more than one way with how many each way, that some calls did not report what
+they were sent with, and that settings were sent without enforcement, so the provider may have ignored any the
+serving model does not take:
+
+```text
+Request settings not confirmed as asked: the judge was asked for {max_tokens=10240, reasoning_effort=high, strict}
+and sent {max_tokens=10240, reasoning_max_tokens=8192, strict} on 12 of 12 score(s). A client may send the closest
+setting a model accepts, or resend a call without enforcement, and reports what each request carried
+(sent_settings); runs sent differently, or one reported and one not, are not pooled as one apparatus.
+```
+
+It is never about the candidate: a host builds its candidate's client itself, and the engine asks it for nothing.
+A run whose every judge and simulator call reported being sent, enforced, exactly as asked prints nothing.
 
 ## Results by kind of case: strata
 

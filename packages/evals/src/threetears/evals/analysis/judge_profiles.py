@@ -47,6 +47,7 @@ from threetears.evals.analysis.agreement import (
     judge_agreement,
     judge_evidence_tiers,
     judge_key,
+    judge_key_of,
     judge_self_agreement,
 )
 from threetears.evals.analysis.judge_kind_readings import JudgeKindReading, JudgeKindReadings
@@ -120,6 +121,7 @@ def _profile_of(reading: JudgeKindReading, *, scope_id: str, recorded_at: str) -
         judge_model=reading.judge_model,
         judge_config_id=reading.judge_config_id,
         judge_temperature=reading.judge_temperature,
+        judge_sent_settings=reading.judge_sent_settings,
         criterion_digest=reading.criterion_digest,
         cases=reading.cases,
         trials=reading.trials,
@@ -245,14 +247,20 @@ def tiers_with_judge_profiles(
     by_id = {profile.id: profile for profile in profiles}
     read: list[JudgeEvidenceTier] = []
     for tier in tiers:
-        key = JudgeKey(tier.rubric_dim, tier.scale, tier.judge_model, tier.judge_config_id, tier.judge_temperature)
+        key = judge_key_of(tier)
         digest = criteria.get(key)
         if tier.tier != "undetermined" or digest is None or key.judge_model is None or key.judge_temperature is None:
             read.append(tier)
             continue
         profile = by_id.get(
             judge_profile_id(
-                key.rubric_dim, key.scale, key.judge_model, key.judge_config_id, key.judge_temperature, digest
+                key.rubric_dim,
+                key.scale,
+                key.judge_model,
+                key.judge_config_id,
+                key.judge_temperature,
+                digest,
+                judge_sent_settings=tier.judge_sent_settings,
             )
         )
         if profile is None:
@@ -286,6 +294,7 @@ def tiers_with_judge_profiles(
                 judge_model=tier.judge_model,
                 judge_config_id=tier.judge_config_id,
                 judge_temperature=tier.judge_temperature,
+                judge_sent_settings=tier.judge_sent_settings,
                 tier=decided,
                 calibration=calibration,
                 separation=separation,

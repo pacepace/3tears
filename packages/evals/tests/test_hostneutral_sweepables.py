@@ -121,6 +121,19 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # the set and the cell model hold. It is the last row, so it is also the one the current versions are checked
     # against.
     ((52, 12), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
+    # 53/13: what the judge and the simulated user were actually SENT joins the apparatus beside what they were asked,
+    # so cells pool only when both match; the set moved, so the cell model moves with the bundle.
+    (
+        (53, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 

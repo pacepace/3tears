@@ -45,6 +45,8 @@ from threetears.evals.analysis.contention import marked_latency_sentence, withhe
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     model_identity_disclosure,
+    request_settings_disclosure,
+    request_settings_readings,
     pooled_composite_basis,
     pooled_served_models,
     project_score_records,
@@ -977,7 +979,11 @@ def run_summary(
         ``model_identity_disclosure`` is the sentence to render beside the ``model`` the rows name when some of
         the candidate's calls or the judge's scores came back from a response that named no model, so the record
         holds only the id asked for (:func:`~threetears.evals.analysis.reporting.model_identity_disclosure`);
-        null when every response named its model.
+        null when every response named its model. ``request_settings_disclosure`` is the sentence to render beside
+        it when the judge's or the simulated user's calls were not shown to be sent as the run asked — sent other
+        settings, more than one way, without enforcement, or unreported
+        (:func:`~threetears.evals.analysis.reporting.request_settings_disclosure`); null otherwise. Never about the
+        candidate.
         ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
@@ -1072,6 +1078,8 @@ def run_summary(
         "latency_disclosure": marked_latency_sentence(len(withheld_latency(results, profile.measures)), len(results)),
         # Which model answered, where the responses did not say: the rows are keyed by the id each call asked for.
         "model_identity_disclosure": model_identity_disclosure(unconfirmed_model_identities([run], results)),
+        # How the judge and the simulated user were sent, where it is not shown to be as the run asked.
+        "request_settings_disclosure": request_settings_disclosure(request_settings_readings([run], results)),
         "rows": rows,
         "dimension_rows": dimension_rows,
     }
