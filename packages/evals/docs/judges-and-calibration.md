@@ -65,6 +65,19 @@ A scoring guide's levels must be the scale's own (`pass`/`fail`, or `1`–`5`). 
 of name to description and one `scale=` for all of them: `Judge(client=client, model="judge-model",
 rubric={"helpful": "..."}, scale="pass_fail")` names the dimension `answer.helpful`.
 
+**A dimension declares its judge.** `RubricDim.judge` says which judge scores it: `"builtin"`, the engine's own
+prompt for its scale, or `"configured"`, the scope's active `JudgeConfig` for the dimension (created with
+`create_judge_config` in `threetears.evals.run`, `rubric_dim_id` set to the dimension's name). On the quick path a
+`Judge` is the declaration: every dimension it builds, or is handed without one, is declared `"builtin"`, so the
+examples above state nothing more. On a host, where a template's rubric is registered apart from its judges (`create_template`, a seed corpus,
+`update_template` writing `rubric`), every judged dimension must carry it, and registration refuses one that does
+not, naming every such dimension at once. Registration and every launch also refuse `"configured"` with no active
+config, and `"builtin"` beside an active (or launch-selected) one, so no dimension is ever scored by the built-in
+prompt in its config's place, or the reverse. A template stored before the declaration existed reads, and its
+launch is refused until `update_template` declares its dimensions. The declaration is not part of the criterion
+(`fingerprint_criterion`), so labels keep pairing across it. The two reserved axes (transcript and outcome) are
+declared by the kind, not by a rubric, and keep taking a config when one is active.
+
 ## Step 3: guardrails are not capabilities
 
 A **capability** dimension (`axis="capability"`, the default) is something the candidate should do well, and it is
@@ -118,11 +131,18 @@ void for the question ([the void run](#the-2026-10-10-run-is-void)). On a judge 
 0 is requested but never applied: the run stamps `judge_temperature=0` (the request) while each score records
 `model_default` (what was sent).
 
-**Request settings.** The judge asks for `JUDGE_REQUEST_SETTINGS` (`threetears.evals.run`): an output cap of
-10,240 tokens, reasoning effort `high` and strict output. Your client builder applies it to the judge's client (the
-shipped `models_clients` does for its `judge` role), and a judged run records it as its `judge_asked_settings`. What a call was actually sent with is the client's to say, as the optional `sent_settings` on
-its completion: a client may send a model the closest setting it accepts (a budget in place of an effort word, a
-lower effort word, no enforcement where a router could not place the call). Each score records it
+**Request settings.** The judge asks for `JUDGE_REQUEST_SETTINGS` (`threetears.evals.run`): a reasoning budget of
+8,192 tokens (`reasoning_max_tokens`, `JUDGE_REASONING_HEADROOM_TOKENS`) under an output cap of 10,240, which is the
+budget plus the 2,048 the reply's schema needs (`JUDGE_ANSWER_BUDGET_TOKENS`: one reasoning paragraph and one score),
+and strict output. Reasoning is asked as a bound because a word bounds no tokens: a model that read `high` as licence
+to think on reasoned past the cap and was cut off with no answer written. A model that takes a budget (Anthropic's
+`thinking.budget_tokens`) is held to it; a model that takes effort words only is sent the word the budget's share of
+the cap reads as, `high` (0.80, `BUDGET_SHARES`), which is exactly what it was sent before, and there the cap stays
+the only hard stop. Reasoning stays on for every scale, pass/fail included: it is part of the instrument. Your client
+builder applies the settings to the judge's client (the shipped `models_clients` does for its `judge` role), and a
+judged run records them as its `judge_asked_settings`. What a call was actually sent with is the client's to say, as
+the optional `sent_settings` on its completion: a client may send a model the closest setting it accepts (an effort
+word in place of a budget, a lower effort word, no enforcement where a router could not place the call). Each score records it
 (`RubricScore.judge_sent_settings`; `None` when the client did not say, which is unverified, never refused), and
 that is part of the judge's identity too, the sixth component of `JudgeKey`: agreement, evidence tiers, judge
 profiles and drift are kept apart per sent settings, so a judge sent `high` and the same model sent a reasoning budget
@@ -132,7 +152,16 @@ sentence names what its judge was sent, or says `request settings unconfirmed`, 
 shown to be sent as asked says so in one sentence on its summary
 ([reading reports](reading-reports.md#how-the-judge-and-the-simulated-user-were-sent)).
 
-**The built-in prompt is a judge too.** A dimension with no `JudgeConfig` is judged with the engine's own
+**A reply cut off at the cap is excluded as `truncated`, never re-bought.** When the provider stops a judge reply at
+its output cap (or early, for a cause it does not name), the dimension is left unscored, the call is not retried,
+and the result records the cut as a fact beside its `judge_error` line: `EvalResult.judge_cut_short[dim]` holds the
+stop reason, the settings the call was sent with (whose `max_tokens` is the cap it ran into; `None` when the client
+did not say) and its token counts. The trial is excluded with cause `truncated` rather than `infra`
+(`trial_exclusion`), and the analysis bundle counts each arm's exclusions by cause with the caps the cut calls were
+sent ([reading reports](reading-reports.md#excluded-trials-by-cause)). A reply the provider filtered, or that came
+back as an error, is recorded the same way and stays a fault of the rig.
+
+**The built-in prompt is a judge too.** A dimension declared `"builtin"` is judged with the engine's own
 instructions: one for the transcript axis, one for the outcome axis, and one template a rubric dimension's name,
 description and scoring guide are filled into. That wording is part of the judge, as an operator's prompt is, so it
 has an identity. Each call records `builtin:<sha12>` in the result's `judge_config_ids`, where a configured call

@@ -209,11 +209,13 @@ from `api_keys=` or the provider's own environment variable the first time a cli
 `await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
 (`simulator={"reasoning_effort": "low", "provider": "openrouter"}`); `models_client` builds one client on its own.
 **The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records it asked for, as its
-`judge_asked_settings` (`max_tokens=10240`, `reasoning_effort="high"`, `strict_output=True`): a `judge` role given no
-`max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that effort word, which
-Anthropic, OpenAI and OpenRouter all take, and `strict_output` is the strict structured directive the judge already
-sends. Pass the judge's settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`) and the client asks
-for those instead, which the run's asked settings do not describe. The engine's other roles ask in effort words too:
+`judge_asked_settings` (`max_tokens=10240`, `reasoning_max_tokens=8192`, `strict_output=True`): a `judge` role given no
+`max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that reasoning budget,
+sent as a thinking budget to an Anthropic model that takes one and as the effort word its share of the cap reads as
+(`high`) to every model that takes words only, and `strict_output` is the strict structured directive the judge
+already sends. Pass the judge's settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`) and the
+client asks for those instead, which the run's asked settings do not describe. The engine's other roles ask in effort
+words:
 the simulated user `low` (`SIMULATOR_REQUEST_SETTINGS`, strict, since every simulator call sends a strict reply
 schema) and the analysis generator `medium` (`analysis_gen_request_settings_for`, whose output cap is the answer
 budget plus a reasoning headroom of at least 1024 tokens, 8192 unless you set one; the headroom sizes the cap and is
@@ -265,12 +267,14 @@ provider is one 3tears-models has no factory for, or when you call Claude throug
 refuses the Claude CLI route, whose completions read as finished whatever stopped them, until models carries the
 CLI's real stop reason. Either way, run `check_completion_conformance` on your client's completions in your suite.
 
-**A client builder of your own sends the effort word.** None of the engine's request settings carries a token budget
-any more: `JUDGE_REQUEST_SETTINGS`, `SIMULATOR_REQUEST_SETTINGS` and `analysis_gen_request_settings_for`'s value each
-ask by `reasoning_effort` and hold `reasoning_max_tokens=None`. A builder that reads only `reasoning_max_tokens` sends
-no reasoning parameter at all, so its role reasons at the provider's default while the run records it asked for an
-effort. Build the request from every field: `wire_settings_for(settings, temperature)` (`threetears.evals.negotiation`)
-turns the engine's value into what `negotiate` sends, so nothing is hand-copied and nothing is dropped.
+**A client builder of your own sends every reasoning field.** The judge asks by a token budget
+(`JUDGE_REQUEST_SETTINGS.reasoning_max_tokens`, with `reasoning_effort=None`), so its reasoning is bounded where a
+model takes a budget; `SIMULATOR_REQUEST_SETTINGS` and `analysis_gen_request_settings_for`'s value ask by
+`reasoning_effort` and hold `reasoning_max_tokens=None`. A builder that reads only one of the two fields sends no
+reasoning parameter to the roles that ask by the other, so they reason at the provider's default while the run
+records what they asked for. Build the request from every field: `wire_settings_for(settings, temperature)`
+(`threetears.evals.negotiation`) turns the engine's value into what `negotiate` sends, so nothing is hand-copied and
+nothing is dropped.
 
 **A client of your own maps its provider's finish reason onto five words** (`StopReason`): `end_turn` for a
 completion that finished, `max_tokens` for one stopped at the output cap (OpenAI's `length`), `content_filter` for a
@@ -595,10 +599,10 @@ a live one), and the records of every other job: a launch (the runs it started),
 a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
 `CORE_DOC_TYPES` lists them.
 
-**The first public release is the baseline.** It writes core v15.0 (major `CORE_BASELINE_VERSION`, equal to
-`CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 0), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and
-cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is
-nothing older for it to read.
+**The first public release is the baseline.** Its major is core v15 (`CORE_BASELINE_VERSION`, equal to
+`CORE_SCHEMA_VERSION`), written at minor 1 (`CORE_SCHEMA_MINOR`; v15.0 documents, which `.25` wrote, read as they
+are), with regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and cassette v1 (`CASSETTE_SCHEMA_VERSION`), and it registers
+no upgrade steps (`CORE_UPGRADERS` is empty): there is nothing older for it to read.
 
 **A core version is a major and a minor, and your store needs no migration for either.** Every core document
 carries `schema_version`, the major, and `schema_minor`, the minor within it. Every change to a core shape is one
@@ -651,10 +655,11 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.0), regenerable documents (v10), cassettes
-(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 53), the cell model
+**Each version space moves on its own.** Core documents (v15.1), regenerable documents (v10), cassettes
+(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 54), the cell model
 (`CELL_MODEL_VERSION`, 13), the report (`REPORT_VERSION`, 10) and the identity keys (`IDENTITY_VERSION`, 24) carry
-separate versions, each at its first public release's value.
+separate versions, each at its first public release's value but the core's minor (v15.1, a judged dimension's judge
+declaration and a judge reply's cut-short record) and the bundle shape (54, exclusions by cause).
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
 `<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
@@ -1280,6 +1285,15 @@ on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSe
   event claiming `armed=True` or `caused_by="rig"`.
 
 ## What the judge reads, and conversations
+
+**Every judged dimension your templates carry declares its judge.** `RubricDim.judge` is `"builtin"` (the engine's
+own prompt) or `"configured"` (the scope's active `JudgeConfig` for that dimension), in your seed corpus and in
+anything you author. `create_template`, `seed_eval_definitions` and an `update_template` that writes `rubric`
+refuse a dimension that declares neither, naming every one at once; a `"configured"` one needs its config active
+(the seed counts a config the same corpus seeds), and a `"builtin"` one must have none. Every launch checks the same
+before any spend, so a template stored before the declaration existed is refused until `update_template` declares
+its dimensions, and a configured dimension whose config was archived since is refused rather than scored by the
+engine's prompt. A quick-path `Judge` declares its own dimensions, so `run_eval` callers state nothing.
 
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
