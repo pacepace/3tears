@@ -65,10 +65,10 @@ JUDGE_IDENTITIES: dict[str, str] = {
 }
 
 #: The final release the table below was taken at: the ``since`` of ``MIGRATIONS.toml``'s ``unreleased`` section.
-RELEASED_AT = "v0.67.0"
+RELEASED_AT = "v0.68.0"
 
 #: Every judge fingerprint as :data:`RELEASED_AT` shipped it, the baseline a wording change is announced against.
-#: v0.67.0 shipped no 3tears-evals, so it shipped no judge and no fingerprint can have moved since it. A copy for
+#: v0.68.0 shipped no 3tears-evals, so it shipped no judge and no fingerprint can have moved since it. A copy for
 #: the reader: what a wording change is measured from is read from the release's tree
 #: (:func:`released_judge_identities`), and this table is held to it.
 RELEASED_JUDGE_IDENTITIES: dict[str, str] = {}
@@ -235,7 +235,7 @@ def test_the_released_pins_are_the_unreleased_sections_baseline() -> None:
 def test_the_released_table_is_the_one_the_release_shipped() -> None:
     """Computed from the tree at :data:`RELEASED_AT`, so editing ``RELEASED_AT`` alone cannot satisfy the rule.
 
-    RELEASED_AT is v0.67.0 today, which shipped no 3tears-evals: there is no released judge to read, and the test
+    RELEASED_AT is v0.68.0 today, which shipped no 3tears-evals: there is no released judge to read, and the test
     passes on the typed table, which must then be empty. The first final release that ships the package carries
     this file, and from then on the typed table must equal what its tree pins.
     """

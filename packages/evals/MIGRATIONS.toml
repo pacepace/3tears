@@ -7,7 +7,7 @@
 #     uv run python packages/evals/scripts/release_notes.py v<version>
 #
 # Every public name has a stability tier, recorded in api/surface.json and declared in one place, HOST_CONTRACT and
-# STABLE in scripts/public_surface.py. The promise starts at 0.68.0, the first tagged release:
+# STABLE in scripts/public_surface.py. The promise starts at 0.69.0, the first tagged release:
 #   host-contract  a name a host writes against. It moves only with a record here AND a deprecation cycle: the
 #                  release that moves it exports the new name beside the old one, which keeps working for that minor
 #                  release and is named in that section's `notes`; the next minor release drops the old name, and its
@@ -25,10 +25,11 @@
 # are history and are not checked against today's surface.
 #
 # Only final releases (tags v<x>.<y>.<z>) count. A pre-release tag, with any suffix, is never followed and never
-# measured from, and has no section here. 0.68.0 is the package's first release: v0.67.0, the release before it,
-# had no 3tears-evals, so nothing can have left a root before 0.68.0 and its section records no names. (The
-# pre-release tags up to v0.66.0-evaladopt.23 were cut while evals was planned for 0.66.0, and those up to
-# v0.67.0-evaladopt.25 while it was planned for 0.67.0; each of those releases shipped without it.)
+# measured from, and has no section here. 0.69.0 is the package's first release: v0.68.0, the release before it,
+# had no 3tears-evals, so nothing can have left a root before 0.69.0 and its section records no names. (The
+# pre-release tags up to v0.66.0-evaladopt.23 were cut while evals was planned for 0.66.0, those up to
+# v0.67.0-evaladopt.25 while it was planned for 0.67.0, and the v0.68.0-evaladopt.N tags while it was planned for
+# 0.68.0; each of those releases shipped without it.)
 #
 # Before tagging a release, rename the first section from "unreleased" to its version; after the tag, the next
 # release's work goes in a new "unreleased" section since that tag. tests/test_api_surface.py fails once the tree
@@ -98,7 +99,7 @@ notes = [
     "Two examples are renamed for what they now compare, since the examples call one model: `compare_two_models.py` is `compare_two_efforts.py` (`low` against `medium` reasoning effort on one model) and `prompt_x_model.py` is `prompt_x_effort.py` (the prompt crossed with the effort).",
     "`llm_analysis.py`'s first draft is canned (`llm_analysis_first_draft.json`), so the refusal it shows does not depend on a model's draft, and the model writes the repair; replayed, the writer reads the bundle the recording was made from (`examples/recordings/llm_analysis.bundle.json`), since a fresh campaign's bundle names fresh run ids and times.",
     "`AnalysisContextBundle` (`threetears.evals.analysis`) is `host-contract`: a host reloads a frozen bundle with `AnalysisContextBundle.from_json` to write over it again, as `llm_analysis.py` does.",
-    "Until 0.68.0 is on PyPI, 3tears-evals installed from a tag is the one package outside a host's family pin: its base install depends on no other 3tears package, so it installs beside a family pinned at another version without a conflict.",
+    "Until 0.69.0 is on PyPI, 3tears-evals installed from a tag is the one package outside a host's family pin: its base install depends on no other 3tears package, so it installs beside a family pinned at another version without a conflict.",
     "`threetears.evals.ROOT_EXTRAS` (host-contract) maps each public root that fails to import without an extra to that extra (`transports.fastmcp` to `fastmcp`), so a host's import gate imports `PUBLIC_ROOTS` minus the roots whose extra it does not install instead of keeping its own list; `PUBLIC_ROOTS` is host-contract too.",
     "Since `v0.68.0-evaladopt.26`, there is no `threetears.evals.vega` root and no `[vega]` extra (`vl-convert-python`): the Vega-Lite renderer, the chart renderer seam (`ChartRenderer`, `assert_renderer_conforms`, `renderer_disagreements`, `ChartRefused`), the `report_charts` operation (`ReportCharts`, `DrawnChart`, `ChartRefusal`, `ChartRefusalCause`) and the host's chart style (`ChartPalette`, `ChartFont`, `CHART_FONT_CHARACTERS`, `require_resolved_colour`, `StyleError`, `assert_no_style_text`, and `StyleProfile.chart_palette` and `chart_font`) are removed. A report draws its own two charts as inline SVG, and a host that wants its own pictures reads the report's `bundle.json`.",
     "Since `v0.67.0-evaladopt.25`, the v15 baseline replaces the pre-release v14 baseline `.21` to `.24` wrote, so a host that ran one of them deletes its eval documents again before deploying `.25` (the operator wipe; Discodon: `TRUNCATE evals, eval_runtime;`).",
