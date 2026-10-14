@@ -34,7 +34,7 @@ from threetears.evals.kernel.declaration import Question
 from threetears.evals.run import set_campaign_archived
 from packages.evals.tests.factories import make_campaign, memory_storage
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_QUESTION_ID, toyhost_campaign
-from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
@@ -135,7 +135,10 @@ class TestVerdictOrder:
 
     def test_a_question_lists_the_bars_on_its_axes_and_the_axes_no_bar_answers(self) -> None:
         question = Question(
-            id=TOYHOST_QUESTION_ID, text="is it accurate, and what does it cost?", merit_axes=["cost", "quality"]
+            id=TOYHOST_QUESTION_ID,
+            text="is it accurate, and what does it cost?",
+            merit_axes=["cost", "quality"],
+            asked_at=TOYHOST_INSTANT,  # as the corpus question was: before its runs, so it scopes the order
         )
         order = _bundle(merit_priority=["quality"], questions=[question]).verdict_order
 

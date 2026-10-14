@@ -141,8 +141,15 @@ def _bundle(
     if questions:
         declaration = declaration.model_copy(
             update={
+                # Asked before the runs, as a campaign that confirms anything asks: a question declared after its
+                # first run builds no family (``preregistered_questions``).
                 "questions": [
-                    Question(id="q-better", text="is the contrast better?", merit_axes=merit_axes or ["quality"])
+                    Question(
+                        id="q-better",
+                        text="is the contrast better?",
+                        merit_axes=merit_axes or ["quality"],
+                        asked_at=min(run.created_at for run in runs),
+                    )
                 ]
             }
         )

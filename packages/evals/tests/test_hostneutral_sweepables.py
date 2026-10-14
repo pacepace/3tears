@@ -134,6 +134,20 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 54/13: the bundle counts each arm's exclusions by cause (a cut-off judge reply as `truncated`) and flags a
+    # differential one, and a question asked after the first run no longer confirms anything. A shape-only bump: the
+    # apparatus set and the cell model hold.
+    (
+        (54, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 

@@ -130,6 +130,8 @@ from threetears.evals.analysis.bundle.cell_reads import (
     _cell_strata,
     _judged_measures,
     _results_by_cell,
+    _arm_exclusions,
+    _differential_exclusions,
 )
 from threetears.evals.analysis.bundle.bars import _bar_adjudications, _frontier_bar, _verdict_order
 from threetears.evals.analysis.bundle.cell_notes import (
@@ -328,6 +330,9 @@ def assemble_context_bundle(
 
     # Deterministic input order → deterministic lens output → stable fingerprint.
     runs = sorted(resolved, key=lambda r: (r.created_at, r.id))
+    # When the campaign's evidence began: its earliest member run, archived ones included (an archived run's results
+    # existed all the same). A question asked after it confirms nothing (`preregistered_questions`).
+    first_run_at = min((run.created_at for run in loaded.values()), default=None)
     # Before any lens reads a descriptor: each host measure is read as its runs were launched to read it, not as
     # whoever reads the campaign now declares it, so every lens below reads one set of declarations.
     profile, launch_declarations = _as_launched(runs, profile)
@@ -635,7 +640,7 @@ def assemble_context_bundle(
         frontier_bar=frontier_bar,
         profile=profile,
     )
-    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design)
+    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design, first_run_at=first_run_at)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
@@ -703,8 +708,14 @@ def assemble_context_bundle(
         contended={
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
+        first_run_at=first_run_at,
     )
-    bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
+    bundle.reading_scope = _reading_scope(
+        campaign.declared_design, bundle.measure_catalog, bundle.judged_measures, first_run_at=first_run_at
+    )
+    # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
+    bundle.exclusions = _arm_exclusions(results_by_cell)
+    bundle.differential_exclusions = _differential_exclusions(bundle.exclusions)
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.

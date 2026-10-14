@@ -244,6 +244,7 @@ from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, Arm
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
+    ArmExclusions,
     ArmMechanismReading,
     ArmServedModel,
     CellCoordinate,
@@ -256,6 +257,7 @@ from threetears.evals.analysis.bundle.schema import (
     DeclaredCrossing,
     DeclaredLevelCoverage,
     DesignArm,
+    DifferentialExclusion,
     FactorPairCell,
     FactorPairPivot,
     FactorPairScan,
@@ -470,6 +472,7 @@ __all__ = [
     "AnalysisStore",
     "ArmLevel",
     "ArmMeasurement",
+    "ArmExclusions",
     "ArmMechanismReading",
     "ArmRow",
     "ArmServedModel",
@@ -501,6 +504,7 @@ __all__ = [
     "DeclaredCrossing",
     "DeclaredLevelCoverage",
     "DesignArm",
+    "DifferentialExclusion",
     "DimensionAgreement",
     "DimensionReading",
     "FactorPairCell",

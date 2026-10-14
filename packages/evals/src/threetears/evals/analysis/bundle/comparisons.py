@@ -41,6 +41,7 @@ from threetears.evals.kernel.declaration import (
     CampaignDesign,
     axis_in_question_scope,
     exploratory_reading,
+    preregistered_questions,
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
@@ -568,6 +569,7 @@ def _multiple_comparisons(
     profile: HostProfile,
     run_margins: Mapping[str, float] | None = None,
     contended: Collection[_CellKey] = frozenset(),
+    first_run_at: str | None,
 ) -> tuple[MultipleComparisons, GuardrailReadings]:
     """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
 
@@ -581,7 +583,9 @@ def _multiple_comparisons(
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
     Args:
-        declared: The campaign's declaration, for its live questions.
+        declared: The campaign's declaration, for its live questions asked before its first run
+            (:func:`~threetears.evals.kernel.declaration.preregistered_questions`): a question asked after it builds
+            no family of its own, and the campaign is read as if it had asked nothing.
         realized: The derived design, for the control arm.
         results_by_cell: Each cell's results.
         records: The assembly's score projection rows, where judged scores live.
@@ -594,6 +598,7 @@ def _multiple_comparisons(
             read as that measure's margin, since its descriptor declares none.
         contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
             reason a comparison or a guardrail on elapsed time could not be read, where it could not.
+        first_run_at: The earliest member run's ``created_at``, which a question must predate to scope a family.
 
     Returns:
         One family per live question, in declaration order; one campaign-wide family over every reading when
@@ -607,9 +612,9 @@ def _multiple_comparisons(
             [],
             withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
         )
-    questions = declared.live_questions() if declared is not None else []
-    # A campaign that asked nothing is not thereby licensed to report chance differences: its family is every
-    # comparison it holds, on every reading, corrected as one.
+    questions = preregistered_questions(declared, first_run_at) if declared is not None else []
+    # A campaign that asked nothing (or only once its results existed) is not thereby licensed to report chance
+    # differences: its family is every comparison it holds, on every reading, corrected as one.
     scopes: list[tuple[str | None, list[MeritAxis]]] = (
         [(question.id, list(question.merit_axes)) for question in questions] if questions else [(None, [])]
     )
@@ -692,18 +697,34 @@ def _multiple_comparisons(
 
 
 def _reading_scope(
-    declared: CampaignDesign | None, catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
+    declared: CampaignDesign | None,
+    catalog: dict[str, MetricDescriptor],
+    judged_measures: list[JudgedMeasure],
+    *,
+    first_run_at: str | None,
 ) -> ReadingScope:
-    """Label the readings no live question asks about exploratory — or, with no question, say so once.
+    """Label the readings no question asked before the first run asks about exploratory — or, with none, say so once.
 
-    The same rule the families are scoped by (:func:`~threetears.evals.kernel.declaration.exploratory_reading`),
-    so a reading is exploratory exactly when no question's family could test it.
+    The same rule the families are scoped by (:func:`~threetears.evals.kernel.declaration.exploratory_reading`, over
+    :func:`~threetears.evals.kernel.declaration.preregistered_questions`), so a reading is exploratory exactly when no
+    question's family could test it, and a question declared after the first run is named as post hoc.
     """
-    questions = declared.live_questions() if declared is not None else []
+    questions = preregistered_questions(declared, first_run_at) if declared is not None else []
+    asked_before = {question.id for question in questions}
+    post_hoc = (
+        [question.id for question in declared.live_questions() if question.id not in asked_before]
+        if declared is not None
+        else []
+    )
     if not questions:
-        return ReadingScope(questions_declared=False, disclosure=exploratory_disclosure(declared))
+        return ReadingScope(
+            questions_declared=False,
+            post_hoc_questions=post_hoc,
+            disclosure=exploratory_disclosure(declared, first_run_at),
+        )
     return ReadingScope(
         questions_declared=True,
+        post_hoc_questions=post_hoc,
         exploratory_measures=sorted(
             name
             for name, descriptor in catalog.items()

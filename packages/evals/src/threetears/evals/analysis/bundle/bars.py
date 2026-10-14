@@ -30,6 +30,7 @@ from threetears.evals.kernel.declaration import (
     BarName,
     CampaignDesign,
     UnreadableBarName,
+    preregistered_questions,
     resolve_bar_name,
 )
 from threetears.evals.kernel.host.profile import HostProfile
@@ -372,7 +373,9 @@ def _bar_adjudications(
     return adjudications
 
 
-def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign | None) -> VerdictOrder:
+def _verdict_order(
+    adjudications: list[BarAdjudication], design: CampaignDesign | None, *, first_run_at: str | None
+) -> VerdictOrder:
     """Order the adjudicated bars by the campaign's declared merit priority, and scope them per question.
 
     Only an ``adjudicated`` bar ranks: a bar with no verdict gives nothing to read in any order. A bar
@@ -382,6 +385,8 @@ def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign 
     Args:
         adjudications: The bundle's bar adjudications, in their own order.
         design: The campaign's declaration, or None.
+        first_run_at: The earliest member run's ``created_at``: only a question asked by then is scoped
+            (:func:`~threetears.evals.kernel.declaration.preregistered_questions`).
 
     Returns:
         The order. With no declaration or an empty priority, every adjudicated bar is unranked and no
@@ -399,7 +404,7 @@ def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign 
         if bar.state == "adjudicated" and (bar.merit_axis is None or bar.merit_axis not in ranked)
     ]
     questions = []
-    for question in design.live_questions() if design is not None else []:
+    for question in preregistered_questions(design, first_run_at) if design is not None else []:
         if not question.merit_axes:
             continue
         # Each axis once: the declaration refuses a repeat, so the reader takes the list as it is.
