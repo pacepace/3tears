@@ -1,11 +1,13 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
-**One page, verdict first.** A report is an ordered list of blocks in six screens: the first screen (the title line,
-the basis line, the verdict line and the scoreboard), what it means (the memo's findings and recommendations, then
-the contrasts against the control), the cases, the trials to drill into, what was not tested, and the methods. Every
-count, rate, interval and cost in it is code's, computed from the evidence bundle the report carries
-(:attr:`Report.bundle`); a memo contributes only its findings and recommendations, each pinned to the evidence it
-rests on.
+**One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
+question in plain words —, the arms line, the verdict line, the scoreboard and the caveats under it, in normal
+weight), the decision rule clause by clause where one is declared, what it means (the memo's findings, each a table
+code built and one sentence, then the contrasts against the control), the cases, the trials (one row each, every
+record folded), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
+of every term of art the page linked. Every count, rate, interval and cost in it is code's, computed from the
+evidence bundle the report carries (:attr:`Report.bundle`). Every string it prints is held to
+:mod:`~threetears.evals.analysis.style`.
 
 **Who wrote what is part of the shape.** A ``text`` block holds what the analysis's author wrote, and nothing else;
 what code says — the verdict, the basis, a table's caption, a reason something is not drawn — is a ``disclosure``.
@@ -33,6 +35,7 @@ from pydantic import Field, model_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialCheck, TrialJudgement, TrialState
 from threetears.evals.analysis.quantities import render_cell, with_unit
+from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
@@ -42,23 +45,28 @@ CellValue = str | int | float | bool | None
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
 
-#: Where a block sits, in reading order. ``header`` is the first screen's title, basis and verdict lines, and
-#: ``scoreboard`` the rest of the first screen; ``memo`` and ``contrasts`` are what it means; ``cases`` and
-#: ``trials`` the cases and their drill-down; ``not_tested`` what the campaign could not speak to; ``methods`` how
-#: everything was measured.
-ReportSection = Literal["header", "scoreboard", "memo", "contrasts", "cases", "trials", "not_tested", "methods"]
+#: Where a block sits, in reading order. ``header`` is the first screen's title, arms and verdict lines, and
+#: ``scoreboard`` the rest of the first screen; ``decision`` is a declared decision rule read clause by clause;
+#: ``memo`` and ``contrasts`` are what it means; ``cases`` and ``trials`` the cases and their drill-down;
+#: ``not_tested`` what the campaign could not speak to; ``methods`` how everything was measured; ``glossary`` every
+#: term of art the page used.
+ReportSection = Literal[
+    "header", "scoreboard", "decision", "memo", "contrasts", "cases", "trials", "not_tested", "methods", "glossary"
+]
 
-#: Each section's heading, in reading order — the order every serializer lays the sections out in. The first screen
-#: (``header`` and ``scoreboard``) carries no heading: it is the page's own head.
+#: Each section's heading, in reading order — the order every serializer lays the sections out in, each three words
+#: or fewer. The first screen (``header`` and ``scoreboard``) carries no heading: it is the page's own head.
 SECTION_TITLES: dict[str, str] = {
     "header": "",
     "scoreboard": "Scoreboard",
+    "decision": "Decision",
     "memo": "What it means",
-    "contrasts": "Contrasts against the control",
+    "contrasts": "Contrasts",
     "cases": "Cases",
     "trials": "Trials",
     "not_tested": "Not tested",
-    "methods": "Methods and disclosures",
+    "methods": "Methods",
+    "glossary": "Glossary",
 }
 
 #: The sections the first screen is made of.
@@ -77,7 +85,8 @@ TextRole = Literal[
     "next_step_why",
 ]
 
-#: Who a disclosure speaks for. ``basis``: whether a question was declared before the run (line 2). ``verdict``: the
+#: Who a disclosure speaks for. ``arms``: the first screen's second line, each arm named in full once, the control
+#: marked. ``caveat``: a line under the scoreboard qualifying the result, in normal weight. ``basis``: whether a question was declared before the run (line 2). ``verdict``: the
 #: verdict line. ``design``, ``charts`` and ``cost``: the lines under the scoreboard. ``memo``: who wrote the memo,
 #: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
@@ -87,6 +96,8 @@ TextRole = Literal[
 #: speak to. ``calibration``: a judge not yet calibrated against people's labels — a state with its next step, never a
 #: failure. ``generation``: how the report itself was made.
 DisclosureSource = Literal[
+    "arms",
+    "caveat",
     "basis",
     "verdict",
     "design",
@@ -255,6 +266,13 @@ class _Block(EvalDocumentModel):
     anchor: str | None = Field(
         default=None, description="The id a link to this block names (`F1`, `case-3`, `T7`); None when none does."
     )
+    fold: str | None = Field(
+        default=None,
+        description=(
+            "The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share "
+            "it. None for a block shown open."
+        ),
+    )
 
     @property
     def finding_number(self) -> int | None:
@@ -298,6 +316,20 @@ class TableColumn(EvalDocumentModel):
 
     key: str = Field(min_length=1, description="The key in each row.")
     header: str = Field(min_length=1, description="The column's header, carrying its unit where it has one.")
+    term: str | None = Field(
+        default=None, description="The glossary term the header links to, where it is a term of art; None for none."
+    )
+
+    @model_validator(mode="after")
+    def _the_term_is_defined(self) -> Self:
+        """Refuse a link to a term the glossary does not define.
+
+        Raises:
+            ValueError: ``term`` is not a :data:`~threetears.evals.analysis.style.GLOSSARY` key.
+        """
+        if self.term is not None and self.term not in GLOSSARY:
+            raise ValueError(f"column {self.key!r} links the term {self.term!r}, which the glossary does not define")
+        return self
 
 
 class TableCell(EvalDocumentModel):
@@ -504,11 +536,16 @@ class TrialBlock(_Block):
 
     kind: Literal["trial"] = Field(default="trial", description="Which kind of block this is.")
     trial_id: str = Field(min_length=1, description="The trial, as the report numbers it.")
-    case_label: str = Field(min_length=1, description="The case, as a reader names it.")
+    case_label: str = Field(
+        min_length=1, description="The case, as a reader names it: its label, or `case N` where the label is a dump."
+    )
     arm: str = Field(min_length=1, description="The arm, as the report names it.")
     repeat: int = Field(ge=1, description="Which repeat of the case.")
     state: TrialState = Field(description="passed, failed or lost.")
     cause_words: str | None = Field(default=None, description="Why it failed or was lost, in words.")
+    why: str | None = Field(
+        default=None, description="Which check or judged dimension failed it, or why it was lost, on one line."
+    )
     first_input: str = Field(default="", description="What the case asked.")
     excerpt: str = Field(default="", description="The tail of what the judge was handed.")
     failed_checks: list[TrialCheck] = Field(default_factory=list, description="Each check it failed.")
@@ -524,6 +561,20 @@ class DisclosureBlock(_Block):
     kind: Literal["disclosure"] = Field(default="disclosure", description="Which kind of block this is.")
     source: DisclosureSource = Field(description="What the disclosure speaks for.")
     text: str = Field(min_length=1, description="The disclosure, one sentence or a few.")
+    term: str | None = Field(
+        default=None, description="The glossary term the line links to, where it uses one; None for none."
+    )
+
+    @model_validator(mode="after")
+    def _the_term_is_defined(self) -> Self:
+        """Refuse a link to a term the glossary does not define.
+
+        Raises:
+            ValueError: ``term`` is not a :data:`~threetears.evals.analysis.style.GLOSSARY` key.
+        """
+        if self.term is not None and self.term not in GLOSSARY:
+            raise ValueError(f"a disclosure links the term {self.term!r}, which the glossary does not define")
+        return self
 
 
 #: A report block, discriminated by ``kind``.
@@ -558,7 +609,7 @@ class Report(EvalDocumentModel):
     """A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states."""
 
     basis: ReportBasis = Field(description="`analysis` over a generated memo, `code_only` over the evidence alone.")
-    title: str = Field(min_length=1, description="The title line: the campaign, its arms, the date and the basis.")
+    title: str = Field(min_length=1, description="The title line: the question the campaign asks, in plain words.")
     finding_count: int = Field(ge=0, description="How many findings the memo holds.")
     source: ReportSource = Field(description="What this is a report of.")
     blocks: list[ReportBlock] = Field(description="The report, in reading order.")
@@ -609,6 +660,23 @@ class Report(EvalDocumentModel):
         if authored := [index for index, block in enumerate(self.blocks) if isinstance(block, TextBlock)]:
             raise ValueError(f"a code-only report holds no author's words, and blocks {authored} are text blocks")
         return self
+
+    @property
+    def terms(self) -> list[str]:
+        """Every glossary term the page links, in the order first linked — what its glossary defines."""
+        linked: list[str] = []
+        for block in self.blocks:
+            found = (
+                [column.term for column in block.columns]
+                if isinstance(block, TableBlock)
+                else [block.term]
+                if isinstance(block, DisclosureBlock)
+                else []
+            )
+            for term in found:
+                if term is not None and term not in linked:
+                    linked.append(term)
+        return linked
 
     def write(self, out_dir: Path | str) -> dict[ReportFile, Path]:
         """Write the report as one self-contained page, its Markdown, and the bundle it was computed from.

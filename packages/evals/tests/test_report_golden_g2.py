@@ -55,21 +55,28 @@ def _first_screen_md(markdown: str) -> str:
 def test_the_first_screen_says_the_judge_was_truncated_and_at_which_cap(g2: Report, door: str) -> None:
     first = "\n".join(_header_lines(report_html(g2))) if door == "html" else _first_screen_md(report_markdown(g2))
     assert "truncated" in first
-    assert "max_tokens=10240" in first
-    assert "NO VERDICT. The test setup failed, not the models" in first
+    assert "10240 tokens" in first and "max_tokens=" not in first
+    assert "No verdict: the test setup failed, not the models." in first
     assert "v4-flash lost 10 of 12 trials, most because the judge's reply was truncated" in first
 
 
-def test_html_line_2_is_the_exploratory_banner(g2: Report) -> None:
+#: The first screen's opening lines, golden: the question as the title, then each arm named once with the control
+#: marked, and the date.
+TITLE = "Kairo queue discipline: does v4-flash do better than v4.1-flash?"
+ARMS = "v4.1-flash (control) vs v4-flash · 14 Oct 2026"
+SCOREBOARD_HEADER = "| Arm | Ran | Lost | Usable | Passed | Failed by check | Failed by judge | Cost per reply |"
+
+
+def test_html_opens_on_the_question_then_the_arms(g2: Report) -> None:
     lines = _header_lines(report_html(g2))
-    assert lines[0].startswith("Kairo queue discipline · ")
-    assert lines[1].startswith("EXPLORATORY — no question was declared before the run")
+    assert lines[:2] == [TITLE, ARMS]
+    assert lines[2].startswith("No verdict: the test setup failed")
 
 
-def test_markdown_line_2_is_the_exploratory_banner(g2: Report) -> None:
+def test_markdown_opens_on_the_question_then_the_arms_then_the_verdict(g2: Report) -> None:
     lines = report_markdown(g2).splitlines()
-    assert lines[0].startswith("# Kairo queue discipline · ")
-    assert lines[1].startswith("EXPLORATORY — no question was declared before the run")
+    assert lines[:4] == [f"# {TITLE}", ARMS, "", lines[3]] and lines[3].startswith("**No verdict: ")
+    assert lines[5:8] == ["**Scoreboard**", "", SCOREBOARD_HEADER]
 
 
 @pytest.mark.parametrize("door", ["html", "markdown"])
@@ -85,8 +92,12 @@ def test_exactly_one_chart_is_drawn_and_it_is_the_outcome_bar(g2: Report) -> Non
     assert page.count("<svg") == 1
     assert page.count('data-chart="outcome_bar"') == 1
     markdown = report_markdown(g2)
-    assert markdown.count("**Chart: ") == 1
-    assert "No rate is estimated or charted: no arm has 5 usable cases." in markdown
+    assert markdown.count("**Outcomes**") == 1
+    # The case floor is a caveat under the scoreboard, in normal weight, after the result.
+    first = _first_screen_md(markdown)
+    caveat = "Too few cases to estimate a rate. Usable cases: v4.1-flash 3, v4-flash 1; a rate needs 5."
+    assert caveat in first.splitlines() and f"**{caveat}" not in first
+    assert first.index(SCOREBOARD_HEADER) < first.index(caveat)
 
 
 @pytest.mark.parametrize("door", ["html", "markdown"])
@@ -95,27 +106,19 @@ def test_no_samples_stub_is_printed(g2: Report, door: str) -> None:
     assert "samples" not in page
 
 
-@pytest.mark.parametrize("door", ["html", "markdown"])
-def test_a_usable_count_is_never_printed_without_saying_usable(g2: Report, door: str) -> None:
-    page = report_html(g2) if door == "html" else report_markdown(g2)
-    text = html.unescape(re.sub(r"<[^>]+>", "\n", page))
-    for sentence in re.split(r"[.\n|]", text):
-        if re.search(r"\b8 of 12\b", sentence):
-            assert "usable" in sentence, sentence
-
-
-def test_the_scoreboard_counts_every_trial_and_reads_as_a_count(g2: Report) -> None:
+def test_the_scoreboard_is_a_bare_table_of_counts(g2: Report) -> None:
     markdown = report_markdown(g2)
-    assert "8 of 12 trials usable (4 lost to the test setup)" in markdown
-    assert "2 of 12 trials usable (10 lost to the test setup)" in markdown
-    assert "10 (judge truncated 7, test setup fault 3)" in markdown
+    assert "| ▸ v4.1-flash | 12 | 4 | 8 | 8 | 0 | 0 |" in markdown
+    assert "| v4-flash | 12 | 10 | 2 | 2 | 0 | 0 |" in markdown
+    assert "lost: judge truncated" in markdown and "lost: setup fault" in markdown, "the causes, in the bar"
 
 
 @pytest.mark.parametrize("door", ["html", "markdown"])
-def test_the_contrasts_state_no_difference_on_the_one_usable_case(g2: Report, door: str) -> None:
-    # The challenger kept 2 usable trials, both of one case: the contrast is read over what the arms kept.
+def test_the_contrasts_collapse_to_one_line_under_the_case_floor(g2: Report, door: str) -> None:
+    # The challenger kept 2 usable trials, both of one case: no contrast can resolve, and none is a row.
     page = report_html(g2) if door == "html" else report_markdown(g2)
-    assert "not tested (n=1)" in page
+    assert "No contrast can resolve: a side has 1 usable case, and a difference needs 5." in page
+    assert 'data-table="comparisons"' not in page and "| Reading | Arm | Change |" not in page
 
 
 def test_both_doors_say_max_tokens(g2: Report) -> None:
@@ -139,5 +142,5 @@ def test_an_unlabelled_judge_is_said_apart_from_the_losses_and_in_no_alarm_colou
     (said,) = _calibration(g2)
     assert said.section not in FIRST_SCREEN | {"scoreboard"}, "never beside what the test setup lost"
     page = report_html(g2)
-    assert f'<div class="disclosure" data-source="calibration">{said.text}</div>' in page
+    assert f'<p class="disclosure" data-source="calibration">{html.escape(said.text, quote=True)}' in page
     assert "Rate about" in report_markdown(g2)

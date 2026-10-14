@@ -94,7 +94,7 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
     """
     pairs = [_PAIR.match(part.strip()) for part in display.split(", ")]
     if len(pairs) > 1 and all(pairs):
-        label = ", ".join(f"{match['axis']} {match['level']}" for match in pairs if match)
+        label = ", ".join(f"{humanize('dimension', match['axis'])} {match['level']}" for match in pairs if match)
         return ArmName(label=label, control=control)
     level = pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display
     if labelled := _LABELLED.match(level):
@@ -152,6 +152,7 @@ _WORD = re.compile(r"(?<![\w(\"'=./-])[A-Za-z][a-z']*(?:-[a-z]+)*(?![\w(\"'=/])"
 _NUMERAL = re.compile(r"(?<![\w.$/-])\$?\d[\d,]*(?:\.\d+)?%?(?![\w-])")
 _KEY_VALUE = re.compile(r"\b[a-z_][a-z0-9_]*=[^\s,;)}=]+")
 _FACT_LINE = re.compile(r"^[A-Z][a-z ]+: .* · [A-Z][a-z ]+: ")
+_CODE_SPAN = re.compile(r"`[^`]*`")
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,8 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     """
     found: list[StyleViolation] = []
     lowered = text.casefold()
+    # A code span is code a reader copies, not prose: it is held to the banned phrases only.
+    text = _CODE_SPAN.sub("code", text)
     found += [StyleViolation("banned", text, phrase) for phrase in BANNED_PHRASES if phrase in lowered]
     for line in text.splitlines():
         if line.count(" — ") >= 2:

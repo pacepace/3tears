@@ -178,11 +178,11 @@ async def _exploratory(tool: MountedTool) -> tuple[OpsFixture, str, AnalysisCont
 
 
 #: How line 2 of a report opens when no question was declared before the run.
-_EXPLORATORY_BASIS = "EXPLORATORY — no question was declared before the run"
+_EXPLORATORY_BASIS = "Exploratory: "
 
 
 def _exploratory_said(report: Report) -> list[DisclosureBlock]:
-    return [block for block in report.blocks if isinstance(block, DisclosureBlock) and "EXPLORATORY" in block.text]
+    return [block for block in report.blocks if isinstance(block, DisclosureBlock) and _EXPLORATORY_BASIS in block.text]
 
 
 async def test_the_bundle_calls_an_undeclared_campaign_exploratory_once(evals: MountedTool) -> None:
@@ -205,11 +205,11 @@ async def test_the_code_only_report_says_so_once_straight_after_its_opening_line
 
     assert not read.is_error, read.text
     page = read.structured["body"]
-    # At the top: line 2, the basis, straight under the one-line title, and nowhere else on the page.
+    # At the top: the verdict line, straight under the title and the arms, and nowhere else on the page.
     lines = page.splitlines()
-    assert lines[0].startswith("# ") and lines[0].endswith("no analysis written")
-    assert lines[1].startswith(_EXPLORATORY_BASIS)
-    assert page.count("EXPLORATORY") == 1
+    assert lines[0].startswith("# ") and lines[2] == ""
+    assert lines[3].startswith(f"**{_EXPLORATORY_BASIS}")
+    assert page.count(_EXPLORATORY_BASIS) == 1
 
 
 async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: MountedTool) -> None:
@@ -235,8 +235,8 @@ async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: 
 
     assert analysis.design_snapshot is None
     (said,) = _exploratory_said(report)
-    assert said.text.startswith(_EXPLORATORY_BASIS) and said.source == "basis"
-    assert report.blocks.index(said) == 0 and said.section == "header"
+    assert said.text.startswith(_EXPLORATORY_BASIS) and said.source == "verdict"
+    assert report.blocks.index(said) == 1 and said.section == "header"
 
 
 async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(evals: MountedTool) -> None:

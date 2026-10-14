@@ -134,10 +134,8 @@ def test_a_declared_level_name_labels_the_arm_on_every_surface_and_moves_no_key(
     assert sorted(arm["levels"][TOYHOST_AXIS] for arm in listed) == ["current width", "proposed width"]  # type: ignore[index]
     report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00Z")
     scoreboard = next(b for b in report.blocks if isinstance(b, TableBlock) and b.name == "scoreboard")
-    assert {str(row["arm"]).removesuffix(" (control)").strip() for row in scoreboard.values()} == {
-        f"{TOYHOST_AXIS}=current width",
-        f"{TOYHOST_AXIS}=proposed width",
-    }
+    # The page names an arm by its level's name alone, never as ``axis=level``.
+    assert {str(row["arm"]).removeprefix("▸ ") for row in scoreboard.values()} == {"current width", "proposed width"}
 
 
 def test_a_level_declared_twice_takes_its_first_name_and_an_undeclared_one_keeps_the_hosts() -> None:

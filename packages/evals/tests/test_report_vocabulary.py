@@ -71,7 +71,7 @@ async def test_an_analysis_report_s_first_two_screens_use_none_of_the_engine_s_n
     _, _, report = await toy_report()
     text = _screens_one_and_two(report)
     assert _banned(text) == []
-    assert "Written by" in text and "F1." in text
+    assert "Written by" not in text and "F1." in text
 
 
 async def test_no_page_calls_any_arm_a_winner(g2: Report) -> None:
@@ -111,13 +111,14 @@ def test_a_truncated_judge_names_the_cap_it_was_sent_or_says_it_was_unreported()
     )
     unsaid = sent.model_copy(update={"truncated_sent_caps": [], "truncated_cap_unreported": True})
     other_rig = sent.model_copy(update={"apparatus_class_id": "rig-2", "truncated_cap_unreported": True})
-    assert "max_tokens=10240" in loss_words("truncated", exclusions=[sent]).words
+    assert "(10240 tokens)" in loss_words("truncated", exclusions=[sent]).words
     remedy = loss_words("truncated", exclusions=[sent]).remedy
     assert remedy == "raise the judge's max_tokens (sent 10240), then rerun both arms"
     assert "max_tokens not reported" in loss_words("truncated", exclusions=[unsaid]).words
+    assert "=" not in loss_words("truncated", exclusions=[sent]).words, "a cap in words, never key=value"
     # An arm under two rigs reads every cell's caps: one reported, one not.
     assert loss_words("truncated", exclusions=[sent, other_rig]).words.endswith(
-        "(max_tokens=10240, and unreported on some)"
+        "(10240 tokens, and unreported on some)"
     )
 
 

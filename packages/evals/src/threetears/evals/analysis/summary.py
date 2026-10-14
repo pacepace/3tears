@@ -1079,7 +1079,7 @@ class EvalSummary(BaseModel):
         """
         lines = [self.headline, f"  {self.results_text}"]
         lines += [f"  {line}" for line in (self.stopped_text, self.spend_cap_text) if line is not None]
-        lines += [f"  {measure.text}" for measure in self.measure_lines]
+        lines += [f"  {measure.text}" for measure in self.measure_lines if measure.state != "not_carried"]
         if self.confusion:
             lines.append("  confusion (expected → predicted):")
             lines += [f"    {line}" for line in self.confusion_lines]
@@ -1101,8 +1101,18 @@ class EvalSummary(BaseModel):
         if self.total_spend_text is not None:
             lines.append(f"  {self.total_spend_text}")
         lines += [f"  {line}" for line in self.goal_check_lines]
+        if (omitted := self.uncarried_text) is not None:
+            lines.append(f"  {omitted}")
         lines += [f"  error: {error}" for error in self.errors]
         return "\n".join(lines)
+
+    @property
+    def uncarried_text(self) -> str | None:
+        """One line counting the measures no result carries, which the printed summary leaves out; None for none."""
+        names = [measure.name for measure in self.measure_lines if measure.state == "not_carried"]
+        if not names:
+            return None
+        return f"not shown, carried by no result: {len(names)} measure{'' if len(names) == 1 else 's'} ({', '.join(names)})"
 
 
 def _spend_cap_line(summary: EvalSummary) -> str | None:

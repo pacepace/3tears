@@ -69,9 +69,9 @@ async def _compare(candidate: Any, control: Any) -> Result:
 
 
 def _chart_titles(comparison: Result) -> list[str]:
-    """The reading each interval chart is drawn for: its title up to the colon."""
+    """The reading each interval chart is drawn for: a contrast's title after ``Change in``, a finding's after its colon."""
     return [
-        block.title.partition(":")[0]
+        block.title.removeprefix("Change in ").partition(": ")[-1 if ": " in block.title else 0]
         for block in comparison.report.blocks
         if isinstance(block, ChartBlock) and block.chart == "interval_rows"
     ]

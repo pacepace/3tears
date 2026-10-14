@@ -34,7 +34,7 @@ def _bar_chart() -> ChartBlock:
                     OutcomeSegment(state="passed", label="passed", count=6),
                     OutcomeSegment(state="failed", label="failed: check", count=2),
                     OutcomeSegment(state="lost", label="lost: judge truncated", count=3),
-                    OutcomeSegment(state="lost", label="lost: test setup fault", count=1),
+                    OutcomeSegment(state="lost", label="lost: setup fault", count=1),
                 ],
             ),
             OutcomeBar(arm="model=b", segments=[OutcomeSegment(state="passed", label="passed", count=12)]),
@@ -66,7 +66,7 @@ def test_every_outcome_count_is_written_as_text() -> None:
     svg = chart_svg(_bar_chart(), chart_id="c1")
     texts = re.findall(r"<text[^>]*>(?:<title>.*?</title>)?([^<]*)</text>", svg)
     written = " ".join(texts)
-    for count in ("passed 6", "failed: check 2", "lost: judge truncated 3", "lost: test setup fault 1", "passed 12"):
+    for count in ("passed 6", "failed: check 2", "lost: judge truncated 3", "lost: setup fault 1", "passed 12"):
         assert count in written, count
     assert "12 trials" in written
     # Each mark says what it is, in its title too.
@@ -128,4 +128,4 @@ async def test_an_arm_under_the_case_floor_is_not_charted_and_the_scoreboard_say
     assert [block.chart for block in charts] == ["outcome_bar"]
     page = report_html(comparison.report)
     assert page.count("<svg") == 1
-    assert page.count(f"no arm has {MIN_CASES} usable cases") == 1
+    assert page.count(f"a rate needs {MIN_CASES}") == 1

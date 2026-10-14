@@ -162,7 +162,7 @@ class TestNoMargin:
         comparison = await _compare()
         assert _row(comparison, "correct")["verdict"].startswith("not separated")
         (line,) = _no_margin_lines(comparison)
-        assert "Correct score" in line and "not separated never means the arms are alike" in line
+        assert "Correct score" in line and "Not separated never means the arms are alike" in line
         assert "grader(correct, margin=...)" in line
         (block,) = [b for b in comparison.report.blocks if isinstance(b, DisclosureBlock) and b.text == line]
         assert block.section == "not_tested", "said with what the campaign could not test"
@@ -172,7 +172,7 @@ class TestNoMargin:
         comparison = await _run(CASES, arms, ["label"], "margins-accuracy", 2)
         (line,) = _no_margin_lines(comparison)
         assert "No margin is declared on Accuracy" in line
-        assert "Declare a margin on Accuracy on the classifier's field (grader('<field>', margin=...))" in line
+        assert "Declare a margin on Accuracy on the classifier's field (`grader('<field>', margin=...)`)" in line
         assert "scorer" not in line, "accuracy takes a margin of its own: no duplicate scorer is needed"
 
 
@@ -355,7 +355,7 @@ class TestTheNoMarginLineAdvisesEachKindOfMeasure:
 
         comparison = await _run(CASES, {"current": priced, "cheaper": priced}, ["label", correct], "no-margin-kinds", 1)
         (line,) = _no_margin_lines(comparison)
-        assert "Declare a margin on Correct score where it is graded (grader(correct, margin=...))" in line
-        assert "Declare a margin on Accuracy on the classifier's field (grader('<field>', margin=...))" in line
+        assert "Declare a margin on Correct score where it is graded (`grader(correct, margin=...)`)" in line
+        assert "Declare a margin on Accuracy on the classifier's field (`grader('<field>', margin=...)`)" in line
         assert "No comparison can declare one on Production cost" in line
         assert "Production cost where it is graded" not in line and "Production cost on the classifier's" not in line
