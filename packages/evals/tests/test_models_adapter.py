@@ -566,7 +566,8 @@ async def test_a_refusal_of_the_resend_is_raised(net: ProviderTransport, provide
 async def test_openrouter_s_last_resend_drops_enforcement_and_its_refusal_is_raised(net: ProviderTransport) -> None:
     """Decision 8: a 404 under require_parameters drops the temperature, then enforcement; each is one resend.
 
-    When the request without either still finds no endpoint, that refusal is raised and nothing is learned.
+    Dropping the temperature alone placed nothing, so it goes back when enforcement goes. When that request still
+    finds no endpoint, its refusal is raised and nothing is learned.
     """
     net.plan(OPENROUTER_HOST, TEMPERATURE_REFUSALS["openrouter"])
     client = build(net, "openrouter", temperature=0.0)
@@ -575,7 +576,7 @@ async def test_openrouter_s_last_resend_drops_enforcement_and_its_refusal_is_rai
     refused, without_temperature, unenforced = net.sent(OPENROUTER_HOST)
     assert refused["temperature"] == 0.0 and refused["provider"]["require_parameters"] is True
     assert "temperature" not in without_temperature and without_temperature["provider"]["require_parameters"] is True
-    assert "temperature" not in unenforced and unenforced["provider"]["require_parameters"] is False
+    assert unenforced["temperature"] == 0.0 and unenforced["provider"]["require_parameters"] is False
     assert client.temperature == 0.0, "nothing was learned from resends that were not served"
 
 

@@ -7636,6 +7636,11 @@
       "signature": "",
       "tier": "closure"
     },
+    "threetears.evals.negotiation.facts_from_router_catalogue": {
+      "kind": "function",
+      "signature": "facts_from_router_catalogue(supported_parameters: Collection[str] | None) -> SettingFacts",
+      "tier": "host-contract"
+    },
     "threetears.evals.negotiation.LearnedSettings": {
       "kind": "class",
       "signature": "LearnedSettings(*, client: str = 'eval.negotiation', declared_by: str = 'declared', contradiction: str = 'a declared fact the provider contradicts; correct where it was declared') -> None",
@@ -7673,17 +7678,22 @@
     },
     "threetears.evals.negotiation.RefusedSetting": {
       "kind": "literal",
-      "signature": "'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'enforcement'",
+      "signature": "'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'max_tokens'` | `'enforcement'",
       "tier": "closure"
     },
     "threetears.evals.negotiation.SettingFacts": {
       "kind": "dataclass",
-      "signature": "SettingFacts(accepts_temperature: bool | None = None, reasoning_efforts: tuple[str, ...] | None = None, refused_efforts: frozenset[str] = frozenset(), reasoning_budget: bool | None = None, adaptive_reasoning: bool | None = None, reasoning_disable: bool | None = None, structured_output: bool | None = None, enforcement: bool | None = None, max_output_tokens: int | None = None)",
+      "signature": "SettingFacts(accepts_temperature: bool | None = None, temperature_beside_reasoning: bool | None = None, reasoning_efforts: tuple[str, ...] | None = None, refused_efforts: frozenset[str] = frozenset(), reasoning_budget: bool | None = None, adaptive_reasoning: bool | None = None, reasoning_disable: bool | None = None, structured_output: bool | None = None, enforcement: bool | None = None, max_output_tokens: int | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.negotiation.SettingRefusal": {
       "kind": "dataclass",
-      "signature": "SettingRefusal(setting: RefusedSetting, message: str, word: str | None = None, accepted: tuple[str, ...] | None = None)",
+      "signature": "SettingRefusal(setting: RefusedSetting, message: str, word: str | None = None, accepted: tuple[str, ...] | None = None, limit: int | None = None, beside_reasoning: bool = False)",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.wire_settings_for": {
+      "kind": "function",
+      "signature": "wire_settings_for(settings: ClientRequestSettings, temperature: float | None) -> WireSettings",
       "tier": "host-contract"
     },
     "threetears.evals.negotiation.WireSettings": {

@@ -120,7 +120,13 @@ def test_a_completion_without_sent_settings_conforms_unless_the_member_is_requir
 @pytest.mark.parametrize("sent", [None, EFFORT_HIGH], ids=["unverified", "reported"])
 def test_a_completion_carrying_sent_settings_conforms_when_it_holds_settings_or_none(sent: Any) -> None:
     check_completion_conformance(_Reporting(sent_settings=sent))
-    check_completion_conformance(_Reporting(sent_settings=sent), require_sent_settings=True)
+
+
+def test_a_required_sent_settings_must_hold_settings_not_none() -> None:
+    """Required, the member must say what was sent: ``None`` is a client that stopped saying, caught by name."""
+    check_completion_conformance(_Reporting(sent_settings=EFFORT_HIGH), require_sent_settings=True)
+    with pytest.raises(CompletionConformanceFailure, match="sent_settings is None, and this check was asked"):
+        check_completion_conformance(_Reporting(sent_settings=None), require_sent_settings=True)
 
 
 def test_a_completion_carrying_sent_settings_of_another_type_fails_conformance_by_name() -> None:

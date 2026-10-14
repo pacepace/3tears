@@ -734,6 +734,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.negotiation.ProviderFamily",
         "threetears.evals.negotiation.SettingRefusal",
         "threetears.evals.negotiation.closest_settings",
+        "threetears.evals.negotiation.facts_from_router_catalogue",
+        "threetears.evals.negotiation.wire_settings_for",
         "threetears.evals.negotiation.read_router_refusal",
         "threetears.evals.negotiation.read_anthropic_refusal",
         "threetears.evals.negotiation.read_openai_refusal",

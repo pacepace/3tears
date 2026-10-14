@@ -5,7 +5,8 @@ per role, model, temperature and reasoning setting, built on first use and kept,
 ``aclose`` releases nothing; every client of one factory reading the price catalogue once; a provider's key read
 from ``api_keys`` or its SDK's environment variable and refused by name at first use, never at construction; a
 role with no model, a role the engine does not have, and a role keyword the factory supplies itself refused by
-name; a judge built as a judged run records it asked (``JUDGE_REQUEST_SETTINGS``, an effort word) on every provider; the
+name; a judge built as a judged run records it asked (``JUDGE_REQUEST_SETTINGS``, an effort word) on every provider,
+and every other role a run records asked settings for (the simulator's) likewise; the
 boot-time price load that lets every client's ceiling answer; and ``aclose_all`` closing everything the factory
 built even when one close fails.
 """
@@ -17,8 +18,10 @@ from typing import Any
 
 import pytest
 
+from threetears.evals import run as run_api
 from threetears.evals.providers import PROVIDER_KEY_VARIABLES, ModelsClientRefused, ModelsCompletion, models_clients
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
+from threetears.evals.schema import EvalRun
 from threetears.models import DEFAULT_CHAT_MODEL
 
 from packages.evals.tests.models_adapter_support import (
@@ -148,6 +151,35 @@ async def test_a_judge_with_no_settings_of_its_own_is_built_from_judge_request_s
     assert body["max_tokens"] == JUDGE_REQUEST_SETTINGS.max_tokens
     assert body["output_config"] == {"effort": JUDGE_REQUEST_SETTINGS.reasoning_effort}
     assert body["thinking"] == {"type": "adaptive"} and "temperature" not in body
+
+
+@pytest.mark.parametrize(
+    "role", [name.removesuffix("_asked_settings") for name in EvalRun.model_fields if name.endswith("_asked_settings")]
+)
+async def test_every_role_a_run_records_asked_settings_for_is_built_from_them(
+    net: ProviderTransport, role: str
+) -> None:
+    """Every role a run stamps ``<role>_asked_settings`` for, given no settings of its own, sends what is recorded.
+
+    The engine records ``JUDGE_REQUEST_SETTINGS`` and ``SIMULATOR_REQUEST_SETTINGS`` as asked; a role the run
+    records as asked one thing and the factory built at its provider's defaults would send another, and every
+    call of it would read as sent other settings than asked. Parametrised over the run's own fields, so a role the
+    engine starts stamping is held here from that day.
+    """
+    asked = getattr(run_api, f"{role.upper()}_REQUEST_SETTINGS")
+    plan_reply(net, "anthropic")
+    clients = models_clients(
+        api_keys={"anthropic": KEYS["anthropic"]},
+        defaults={role: DEFAULT_CHAT_MODEL},
+        prices=FakeCatalogue(),
+        **{role: {"base_url": net.base_url(ANTHROPIC_HOST)}},
+    )
+    await _generate(clients(role, None, temperature=0.0))
+    body = net.last(ANTHROPIC_HOST)
+    assert asked.reasoning_effort is not None and asked.reasoning_max_tokens is None
+    assert body["max_tokens"] == asked.max_tokens
+    assert body["output_config"] == {"effort": asked.reasoning_effort}
+    assert body["thinking"] == {"type": "adaptive"}
 
 
 async def test_a_judge_s_own_settings_are_kept(net: ProviderTransport) -> None:

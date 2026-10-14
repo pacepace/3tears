@@ -3,16 +3,19 @@
 Against mocked provider transports (``models_adapter_support``): no provider is called. What each test holds: a
 request a provider refuses for a setting it carried is resent once with the closest setting the model then takes,
 read per SDK (Anthropic's ``invalid_request_error`` message, OpenAI's ``param`` and ``code``, OpenRouter's 404 under
-``require_parameters``), and once served the fact is kept for every client of the factory and logged once; on
-OpenRouter the temperature goes first and enforcement last (Discodon's first ``.24`` campaign, 2026-10-13, is
-reproduced exactly); what is known before any request comes from 3tears-models' capabilities (read with
-``getattr``, including the published layer for a model with no static entry) and OpenRouter's catalogue; and every
+``require_parameters``), and once served what it proved is kept for every client of the factory and logged once; on
+OpenRouter the temperature goes first and enforcement last, whatever the catalogue lists, enforcement for that call
+alone (Discodon's first ``.24`` campaign, 2026-10-13, is reproduced exactly), and a refused schema goes as JSON mode;
+what is known before any request comes from 3tears-models' capabilities (read with ``getattr``, including the
+published layer for a model with no static entry) and OpenRouter's catalogue, as this factory's ``load_prices`` read
+it, only for a parameter no endpoint takes; and every
 completion's ``sent_settings`` and ``temperature`` are what the served request carried. The pure choice of what to
 send is ``test_closest_settings.py``; the temperature's own learning, ``test_models_adapter.py``.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -24,7 +27,7 @@ import threetears.models as models_api
 from threetears.evals.providers import ModelsCompletion, models_client, models_clients
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.evals.schema import DEFAULT_JUDGE_TEMPERATURE, ClientRequestSettings
-from threetears.models import ModelCapabilities, ModelTier, ModelType
+from threetears.models import DEFAULT_CHAT_MODEL, ModelCapabilities, ModelTier, ModelType
 
 from packages.evals.tests.models_adapter_support import (
     ANTHROPIC_HOST,
@@ -159,44 +162,133 @@ async def test_an_openrouter_judge_whose_endpoints_take_no_temperature_is_served
 async def test_openrouter_drops_enforcement_only_when_the_request_without_a_temperature_still_finds_no_endpoint(
     net: ProviderTransport, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Decision 8: a strict call the router cannot place is resent once without enforcement, and says so."""
-    net.plan(OPENROUTER_HOST, NO_ENDPOINT, NO_ENDPOINT, ok(openrouter_stream()))
+    """Decision 8: a strict call the router cannot place is resent once without enforcement, and says so.
+
+    Dropping the temperature alone placed nothing, so it proved nothing: the temperature goes back when enforcement
+    goes, and is not learned. Enforcement is dropped for that call alone, since a 404 can be an outage: the next call
+    starts enforced, with its temperature, and walks the same order.
+    """
+    net.plan(
+        OPENROUTER_HOST,
+        NO_ENDPOINT,
+        NO_ENDPOINT,
+        ok(openrouter_stream()),
+        NO_ENDPOINT,
+        NO_ENDPOINT,
+        ok(openrouter_stream()),
+    )
     judge = _openrouter_judges()("judge", None, temperature=DEFAULT_JUDGE_TEMPERATURE)
     with caplog.at_level(logging.WARNING, logger=ADAPTER_LOGGER):
         result = await _judge(judge)
         later = await _judge(judge)
-    refused, without_temperature, unenforced, after = net.sent(OPENROUTER_HOST)
-    assert refused["temperature"] == DEFAULT_JUDGE_TEMPERATURE and refused["provider"]["require_parameters"] is True
-    assert "temperature" not in without_temperature and without_temperature["provider"]["require_parameters"] is True
-    assert "temperature" not in unenforced and unenforced["provider"]["require_parameters"] is False
-    assert unenforced["response_format"]["type"] == "json_schema", "the format still goes, unenforced"
-    assert after == {**unenforced, "messages": after["messages"]}, "the served request's shape, at once"
+    sent = net.sent(OPENROUTER_HOST)
+    assert len(sent) == 6, "each call walks the order: nothing of it was learned"
+    for refused, without_temperature, unenforced in (sent[:3], sent[3:]):
+        assert refused["temperature"] == DEFAULT_JUDGE_TEMPERATURE and refused["provider"]["require_parameters"] is True
+        assert "temperature" not in without_temperature
+        assert without_temperature["provider"]["require_parameters"] is True
+        assert unenforced["temperature"] == DEFAULT_JUDGE_TEMPERATURE, "put back: dropping it alone placed nothing"
+        assert unenforced["provider"]["require_parameters"] is False
+        assert unenforced["response_format"]["type"] == "json_schema", "the format still goes, unenforced"
     unenforced_settings = JUDGE_REQUEST_SETTINGS.model_copy(update={"strict_output": False})
     assert result.sent_settings == later.sent_settings == unenforced_settings
-    assert result.temperature is None
-    logged = [r.getMessage() for r in caplog.records if "refuses" in r.getMessage()]
-    assert [m.split(" provider=")[0] for m in logged] == [
-        "eval.providers model refuses a temperature",
-        "eval.providers model refuses require_parameters",
-    ], "each step learned, once"
+    assert result.temperature == later.temperature == DEFAULT_JUDGE_TEMPERATURE
+    assert not [r for r in caplog.records if "refuses" in r.getMessage()], "nothing proved, nothing learned or logged"
 
 
-async def test_openrouter_s_catalogue_says_what_a_model_takes_before_any_request(net: ProviderTransport) -> None:
-    """Once the catalogue is read (``load_prices``), a parameter it does not list for the model is never sent."""
+async def test_a_catalogue_listing_a_temperature_does_not_keep_it_from_going_first(net: ProviderTransport) -> None:
+    """The catalogue lists what SOME endpoint takes: a 404 under enforcement still drops the temperature first."""
+    listed = {
+        "id": "openai/gpt-6-luna",
+        "pricing": {"prompt": "0.000001", "completion": "0.000004"},
+        "supported_parameters": ["max_tokens", "temperature", "reasoning", "response_format", "structured_outputs"],
+    }
+    catalogue = FakeCatalogue(payload={"data": [*CATALOGUE["data"], listed]})
+    net.plan(OPENROUTER_HOST, NO_ENDPOINT, ok(openrouter_stream()))
+    judge = _openrouter_judges(prices=catalogue)("judge", None, temperature=DEFAULT_JUDGE_TEMPERATURE)
+    assert await judge.load_prices() is None
+    result = await _judge(judge)
+    refused, served = net.sent(OPENROUTER_HOST)
+    assert refused["temperature"] == DEFAULT_JUDGE_TEMPERATURE
+    assert "temperature" not in served and served["provider"]["require_parameters"] is True
+    assert result.temperature is None and result.sent_settings == JUDGE_REQUEST_SETTINGS
+
+
+async def test_the_catalogue_decides_nothing_until_this_factory_s_own_load_prices(net: ProviderTransport) -> None:
+    """Another client's priced call fills the factory's catalogue cache; what a call is sent waits for ``load_prices``.
+
+    Otherwise the same judge would be sent one way before an Anthropic call of the factory happened to be priced and
+    another way after, for no reason the run records.
+    """
     listed = {
         "id": "openai/gpt-6-luna",
         "pricing": {"prompt": "0.000001", "completion": "0.000004"},
         "supported_parameters": ["max_tokens", "reasoning", "response_format", "structured_outputs"],
     }
     catalogue = FakeCatalogue(payload={"data": [*CATALOGUE["data"], listed]})
+    clients = models_clients(
+        api_keys={"openrouter": KEYS["openrouter"], "anthropic": KEYS["anthropic"]},
+        defaults={"judge": "openai/gpt-6-luna", "analysis": DEFAULT_CHAT_MODEL},
+        prices=catalogue,
+        judge={"provider": "openrouter"},
+        analysis={"base_url": net.base_url(ANTHROPIC_HOST)},
+    )
+    net.plan(ANTHROPIC_HOST, ok(anthropic_reply()))
+    net.plan(OPENROUTER_HOST, ok(openrouter_stream()), ok(openrouter_stream()))
+    priced = await clients("analysis", None).generate(system="s", user="u")
+    assert priced.cost_usd is not None and catalogue.fetches, "the Anthropic call read the catalogue to price itself"
+    judge = clients("judge", None, temperature=DEFAULT_JUDGE_TEMPERATURE)
+    before = await _judge(judge)
+    assert await clients.load_prices() == {}
+    after = await _judge(judge)
+    first, second = net.sent(OPENROUTER_HOST)
+    assert first["temperature"] == DEFAULT_JUDGE_TEMPERATURE and before.temperature == DEFAULT_JUDGE_TEMPERATURE
+    assert "temperature" not in second and after.temperature is None, "no endpoint lists one, once loaded"
+
+
+async def test_a_format_refusal_relayed_on_openrouter_is_resent_in_json_mode_never_the_same_schema(
+    net: ProviderTransport,
+) -> None:
+    """An upstream refusing the schema, relayed by OpenRouter: the looser format, unenforced, validated on return."""
+    upstream = {
+        "error": {
+            "message": "Invalid parameter: 'response_format' of type 'json_schema' is not supported with this model.",
+            "type": "invalid_request_error",
+            "param": "response_format",
+            "code": None,
+        }
+    }
+    relayed = {
+        "error": {
+            "code": 400,
+            "message": "Provider returned error",
+            "metadata": {"raw": json.dumps(upstream), "provider_name": "OpenAI"},
+        }
+    }
+    net.plan(OPENROUTER_HOST, status(400, relayed), ok(openrouter_stream()))
+    result = await _judge(_openrouter_judges()("judge", None))
+    refused, resent = net.sent(OPENROUTER_HOST)
+    assert refused["response_format"]["type"] == "json_schema" and refused["provider"]["require_parameters"] is True
+    assert resent["response_format"] == {"type": "json_object"}
+    assert resent["provider"]["require_parameters"] is False
+    assert result.sent_settings == JUDGE_REQUEST_SETTINGS.model_copy(update={"strict_output": False})
+
+
+async def test_an_openrouter_model_no_endpoint_of_which_takes_a_format_is_sent_none(net: ProviderTransport) -> None:
+    """Loaded, the catalogue lists neither ``structured_outputs`` nor ``response_format``: no format at all."""
+    listed = {
+        "id": "openai/gpt-6-luna",
+        "pricing": {"prompt": "0.000001", "completion": "0.000004"},
+        "supported_parameters": ["max_tokens", "temperature", "reasoning"],
+    }
+    catalogue = FakeCatalogue(payload={"data": [*CATALOGUE["data"], listed]})
     net.plan(OPENROUTER_HOST, ok(openrouter_stream()))
-    judge = _openrouter_judges(prices=catalogue)("judge", None, temperature=DEFAULT_JUDGE_TEMPERATURE)
-    assert judge.chat_model.bound.temperature == DEFAULT_JUDGE_TEMPERATURE, "built as asked: nothing read yet"
+    judge = _openrouter_judges(prices=catalogue)("judge", None)
     assert await judge.load_prices() is None
     result = await _judge(judge)
     (body,) = net.sent(OPENROUTER_HOST)
-    assert "temperature" not in body and body["provider"]["require_parameters"] is True
-    assert result.temperature is None and result.sent_settings == JUDGE_REQUEST_SETTINGS
+    assert "response_format" not in body and body["provider"]["require_parameters"] is False
+    assert result.sent_settings == JUDGE_REQUEST_SETTINGS.model_copy(update={"strict_output": False})
 
 
 async def test_a_404_on_a_call_that_does_not_require_every_parameter_is_raised(net: ProviderTransport) -> None:

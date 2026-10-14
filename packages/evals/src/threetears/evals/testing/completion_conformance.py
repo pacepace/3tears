@@ -20,8 +20,9 @@ class attributes, so a class can lack an attribute every one of its instances ha
 :class:`~threetears.evals.schema.ClientRequestSettings`) is not required: a completion without it conforms,
 and the engine records its calls as unverified. When the completion carries it, its type is checked, since a
 wrong one is refused on every call the engine reads. A host that opts in passes
-``require_sent_settings=True``, so its suite fails the day the member is dropped or renamed rather than
-every later run quietly reading as unverified::
+``require_sent_settings=True``, so its suite fails the day the member is dropped or renamed, or holds
+``None`` (a client that stopped saying what it sent), rather than every later run quietly reading as
+unverified::
 
     check_completion_conformance(my_client_result_for_a_canned_response(), require_sent_settings=True)
 
@@ -62,13 +63,15 @@ def check_completion_conformance(completion: object, *, require_sent_settings: b
 
     Args:
         completion: An instance of the host's completion type, as its client returns one.
-        require_sent_settings: Fail when the completion carries no ``sent_settings`` attribute: for a host
-            whose client reports what each request carried, so dropping the member is caught here.
+        require_sent_settings: Fail when the completion carries no ``sent_settings``, or carries ``None``: for a
+            host whose client reports what each request carried, so dropping the member, or a client that stops
+            filling it, is caught here. Hand it a completion of a call made with an output cap (a client built
+            with none reports ``None``, since a settings value names a cap).
 
     Raises:
         CompletionConformanceFailure: An attribute is missing, ``stop_reason`` is not a
             :data:`~threetears.evals.schema.completion.StopReason`, ``sent_settings`` is present and is neither
-            ``None`` nor a :class:`~threetears.evals.schema.ClientRequestSettings`, or it is absent and
+            ``None`` nor a :class:`~threetears.evals.schema.ClientRequestSettings`, or it is absent or ``None`` and
             ``require_sent_settings`` is set.
     """
     missing = [name for name in COMPLETION_RESULT_ATTRIBUTES if not hasattr(completion, name)]
@@ -91,7 +94,14 @@ def check_completion_conformance(completion: object, *, require_sent_settings: b
                 "missing sent_settings, which this check was asked to require: the optional member saying what each "
                 "request actually carried (a ClientRequestSettings, or None when the client cannot say)"
             )
-    elif (sent := getattr(completion, "sent_settings")) is not None and not isinstance(sent, ClientRequestSettings):
+    elif (sent := getattr(completion, "sent_settings")) is None:
+        if require_sent_settings:
+            problems.append(
+                "sent_settings is None, and this check was asked to require it: the completion says nothing of what "
+                "its request carried, so every call from it records as unverified (report Negotiated.sent_settings, "
+                "or what your request builder put on the request)"
+            )
+    elif not isinstance(sent, ClientRequestSettings):
         problems.append(
             f"sent_settings holds a {type(sent).__name__}, not a ClientRequestSettings or None: the engine refuses "
             "every completion carrying it (CompletionProtocolDefect)"

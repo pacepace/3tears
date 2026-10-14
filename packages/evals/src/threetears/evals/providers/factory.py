@@ -20,14 +20,15 @@ judge or a rejudge) under an enforced ``out_of_run_cap_usd``. Without it a ceili
 loaded the rates (never, on OpenRouter), and the engine refuses every such call. A model the engine names beyond
 ``defaults`` is loaded the same way through its client: ``await clients(role, model).load_prices()``.
 
-**The judge is built as the run asks it.** A run launched with a judge records
-:data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` as its ``judge_asked_settings``, so a ``judge`` role given no
-request settings of its own (no ``max_tokens``, ``reasoning_max_tokens`` or ``reasoning_effort``) is built from
-those values: its output cap and its reasoning effort word. A model that takes no effort word, or not that one, is
-sent the closest setting it accepts (a budget by the word's share of the cap, a neighbouring word), and each
-completion's ``sent_settings`` says what was sent. Their ``strict_output`` is the strict structured directive the
-judge already sends on every call. A host that passes the judge's settings explicitly asks for those instead, and
-the run's asked settings do not describe them.
+**Every role the run records asked settings for is built as the run asks it.** A run launched with a judge records
+:data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` as its ``judge_asked_settings``, and one with a simulated user
+:data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS` as its ``simulator_asked_settings``, so a ``judge`` or
+``simulator`` role given no request settings of its own (no ``max_tokens``, ``reasoning_max_tokens`` or
+``reasoning_effort``) is built from those values: its output cap and its reasoning parameter. What the adapter sends
+is then what the run records as asked, moved only to the closest setting a model accepts (a budget by the word's
+share of the cap, a neighbouring word), and each completion's ``sent_settings`` says what was sent. Their
+``strict_output`` is the strict structured directive each role already sends on every call. A host that passes a
+role's settings explicitly asks for those instead, and the run's asked settings do not describe them.
 """
 
 from __future__ import annotations
@@ -37,8 +38,8 @@ from collections.abc import Mapping
 from typing import Any, Final, Self, get_args
 
 from threetears.evals.kernel.host import CompletionRole
-from threetears.evals.run import JUDGE_REQUEST_SETTINGS
-from threetears.evals.schema import BoundCompletionClient, KnownReasoningEffort
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS
+from threetears.evals.schema import BoundCompletionClient, ClientRequestSettings, KnownReasoningEffort
 from threetears.models.price_lookup import HttpClient
 
 from threetears.evals.providers.adapter import (
@@ -68,9 +69,17 @@ _NOT_PER_ROLE: Final[Mapping[str, str]] = {
 #: A cached client's key: role, model, temperature, reasoning word and reasoning budget.
 _ClientKey = tuple[str, str, float | None, str | None, int | None]
 
-#: The role keywords that state a client's request settings. A ``judge`` role naming none of them is built from
-#: :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`.
+#: The role keywords that state a client's request settings. A role of :data:`_ASKED` naming none of them is built from
+#: its asked settings.
 _REQUEST_KEYWORDS: Final = ("max_tokens", "reasoning_max_tokens", "reasoning_effort")
+
+#: The request settings the engine stamps on a run as asked of a role (``EvalRun.judge_asked_settings``,
+#: ``EvalRun.simulator_asked_settings``), by role: what a role's client is built from when the host names none, so
+#: the adapter sends what the run records as asked.
+_ASKED: Final[Mapping[str, ClientRequestSettings]] = {
+    "judge": JUDGE_REQUEST_SETTINGS,
+    "simulator": SIMULATOR_REQUEST_SETTINGS,
+}
 
 
 class _Lease:
@@ -166,23 +175,25 @@ class ModelsClients:
         self._clients: dict[_ClientKey, ModelsCompletionClient] = {}
 
     def _settings_for(self, role: CompletionRole) -> dict[str, Any]:  # Any: models_client's keywords
-        """The keywords ``role``'s client is built with: the role's own, and the judge's defaults.
+        """The keywords ``role``'s client is built with: the role's own, and the engine's asked settings for it.
 
         Args:
             role: The role.
 
         Returns:
-            The role's keywords; for a ``judge`` that states no request settings of its own, with the output cap and
-            the reasoning parameter of :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` added (its effort word,
-            or its budget when it asks by one).
+            The role's keywords; for a ``judge`` or ``simulator`` that states no request settings of its own, with the
+            output cap and the reasoning parameter the engine records as asked of it added (the effort word, or the
+            budget when it asks by one): :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`,
+            :data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS`.
         """
         settings = self._role_settings.get(role, {})
-        if role != "judge" or any(keyword in settings for keyword in _REQUEST_KEYWORDS):
+        stamped = _ASKED.get(role)
+        if stamped is None or any(keyword in settings for keyword in _REQUEST_KEYWORDS):
             return settings
         asked = {
-            "max_tokens": JUDGE_REQUEST_SETTINGS.max_tokens,
-            "reasoning_effort": JUDGE_REQUEST_SETTINGS.reasoning_effort,
-            "reasoning_max_tokens": JUDGE_REQUEST_SETTINGS.reasoning_max_tokens,
+            "max_tokens": stamped.max_tokens,
+            "reasoning_effort": stamped.reasoning_effort,
+            "reasoning_max_tokens": stamped.reasoning_max_tokens,
         }
         return {**settings, **{keyword: value for keyword, value in asked.items() if value is not None}}
 
@@ -318,9 +329,10 @@ def models_clients(
         **per_role_kwargs: Role -> keywords for :func:`~threetears.evals.providers.models_client` for every client
             of that role: ``simulator={"reasoning_effort": "low", "provider": "openrouter"}``. The temperature,
             the key and the prices are the engine's and the factory's to supply, and are refused here. A ``judge``
-            that names no ``max_tokens``, ``reasoning_max_tokens`` or ``reasoning_effort`` is built from
-            :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` (``max_tokens`` and the reasoning effort word),
-            which is what a judged run records it asked.
+            or ``simulator`` that names no ``max_tokens``, ``reasoning_max_tokens`` or ``reasoning_effort`` is built
+            from :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` or
+            :data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS` (``max_tokens`` and the reasoning parameter),
+            which is what a run records it asked.
 
     Returns:
         The factory.

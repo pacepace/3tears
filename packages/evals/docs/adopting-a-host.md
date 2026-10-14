@@ -340,7 +340,13 @@ shape is the `router` family; `read_router_refusal` reads its 404 and the 400s i
 ```python
 from dataclasses import dataclass, replace
 
-from threetears.evals.negotiation import LearnedSettings, WireSettings, negotiate, read_router_refusal
+from threetears.evals.negotiation import (
+    LearnedSettings,
+    WireSettings,
+    facts_from_router_catalogue,
+    negotiate,
+    read_router_refusal,
+)
 from threetears.evals.schema import ClientRequestSettings, StopReason
 
 
@@ -367,13 +373,20 @@ class RouterCompletion:
     sent_settings: ClientRequestSettings | None
 
 
-STOPS: dict[str, StopReason] = {"stop": "end_turn", "length": "max_tokens", "content_filter": "content_filter"}
+STOPS: dict[str, StopReason] = {
+    "stop": "end_turn", "length": "max_tokens", "content_filter": "content_filter", "error": "error",
+}
 
 
 class RouterClient:
-    def __init__(self, model: str, *, asked: WireSettings, post, learned: LearnedSettings) -> None:
+    def __init__(
+        self, model: str, *, asked: WireSettings, post, learned: LearnedSettings, supported_parameters=None
+    ) -> None:
         # post(body) -> (status, json): your HTTP call to /chat/completions. learned: one per process or factory.
+        # asked: wire_settings_for(JUDGE_REQUEST_SETTINGS, temperature), never hand-copied constants.
+        # supported_parameters: the model's row of OpenRouter's catalogue, read once at boot, or None.
         self.model, self.asked, self.post, self.learned = model, asked, post, learned
+        self.declared = facts_from_router_catalogue(supported_parameters)  # only what no endpoint takes
 
     async def generate(self, *, system: str, user: str, response_format: dict | None = None) -> RouterCompletion:
         async def send(wire: WireSettings, facts) -> dict:
@@ -397,14 +410,19 @@ class RouterClient:
             replace(self.asked, strict_output=response_format is not None),  # a schema asks for enforcement
             provider_family="router", provider="openrouter", model=self.model, send=send,
             read_refusal=lambda exc: read_router_refusal(exc.status, exc.body) if isinstance(exc, RouterRefused) else None,
-            learned=self.learned,
+            learned=self.learned, declared=self.declared,
         )
-        choice, usage = done.reply["choices"][0], done.reply.get("usage", {})
+        choices, usage = done.reply.get("choices") or [], done.reply.get("usage", {})
+        if choices:
+            choice = choices[0]
+            content, stop = choice["message"].get("content") or "", STOPS.get(choice.get("finish_reason"), "truncated")
+        else:  # a 200 with no choices: the router reported a failure in place of a completion
+            content, stop = "", "error"
         return RouterCompletion(
-            content=choice["message"]["content"], input_tokens=usage.get("prompt_tokens"),
+            content=content, input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"), reasoning_tokens=None, cost_usd=None,
             price_source=None, model=self.model, served_model=done.reply.get("model"),
-            temperature=done.temperature, stop_reason=STOPS.get(choice.get("finish_reason"), "truncated"),
+            temperature=done.temperature, stop_reason=stop,
             sent_settings=done.sent_settings,  # what the SERVED request carried, never what was asked
         )
 
@@ -421,12 +439,14 @@ each mistake unless your client resends in that order, reports what was served, 
 at once:
 
 ```python
+from threetears.evals.negotiation import wire_settings_for
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.evals.testing import check_refusal_negotiation
 
 await check_refusal_negotiation(
     lambda transport: RouterClient(
         "openai/gpt-6-luna",
-        asked=WireSettings(max_tokens=10240, temperature=0.0, reasoning_effort="high"),
+        asked=wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0),  # the temperature the engine names
         post=transport,
         learned=LearnedSettings(),
     )
