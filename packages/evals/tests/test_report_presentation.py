@@ -83,6 +83,14 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     assert first.index("**Keep production") < first.index("**Scoreboard**") < first.index(caveat)
 
 
+async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2_ruled: tuple[Result, Report]) -> None:
+    _, report = g2_ruled
+    # Passed, failed by check and failed by judge are the scoreboard's own columns: the bar's table would repeat it.
+    assert "**Outcomes**" not in report_markdown(report)
+    # The page still draws the bar.
+    assert report_html(report).count('data-chart="outcome_bar"') == 1
+
+
 async def test_the_question_is_the_title_and_never_repeated_in_the_body(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     markdown = report_markdown(report)

@@ -2,7 +2,8 @@
 
 Every block the page draws is printed here, in the page's order: the title on line 1, the arms on line 2, the verdict,
 the scoreboard; a chart is its title and the table of the values it draws, so a reader of Markdown can check every
-number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. What
+number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. An
+outcome bar whose every column is one of the scoreboard's prints nothing here: its table would repeat the scoreboard. What
 the page folds (a trial's record, a finding's evidence, the engine's disclosures) is a ``<details>`` here as well.
 Deterministic: one report renders to one string.
 """
@@ -23,6 +24,7 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
     TrialBlock,
 )
+from threetears.evals.analysis.report.verdict import cause_short
 from threetears.evals.analysis.style import GLOSSARY
 
 #: How an answer's resolution leads it.
@@ -39,14 +41,14 @@ def report_markdown(report: Report) -> str:
         The Markdown text, ending in a newline.
     """
     lines = [f"# {_one_line(report.title)}"]
-    head = [block for block in report.blocks if block.section in FIRST_SCREEN]
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _repeats_scoreboard(block)]
     for index, block in enumerate(head):
         # Line 2 is the arms, directly under the title: every other block is set off by a blank line.
         lines += [*([] if index == 0 else [""]), *_block(block)]
     for section in SECTION_TITLES:
         if section in FIRST_SCREEN or section == "glossary":
             continue
-        blocks = [block for block in report.blocks if block.section == section]
+        blocks = [block for block in report.blocks if block.section == section and not _repeats_scoreboard(block)]
         if not blocks:
             continue
         lines += ["", f"## {SECTION_TITLES[section]}"]
@@ -55,6 +57,25 @@ def report_markdown(report: Report) -> str:
         lines += ["", f"## {SECTION_TITLES['glossary']}", ""]
         lines += [f"- **{term}**: {GLOSSARY[term]}" for term in report.terms]
     return "\n".join(lines) + "\n"
+
+
+#: The failure causes the scoreboard gives a column of their own, as an outcome bar labels them.
+_SCOREBOARD_FAILURES = frozenset(f"failed: {cause_short(cause)}" for cause in ("check", "judged"))
+
+
+def _repeats_scoreboard(block: ReportBlock) -> bool:
+    """Whether a block is an outcome bar whose table would only repeat the scoreboard's numbers.
+
+    The scoreboard has a column for passed, failed by check and failed by judge, and one each for every other failure
+    cause and every loss cause together; a bar with at most one of each of those last two maps onto it column for
+    column. A bar that splits them further says something the scoreboard does not, and is printed.
+    """
+    if not isinstance(block, ChartBlock) or block.chart != "outcome_bar" or block.section != "scoreboard":
+        return False
+    segments = [segment for bar in block.bars for segment in bar.segments]
+    other = {s.label for s in segments if s.state == "failed" and s.label not in _SCOREBOARD_FAILURES}
+    lost = {s.label for s in segments if s.state == "lost"}
+    return len(other) <= 1 and len(lost) <= 1
 
 
 def _folded(blocks: Sequence[ReportBlock]) -> list[str]:
