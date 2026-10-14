@@ -14,6 +14,8 @@ echo "=== Typecheck ==="
 
 echo ""
 echo "=== Tests ==="
+# Honours THREETEARS_TEST_REMOTE (docs/testing.md): only this step can leave the
+# box. Lint and typecheck above, and the sidecar suite below, always run here.
 "$REPO_ROOT/scripts/test.sh"
 
 # The sidecar has its own venv (nodriver is AGPL and never enters the workspace one), so the

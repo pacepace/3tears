@@ -11,6 +11,25 @@ cd "$REPO_ROOT"
 #   ./scripts/test.sh core         # just core
 #   ./scripts/test.sh core -v      # core, verbose
 #   ./scripts/test.sh -v           # all packages, verbose
+#
+# THREETEARS_TEST_REMOTE=<host> runs the same invocation on a remote test host
+# instead (docs/testing.md, "The remote test lane"). Unset, nothing changes. Set,
+# one 5 s probe decides; a host that fails it falls back to local, out loud.
+if [ -n "${THREETEARS_TEST_REMOTE:-}" ]; then
+    lane="$THREETEARS_TEST_REMOTE"
+    probe=0
+    "$REPO_ROOT/scripts/test-remote.sh" --probe "$lane" "$@" || probe=$?
+    if [ "$probe" = 0 ]; then
+        rc=0
+        "$REPO_ROOT/scripts/test-remote.sh" "$lane" "$@" || rc=$?
+        echo "tests ran on $lane (remote)"
+        exit "$rc"
+    elif [ "$probe" = 64 ]; then
+        echo "remote lane $lane cannot carry these arguments: running locally" >&2
+    else
+        echo "remote lane $lane unreachable: running locally" >&2
+    fi
+fi
 
 PACKAGE=""
 EXTRA_ARGS=()
