@@ -101,8 +101,8 @@ class Completion:
         served_model: The model the reply named; ``None`` when it named none, or named a requested alias back.
         temperature: The temperature the served request carried, or ``None``.
         stop_reason: Why it stopped, in the engine's words: an absent or unknown reason is ``truncated``.
-        sent_settings: What the served request carried: its cap, its reasoning word or budget, and ``strict_output``
-            exactly when it was enforced.
+        sent_settings: What the served request carried: its cap, its reasoning word or budget, ``strict_output``
+            exactly when it was enforced, and ``unsent_reasoning_max_tokens`` when a budget asked went as a word.
         provider_stop_reason: The stop reason as the provider named it, or ``None``.
         served_provider: The upstream OpenRouter routed the call to; ``None`` on a direct provider.
         pricing_failure: Why ``cost_usd`` is ``None``; ``None`` when priced.
@@ -418,9 +418,11 @@ class Model:
             max_tokens: The output cap, reasoning included; ``None`` sends :data:`DEFAULT_MAX_TOKENS`. Above the
                 model's own cap (as the catalogue or a refusal says), that cap.
             effort: Reasoning, as an effort word (``none`` to ``max``) or a token budget, sent as the family takes
-                it: Anthropic's ``output_config.effort`` over adaptive thinking or a thinking budget, OpenAI's
-                ``reasoning_effort``, OpenRouter's ``reasoning.effort``; a budget on a family that takes words goes
-                as the word its share of ``max_tokens`` maps to. ``None`` sends none.
+                it: Anthropic's ``output_config.effort`` over adaptive thinking or a thinking budget
+                (``thinking.budget_tokens``), OpenAI's ``reasoning_effort``, OpenRouter's ``reasoning.effort`` or
+                ``reasoning.max_tokens``. A budget where only words are taken (OpenAI's chat completions, a model
+                that refused a budget) goes as the word its share of ``max_tokens`` maps to, and the completion's
+                ``sent_settings.unsent_reasoning_max_tokens`` names it. ``None`` sends none.
             temperature: The sampling temperature, or ``None`` for the model's own. Never sent to a Claude 5.5
                 model, nor beside Anthropic thinking; each completion says what was sent.
             recording: A JSONL recording to replay, or to record into.
@@ -672,7 +674,8 @@ class Clients:
     model shares one :class:`~threetears.evals.providers.Catalogue`, so the catalogue is fetched once and a refusal
     one model met is known to all. A ``judge`` or ``simulator`` given as a model id is asked as the run records it
     asked (:data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`,
-    :data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS`): its output cap and its reasoning.
+    :data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS`): its output cap and its reasoning, the judge's budget
+    sent as a budget wherever the provider takes one.
 
     The engine closes what it is handed after each unit of work; that releases nothing here, and :meth:`aclose`
     closes every model once, at shutdown. Await :meth:`load_prices` at boot so every price ceiling can answer.

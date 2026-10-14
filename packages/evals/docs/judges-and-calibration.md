@@ -138,9 +138,10 @@ void for the question ([the void run](#the-2026-10-10-run-is-void)). On a judge 
 budget plus the 2,048 the reply's schema needs (`JUDGE_ANSWER_BUDGET_TOKENS`: one reasoning paragraph and one score),
 and strict output. Reasoning is asked as a bound because a word bounds no tokens: a model that read `high` as licence
 to think on reasoned past the cap and was cut off with no answer written. A model that takes a budget (Anthropic's
-`thinking.budget_tokens`) is held to it; a model that takes effort words only is sent the word the budget's share of
-the cap reads as, `high` (0.80, `BUDGET_SHARES`), which is exactly what it was sent before, and there the cap stays
-the only hard stop. Reasoning stays on for every scale, pass/fail included: it is part of the instrument. Your client
+`thinking.budget_tokens`, OpenRouter's `reasoning.max_tokens`) is held to it; a model that takes effort words only
+(OpenAI's chat completions, or one that refused a budget) is sent the word the budget's share of the cap reads as,
+`high` (0.80, `BUDGET_SHARES`), its sent settings naming the budget that went unsent
+(`unsent_reasoning_max_tokens`), and there the cap stays the only hard stop. Reasoning stays on for every scale, pass/fail included: it is part of the instrument. Your client
 builder applies the settings to the judge's client (the shipped `Clients` does for a `judge` role given by id), and a
 judged run records them as its `judge_asked_settings`. What a call was actually sent with is the client's to say, as
 the optional `sent_settings` on its completion: a client may send a model the closest setting it accepts (an effort

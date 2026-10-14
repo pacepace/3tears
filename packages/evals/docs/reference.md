@@ -340,7 +340,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 1`
+  <br>`= 2`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -2445,7 +2445,7 @@ Request negotiation: a client that never fails a request because a model lacks a
 
 **Types**
 
-- **`ProviderFamily`** · *host contract* · literal · The request shape a client speaks, which decides how a setting goes on the wire: `anthropic` (Anthropic's Messages API: thinking budgets, adaptive thinking with effort words, no temperature beside thinking), `openai` (OpenAI's `reasoning_effort`, no budget) and `router` (a router's chat completions: `reasoning.effort` with all seven words, no budget, and enforcement as `provider.require_parameters`, under which a router that finds no endpoint taking every parameter refuses the request).
+- **`ProviderFamily`** · *host contract* · literal · The request shape a client speaks, which decides how a setting goes on the wire: `anthropic` (Anthropic's Messages API: thinking budgets, adaptive thinking with effort words, no temperature beside thinking), `openai` (OpenAI's `reasoning_effort`, no budget) and `router` (a router's chat completions: `reasoning.effort` with all seven words or a `reasoning.max_tokens` budget, never both, and enforcement as `provider.require_parameters`, under which a router that finds no endpoint taking every parameter refuses the request).
   <br>`'anthropic'` | `'openai'` | `'router'`
 - **`RefusedSetting`** · *host contract* · literal · What a provider refused:
   <br>`'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'max_tokens'` | `'enforcement'`
@@ -2454,7 +2454,7 @@ Request negotiation: a client that never fails a request because a model lacks a
 
 - **`ANTHROPIC_MIN_THINKING_BUDGET`** · *host contract* · constant (int) · Anthropic's floor on a thinking budget, in tokens: a budget below it is the caller's error, and a word sent as a budget is never below it.
   <br>`= 1024`
-- **`BUDGET_SHARES`** · constant (dict) · The share of the output cap each effort word stands for: the `router` family's documented ratios for turning an effort into a reasoning budget on a model that takes budgets, so a budget sent to a router as its word comes back as about the budget asked (the judge's 8192 of 10240 is 0.80, `high`, and `high` is 0.80 of the cap again).
+- **`BUDGET_SHARES`** · constant (dict) · The share of the output cap each effort word stands for: the `router` family's documented ratios for turning an effort into a reasoning budget on a model that takes budgets, so a budget sent as its word comes back as about the budget asked (the judge's 8192 of 10240 is 0.80, `high`, and `high` is 0.80 of the cap again).
 - **`EFFORT_LADDER`** · constant (tuple) · The engine's seven reasoning words (`REASONING_EFFORTS`) as a ladder, lowest first: what "closest" is measured on.
 - **`MAX_RESENDS`** · *host contract* · constant (int) · The most times one call is resent for a refused setting: one per setting a client can drop or move (the temperature, the reasoning parameter, the reply format, enforcement).
   <br>`= 4`

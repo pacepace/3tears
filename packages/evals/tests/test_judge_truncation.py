@@ -247,12 +247,24 @@ def test_the_judge_asks_its_reasoning_as_a_budget_under_a_cap_one_answer_above_i
     assert JUDGE_REQUEST_SETTINGS.strict_output
 
 
-@pytest.mark.parametrize("family", ["openai", "router"])
-def test_a_model_taking_words_only_is_sent_the_word_it_was_sent_before(family: Any) -> None:
-    """Wire-neutral where words are all a model takes: 8192 of 10240 is 0.80, which is `high`."""
-    sent, _notes = closest_settings(wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0), SettingFacts(), family)
+@pytest.mark.parametrize(
+    ("family", "facts"),
+    [("openai", SettingFacts()), ("router", SettingFacts(reasoning_budget=False))],
+    ids=["openai", "router-refusing-a-budget"],
+)
+def test_a_model_taking_words_only_is_sent_the_word_it_was_sent_before(family: Any, facts: SettingFacts) -> None:
+    """Wire-neutral where words are all a model takes: 8192 of 10240 is 0.80, which is `high`, the budget named unsent."""
+    sent, _notes = closest_settings(wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0), facts, family)
 
     assert (sent.reasoning_effort, sent.reasoning_max_tokens, sent.max_tokens) == (JUDGE_REASONING_EFFORT, None, CAP)
+    assert sent.unsent_reasoning_max_tokens == 8192
+
+
+def test_a_router_is_sent_the_bound() -> None:
+    """OpenRouter takes a budget as ``reasoning.max_tokens``: the judge's budget binds there, not only the cap."""
+    sent, _notes = closest_settings(wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0), SettingFacts(), "router")
+
+    assert (sent.reasoning_max_tokens, sent.reasoning_effort, sent.max_tokens) == (8192, None, CAP)
 
 
 def test_an_anthropic_model_taking_a_budget_is_sent_the_bound() -> None:

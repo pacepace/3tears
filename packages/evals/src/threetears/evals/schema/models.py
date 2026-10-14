@@ -3057,6 +3057,16 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
             "actually enforced (False for a request resent without enforcement). False = no enforcement."
         ),
     )
+    unsent_reasoning_max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Sent settings only: the reasoning budget the client was asked for that the request could not carry as a "
+            "budget (OpenAI's chat completions take effort words only, or the model refused a budget), so it went as "
+            "`reasoning_effort` or as no reasoning parameter. None = no budget was asked, or it went as one (or the "
+            "client did not say). Never set beside `reasoning_max_tokens`, and never on asked settings."
+        ),
+    )
 
     @model_validator(mode="after")
     def _one_way_to_ask_for_reasoning(self) -> Self:
@@ -3066,12 +3076,18 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
             The settings, unchanged.
 
         Raises:
-            ValueError: Both ``reasoning_max_tokens`` and ``reasoning_effort`` are set.
+            ValueError: Both ``reasoning_max_tokens`` and ``reasoning_effort`` are set, or a budget is named both as
+                sent and as unsent.
         """
         if self.reasoning_max_tokens is not None and self.reasoning_effort is not None:
             raise ValueError(
                 "reasoning is asked for by a token budget (reasoning_max_tokens) or by an effort level "
                 "(reasoning_effort), not both: the provider would pick one and the record could not say which"
+            )
+        if self.reasoning_max_tokens is not None and self.unsent_reasoning_max_tokens is not None:
+            raise ValueError(
+                "a request that carried a reasoning budget (reasoning_max_tokens) left none unsent "
+                "(unsent_reasoning_max_tokens): name one or the other"
             )
         return self
 
@@ -3112,6 +3128,8 @@ def request_settings_words(settings: ClientRequestSettings) -> str:
         parts.append(f"reasoning_max_tokens={settings.reasoning_max_tokens}")
     else:
         parts.append("no reasoning parameter")
+    if settings.unsent_reasoning_max_tokens is not None:
+        parts.append(f"reasoning budget {settings.unsent_reasoning_max_tokens} not sendable")
     parts.append("strict" if settings.strict_output else "not strict")
     return "{" + ", ".join(parts) + "}"
 

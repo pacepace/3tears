@@ -260,6 +260,67 @@ async def test_an_anthropic_budget_goes_as_thinking_enabled() -> None:
     assert "system" not in provider.bodies[0]
 
 
+async def test_a_reasoning_budget_goes_as_a_budget_where_the_provider_takes_one() -> None:
+    """OpenRouter's ``reasoning.max_tokens`` (never beside ``effort``), Anthropic's thinking budget; OpenAI's chat
+    completions take none, so the word goes and the completion names the budget unsent."""
+    router, claude, direct = Scripted(chat()), Scripted(message()), Scripted(chat())
+    routed = await model("deepseek/deepseek-v4-flash", router, effort=8192, max_tokens=10240).generate(
+        system="", user="x"
+    )
+    assert router.bodies[0]["reasoning"] == {"max_tokens": 8192}
+    assert routed.sent_settings == ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192)
+    thought = await model("claude-sonnet-4-6", claude, provider="anthropic", effort=8192, max_tokens=10240).generate(
+        system="", user="x"
+    )
+    assert claude.bodies[0]["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+    assert claude.bodies[0]["max_tokens"] == 10240 and "output_config" not in claude.bodies[0]
+    assert thought.sent_settings == ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192)
+    worded = await model("gpt-5-nano", direct, provider="openai", effort=8192, max_tokens=10240).generate(
+        system="", user="x"
+    )
+    assert direct.bodies[0]["reasoning_effort"] == "high" and "reasoning" not in direct.bodies[0]
+    assert worded.sent_settings == ClientRequestSettings(
+        max_tokens=10240, reasoning_effort="high", unsent_reasoning_max_tokens=8192
+    )
+
+
+async def test_a_router_model_catalogued_without_reasoning_is_sent_no_budget_and_says_so() -> None:
+    """The catalogue's refusal path still applies to a budget: no ``reasoning`` listed, none is sent, and named."""
+    rows = {"data": [{"id": "vendor/plain", "supported_parameters": ["max_tokens", "temperature"]}]}
+    provider = Scripted(chat())
+    completion = await model(
+        "vendor/plain", provider, effort=8192, max_tokens=10240, catalogue=catalogue(rows)
+    ).generate(system="", user="x")
+    assert "reasoning" not in provider.bodies[0]
+    assert completion.sent_settings == ClientRequestSettings(max_tokens=10240, unsent_reasoning_max_tokens=8192)
+
+
+def test_a_body_no_provider_could_take_as_built_is_refused_never_clamped_or_dropped() -> None:
+    """An Anthropic budget its ``max_tokens`` does not exceed, named with both; a budget on OpenAI's wire."""
+    from threetears.evals.negotiation import SettingFacts, WireSettings
+    from threetears.evals.providers.wire import Directive, request_body
+
+    def body(provider: Any, sent: WireSettings) -> dict[str, Any]:
+        return request_body(
+            provider,
+            "m",
+            system="",
+            user="x",
+            sent=sent,
+            facts=SettingFacts(),
+            directive=Directive(None),
+            direct_openai=True,
+            json_mode=False,
+        )
+
+    with pytest.raises(ValueError, match=r"max_tokens \(8192\) must exceed the thinking budget \(8192\)"):
+        body("anthropic", WireSettings(max_tokens=8192, reasoning_max_tokens=8192))
+    with pytest.raises(ValueError, match="take no reasoning budget"):
+        body("openai", WireSettings(max_tokens=10240, reasoning_max_tokens=8192))
+    both = body("openrouter", WireSettings(max_tokens=10240, reasoning_effort="low", reasoning_max_tokens=8192))
+    assert both["reasoning"] == {"max_tokens": 8192}, "OpenRouter takes one: the budget wins"
+
+
 async def test_a_directive_the_client_does_not_send_is_refused() -> None:
     with pytest.raises(ValueError, match="is not one the client sends"):
         await model("vendor/m", Scripted(chat())).generate(system="", user="x", response_format={"type": "xml"})
@@ -616,9 +677,9 @@ async def test_a_judge_named_by_id_is_built_from_the_judges_request_settings(mon
     assert judge.price_ceiling(system="", user="x") is None  # the catalogue is not loaded yet
     completion = await judge.generate(system="", user="x")
     [body] = provider.bodies
-    # JUDGE_REQUEST_SETTINGS: a 10240 cap and an 8192 budget, which a router takes as the word its share maps to.
-    assert (body["max_tokens"], body["reasoning"], body["temperature"]) == (10240, {"effort": "high"}, 0.0)
-    assert completion.sent_settings == ClientRequestSettings(max_tokens=10240, reasoning_effort="high")
+    # JUDGE_REQUEST_SETTINGS: a 10240 cap and an 8192 budget, which a router takes as a budget.
+    assert (body["max_tokens"], body["reasoning"], body["temperature"]) == (10240, {"max_tokens": 8192}, 0.0)
+    assert completion.sent_settings == ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192)
     unpriced = await Clients(judge="vendor/unlisted", catalogue=catalogue()).load_prices()
     assert "vendor/unlisted" in unpriced
 
