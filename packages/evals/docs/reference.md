@@ -2933,7 +2933,8 @@ Every other call builtin counts only calls that succeeded, so a candidate whose 
 to them, as one that never called; these two are what tell the two apart. `refused(a)` is
 `refused_count(a) >= 1`. A ledger that keeps no refusal record (a kind that does not record refusals, or a
 cell stored before refusals were recorded) is not read as "none refused": evaluating either against it raises,
-so the check cannot be graded rather than graded as a pass.
+so the check cannot be graded rather than graded as a pass. `passed()` does not read refusals: it is an
+end-state check, and a refused call is its own outcome, which these two grade.
 
 Call parameters (`calls()` returns the matching calls' recorded parameters, in order):
 

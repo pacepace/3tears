@@ -184,6 +184,8 @@ Pitfalls:
   `refused_count(...) == 0` where trying and being refused is a failure of its own. A host kind records its tools'
   refusals with `CallLedger.record_refusal()` (or starts its ledger with `CallLedger(refused=[])`); against a ledger
   that keeps no refusal record, a refusal check cannot be graded rather than reading "none refused".
+  `passed()` does not read refusals: it is an end-state check (a deliberate pass and no call that took effect),
+  and a refused call is its own outcome, which `refused()` and `refused_count()` exist to grade.
 - A string comparison over a call parameter is allowed only where the tool's own schema closes the value
   (`enum`, `const` or `pattern`). Anything else compares text the model wrote, which belongs to a judge. The
   authoring gate refuses it; `run_eval` does not check this today, so hold yourself to it.
