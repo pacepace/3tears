@@ -15,19 +15,21 @@ The running example is a support-ticket router. It reads a ticket and picks one 
 
 Build one file, `triage.py`, as you go. Step 1 starts it. Each later step adds code below what is there and
 replaces the `main()` function and the `asyncio.run(main())` line at the bottom. Run it with
-`python triage.py` (`uv run python triage.py` in the checkout).
+`python triage.py` (`uv run python triage.py` in the checkout). A file that defines its evals at module level
+(`ev = Eval(...)`) can also be run with no `main()` at all: `python -m threetears.evals triage.py` runs every `Eval`
+a `.py` or `.toml` file declares, prints each, and writes its report.
 
 ## 1. Write the cases
 
 A **case** is one input plus what a good answer looks like. Here, a ticket and the queue it belongs in. The
-**candidate** is what you are evaluating: any async function that takes one case and returns an answer.
+**runner** is what you are evaluating: any async function that takes one case and returns an answer.
 
 ```python
 import asyncio
 import json
 from types import SimpleNamespace
 
-from threetears.evals.quick import Judge, JudgeExample, compare, run_eval
+from threetears.evals import Eval, Example, Judge, grader
 
 CASES = [
     {"id": "double-charge", "ticket": "I was charged twice for March.", "queue": "billing"},
@@ -56,7 +58,9 @@ async def route_v1(case: dict) -> str:
 ```
 
 A case is a plain dict. Its `id` names it in everything you read later; without one, a case is named by its
-position. Nothing is graded against `queue` until step 2 says it holds the right answer.
+position. `id` is one of three reserved keys, with `stratum` and `world`: each describes the case rather than
+asking anything of it, so none is handed to the runner. Nothing is graded against `queue` until step 2 says it
+holds the right answer.
 
 Ten cases is enough to learn with, not to decide with. A set worth trusting is built mostly from hard cases like
 `charged-crash`: boundaries between labels, lookalikes, and pairs that differ in one detail.
@@ -65,21 +69,23 @@ Ten cases is enough to learn with, not to decide with. A set worth trusting is b
 The list sits in `triage.py` so the tutorial stays one file. In your own project, keep the cases in a file beside
 the code, one JSON object per line, and load them with
 `CASES = [json.loads(line) for line in open("tickets.jsonl") if line.strip()]`. A test set is data: it outlives
-any one version of the candidate, and it grows. When production routes a ticket wrong, add that ticket to the file
+any one version of the runner, and it grows. When production routes a ticket wrong, add that ticket to the file
 ([Maintaining the set](designing-classifier-evals.md#8-maintaining-the-set)).
-[`compare_two_prompts.py`](../examples/compare_two_prompts.py) loads its tickets this way, and gives each its kind
-(`"kind": "lookalike"`), which `stratum_key="kind"` turns into results per kind of case
+`Eval("tickets.jsonl", ...)` reads such a file itself. [`compare_two_prompts.py`](../examples/compare_two_prompts.py)
+loads its tickets this way, and gives each its kind under the reserved key `stratum` (`"stratum": "lookalike"`),
+which turns into results per kind of case
 ([Reading results by kind of case](designing-classifier-evals.md#reading-results-by-kind-of-case)).
 
 ## 2. Run it
 
-`run_eval` plays the candidate on every case `k` times. **k** is the number of repeats per case. A model can
-answer the same input differently from one call to the next, so one play per case hides that variance.
+An eval has three slots: `Eval(cases, runner, grader)`. `await ev.run()` plays the runner on every case `k`
+times. **k** is the number of repeats per case. A model can answer the same input differently from one call to
+the next, so one play per case hides that variance.
 
 ```python
 async def main() -> None:
-    summary = await run_eval(CASES, route_v1, expected=lambda case: case["queue"], k=2)
-    print(summary.render())
+    result = await Eval(CASES, route_v1, ["queue"], k=2).run(store=":memory:")
+    print(result.summary.render())
 
 
 asyncio.run(main())
@@ -105,21 +111,24 @@ run 01a12445-eaee-73db-abe3-97da2b88bbb7 completed: route_v1 over 10 case(s) x k
 
 How to read it:
 
-- **`expected=`** makes this a classifier eval: code compares each answer with the case's label. That is the
-  special case. Most answers can't be checked by code, and step 6 grades those with a judge. A **scorer** is the
-  other code grade: any `(case, answer) -> bool | float` function, passed in a list after the candidate
-  ([`rung_zero.py`](../examples/rung_zero.py) has one).
+- **`"queue"`**, a field name in the grader list, makes this a classifier eval: code compares each answer with
+  the case's `queue`. That is the special case. Most answers can't be checked by code, and step 6 grades those
+  with a judge. A **grader** is any of them: a field name, a `(case, answer) -> bool | float` function, or a
+  judge, listed after the runner ([`rung_zero.py`](../examples/rung_zero.py) has a function).
 - **A result** is one play of one case. **Scored** results were graded. When there are any, the line also counts
-  results **failed by the candidate** (your function raised; they count against it) and **excluded** ones (a
-  fault of the measuring setup, such as a scorer that raised; they count for nothing).
+  results **failed by the runner** (your function raised; they count against it) and **excluded** ones (a
+  fault of the measuring setup, such as a grader that raised; they count for nothing).
 - **`match`** is 1 when the answer was the expected label. Its mean, 0.6, is the accuracy.
 - **The confusion matrix** shows which labels were mistaken for which. Every `account` ticket went to `other`.
 - **Per label**, precision is how often a predicted label was right, and recall is how often a true label was
   found. Each has a 95% interval: the range the true rate plausibly lies in. The intervals count cases, not
   repeats ("over 3 cases"), because repeating a case does not make it a new case. A rate from a single case has
   no interval at all, and ten cases give wide ones.
-- **Where the run is stored**: in memory, for as long as the call. To keep runs, step 8 passes a store, and
-  `scope_id=` names where they are found again.
+- **Where the run is stored**: `store=":memory:"` keeps it in memory, for this process alone. With no `store=`,
+  an eval keeps its runs in `.evals/evals.sqlite` under the working directory, in a scope named after the eval.
+  Step 8 keeps them in a file of its own, and `scope=` names where they are found again.
+- **`print(result)`** is the quiet view: the readings, the top misses and where the runs are stored.
+  `result.summary.render()`, printed above, is the whole summary.
 
 ## 3. Read your misses
 
@@ -127,13 +136,13 @@ This is the most important habit in evals. An accuracy figure tells you how much
 tell you what went wrong, and whether the eval itself is right. Read every miss before you read any number
 again.
 
-A **miss** is a result the candidate got wrong: a wrong label, a scorer that gave 0, a failed check, a failed
-pass/fail judgement, or a result the candidate failed outright (it raised, say). `summary.misses()` returns
+A **miss** is a result the runner got wrong: a wrong label, a grader that gave 0, a failed check, a failed
+pass/fail judgement, or a result the runner failed outright (it raised, say). `summary.misses()` returns
 them, each saying why. `summary.results()` returns every result, misses or not.
 
 ```python
 async def main() -> None:
-    summary = await run_eval(CASES, route_v1, expected=lambda case: case["queue"], k=2)
+    summary = (await Eval(CASES, route_v1, ["queue"], k=2).run(store=":memory:")).summary
     for miss in summary.misses():
         print(f"{miss.case} (repeat {miss.repeat}): {'; '.join(miss.missed_because)}")
     excluded = [result for result in summary.results() if result.outcome == "excluded"]
@@ -157,18 +166,18 @@ charged-crash (repeat 2): answered 'bug', expected 'billing'
 
 For each miss, decide whose fault it is. There are three answers, and each needs a different fix:
 
-1. **The candidate is wrong.** The three `account` tickets fail because `route_v1` has no rule for that queue.
-   This is the finding you ran the eval for. Fix the candidate, then run again.
+1. **The runner is wrong.** The three `account` tickets fail because `route_v1` has no rule for that queue.
+   This is the finding you ran the eval for. Fix the runner, then run again.
 2. **The case is wrong.** Is `charged-crash` really `billing`? It names a crash. The label is right only because
    of a ruling, money wins, which the comment in step 1 records. Without one, ask whoever owns the labels. If
-   they disagree, change the case, not the candidate. Either way, write the ruling down beside the case.
-3. **The grading is wrong.** A scorer that is too strict, or an expected label with a trailing space, makes
+   they disagree, change the case, not the runner. Either way, write the ruling down beside the case.
+3. **The grading is wrong.** A grader that is too strict, or an expected label with a trailing space, makes
    right answers read as misses. Fix the grader.
 
 Look at the repeats too. This stand-in always answers the same way, so each miss appears on both repeats. A real
 model often misses a case on one repeat and not the other. That case is unstable, which is a finding in itself.
 
-Excluded results are not misses. They say nothing about the candidate. When they are not zero, read them in
+Excluded results are not misses. They say nothing about the runner. When they are not zero, read them in
 `summary.results()`, where each one's `errors` says why.
 
 ## 4. Compare two versions
@@ -189,13 +198,7 @@ async def route_v2(case: dict) -> str:
 
 
 async def main() -> None:
-    result = await compare(
-        CASES,
-        {"v1": route_v1, "v2": route_v2},
-        expected=lambda case: case["queue"],
-        control="v1",
-        k=2,
-    )
+    result = await Eval(CASES, {"v1": route_v1, "v2": route_v2}, ["queue"], k=2).run(store=":memory:")
     for row in result.contrasts("accuracy"):
         print(f"{row['contrast']} against {row['control']}: delta {row['delta']:+.2f}, interval {row['interval']}, "
               f"p {row['p_adjusted']:.3f}, {row['verdict']}")
@@ -210,12 +213,13 @@ candidate=v2 against candidate=v1: delta +0.40, interval [0.03059, 0.7694] at 95
 v2 misses: 0
 ```
 
-Each candidate becomes an **arm**: one version, run over every case. `compare` runs every arm over the same cases,
-so each case is compared with itself across the arms. The **control** is the arm the others are tested
-against: usually what runs in production today. The report names each arm by its key, as `candidate=v2`. The
-runs land together as one **campaign**, the set of runs you want compared.
+A runner given as a mapping is a comparison, and each runner in it becomes an **arm**: one version, run over every
+case. The eval runs every arm over the same cases, so each case is compared with itself across the arms. The
+**control** is the arm the others are tested against, the mapping's first key: usually what runs in production
+today. The report names each arm by its key, as `candidate=v2`. The runs land together as one **campaign**, the
+set of runs you want compared.
 
-`result.render()` prints the whole report as Markdown. `result.contrasts()` gives its "Contrasts against the
+`result.render(full=True)` prints the whole report as Markdown. `result.contrasts()` gives its "Contrasts against the
 control" table as rows you can read in code. `result.misses("v2")` works as in step 3: a better number is no
 reason to stop reading misses.
 
@@ -256,13 +260,8 @@ async def route_v1_login(case: dict) -> str:
 
 
 async def main() -> None:
-    result = await compare(
-        CASES,
-        {"v1": route_v1, "v1-login": route_v1_login, "v2": route_v2},
-        expected=lambda case: case["queue"],
-        control="v1",
-        k=2,
-    )
+    arms = {"v1": route_v1, "v1-login": route_v1_login, "v2": route_v2}
+    result = await Eval(CASES, arms, ["queue"], k=2).run(store=":memory:")
     for row in result.contrasts("accuracy"):
         print(f"{row['arm']}: delta {row['delta']:+.2f}, interval {row['interval']}, "
               f"p {row['p_adjusted']:.3f}, {row['verdict']}")
@@ -285,19 +284,14 @@ Two lessons here:
   Compare only the arms that answer your question.
 
 To show a cheaper or simpler version is **good enough**, you need `equivalent`, and that needs a **margin**: the
-largest difference too small to matter. Declare it with `margins=`, by measure: on accuracy, it is recorded on
-every arm's run; on a scorer of your own, by the scorer's name. Replace `main()`:
+largest difference too small to matter. Declare it on the grader, with `grader(..., margin=)`: on the classifier's
+field it is accuracy's margin, recorded on every arm's run; on a function of your own, it is that grader's.
+Replace `main()`:
 
 ```python
 async def main() -> None:
-    result = await compare(
-        CASES,
-        {"v1": route_v1, "v1-login": route_v1_login},
-        expected=lambda case: case["queue"],
-        control="v1",
-        k=2,
-        margins={"accuracy": 0.25},
-    )
+    arms = {"v1": route_v1, "v1-login": route_v1_login}
+    result = await Eval(CASES, arms, [grader("queue", margin=0.25)], k=2).run(store=":memory:")
     for row in result.contrasts("accuracy"):
         print(f"{row['arm']}: delta {row['delta']:+.2f}, interval {row['interval']}, {row['verdict']}")
 
@@ -321,19 +315,23 @@ rest of the report.
 
 Most answers have no label to compare against. Is this reply polite? Does it say only what the policy says? A
 **judge** is a model that reads each answer and scores it against a **rubric**: one written description per
-quality you care about, each scored 1 to 5 by default.
+quality you care about. A rubric given as a mapping of name to description is scored pass/fail; a dimension given
+as a `RubricDim` states its own scale, and the one below asks for 1 to 5.
 
-Give `run_eval` a `Judge`: a completion client, the model it calls, the rubric, and the material each answer is
-judged against. The client below is an offline stand-in that looks for an apology. A real one calls your model
+A `Judge` is a grader: list it with the others. Give it a completion client that names the model it calls
+(`model_name`), the rubric, and the material each answer is judged against. The client below is an offline stand-in that looks for an apology. A real one calls your model
 provider: `models_client` from `threetears.evals.providers` (the `[models]` extra) is the shipped one, which
 [`llm_judge.py`](../examples/llm_judge.py) hands to its judge, replaying a recording of it when no key is set. A
 stand-in of your own returns what a model would:
 a JSON reply with a string `reasoning` and `criteria_scores`, an object whose one key is the dimension asked
-about as `<context>.<dimension>` (`answer.acknowledges` here, the key the engine's prompt names), mapped to a score
+about by its stored name (`answer.acknowledges` here, the key the engine's prompt names), mapped to a score
 of 1 to 5 (`"pass"` or `"fail"` on a pass/fail dimension). The prompt and the strict schema sent beside it ask for the
 score as a string, `"1"` to `"5"`; the bare integer this stand-in returns is read too.
 
 ```python
+from threetears.evals.schema import RubricDim
+
+
 async def draft_reply(case: dict) -> str:
     """Draft the first reply to a support ticket."""
     if case["queue"] == "other":
@@ -352,14 +350,14 @@ async def stand_in_judge(*, system: str, user: str, response_format: dict | None
 
 
 async def main() -> None:
+    acknowledges = "The reply acknowledges the customer's problem before anything else."
     judge = Judge(
-        client=SimpleNamespace(generate=stand_in_judge),
-        model="stand-in",
-        rubric={"acknowledges": "The reply acknowledges the customer's problem before anything else."},
+        SimpleNamespace(generate=stand_in_judge, model_name="stand-in"),
+        [RubricDim(name="answer.acknowledges", description=acknowledges, scale="ordinal")],
         case_material=lambda case: f"Ticket: {case['ticket']}",
-        examples=[JudgeExample("acknowledges", "We've passed your ticket on.", 1, "skips the problem", case=CASES[0])],
+        examples=[Example("acknowledges", "We've passed your ticket on.", 1, "skips the problem", case=CASES[0])],
     )
-    summary = await run_eval(CASES, draft_reply, judge=judge, k=2)
+    summary = (await Eval(CASES, draft_reply, [judge], k=2).run(store=":memory:")).summary
     print(summary.render())
     for result in summary.results():
         for grade in result.judged:
@@ -383,11 +381,12 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
 hours: answer.acknowledges 2, because stand-in: looks for an apology
 ```
 
-- **The intent** is what the judge is told each case asks. Here it came from the candidate's docstring, and the
-  summary says so. Pass `intent=` to state it outright: its wording can move the scores.
+- **The intent** is what the judge is told each case asks. It comes from the first line of the runner's docstring,
+  and the summary says so. Its wording can move the scores, so write it as the task.
 - **With a judge in play** the summary also counts results excluded for a judge's fault, states the spend cap
   (none here; `max_cost_usd=` sets one) and what the judge spent.
-- **`answer.acknowledges`** is the rubric's dimension, placed under the judge's default context, `answer`.
+- **`answer.acknowledges`** is the rubric's dimension, named under `answer`, where a mapping rubric's bare names
+  are placed too.
 - **`served_model`** is the model the provider's response says answered. A real client reads it off the response;
   without it, the summary says it cannot confirm which model produced the scores, since a provider may answer a
   model id with a model of its choosing.
@@ -403,9 +402,10 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
   is one").
 - **`examples=`** are answers the judge must grade a known way: here, a reply that skips the problem must score 1.
   They are stored as the cases a judge campaign calibrates it on, calling no model ([Seeding hard negatives](judges-and-calibration.md#seeding-hard-negatives)).
-- `judge=` works on `compare` too, and code grading (`expected=`, scorers) can run beside it.
+- A judge grades every arm of a comparison too, and code grading (fields, functions) can run beside it in the
+  same list.
 
-A judge's scores are only as good as the judge. Use a different model from the candidate's, and check it
+A judge's scores are only as good as the judge. Use a different model from the runner's, and check it
 against people's ratings before you lean on it: [Judges and calibration](judges-and-calibration.md).
 
 ## 7. Hold a guardrail
@@ -414,8 +414,8 @@ Some things a reply must never do, however much better it gets elsewhere: here, 
 the billing team may grant. A **guardrail** is a reading no arm may get worse on. It is kept out of the contrasts,
 so a gain there cannot pay for a loss here, and each arm is decided against the control on it alone.
 
-Add two new drafts, a scorer for the rule, and declare the scorer a guardrail with `Guardrail`. Add `Guardrail`
-to the `threetears.evals.quick` import at the top:
+Add two new drafts, a grader for the rule, and declare it a guardrail with `grader(..., guard=)`, imported at the
+top in step 1:
 
 ```python
 async def draft_reply_v2(case: dict) -> str:
@@ -438,14 +438,8 @@ def promises_nothing(case: dict, reply: str) -> bool:
 
 
 async def main() -> None:
-    result = await compare(
-        CASES,
-        {"v1": draft_reply, "v2": draft_reply_v2, "v3": draft_reply_v3},
-        [promises_nothing],
-        guardrails={"promises_nothing": Guardrail(margin=0.1, direction="higher_is_better")},
-        control="v1",
-        k=2,
-    )
+    arms = {"v1": draft_reply, "v2": draft_reply_v2, "v3": draft_reply_v3}
+    result = await Eval(CASES, arms, [grader(promises_nothing, guard=0.1)], k=2).run(store=":memory:")
     for row in result.guardrails():
         print(f"{row['arm']}: {row['control_mean']:.2f} -> {row['arm_mean']:.2f}, interval {row['interval']}, "
               f"{row['outcome']}")
@@ -459,8 +453,9 @@ v2: 1.00 -> 0.10, interval [-1, -0.2498] at 95%, breached
 v3: 1.00 -> 1.00, interval [-0.3431, 0.3431] at 95%, undecided
 ```
 
-- **The margin** (`margin=0.1`) is how much worse than the control you would tolerate: here, a promise in one
-  more reply in ten. **The direction** says which way is better. You declare both; neither is assumed.
+- **The margin** (`guard=0.1`) is how much worse than the control you would tolerate: here, a promise in one
+  more reply in ten. You declare it; none is assumed. Every grade is higher-is-better, so the grader is worded as
+  what the reply must do (`promises_nothing`), and no direction is stated.
 - **Breached**: the whole interval is beyond the margin. `v2` is not adopted, whatever else it gained, and the
   report says so. Ten cases show a breach only when it is large: had `v2` promised a refund on six tickets in
   ten, its interval would reach -0.016 and it would be undecided.
@@ -468,24 +463,25 @@ v3: 1.00 -> 1.00, interval [-0.3431, 0.3431] at 95%, undecided
   reply in ten would not appear, so the interval reaches past the margin. Undecided is never read as held. At
   a margin of 0.1 it takes 41 cases, none of them with a promise, to read **held**.
 - **The interval** is a bounded test's, which holds its 2.5% error rate on a scored range at any number of
-  cases; a t interval does not, and on coarse scores read `held` up to 9.5% of the time at the margin. A scorer returning a
-  number is held only once you declare its range (`ranges=`); with none it is never read `held`.
+  cases; a t interval does not, and on coarse scores read `held` up to 9.5% of the time at the margin. A grader returning a
+  number is held only once you declare its range (`grader(..., range=(1, 5))`); with none it is never read `held`.
 
-`result.render()` prints the full "Guardrails against the control" table, and `result.guardrail_standing("v2")`
-says what one arm breached, is undecided on, and held. A judged rubric dimension can be a guardrail too: name it
-in `guardrails=`. [Reading the guardrails](reading-reports.md#reading-the-guardrails) has the details.
+`result.render(full=True)` prints the full "Guardrails against the control" table, and
+`result.guardrail_standing("v2")` says what one arm breached, is undecided on, and held. A judged rubric dimension
+can be a guardrail too: `Judge(..., guard={"acknowledges": 0.5})`. [Reading the guardrails](reading-reports.md#reading-the-guardrails) has the details.
 
 ## 8. Keep your runs
 
-Every run so far was stored in memory and gone when the script ended. To keep runs, pass a store. One keyword
-does it: `store=` on `run_eval` or `compare`. `SqliteDocumentStore` keeps every run in one SQLite file, using
-only the standard library. A kept run names its scope (`scope_id=`), where it is found again. Kept runs have a
-history: how a reading moved from one run to the next. Add these imports to the top of the file, a scorer for the
-right queue, and replace `main()`:
+Every run so far was stored in memory and gone when the script ended. To keep runs, pass a store, or none: one
+keyword does it, `store=` on `run()`, and with no `store=` an eval keeps its runs in `.evals/evals.sqlite`.
+`SqliteDocumentStore` keeps every run in one SQLite file, using only the standard library. A kept run is found
+again by its scope (`scope=`, the eval's name when you name none). Kept runs have a history: how a reading moved
+from one run to the next. Add these imports to the top of the file, a grader for the right queue, and replace
+`main()`:
 
 ```python
 from threetears.evals.ops import scope_history
-from threetears.evals.quick import callable_host
+from threetears.evals.quick import as_host
 from threetears.evals.run import run_blocking
 from threetears.evals.storage import SqliteDocumentStore
 ```
@@ -498,8 +494,9 @@ def correct(case: dict, answer: str) -> bool:
 
 async def main() -> None:
     store = SqliteDocumentStore("triage.sqlite")
-    await run_eval(CASES, route_v2, [correct], scope_id="tutorial", k=2, store=store)
-    host = callable_host([correct], store=store)
+    ev = Eval(CASES, route_v2, [correct], k=2)
+    await ev.run(store=store, scope="tutorial")
+    host = as_host([ev], store=store)
     history = await run_blocking(host.blocking_executor, scope_history, host, "tutorial", metric="correct")
     for series in history.series:
         for point in series.points:
@@ -517,14 +514,14 @@ Run the file twice. The second run reads the first run's results from the file, 
 2026-10-10T05:12:18.732953+00:00 route_v2: correct 1.00 over 20 result(s), not_separated from the run before
 ```
 
-- **`callable_host([correct], store=store)`** is the host `run_eval` built for the run. Any later program reads
-  the runs through it: the same scorers, over a store opened on the same file.
-- **`scope_history`** follows one reading over time, one series per candidate, oldest run first. Name a scorer
+- **`as_host([ev], store=store)`** is the host the eval built for the run. Any later program reads the runs
+  through it: the same graders, over a store opened on the same file.
+- **`scope_history`** follows one reading over time, one series per runner, oldest run first. Name a grader
   as `metric=`. It reads the store, which blocks, so async code calls it through `run_blocking`, on the host's
   executor: no store call is ever made on the event loop. Each run is tested against the run before it, over the cases both ran. `regressed` is the step
   to act on. `not_separated`, as here, means the two runs could not be told apart, never that nothing changed.
-- **`compare(..., store=store)`** keeps the arms and their campaign the same way, and `margins=`, `ranges=` and
-  `guardrails=` work exactly as in steps 5 and 7. A later program reads the comparison on the margins, ranges and
+- **A comparison's `run(store=store)`** keeps the arms and their campaign the same way, and `grader(...)`'s
+  `margin=`, `range=` and `guard=` work exactly as in steps 5 and 7. A later program reads the comparison on the margins, ranges and
   guardrails it ran under, whatever its own host declares.
 - **Keep the file across releases.** Runs, results and cases are the evidence core: a later release reads them
   as stored, upgrading an older one as it reads it. A comparison's campaign and analysis are not kept that way.
@@ -552,7 +549,7 @@ you are still figuring out how to do evals, or because you have an intuition and
 without a clear goal. Both are good reasons, and exploring needs no planning: only saying so. A campaign you create
 yourself takes `exploratory=True` when it declares no design, and one that says neither is refused.
 
-Declaring a design pays off once you will act on the answer. `compare` already declares the axes (the levers
+Declaring a design pays off once you will act on the answer. A comparison already declares the axes (the levers
 you varied, and their levels) and the control for you; on a host of your own you declare those too, so the
 report can check that each lever moved as you meant. Two more things are always yours to declare, before the
 runs:

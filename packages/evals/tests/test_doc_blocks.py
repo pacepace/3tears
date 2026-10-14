@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import sys
 import types
 from collections.abc import Mapping
 from pathlib import Path
@@ -49,12 +50,24 @@ def without(blocks: list[str], skipped: Mapping[str, str]) -> list[str]:
 
 
 async def run_in_order(blocks: list[str], namespace: dict[str, Any], *, page: str) -> None:
-    """Run ``blocks`` one after another in ``namespace``, awaiting each that awaits, as ``python -m asyncio`` would."""
-    for index, block in enumerate(blocks):
-        code = compile(block, f"{page}[{index}]", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
-        ran = eval(code, namespace)
-        if isinstance(ran, types.CoroutineType):
-            await ran
+    """Run ``blocks`` one after another in ``namespace``, awaiting each that awaits, as ``python -m asyncio`` would.
+
+    The blocks run in a module of their own, as a reader's ``__main__`` is one: a pydantic model a block declares
+    resolves its annotations in the module it was defined in, which must be a module the interpreter knows.
+    """
+    # One module per namespace, made on its first page, so no test reads another's names.
+    stem = page.removesuffix(".md").replace("-", "_")
+    name = namespace.setdefault("__name__", f"doc_blocks_{stem}_{id(namespace)}")
+    module = sys.modules.setdefault(name, types.ModuleType(name))
+    module.__dict__.update(namespace)
+    try:
+        for index, block in enumerate(blocks):
+            code = compile(block, f"{page}[{index}]", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+            ran = eval(code, module.__dict__)
+            if isinstance(ran, types.CoroutineType):
+                await ran
+    finally:
+        namespace.update(module.__dict__)
 
 
 def printed_lines(capsys: pytest.CaptureFixture[str]) -> list[str]:
@@ -121,7 +134,9 @@ JUDGES_SKIPPED = {
 
 async def test_judges_and_calibration_runs_top_to_bottom_on_a_stand_in_client() -> None:
     """The rubric, the judged run, the ratings, agreement, tiers, repeats, frozen judge cases and their readings."""
-    namespace: dict[str, Any] = {"client": SimpleNamespace(generate=_stand_in_judge, aclose=_close)}
+    # The page's client names the model it calls, as a Judge's client does.
+    client = SimpleNamespace(generate=_stand_in_judge, aclose=_close, model_name="judge-model")
+    namespace: dict[str, Any] = {"client": client}
     blocks = without(page_blocks("judges-and-calibration.md"), JUDGES_SKIPPED)
     await run_in_order(blocks, namespace, page="judges-and-calibration.md")
     assert namespace["frozen"].cases, "the freeze froze nothing, so the blocks after it read nothing"

@@ -25,13 +25,13 @@ Three more terms:
 |---|---|---|---|---|
 | Is B better than A? | A and B, differing in one lever; A is the control | `one_factor_at_a_time` | [the contrasts against the control](reading-reports.md#reading-a-comparison) | why B differs, or whether another level would do better |
 | Which of several single changes helps? | the control, plus one arm per change, each moving one lever | `one_factor_at_a_time` | the contrasts, Holm-corrected across the arms | how the changes combine |
-| Which combination wins? | every combination of the levers' levels (a full grid) | `multi_factor` | the contrasts, read again against other controls (`Comparison.against`) | which lever made a combination's gain, except where the grid holds that lever's two levels with all else equal |
+| Which combination wins? | every combination of the levers' levels (a full grid) | `multi_factor` | the contrasts, read again against other controls (`Result.against`) | which lever made a combination's gain, except where the grid holds that lever's two levels with all else equal |
 | Which arm is cheapest among those good enough? | arms that differ in cost (model, effort), all run at one k, under one subject | any | the [frontier](#the-frontier-passk-against-cost): pass^k, cost and latency against a bar | whether two arms differ on a measure; that is a contrast |
 
 **"One lever per arm" is a rule for the first two questions, not a law.** It is what makes each contrast
 attributable to its lever. In a grid, arms that move several levers are the point. A lever's effect is clean
 only between two arms that differ in that lever alone. A 2×2 grid holds two such pairs for each lever: the
-report tests the lever at the control's level of the other lever, and `Comparison.against` tests it at the
+report tests the lever at the control's level of the other lever, and `Result.against` tests it at the
 other level. The engine does not test the interaction itself. When those two effects differ, the combination
 matters more than either lever. Each `against` is its own Holm family. The bundle's row for each lever
 (`bundle.coverage`) lists in `confounded_by` every other lever that varied across its runs. While that list
@@ -47,13 +47,13 @@ decision surface's row order is not a ranking either.
 
 ## Declare the design and its control
 
-**On the quick path, `compare` declares it for you.** It sets one axis per factor, with the levels the arms
-ran, and the control from `control=`. It sets `intended_repetitions` to `k`, and states the stimulus held
+**On the quick path, an `Eval` over a mapping of arms declares it for you.** It sets one axis per factor, with the
+levels the arms ran, and the control from the mapping's first key. It sets `intended_repetitions` to `k`, and states the stimulus held
 fixed and the rig commissioned. It launches every arm together, so time and load do not differ between them.
 
 ```python
 from threetears.evals.analysis import inspect_campaign_bundle
-from threetears.evals.quick import compare
+from threetears.evals import Eval
 from threetears.evals.run import run_blocking
 
 CASES = [
@@ -73,9 +73,8 @@ def classifier(prompt):  # an offline stand-in for a model call under each promp
         return "billing" if "charged" in text or "refund" in text else "bug"
     return classify
 
-comparison = await compare(
-    CASES, {"v1": classifier("v1"), "v2": classifier("v2")}, control="v1",
-    expected=lambda case: case["queue"], scope_id="triage", k=3,
+comparison = await Eval(CASES, {"v1": classifier("v1"), "v2": classifier("v2")}, ["queue"], k=3).run(
+    store=":memory:", scope="triage"
 )
 host = comparison.host
 # A store read, so it runs off the event loop, on the host's executor.
@@ -190,25 +189,26 @@ and never slips:
 from functools import partial
 
 from threetears.evals.analysis import frontier
-from threetears.evals.quick import Answer
+from threetears.evals import Answer
 from threetears.evals.run import list_runs
 
 def agent(cost, skips):  # an offline stand-in that leaves the light alone in the rooms named in `skips`
     async def act(case, room):
         seen = await room.view()
         wanted = "on" if seen["daylight"] == "dark" else "off"
-        if seen["light"] != wanted and case["id"] not in skips:
+        if seen["light"] != wanted and case["room"] not in skips:
             await room["switch_light"](to=wanted)
         return Answer("Done.", model="m", cost_usd=cost)
     return act
 
-ROOMS = [{"id": f"{light}-{day}-{i}", "light": light, "daylight": day}
+ROOMS = [{"room": f"{light}-{day}-{i}", "world": {"light": light, "daylight": day}}
          for light in ("on", "off") for day in ("dark", "bright") for i in range(5)]
-rooms = await compare(
-    ROOMS, {("m", "high"): agent(0.002, set()), ("m", "low"): agent(0.0005, {"off-dark-0", "off-dark-1"})},
-    factors=("model", "effort"), control=("m", "high"), world=ROOM, scope_id="lights", k=3,
-    seed=lambda case: {"light": case["light"], "daylight": case["daylight"]},
-    goal_checks=['(state.light == "on") == (state.daylight == "dark")'],
+arms = {  # named as k=v pairs: each pair a factor, the first arm the control
+    "model=m, effort=high": ROOM(agent(0.002, set())),
+    "model=m, effort=low": ROOM(agent(0.0005, {"off-dark-0", "off-dark-1"})),
+}
+rooms = await Eval(ROOMS, arms, ['(state.light == "on") == (state.daylight == "dark")'], k=3).run(
+    store=":memory:", scope="lights"
 )
 read = await run_blocking(  # a store read
     rooms.host.blocking_executor, frontier, rooms.host.storage, "lights",
@@ -227,10 +227,10 @@ The cheaper arm may still be good enough; 20 rooms cannot say. To decide it, add
 Before you rely on it, check two things:
 
 - **Every arm must run under one subject.** The frontier never ranks across subjects. On the quick path,
-  every arm of one `compare` runs under the comparison's subject (its name), so its models and its named arms
+  every arm of one comparison runs under the comparison's subject (its name), so its models and its named arms
   rank on one frontier. On your own host, run every arm under the subject it measures.
 - **pass^k needs goal checks or a judge.** An arm graded by neither, such as a classifier scored only by
-  `expected=`, has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and no bar
+  a field grader, has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and no bar
   is decided on it. Read such an arm from the contrasts.
 
 The same frontier is the `scope_frontier` action and the `frontier` command

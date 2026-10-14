@@ -10,7 +10,7 @@ The code blocks run in order, in one async context (`python -m asyncio`, or insi
 names an earlier one defined. A store call blocks, so a block makes it off the event loop with
 `await run_blocking(host.blocking_executor, fn, ...)`.
 
-The **quick path** (`run_eval` or `compare` with a `World`) wires everything for you. A **full host**
+The **quick path** (an `Eval` whose runner is a `World`'s: `ROOM(agent)`) wires everything for you. A **full host**
 ([adopting a host](adopting-a-host.md#a-world-through-the-cells-session)) is needed when your world is production
 state behind your own write paths, when a template must state preconditions or prove its checks, when lookups
 need cassettes in the same run as a world, or when the agent sees the world through more than one surface.
@@ -18,25 +18,32 @@ need cassettes in the same run as a world, or when the agent sees the world thro
 ## Step 1: declare the world
 
 A world is a few named pieces of state, each with a JSON Schema and a sentence on why it matters, plus the tools
-that change it. A tool is a plain function of the state. The schema of each parameter is what the model is
-shown, and a call that breaks it changes nothing, is not recorded, and tells the agent why.
+that change it. On the quick path the state is a pydantic model, each field a dimension and its `description` why
+it matters, and a tool is a plain function of the state and its typed parameters. The schema of each parameter,
+read from its type, is what the model is shown, and a call that breaks it changes nothing, is not recorded, and
+tells the agent why.
 
 ```python
-from threetears.evals.quick import Dimension, World, WorldTool, callable_host, run_eval
+from typing import Literal
 
-def switch_light(room: dict, to: str) -> str:
+from pydantic import BaseModel, Field
+
+from threetears.evals import Eval, World
+
+class Room(BaseModel):
+    light: Literal["on", "off"] = Field(description="The lamp the assistant controls.")
+    daylight: Literal["dark", "bright"] = Field(description="Whether the room needs the lamp at all.")
+
+def switch_light(room: Room, to: Literal["on", "off"]) -> str:
     """Turn the room's light on or off."""  # the model sees this line as the tool's description
-    room["light"] = to
+    room.light = to
     return f"The light is now {to}."
 
-ROOM = World("room", [
-    Dimension("light", {"enum": ["on", "off"]}, "The lamp the assistant controls."),
-    Dimension("daylight", {"enum": ["dark", "bright"]}, "Whether the room needs the lamp at all."),
-], tools=[WorldTool(switch_light, to={"enum": ["on", "off"]})])
+ROOM = World(Room, tools=[switch_light])  # named for its state: calls are "room.switch_light"
 ```
 
 `ROOM.registry` is the engine's declaration that this builds: each dimension gets a `seed` and a `read` handle and
-is `perceived_by` the one surface the agent sees (`await room.view()` inside the candidate). On a full host you
+is `perceived_by` the one surface the agent sees (`await room.view()` inside the agent). On a full host you
 write that declaration yourself. The handles must be production's own write and read paths, and `perceived_by`
 must name **every** surface that shows the dimension to the agent:
 
@@ -71,8 +78,9 @@ REGISTRY = WorldRegistry(
 
 ## Step 2: seed each case's starting state
 
-Each case states where its world starts. `seed=` maps a case to every dimension's value. A seed that leaves a
-dimension unset or breaks its schema is refused before anything runs, and every cell gets a fresh world.
+Each case states where its world starts, under its reserved `world` key. A field it leaves out takes the state
+model's default; a starting state that leaves a field with no default unset, or breaks its schema, is refused
+before anything runs, and every cell gets a fresh world. Goal checks (step 3) are listed among the graders.
 
 ```python
 async def agent(case, room):  # your agent; examples/world.py runs Claude in a tool loop here
@@ -82,15 +90,12 @@ async def agent(case, room):  # your agent; examples/world.py runs Claude in a t
         await room["switch_light"](to=wanted)
     return "Done."
 
-CASES = [{"light": light, "daylight": daylight} for light in ("on", "off") for daylight in ("dark", "bright")]
+STARTS = [(light, daylight) for light in ("on", "off") for daylight in ("dark", "bright")]
+CASES = [{"world": {"light": light, "daylight": daylight}} for light, daylight in STARTS]
 LIGHT_MATCHES_DAYLIGHT = '(state.light == "on") == (state.daylight == "dark")'
 
-host = callable_host(world=ROOM)  # kept, so the results can be read back in step 6
-summary = await run_eval(
-    CASES, agent, host=host, world=ROOM, scope_id="lights", k=2,
-    seed=lambda case: {"light": case["light"], "daylight": case["daylight"]},
-    goal_checks=[LIGHT_MATCHES_DAYLIGHT],
-)
+result = await Eval(CASES, ROOM(agent), [LIGHT_MATCHES_DAYLIGHT], k=2).run(store=":memory:", scope="lights")
+host, summary = result.host, result.summary  # kept, so the results can be read back in step 6
 print(summary.render())
 ```
 
@@ -132,7 +137,6 @@ from threetears.evals.schema import (
     RecordedCall,
     WorldSeed,
 )
-from threetears.evals.quick import CALLABLE_KIND
 from threetears.evals.run import create_template, run_blocking
 
 LIGHT_ON = 'state.light == "on"'
@@ -145,7 +149,8 @@ template = await run_blocking(  # a store write, so it runs off the event loop
     create_template,
     host,
     {
-        "candidate_kind": CALLABLE_KIND, "name": "dark room", "intent": "Light a dark room for reading.",
+        "candidate_kind": "callable",  # the kind an eval's runs are of
+        "name": "dark room", "intent": "Light a dark room for reading.",
         "world_seed": WorldSeed(namespaces={"room": {"light": "off", "daylight": "dark"}}),
         "preconditions": [Precondition(expression='state.light == "off"', presumes="The lamp starts off.")],
         "goal_state_checks": [LIGHT_ON, AT_MOST_ONE_SWITCH],
@@ -188,7 +193,7 @@ Pitfalls:
   and a refused call is its own outcome, which `refused()` and `refused_count()` exist to grade.
 - A string comparison over a call parameter is allowed only where the tool's own schema closes the value
   (`enum`, `const` or `pattern`). Anything else compares text the model wrote, which belongs to a judge. The
-  authoring gate refuses it; `run_eval` does not check this today, so hold yourself to it.
+  authoring gate refuses it; an eval does not check this today, so hold yourself to it.
 - A `variation.*` parameter is one string, never a list: `intersects(state.tags, variation.tags)` is refused.
   Write the set as a list literal, or use `contains(state.tags, variation.tag)`.
 
@@ -196,10 +201,13 @@ Pitfalls:
 
 World tools always run, because replaying a recording in their place would leave the world unmoved and the end
 state graded wrong. A cassette is for **lookups** whose answers drift or cost money: a search, a price feed. On
-the quick path these are `tools=` on a run without a world. Capture once at `k=1`, then replay:
+the quick path these are a world with no state, `World(tools=[...], recording=...)`. Record once at `k=1`, then
+replay:
 
 ```python
 import random
+from pathlib import Path
+from tempfile import mkdtemp
 
 def search(query: str) -> list[str]:  # a live index whose ranking drifts
     return random.sample(["14 days", "30 days", "90 days"], k=2)
@@ -208,16 +216,13 @@ async def answers_from_search(case, tools):
     return (await tools["search"](query=case["query"]))[0]
 
 QUERIES = [{"query": "refund window", "expected": "14 days"}, {"query": "log retention", "expected": "90 days"}]
-search_host = callable_host()
-capture = await run_eval(QUERIES, answers_from_search, expected=lambda case: case["expected"], host=search_host,
-                         scope_id="search", tools={"search": search}, cassette_mode="capture", k=1)
-replay = await run_eval(QUERIES, answers_from_search, expected=lambda case: case["expected"], host=search_host,
-                        scope_id="search", tools={"search": search}, cassette_mode="replay",
-                        cassette_corpus_id=capture.run_id, k=3)
+LOOKUPS = World(tools=[search], recording=Path(mkdtemp()) / "search.jsonl")  # a file of your own, in practice
+capture = await Eval(QUERIES, LOOKUPS(answers_from_search), ["expected"], k=1).run(store=":memory:", scope="search")
+replay = await Eval(QUERIES, LOOKUPS(answers_from_search), ["expected"], k=3).run(store=":memory:", scope="search")
 ```
 
-A replay asked something the capture never recorded excludes that cell as a rig failure; it never runs live.
-`run_eval` refuses `tools=` or a cassette mode beside `world=`. A host's own kind can wire cassettes for its
+A replay asked something the recording does not hold excludes that cell as a rig failure; it never runs live.
+`RECORD=1` records the file again. A world with state takes no recording. A host's own kind can wire cassettes for its
 lookups next to a world ([cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools)).
 `examples/cassettes.py` is the full example.
 
@@ -274,8 +279,8 @@ for result in results:
     print(result.test_case_id, trace.call_ledger.calls, trace.end_state, failed or "ok")
 ```
 
-**A change, better or worse.** `compare(CASES, {"old": old_agent, "new": new_agent}, control="old", world=ROOM,
-seed=..., goal_checks=[...], scope_id=...)` runs both agents on the same seeded cases. Each goal check becomes a
+**A change, better or worse.** `Eval(CASES, {"old": ROOM(old_agent), "new": ROOM(new_agent)}, [checks...])`, the
+first key the control, runs both agents on the same seeded cases. Each goal check becomes a
 reading named `goal_state:<check>` in the contrasts table, with its interval and verdict, and an unproven check is
 disclosed under Methods. [Reading a comparison](reading-reports.md#reading-a-comparison) explains the verdicts.
 

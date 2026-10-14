@@ -48,7 +48,7 @@ the open tickets it closed, the meeting it booked, the light it switched on.
    ```python
    import asyncio
 
-   from threetears.evals.quick import run_eval
+   from threetears.evals import Eval
 
    CASES = [
        {"id": "early", "text": "Exactly what I ordered, and it arrived early.", "expected": "positive"},
@@ -63,9 +63,9 @@ the open tickets it closed, the meeting it booked, the light it switched on.
 
 
    async def main() -> None:
-       summary = await run_eval(CASES, classify, expected=lambda case: case["expected"], k=2)
-       print(summary.render())
-       for miss in summary.misses():
+       result = await Eval(CASES, classify, ["expected"], k=2).run()
+       print(result)  # kept in .evals/evals.sqlite; result.write("report") writes the page
+       for miss in result.misses():
            print(f"{miss.case} (repeat {miss.repeat}): {'; '.join(miss.missed_because)}")
 
 
@@ -157,18 +157,18 @@ you installed.
 |---|---|---|---|
 | World contract | `WorldRegistry`; quick path: `World`, `Dimension`, `WorldTool`, `seed=`, `goal_checks=` | [Evaluating a tool-using agent](docs/evaluating-agents.md), [The world model](docs/world-model.md) | [`world.py`](examples/world.py) |
 | World conformance kit | `check_world_conformance` (`threetears.evals.kernel.host`) | [Step 5](docs/evaluating-agents.md#step-5-run-the-conformance-kit-against-your-world) | |
-| Guardrails, decided apart from capability | quick path: `compare(guardrails={name: Guardrail(margin=..., direction=...)})`, `Comparison.guardrails()`; on a host: `MetricDescriptor(guardrail=True)`, `RubricDim(axis="boundary")`; held / breached / undecided | [Reading the guardrails](docs/reading-reports.md#reading-the-guardrails), [Judges and calibration](docs/judges-and-calibration.md#step-3-guardrails-are-not-capabilities) | [`guardrails.py`](examples/guardrails.py) |
-| Equivalence, the only verdict that says "good enough" | A margin by measure: `compare(margins={"accuracy": 0.05})` (recorded on the runs) or a scorer's, `margins={"correct": 0.05}`; a scorer returning a number, not a bool, needs its range too (`ranges={"rating": (1, 5)}`). On a host: `MetricDescriptor.materiality_threshold` and `value_range` (with no range it is never tested) | [Reading a comparison](docs/reading-reports.md#reading-a-comparison) | [`compare_two_efforts.py`](examples/compare_two_efforts.py) |
+| Guardrails, decided apart from capability | quick path: `grader(fn, guard=...)` or `Judge(guard={dim: ...})`, `Result.guardrails()`; on a host: `MetricDescriptor(guardrail=True)`, `RubricDim(axis="boundary")`; held / breached / undecided | [Reading the guardrails](docs/reading-reports.md#reading-the-guardrails), [Judges and calibration](docs/judges-and-calibration.md#step-3-guardrails-are-not-capabilities) | [`guardrails.py`](examples/guardrails.py) |
+| Equivalence, the only verdict that says "good enough" | A margin by grader: `grader("label", margin=0.05)` on the classifier's field (recorded on the runs) or a function's, `grader(correct, margin=0.05)`; a grader returning a number, not a bool, needs its range too (`grader(rating, range=(1, 5))`). On a host: `MetricDescriptor.materiality_threshold` and `value_range` (with no range it is never tested) | [Reading a comparison](docs/reading-reports.md#reading-a-comparison) | [`compare_two_efforts.py`](examples/compare_two_efforts.py) |
 | Typed verdicts and a CI gate | `Comparison.verdicts()`, `Comparison.gate()`, `python -m threetears.evals gate --fail-on regressed,breached` | [The command line](docs/command-line.md#gate) | [`reports.py`](examples/reports.py) |
 | Cassettes | `tools=`, `cassette_mode="capture"` / `"replay"`, `cassette_corpus_id=` | [Adopting the engine](docs/adopting-a-host.md#cassettes-recording-and-replaying-tools) | [`cassettes.py`](examples/cassettes.py) |
-| Grids of factors | `compare(..., factors=...)`, `Comparison.against` | [Choosing a campaign design](docs/choosing-a-design.md#start-from-the-question) | [`prompt_x_effort.py`](examples/prompt_x_effort.py) |
+| Grids of factors | arms named as `k=v` pairs (`"prompt=v2, effort=low"`), `Result.against` | [Choosing a campaign design](docs/choosing-a-design.md#start-from-the-question) | [`prompt_x_effort.py`](examples/prompt_x_effort.py) |
 | Campaigns and declared designs | `create_campaign`, `update_campaign`, `add_runs_to_campaign`, `set_campaign_control`, `declared_design`, `exploratory`, `control_from_run_id` | [Choosing a campaign design](docs/choosing-a-design.md#declare-the-design-and-its-control) | [`compare_two_prompts.py`](examples/compare_two_prompts.py) |
 | Cost against quality | `Answer`, `max_cost_usd=`, the frontier | [Cost and budgets](docs/cost-and-budgets.md), [The frontier](docs/choosing-a-design.md#the-frontier-passk-against-cost) | [`compare_two_efforts.py`](examples/compare_two_efforts.py) |
 | The analysis bundle and reports | `inspect_campaign_bundle`, `AnalysisContextBundle`, `report_markdown`, `report_html` | [Reading reports](docs/reading-reports.md) | [`reports.py`](examples/reports.py) |
 | Analysis written by a model over frozen evidence | `generate_analysis` | [Having a model write the analysis](docs/reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence) | [`llm_analysis.py`](examples/llm_analysis.py) |
 | Judge calibration and evidence tiers | `rate_result`, `judge_agreement`, `JudgeEvidenceTier` | [Judges and calibration](docs/judges-and-calibration.md) | [`llm_judge.py`](examples/llm_judge.py) |
 | MCP | `threetears.evals.actions`, `mount_fastmcp` (extra `fastmcp`) | [Driving it from an agent](docs/agents-and-mcp.md) | |
-| Keeping runs | `run_eval(..., store=SqliteDocumentStore(path))`, the same on `compare`; any `DocumentStore`, proven with `STORE_CONFORMANCE_CASES` | [Keep your runs](docs/tutorial.md#8-keep-your-runs), [The store](docs/adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it), [What is kept](docs/adopting-a-host.md#stored-data-what-is-kept) | |
+| Keeping runs | `Eval(...).run(store=path)` (by default `.evals/evals.sqlite`); any `DocumentStore`, proven with `STORE_CONFORMANCE_CASES` | [Keep your runs](docs/tutorial.md#8-keep-your-runs), [The store](docs/adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it), [What is kept](docs/adopting-a-host.md#stored-data-what-is-kept) | |
 | A complete host | `EvalHost`, `HostProfile`, `CandidateKind` | [Adopting the engine](docs/adopting-a-host.md#read-the-reference-hosts-in-this-order) | [`courierhost`](tests/fixtures/courierhost/__init__.py), then [`toyhost`](tests/fixtures/toyhost/README.md) |
 
 Import only from the public roots the [reference](docs/reference.md#public-api)

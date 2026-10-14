@@ -34,12 +34,12 @@ A dimension is one question, named `<context>.<name>`. Write it from failures yo
 judge is asked one dimension per call, gives its reasoning before its score, and may answer "can't tell", which
 excludes that cell from the dimension. It reads only the answer and what `case_material` renders for the case,
 so give it what the candidate answered from. With no `case_material` it sees the case as JSON, and on a
-classifier run (`expected=`) every field holding the expected label is left out, so it never grades against the
+classifier run (a field grader) every field holding the expected label is left out, so it never grades against the
 answer key by accident. To grade against a reference answer, render the reference through `case_material`.
 
 ```python
 from threetears.evals.schema import RubricDim
-from threetears.evals.quick import Judge
+from threetears.evals import Judge
 
 POLICY = "Unworn items can be returned within 30 days of delivery for a full refund. Sale items are exchange only."
 
@@ -55,8 +55,8 @@ NO_PROMISES = RubricDim(
     scale="pass_fail",
     axis="boundary",  # a guardrail: step 3
 )
-judge = Judge(
-    client=client, model="judge-model", rubric=[GROUNDED, NO_PROMISES],
+judge = Judge(  # `client` names the model it calls ("judge-model"), as client.model_name
+    client, [GROUNDED, NO_PROMISES],
     case_material=lambda case: f"Store policy:\n{POLICY}\n\nCustomer question: {case['question']}",
 )
 ```
@@ -65,8 +65,8 @@ Name the judge's model by a concrete model id, never an alias: the served model 
 key, so an alias re-pointed to a new model under the same name merges two judges' evidence (Step 7).
 
 A scoring guide's levels must be the scale's own (`pass`/`fail`, or `1`–`5`). For a quick rubric, pass a mapping
-of name to description and one `scale=` for all of them: `Judge(client=client, model="judge-model",
-rubric={"helpful": "..."}, scale="pass_fail")` names the dimension `answer.helpful`.
+of name to description, each scored pass/fail: `Judge(client, {"helpful": "..."})` names the dimension
+`answer.helpful`. A dimension on another scale is a `RubricDim` stating it.
 
 **A dimension declares its judge.** `RubricDim.judge` says which judge scores it: `"builtin"`, the engine's own
 prompt for its scale, or `"configured"`, the scope's active `JudgeConfig` for the dimension (created with
@@ -88,14 +88,14 @@ read into the composite and pass^k. A **guardrail** (`axis="boundary"`) is somet
 with an unsafe ask, promise what policy does not allow. A guardrail never joins the composite, pass^k or a
 comparison family. In a comparison each one is decided for each arm against the control as `held`, `breached` or
 `undecided`, and a breach blocks adopting that arm whatever it gained. An undecided guardrail is never read as
-safe ([reading the guardrails](reading-reports.md#reading-the-guardrails)). `compare(guardrails=...)` puts a
-rubric dimension on the boundary axis with the margin it is held to. A single run's summary shows a guardrail's
+safe ([reading the guardrails](reading-reports.md#reading-the-guardrails)). `Judge(guard={"no_promises": 0.1})`
+puts a rubric dimension on the boundary axis with the margin it is held to. A single run's summary shows a guardrail's
 mean like any other dimension.
 
 ## Step 4: run the judge
 
 ```python
-from threetears.evals.quick import callable_host, run_eval
+from threetears.evals import Eval
 
 POLICY_CASES = [
     {"question": "Can I return worn shoes?"}, {"question": "How long do I have to return a jacket?"},
@@ -108,9 +108,8 @@ async def answer(case):
     return "Unworn items can be returned within 30 days for a full refund."
 
 
-host = callable_host()  # kept: its in-memory store holds the results the next steps read
-summary = await run_eval(POLICY_CASES, answer, judge=judge, host=host, scope_id="support", k=2,
-                         model="candidate-model")
+result = await Eval(POLICY_CASES, {"candidate-model": answer}, [judge], k=2).run(store=":memory:", scope="support")
+host, summary = result.host, result.summary  # kept: the host's in-memory store holds what the next steps read
 print(summary.render())
 ```
 
@@ -454,7 +453,8 @@ reading that re-scored one side under the other side's judge.
 Calls are priced against the out-of-run cap before the first is sent. They are ledgered under purpose
 `second_judge` and never added to the candidate's cost.
 
-**Comparing two candidates on judged quality:** see `compare`'s `judge=`.
+**Comparing two candidates on judged quality:** list the `Judge` among the graders of an `Eval` over a mapping
+of arms.
 
 ## Step 10: measure what temperature does to the judge
 
@@ -704,12 +704,12 @@ seeded = await run_blocking(
 dimension's scale cannot hold (`"fail"` on an ordinal dimension, `7`, `3` on pass/fail) is refused when the case is
 written, naming both. Through an agent, the `judge_case_author` action writes one case, naming the dimension by its
 template (`criterion_template_id`, `criterion`) and recording the caller as its author. On the quick path, hand the
-`Judge` its examples, and every judged `run_eval` stores them as authored cases of the judge template
+`Judge` its examples, and every judged eval stores them as authored cases of the judge template
 `<template id>-judge`, listed by the case set of that name, calling no model:
 
 ```
-Judge(client=client, model="judge-model", rubric=[GROUNDED], case_material=...,
-      examples=[JudgeExample("grounded", "Yes, within 60 days.", "fail", "60 days is in no policy", case=ticket)])
+Judge(client, [GROUNDED], case_material=...,
+      examples=[Example("grounded", "Yes, within 60 days.", "fail", "60 days is in no policy", case=ticket)])
 ```
 
 Run one arm per judge. Through a launch, a host registers `launchable_judge_kind` for `JUDGE_KIND` and declares

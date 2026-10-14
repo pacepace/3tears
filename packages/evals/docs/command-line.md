@@ -25,23 +25,26 @@ python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host -
                                   [--repeats N] [--all] [--result ID ...] [--estimate] [--json]
 ```
 
-**Runs you made with `run_eval` or `compare`** are read the same way: the factory returns the host the quick path
-built over the store you kept them in ([Keep your runs](tutorial.md#8-keep-your-runs)), with the same scorers:
+**Runs you made with an `Eval`** are read the same way: the factory returns the host the evals run in, over the
+store you kept them in ([Keep your runs](tutorial.md#8-keep-your-runs)), with the same graders:
 
 ```python
 # myapp/evals.py
-from threetears.evals.quick import callable_host
+from threetears.evals import Eval
+from threetears.evals.quick import as_host
 from threetears.evals.storage import SqliteDocumentStore
 
-from myapp.scorers import correct
+from myapp.triage import CASES, correct, triage
+
+TRIAGE = Eval(CASES, triage, [correct])
 
 
 def build_host():
-    return callable_host([correct], store=SqliteDocumentStore("triage.sqlite"))
+    return as_host([TRIAGE], store=SqliteDocumentStore("triage.sqlite"))
 ```
 
 `ls`, `report`, `bundle`, `spend`, `frontier` and `gate` then read those runs. `run` needs a launch host, and
-`judge-temperature` a host with completion clients (`callable_host(..., clients=...)`).
+`judge-temperature` a host with completion clients (`as_host(..., clients=...)`).
 
 ### `run`
 
@@ -113,7 +116,7 @@ The default is `--fail-on regressed,breached,undecided-guardrail`: a regression 
 guardrail not shown held is not known to be safe. A verdict left undecided that `--fail-on` does not name exits
 `0`, and the gate prints it as undecided, never as passed. To require every arm be shown improved or equivalent,
 add `not-separated,untested`. `--reading` gates only the readings it names. A campaign with no verdict at all
-(no control, no bar, no guardrail) is refused. In code, `Comparison.gate()` and `gate_verdicts()` do the same.
+(no control, no bar, no guardrail) is refused. In code, `Result.gate()` and `gate_verdicts()` do the same.
 
 ## Exit codes
 
