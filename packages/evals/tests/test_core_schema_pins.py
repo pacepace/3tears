@@ -1,7 +1,7 @@
 """The evidence core's shape is pinned: a core shape cannot change without a minor or a major, as the change is.
 
-``schema/versioning.py`` promises that a core document is read forever from the baseline, and that a newer minor of
-this build's major is read too. This holds the first promise from both ends: every core type's validation JSON schema
+``schema/versioning.py`` promises that a core document of this build's major is read, a newer minor of it included,
+and that the core ships no upgrader: a core major is a baseline reset. This holds the first promise from both ends: every core type's validation JSON schema
 is pinned to a digest under the major and minor recorded here, so a shape change without a version goes red here; and
 a frozen corpus of stored core documents, one directory per core major, must keep reading under the current build,
 which also catches a validator tightening the JSON schema cannot show (the goal grammar, an ``AfterValidator``).
@@ -12,19 +12,19 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
   optional field included. If it is additive only (a new optional field with a default, a new optional
   sub-object, a new member of an open vocabulary, a new doc type) it is a **minor**: bump ``CORE_SCHEMA_MINOR``
   with a ledger line ending in ``MINOR_ADDITIVITY_SENTENCE``, and re-pin the digests and the minor here. Nothing
-  else is a minor: before changing the shape, copy ``tests/fixtures/core_documents/v{N}/`` to ``v{N+1}/`` (the old
-  directory stays as it is: it is what an old store holds), bump ``CORE_SCHEMA_VERSION`` with a ledger line above
-  it, reset ``CORE_SCHEMA_MINOR`` to 0, append one ``CoreUpgrader`` from ``N``, re-pin the digests and the version
-  here, and regenerate the new directory's fixtures and pin their files (``regenerate_core_fixtures.py``, below).
-  Give the step its own test of the fields it transforms.
+  else is a minor: anything else is a **major**, which for the core is a baseline reset with no upgrader. Bump
+  ``CORE_SCHEMA_VERSION`` and ``CORE_BASELINE_VERSION`` together with a ledger line above them, reset
+  ``CORE_SCHEMA_MINOR`` to 0, replace ``tests/fixtures/core_documents/v{N}/`` with ``v{N+1}/`` (a reset refuses and
+  deletes every older core document, so no build reads the old corpus), re-pin the digests and the version here, and
+  pin the new fixtures (``regenerate_core_fixtures.py``, below). Its release notes tell a host to delete its core
+  documents before deploying (``EvalStorage.reset_core``).
 - **The version moved and the pins did not.** Re-pin every digest under the new major or minor, even where a
   shape held, so this file states what it was checked under.
-- **The version moved and the ledger or the chain has no entry for it.** Write the ledger line (a minor's
-  carrying the additivity sentence), and for a major the upgrader.
+- **The version moved and the ledger has no entry for it.** Write the ledger line (a minor's carrying the
+  additivity sentence), and for a major move the baseline with it.
 - **A frozen fixture stopped reading.** The current build no longer reads a document an older build
-  stored. Either a validator tightened (a major and a step that brings old documents into line, or a None
-  for what cannot be derived), or a step is wrong. Never edit the fixture: its digest is pinned so it
-  cannot be.
+  stored at this major. A validator tightened, which is a major (a baseline reset). Never edit the fixture: its
+  digest is pinned so it cannot be.
 - **A frozen fixture's digest moved.** Someone edited a stored document of the past. Restore it.
 - **The core's membership moved.** A type became core or stopped being core; that is a decision about
   what is kept, recorded in ``CORE_DOC_TYPES`` and here together. The eight types people author left the core
@@ -71,7 +71,6 @@ from threetears.evals.schema.versioning import (
     CORE_DOC_TYPES,
     CORE_SCHEMA_MINOR,
     CORE_SCHEMA_VERSION,
-    CORE_UPGRADERS,
     CORE_VERSION_SPACE,
     MINOR_ADDITIVITY_SENTENCE,
 )
@@ -80,22 +79,22 @@ from threetears.evals.schema.versioning import (
 PINNED_CORE_SCHEMA_VERSION = 15
 
 #: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_CORE_SCHEMA_MINOR = 1
+PINNED_CORE_SCHEMA_MINOR = 2
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "eval_action_job": "08dde0e492e98335d953dca2198983899a70960b5bfd52b82ba1cbb64d6f3e75",
-    "eval_analysis_attempt": "28cbb946c28429589a90688b593275af8278820ba6f3bc3ee414a088a67f330d",
-    "eval_campaign": "62dbc461d3dc9fd40d05a255aa2446390dee7df6b04ae653109349429327f5bb",
-    "eval_generation_slot": "ea6ecdf0bb0f2baf40a071ede146fbb1f194ed0fd215fa1d99bd837ad7cc8f08",
-    "eval_judge_temperature_check": "239334f02911c04f433c9a21d5c4d2f00df8b65790a85573eb6fe60035f9b8e4",
-    "eval_launch": "17987aee847cc79dcdf4e902f06321f22b9b93cf7a0fbfb9a7eb6310fee0d472",
-    "eval_out_of_run_spend": "85d9d128c2f8ecbd5c41adf6f2cde657ac52c672adb6241d968f8647ec79f1ae",
-    "eval_result": "b8579faea0145a40e7bd0953f3cc7d8827fc93d08bd70cc2c2b7af0ceb855fe7",
-    "eval_run": "e44d44f881a2e9c91825dfd5def7fd5414a39979ef1c4c08aae4bda49e01f52e",
-    "eval_second_judge_pass": "118f451f6e13ef3bab1c551419d3fb4daafc8603f5ca6484c42d2b0b8fd55590",
-    "eval_sweep": "bb9ca087b2023cf639e413b53d70f224f72a0b6dbed690cda60876852ae13976",
-    "eval_trace": "c8fb190d1f49e8c7b83e81ed9fe31598b910341891eb7d7721168b10453a753f",
+    "eval_action_job": "9c11c196f42bb6ef9947d4fdb00fd179e5cbc5eb3f7e5a0949e413fc35e39d0d",
+    "eval_analysis_attempt": "74fce5fef0e2876f62df51a7c87f364f358ec652646e4fa1efdf696a6361a2c3",
+    "eval_campaign": "aed376e4d6b5f00f083f74a6ebadc545aa466de236124830c37cc228276acdca",
+    "eval_generation_slot": "554e5225bf0bfa617991750089c4953fc4a1903ce095a1e046e53829819b7fc3",
+    "eval_judge_temperature_check": "204d780376bb7db499179d6b63141efa45e3a7ebf45905aa6780d226b872d40e",
+    "eval_launch": "e6d6bfb32c805e284b36b66871f454e8597f87bc0a3b0d3866c417851828fcd6",
+    "eval_out_of_run_spend": "ca2d959bf9d9657e913b5f442730fef7a9505ec693beae87923e199831b2870f",
+    "eval_result": "8bec36e2ce1efed3cf1e099df6e9e3b807b20aa8725a182cc2634990ae49bd65",
+    "eval_run": "526251b8c83afd9889e97d9a86604ba4c2867a3b21ce2ce70e27db41ee14f116",
+    "eval_second_judge_pass": "dfd1d452b98b6c5c7b8fbfd4ee1f4256c8496b29e6e2e770ea2e688b1a34c052",
+    "eval_sweep": "2ffabe3f76ecbf64abf1e4fe196b409fb9bf7bae417aad6660f6eae7fab5910a",
+    "eval_trace": "394735ef53922a7547c5e3cc883030c030be9cd22a98a8f4d527eb0776c645a2",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
@@ -146,20 +145,6 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     ),
 }
 
-#: What a step may never touch beyond the addressing fields: the host's and the kind's opaque payloads, and
-#: every stored key or digest (an upgrader never recomputes identity).
-UNTOUCHABLE_FIELDS = frozenset(
-    {
-        "host_payload",
-        "kind_payload",
-        "variant_key",
-        "context_key",
-        "context_components",
-        "content_hash",
-        "identity_version",
-    }
-)
-
 #: The frozen corpus: one directory per core version, one stored document per core type.
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "core_documents"
 
@@ -170,18 +155,18 @@ FIRST_STORED_AT: dict[str, int] = {}
 
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
-    "v15/eval_action_job.json": "5283f8ce71dfb97876c55ea602877f738bbf7135c976fbcd1904aa1716e66c05",
-    "v15/eval_analysis_attempt.json": "855f51c733b8275beabf97b520dd752765865a8c307c78ed8642a1c669ab32a9",
-    "v15/eval_campaign.json": "c9152ddab88b638891590f3909b5917629c2ff21766a54f62362703560881645",
-    "v15/eval_generation_slot.json": "9a04af073babbd91668b2b294d7d20ba8c62fba6d430abcdecfcd1313b2d4c98",
-    "v15/eval_judge_temperature_check.json": "4dab8c1462b5cd3dab1945624c73061677fe292f03c8fad2509dc96ef72b955b",
-    "v15/eval_launch.json": "8fa9e3d0060c1f43a0717536c4a473d2cb981ba01170c277ecbe9ce8e1d97519",
-    "v15/eval_out_of_run_spend.json": "0919885afaf82372b7f4bc900fb5965a7bc0e09c6d9504cbbae99633a3c79ab3",
-    "v15/eval_result.json": "4524e9cecdb45740fbf7f200c4fa21e0e87484af5d316344fa2faf254607b823",
-    "v15/eval_run.json": "e90dbc59bb11c2fcdd21880e8892446070d49284cc76298a39d019cd472685fb",
-    "v15/eval_second_judge_pass.json": "a3d1b663aa127e77e6056849a8b046e63d1ad5ab87f9791eef67fd5589d8de53",
-    "v15/eval_sweep.json": "1ac1d31e40f730f47a8e8591de9f7f7f712f4c50d56322573e8a5c4e112ca4a3",
-    "v15/eval_trace.json": "703f57f22421d3da09ed45bcf165b05e4d1b07b190ea47990c4cdce03eabe024",
+    "v15/eval_action_job.json": "e1f2e92c5bf8962345488c5791f93e4698c221af53831f06aba5934a73b73e95",
+    "v15/eval_analysis_attempt.json": "bd1015905b2a71c3d1d3efebbb15ce313d1c64a5281a20558fe2e685bcfc85e0",
+    "v15/eval_campaign.json": "b000affa5e9c0bbea26f272ba0024270cceb1fe1720a06ed64c7916f4f9bf0a3",
+    "v15/eval_generation_slot.json": "18efd267b51051a943a4edc53aeb0f57f11efd6f54fa9996791e15b5a25e9991",
+    "v15/eval_judge_temperature_check.json": "178f1a5afc01c064ae7013a35bcf6528a907906e2764689a0784924aa4b70cb3",
+    "v15/eval_launch.json": "3d92be4c4c5d701841ff9ab4b4192879888902d6626ab9e35cad016a9abf53e9",
+    "v15/eval_out_of_run_spend.json": "b8ae34c1bb023f0c5694ad81b31345fd0be19b4d41655e4f3c1d5173d126109d",
+    "v15/eval_result.json": "185ebd15dd452e4ba84527d9750caaa4ccc971055b7280b8124a6f9afb9f690e",
+    "v15/eval_run.json": "05d4b8d8ab2c79d288fc952eb768d820f471fd0038476a5092ca36d0599c7474",
+    "v15/eval_second_judge_pass.json": "6a3e6a6e0bdb25e904e4ee48c941b3c6366deaa1dd0373c62d43d1c8f799ed12",
+    "v15/eval_sweep.json": "4b51f9b19f3cc56c2928413fe2f8314af40d00d615bf17d37b99e49f50e60cc7",
+    "v15/eval_trace.json": "8fe80d888a150823a845e20750d259df302a9559a0b94fc43fa9967156a26445",
 }
 
 #: Keys whose dict values are maps of names to schemas, not schema nodes: their own keys are field or
@@ -305,14 +290,13 @@ def test_the_addressing_fields_are_pinned_and_are_fields() -> None:
 _LEDGER_ENTRY = re.compile(r"^#: - \*\*v(\d+)\*\*", re.MULTILINE)
 
 
-def test_every_core_version_has_a_ledger_entry_and_an_upgrader() -> None:
-    """Every version from the baseline is explained, and every step between two of them is registered."""
+def test_the_core_reads_only_its_own_major_and_every_major_has_a_ledger_entry() -> None:
+    """The core ships no upgrader: a core major is a baseline reset, so the baseline is the major, explained."""
     source = inspect.getsource(versioning)
     ledger = source[source.index("CORE_BASELINE_VERSION: Final") : source.index("CORE_SCHEMA_VERSION: int =")]
-    recorded = {int(version) for version in _LEDGER_ENTRY.findall(ledger)}
-    assert set(range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION + 1)) <= recorded
-    assert [step.from_version for step in CORE_UPGRADERS] == list(range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION))
-    assert all(step.doc_types <= CORE_DOC_TYPES and step.reason for step in CORE_UPGRADERS)
+    assert CORE_BASELINE_VERSION == CORE_SCHEMA_VERSION
+    assert CORE_VERSION_SPACE.upgraders == ()
+    assert CORE_SCHEMA_VERSION in {int(version) for version in _LEDGER_ENTRY.findall(ledger)}
 
 
 def test_every_core_minor_has_a_ledger_entry_carrying_the_additivity_sentence() -> None:
@@ -396,22 +380,3 @@ def test_a_frozen_document_written_before_its_optional_fields_still_reads(path: 
     sparse = {key: value for key, value in document.items() if key not in optional or key in addressed}
 
     assert model.from_dict(sparse).schema_version == CORE_SCHEMA_VERSION  # type: ignore[attr-defined]
-
-
-def test_every_registered_step_keeps_to_the_step_rules() -> None:
-    """On every frozen document at its version, a step leaves what the store reads and every key untouched.
-
-    Empty at the baseline, where no step is registered; the mechanism tests hold the runner to the same
-    rules with synthetic steps.
-    """
-    for step, path in (
-        (step, path) for step in CORE_UPGRADERS for path in sorted((FIXTURES / f"v{step.from_version}").glob("*.json"))
-    ):
-        document = json.loads(path.read_text(encoding="utf-8"))
-        if document["doc_type"] not in step.doc_types:
-            continue
-        protected = CORE_ADDRESSING_FIELDS[document["doc_type"]] | UNTOUCHABLE_FIELDS
-        upgraded = step.upgrade(dict(document))
-        moved = {key for key in protected if upgraded.get(key) != document.get(key)}
-        assert moved <= {"schema_version"}, f"the v{step.from_version} step touched {sorted(moved)} in {path.name}"
-        assert step.upgrade(dict(document)) == upgraded, "a step is pure: the same input gives the same output"

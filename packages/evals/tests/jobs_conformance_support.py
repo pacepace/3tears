@@ -20,7 +20,8 @@ from threetears.evals.kernel import default_job_timeout
 from threetears.evals.actions import Caller, ConformanceSample
 from threetears.evals.kernel.host import CompletionClients
 from threetears.evals.ops import AnalysisGeneration, OpsHost
-from threetears.evals.quick import JUDGED_CALLABLE_KIND, Judge, callable_host, callable_kind
+from threetears.evals import Judge
+from threetears.evals.quick.one_call import JUDGED_CALLABLE_KIND, callable_host, callable_kind
 from threetears.evals.run import (
     KindWiring,
     LaunchableKind,
@@ -36,6 +37,7 @@ from threetears.evals.schema import (
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
+    RubricDim,
     SubjectSnapshot,
 )
 from threetears.evals.testing import CompletionGuard, JobsConformanceHost
@@ -50,7 +52,11 @@ _SUBJECT = "subject-judged"
 _CANDIDATE = "candidate-a"
 _JUDGE = "judge/first"
 _SECOND = "judge/second"
-_RUBRIC = {"answer.faithful": "Says only what the case supports.", "answer.clear": "Reads plainly."}
+#: Judged 1-5, so the judge's 3 is a borderline score.
+_RUBRIC = [
+    RubricDim(name="answer.faithful", description="Says only what the case supports.", scale="ordinal"),
+    RubricDim(name="answer.clear", description="Reads plainly.", scale="ordinal"),
+]
 
 
 @dataclass(frozen=True)
@@ -125,7 +131,7 @@ def conformance_host(
     """
     factory = guard.wrap(clients if clients is not None else ScriptedClients())
     eval_host = callable_host(clients=factory, store=store)
-    judge = Judge(client=_ScriptedClient("judge", _JUDGE), model=_JUDGE, rubric=_RUBRIC)
+    judge = Judge(_ScriptedClient("judge", _JUDGE), _RUBRIC)
     template = EvalTemplate(
         id=_TEMPLATE,
         scope_id=CONFORMANCE_SCOPE,

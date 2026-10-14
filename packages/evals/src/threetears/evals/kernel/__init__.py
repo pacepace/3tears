@@ -380,6 +380,8 @@ from threetears.evals.kernel.surface import (
     TimeAxisBasis,
     TimePosition,
 )
+from threetears.evals.kernel.eval_file import beside_eval_file
+from threetears.evals.kernel.runner_spend import note_spend
 from threetears.evals.kernel.usage_capture import (
     ResolvedUsage,
     RoleUsageLedger,
@@ -657,6 +659,8 @@ __all__ = [
     "ResultCondition",
     "ResultOutcome",
     "RoleUsageLedger",
+    "note_spend",
+    "beside_eval_file",
     "RunIndexEntry",
     "RunRecordStore",
     "RunStore",

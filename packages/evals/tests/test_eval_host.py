@@ -32,7 +32,6 @@ from threetears.evals.run import (
     LaunchSettings,
     launch_run,
     start_run,
-    start_universal_battery,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT, toyhost_observation
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -136,35 +135,6 @@ async def test_a_kind_the_host_registers_no_launcher_for_is_refused():
             subject_id=TOYHOST_SUBJECT.subject_id,
             models=[RUN_MODELS[0]],
         )
-
-
-async def test_the_battery_reads_its_templates_in_the_scope_it_is_named():
-    """The battery lists the universal templates of ONE scope and launches each there.
-
-    Both reads it makes — the listing and each launch's template load — name the scope; a scope-free
-    listing is the read the port no longer has.
-    """
-    host, storage = off_loop(_launching)
-    off_loop(storage.save_template, toyhost_template().model_copy(update={"universal": True}))
-
-    async def preflight(_subject_id, _models):
-        async def check(_template, _cassette_mode):
-            return None
-
-        return check
-
-    run_ids = await start_universal_battery(
-        host, TOYHOST_SUBJECT.subject_id, scope_id=TOYHOST_SCOPE, models=[RUN_MODELS[0]], preflight=preflight
-    )
-    await _settled(host, run_ids)
-
-    assert len(run_ids) == 1
-    assert (
-        await start_universal_battery(
-            host, TOYHOST_SUBJECT.subject_id, scope_id="another-scope", models=[RUN_MODELS[0]], preflight=preflight
-        )
-        == []
-    ), "another scope holds no universal template, so its battery is empty"
 
 
 # --- the host's construction refusals --------------------------------------------------------------
@@ -383,31 +353,6 @@ async def test_a_replay_corpus_must_be_a_capture_of_this_template_in_this_scope(
     assert len(handed) == launched_so_far, "a refused corpus reached the launcher"
 
 
-async def test_a_battery_cannot_replay_one_corpus_across_its_templates():
-    host, storage = off_loop(_launching)
-    off_loop(storage.save_template, toyhost_template().model_copy(update={"universal": True}))
-
-    async def preflight(_subject_id, _models):
-        async def check(_template, _cassette_mode):
-            return None
-
-        return check
-
-    with pytest.raises(
-        ValidationFailedError, match="Nothing was launched.*replay each template with a run_launch of its own"
-    ):
-        await start_universal_battery(
-            host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            cassette_mode="replay",
-            preflight=preflight,
-        )
-
-    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
-
-
 async def test_a_launch_argument_the_kind_cannot_honour_is_refused_before_its_launcher_runs():
     """Refused at the dispatch, so a launcher that would have ignored it never gets the chance."""
     host, storage, handed = off_loop(_launching_with, _wired, unhonoured=frozenset({"cassette_mode"}))
@@ -503,31 +448,3 @@ async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_r
 
     assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert host.job_manager.admitted_count == 0
-
-
-async def test_a_battery_refuses_a_template_its_launch_would_refuse_before_launching_any():
-    """The dispatch's own refusals are pre-flighted over the whole set: all or nothing.
-
-    A battery whose second template names a kind this host cannot launch used to launch the first
-    and then be refused — the partial battery it promises never to start.
-    """
-    host, storage = off_loop(_launching)
-    first = toyhost_template().model_copy(update={"universal": True})
-    unlaunchable = toyhost_template().model_copy(
-        update={"id": "unlaunchable", "universal": True, "candidate_kind": "a-kind-with-no-launcher"}
-    )
-    off_loop(storage.save_template, first)
-    off_loop(storage.save_template, unlaunchable)
-
-    async def preflight(_subject_id, _models):
-        async def check(_template, _cassette_mode):
-            return None
-
-        return check
-
-    with pytest.raises(ValidationFailedError, match="no launcher.*Nothing was launched"):
-        await start_universal_battery(
-            host, TOYHOST_SUBJECT.subject_id, scope_id=TOYHOST_SCOPE, models=[RUN_MODELS[0]], preflight=preflight
-        )
-
-    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []

@@ -35,15 +35,14 @@ working beside the new one for a minor release, and any other (`closure`) name m
 every name that leaves a public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py
 v<version>` prints a release's notes).
 
-- **Dependencies.** Python 3.14+ and `pydantic` only. The engine depends on no other 3tears package. Two extras:
-  `[fastmcp]` (the FastMCP transport) and `[models]` (`3tears-models`, for the shipped provider adapter). The examples that call a model need `[models]`.
+- **Dependencies.** Python 3.14+, `pydantic` and `httpx`. The package depends on no other 3tears package. One
+  extra: `[fastmcp]` (the FastMCP transport).
 - **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
   `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `negotiation`, `providers`. A consumer
   imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
   itself exports the roots, which of them fail to import without an extra and what each needs (`ROOT_EXTRAS`, each
   root's `RootExtra`: the extra and the modules the root imports past the base install, so `transports.fastmcp` needs
-  `[fastmcp]` for `fastmcp`, and `providers` `[models]` for `threetears.models`, `anthropic`, `openai`, `openrouter`,
-  `langchain_core` and `httpx`), all
+  `[fastmcp]` for `fastmcp`), all
   host-contract so a host's import gate reads them rather than keep its own list, and `__version__`, the
   installed version, which a host records beside what it stores since no stored document or analysis bundle carries
   it.
@@ -70,47 +69,35 @@ v<version>` prints a release's notes).
   `scope_id`, required on every stored document. The subject under test is the application's, reached through a
   candidate kind. A kind declares how many cells it runs at once, and plans and prices its own arms
   (`plan_arm`). The adopter's guide is `docs/adopting-a-host.md`.
-- **A shipped provider adapter** (`threetears.evals.providers`, the `[models]` extra). `models_client` turns a chat
-  model 3tears-models builds for Anthropic, OpenAI or OpenRouter into the completion client, `models_clients` is
-  the role factory a host hands `EvalHost` as `clients` (keys from `api_keys=` or each provider's environment
-  variable, refused by name at first use), and `ModelsFailureDescriber` maps each SDK's errors onto the failure
-  port without repeating a payload. A setting a model does not take never fails the call: the adapter sends the
-  closest one it accepts (`closest_settings`, in `negotiation`: a word as the closest word, never more than asked; a budget as the
-  effort word its share of the cap maps to where only words are taken, and a word as that share where only budgets
-  are; an Anthropic effort word over adaptive thinking with no temperature beside it; a strict format a model cannot
-  take, unenforced), from what a provider refused, 3tears-models' capabilities and OpenRouter's catalogue, and each
-  completion reports what its request carried as `sent_settings`. Every request is sent once, under a breaker of
-  the adapter's own, except that a request the provider refused (unbilled) for a setting it carried is sent again
-  with the closest setting the model then takes, learned for every client of the factory; on OpenRouter, whose 404
-  under `require_parameters` names nothing, the temperature goes first and enforcement last (`strict_output=False`).
-  A reply's served model, stop reason, reasoning tokens and the temperature actually sent are read per provider,
-  and which members each provider exposes is pinned by a test, so a LangChain or models upgrade that moves one
-  fails by name. Anthropic and OpenAI calls are priced from models' price catalogue, OpenRouter calls by
-  OpenRouter's own figure, and an unpriced call is `None` with its reason. A reasoning setting that is the caller's
-  error (a word and a budget together, a budget not below the cap), and the Claude CLI route (whose completions
-  read as finished whatever stopped them), are refused by name. The engine
-  never imports it. A stop the provider did not name (no finish reason, an unknown one, Anthropic's `pause_turn`)
-  reads as `truncated`, output cut short for an unnamed cause, and only a provider-reported failure as `error`; a
-  host mapping its own client onto `StopReason` follows the same split. The adapter logs each `truncated` reply's
-  raw stop reason at WARNING. A host awaits `await clients.load_prices()` once at boot, so every client's
-  synchronous `price_ceiling` can price an out-of-run call under an enforced cap. A pricing failure never costs a
-  paid answer (it is logged and the completion returned unpriced), and a cached prompt's cost is marked approximate
-  (`;cache-approximate`). The `judge` role is built from `JUDGE_REQUEST_SETTINGS`, what a judged run records it asked:
-  an output cap and the effort word `high`, sent as the closest setting the judge model takes.
+- **A shipped completion client** (`threetears.evals.providers`, on the base install). `Model("deepseek/deepseek-v4-flash")`
+  speaks OpenRouter's, Anthropic's (`provider="anthropic"`) or any OpenAI-compatible (`provider="openai"`,
+  `base_url=`) chat API over `httpx`, with no SDK, no LangChain and no other 3tears package, and is the engine's
+  completion client as well as a runner's own (`text`, `json` with a strict schema validated on return, `prompt`).
+  `Clients` is the role factory a host hands `EvalHost` as `clients`, `describe_failure` its failure describer over
+  the client's one error, `ProviderError` (never the response body; `account` for a refused key or spent credit),
+  and `Catalogue` OpenRouter's public model list, read once and shared: rates, the parameters each model takes, and
+  what refusals taught. A setting a model does not take never fails the call: the closest one it accepts is sent
+  (`negotiation`), a refusal of one is resent and learned, and each completion reports what its request carried
+  (`sent_settings`, `temperature`); nothing else is retried. A reply's stop maps onto the engine's five words (an
+  unnamed or unknown one is `truncated`, logged with its raw value), counts are `None` when unreported, and the cost
+  is OpenRouter's own figure (plus the upstream's under bring-your-own-key) or the catalogue's rates for a direct
+  call, `None` with its reason when unpriced, never `0`. `Model(..., recording=path)` replays a recording offline and
+  records it live under `RECORD=1`, through `RecordedCompletions`. `Model` is also exported from `threetears.evals`.
+  An app on another client (3tears-models, LangChain, an SDK) wraps it in the `CompletionClient` port.
 - **One negotiation for every client** (`threetears.evals.negotiation`, on the base install: no SDK, no HTTP
-  client). Choosing the closest settings, reading a provider's refusal and resending are not the adapter's own:
+  client). Choosing the closest settings, reading a provider's refusal and resending are not the client's own:
   `negotiate` takes a client's own `send` and refusal reader, resends in the fixed order (a temperature first,
   keeping enforcement, then enforcement) at most once per setting and four times per call, learns into a shared
   `LearnedSettings`, and returns what the served request carried (`Negotiated.sent_settings`, `.temperature`).
   `read_router_refusal` (OpenRouter's 404 and the 400s it relays), `read_anthropic_refusal` and
-  `read_openai_refusal` read a refusal off a status and a JSON body, so a host's client of raw HTTP and the adapter
+  `read_openai_refusal` read a refusal off a status and a JSON body, so a host's client of raw HTTP and the shipped client
   read the same. Only what a served request proved is learned, for the store's life (the process, or the factory):
   never enforcement (each call starts enforced and drops it for itself alone, since a 404 can be an outage), a
   router 404's temperature only when dropping it alone was served, and a temperature refused beside reasoning only
   beside reasoning; an effort refusal steps at most once before sending no effort word, and an output cap the
   provider names is resent and kept. `facts_from_router_catalogue` reads a catalogue's `supported_parameters` as
   only what no endpoint takes, `wire_settings_for` builds a client's asked settings from the engine's, and
-  `models_clients` builds the simulator from `SIMULATOR_REQUEST_SETTINGS` as it builds the judge. The host guide
+  `Clients` builds the simulator from `SIMULATOR_REQUEST_SETTINGS` as it builds the judge. The host guide
   carries a minimal OpenRouter client built on it, and `testing.check_refusal_negotiation` scripts three routers (a
   temperature refused under enforcement, no endpoint under enforcement, an upstream refusing the cap and the effort
   word), naming each mistake a host's client makes in resending, reporting or remembering.

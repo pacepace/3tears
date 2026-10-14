@@ -8,7 +8,8 @@ adapters BEHIND that port, so an adapter's dependencies never reach the schema.
 It holds two adapters, a router and a bridge. :class:`InMemoryDocumentStore` is the reference adapter for tests,
 examples and a quick start, and the shape to compare a real adapter against; nothing it holds outlives the
 process. :class:`SqliteDocumentStore` keeps every document in one SQLite file through the standard library, for
-keeping runs without running a database (``run_eval(..., store=SqliteDocumentStore("evals.sqlite"))``).
+keeping runs without running a database (``Eval(...).run(store=SqliteDocumentStore("evals.sqlite"))``, which an eval
+opens by default under ``.evals/``).
 :class:`RoutedDocumentStore` is one store over several, each document type kept in the store a
 :class:`DocTypeRoute` over its facts names. All three pass every case of the store conformance kit. A host with its own database writes
 its own adapter, passes it to :class:`~threetears.evals.kernel.EvalStorage`, and proves it with

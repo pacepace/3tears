@@ -135,17 +135,27 @@ async def test_recording_appends_one_line_per_call_and_hands_back_the_inner_comp
     assert all(datetime.fromisoformat(line["recorded_at"]).tzinfo is not None for line in lines)
 
 
-async def test_the_key_covers_the_model_and_temperature_the_completion_reports(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("second", "named"),
+    [
+        (_Reply(content="b", model="acme/small"), "answered by 'acme/small' at 0.0"),
+        (_Reply(content="c", temperature=0.7), "answered by 'acme/large' at 0.7"),
+    ],
+    ids=["another-model", "another-temperature"],
+)
+async def test_a_recording_holds_one_model_at_one_temperature(tmp_path: Path, second: _Reply, named: str) -> None:
+    """A second model or temperature is another client, recorded into a file of its own: onto this one it is refused."""
     path = tmp_path / "rec.jsonl"
-    await _record(
-        path,
-        ("Same prompt.", _Reply(content="a")),
-        ("Same prompt.", _Reply(content="b", model="acme/small")),
-        ("Same prompt.", _Reply(content="c", temperature=0.7)),
-    )
-    lines = _lines(path)
-    assert len({line["key"] for line in lines}) == 3
-    assert [line["index"] for line in lines] == [0, 0, 0]
+    await _record(path, ("Same prompt.", _Reply(content="a")))
+    with pytest.raises(RecordingRefused, match="a recording holds one model at one temperature") as refused:
+        await _record(path, ("Same prompt.", second))
+    assert named in str(refused.value) and refused.value.remedy == "record this client into a file of its own"
+    assert len(_lines(path)) == 1, "the refused call left no line"
+
+    with path.open("a", encoding="utf-8") as recording:
+        recording.write(json.dumps(_good_line(key="f" * 64, result={**_good_line()["result"], "model": "m"})) + "\n")
+    with pytest.raises(RecordingRefused, match="line 2 is not a recorded call: it holds a call of model 'm'"):
+        RecordedCompletions.replay(path, settings=BUDGETED)
 
 
 async def test_concurrent_identical_calls_are_numbered_without_a_gap(tmp_path: Path) -> None:
@@ -279,26 +289,6 @@ async def test_aclose_closes_the_inner_client_recording_and_nothing_replaying(tm
     assert (await replaying.generate(system=SYSTEM, user="Hello.")).content == "ok", "closing a replay releases nothing"
 
 
-async def test_one_file_holding_two_models_answering_one_prompt_replays_each_by_name(tmp_path: Path) -> None:
-    path = tmp_path / "rec.jsonl"
-    await _record(path, ("Same prompt.", _Reply(content="large")), ("Same prompt.", _Reply(content="small", model="m")))
-
-    with pytest.raises(
-        RecordingRefused, match=r"recorded under model 'acme/large' at temperature 0\.0, model 'm'"
-    ) as e:
-        await RecordedCompletions.replay(path, settings=BUDGETED).generate(system=SYSTEM, user="Same prompt.")
-    assert "replay(path, model=..., temperature=...)" in e.value.remedy
-
-    large = RecordedCompletions.replay(path, settings=BUDGETED, model="acme/large")
-    small = RecordedCompletions.replay(path, settings=BUDGETED, model="m", temperature=0.0)
-    assert (await large.generate(system=SYSTEM, user="Same prompt.")).content == "large"
-    assert (await small.generate(system=SYSTEM, user="Same prompt.")).content == "small"
-    with pytest.raises(RecordingRefused, match="under model 'm' at temperature 0.7"):
-        await RecordedCompletions.replay(path, settings=BUDGETED, model="m", temperature=0.7).generate(
-            system=SYSTEM, user="Same prompt."
-        )
-
-
 async def test_check_covers_names_every_prompt_the_recording_no_longer_covers(tmp_path: Path) -> None:
     path = tmp_path / "rec.jsonl"
     await _record(path, ("Roll a die.", _Reply(content="4")), ("Pick a card.", _Reply(content="7")))
@@ -369,7 +359,7 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
             "model": "acme/large",
             "served_model": None,
             "reasoning_tokens": None,
-            "temperature": None,
+            "temperature": 0.0,
             "stop_reason": "end_turn",
         },
         "extra": {},
@@ -722,15 +712,6 @@ async def test_a_replay_stands_in_for_an_analysis_client_and_costs_nothing(tmp_p
     assert replay.price_ceiling(system=SYSTEM, user="anything") == 0.0, "a replay sends nothing and costs nothing"
     ceilings, made, _ = await _analysis_call(replay)
     assert ceilings == [0.0] and made.result.content == "The analysis."
-
-
-async def test_a_replay_s_model_is_the_one_it_names_and_ambiguity_is_refused(tmp_path: Path) -> None:
-    path = tmp_path / "two.jsonl"
-    await _record(path, ("Hello.", _Reply(content="a")), ("Hello.", replace(_Reply(content="b"), model="acme/small")))
-    assert RecordedCompletions.replay(path, settings=BUDGETED, model="acme/small").model_name == "acme/small"
-    with pytest.raises(RecordingRefused, match="holds calls of 2 models .* ambiguous") as refused:
-        _ = RecordedCompletions.replay(path, settings=BUDGETED).model_name
-    assert "model=" in refused.value.remedy
 
 
 def test_a_recorder_of_a_plain_client_names_no_model_and_prices_nothing(tmp_path: Path) -> None:

@@ -120,9 +120,9 @@ async def test_the_action_reads_the_same_and_says_it() -> None:
     assert not outcome.is_error, outcome.text
     listing = UnreadableRunsListing.model_validate(outcome.structured)
     assert listing == off_loop(runs_unreadable, fixture.host.eval_host, TOYHOST_SCOPE)
-    assert f"cannot read: 3 of {listing.runs_read}, 2 stranded" in outcome.text
-    assert f"- run-stranded-running (running, stranded): {RETIRED}" in outcome.text
-    assert f"- run-ended (completed): {MISSING}" in outcome.text
+    assert {f"runs_read: {listing.runs_read}", "stranded: 2", "runs (3):"} <= set(outcome.text.splitlines())
+    assert f"- run_id=run-stranded-running; status=running; stranded=True; reasons=[{RETIRED}]" in outcome.text
+    assert f"- run_id=run-ended; status=completed; stranded=False; reasons=[{MISSING}]" in outcome.text
     assert fixture.campaign.run_ids[0] not in outcome.text
 
 

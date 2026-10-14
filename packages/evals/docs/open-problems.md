@@ -5,7 +5,7 @@ what is missing today and why it matters. Each entry is a gap in today's code, o
 matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry,
 except a limit decided on purpose, which stays, marked "Decided in" its issue with the decision, so the record
 survives. The figures behind several entries are in [measuring soundly](measuring-soundly.md), and the outside
-sources in [prior art](prior-art.md).
+sources in [prior art](design.md#prior-art).
 
 ## Measurement
 
@@ -29,8 +29,8 @@ Decided with the fix that made `held` a bounded test's claim (no issue filed yet
 
 `held` is a claim of safety. With no declared range no test of a mean holds its error rate at a few cases, and the
 t interval the engine read it off claimed `held` up to 9.5% of the time against 2.5% at the margin on skewed coarse
-values. Such a guardrail now reads `undecided`, with the reason "declare value_range on this measure (on compare(),
-ranges= beside the scorer)". Fix, on the host's side: declare the reading's range. A pass/fail scorer and a judged
+values. Such a guardrail now reads `undecided`, with the reason "declare value_range on this measure (on an eval,
+grader(..., range=) beside the guard)". Fix, on the host's side: declare the reading's range. A pass/fail scorer and a judged
 scale declare theirs already.
 
 **The breach on such a reading is still the t interval's, and its rate is not guaranteed.** Simulated at 30 cases
@@ -76,3 +76,12 @@ and per run, so concurrent runs, out-of-run calls and the host's live traffic ca
 quota together. Rejected when the ceiling shipped: a credit cap (provider-specific), folding credits into
 the dollar cap (fails open with no rate card), a separate eval provider key. A fix needs a per-provider
 quota the host declares, shared across runs.
+
+## Worlds
+
+### A world with state has no recorded lookups
+
+Planned for .28 (no issue filed yet). A `World` with state refuses `recording=`, since its tools move the state it
+is graded on, and one world cannot also hold stateless lookups whose answers are recorded, while `as_host` refuses
+evals on two worlds, so no host can pair the two. Rung 4 (`examples/4-booking/`) therefore has no recorded tool
+lookup beside its calendar: every tool it calls runs live in each cell.

@@ -12,8 +12,9 @@ fields with their annotations as written. Everything it renders is deterministic
 timestamps, no object addresses, sets sorted.
 
 Each name also has a stability tier, the one thing the walk does not read from code: :data:`HOST_CONTRACT` declares
-the names a host binds to, and every other public name is ``closure``, public because a public signature reaches
-it. The snapshot records each entry's tier, so a promotion or a demotion is a diff in review like any other.
+the names a host binds to and :data:`STABLE` the rest of the declared surface, and every other exported name is
+``provisional``: importable from its root, promised nothing. The snapshot records each entry's tier, so a promotion
+or a demotion is a diff in review like any other.
 """
 
 from __future__ import annotations
@@ -438,9 +439,12 @@ def public_names() -> Iterator[tuple[str, str, Any]]:
 
 
 #: A public name's stability tier. ``host-contract`` is a name a host binds to (:data:`HOST_CONTRACT`): it moves
-#: only with a ``MIGRATIONS.toml`` record and a deprecation cycle. ``closure`` is a name public because a public
-#: signature reaches it: it may move in any release, recorded in ``MIGRATIONS.toml`` and never shimmed.
-Tier = Literal["host-contract", "closure"]
+#: only with a ``MIGRATIONS.toml`` record and a deprecation cycle. ``stable`` is the rest of the declared surface
+#: (:data:`STABLE`): it may move in any release, recorded in ``MIGRATIONS.toml`` and never shimmed. ``provisional`` is
+#: every other name a root exports, most because a declared signature reaches it, so a host can type its code without
+#: reaching below a root: it is promised nothing, ``docs/reference.md`` does not list it, and the snapshot records
+#: its name and kind but not its signature.
+Tier = Literal["host-contract", "stable", "provisional"]
 
 #: The tiers, in the order the promise weakens.
 TIERS: tuple[Tier, ...] = typing.get_args(Tier)
@@ -456,13 +460,13 @@ class SurfaceEntry:
             with their annotations as written and their defaults; a protocol's members; an enum's or a literal's
             values; a type alias's definition; a class's or exception's constructor. Empty for a constant, whose
             value is data rather than a contract (a schema version moves on every bump).
-        tier: Its stability tier (:data:`Tier`): ``host-contract`` when :data:`HOST_CONTRACT` lists it, otherwise
-            ``closure``, which is what a name nobody has promised is.
+        tier: Its stability tier (:data:`Tier`): ``host-contract`` when :data:`HOST_CONTRACT` lists it, ``stable``
+            when :data:`STABLE` does, otherwise ``provisional``, which is what a name nobody has promised is.
     """
 
     kind: str
     signature: str
-    tier: Tier = "closure"
+    tier: Tier = "provisional"
 
 
 def _fields_signature(cls: type) -> str:
@@ -532,13 +536,14 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 
 #: The host contract: every public name a host binds to, by ``root.name``. Each moves only with a
 #: ``MIGRATIONS.toml`` record and a deprecation cycle (the old name keeps working beside the new one for one minor
-#: release), from 0.68.0 on. Every other public name is ``closure``.
+#: release), from 0.68.0 on. :data:`STABLE` holds the rest of the declared surface; every other public name is
+#: ``provisional``.
 #:
-#: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/tutorial.md``, the
+#: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/ladder.md``, the
 #: README and ``examples/`` (every name they import is here, which ``tests/test_api_tiers.py`` holds), and the
 #: courier host (``tests/fixtures/courierhost/``), the least a product writes to be a host. A name a topic guide
 #: alone imports, a field type a contract name's signature reaches, and a name a later section of the host guide
-#: mentions for an optional feature are ``closure``: promoting one later is free, and demoting one is a break.
+#: mentions for an optional feature are not: promoting one later is free, and demoting one is a break.
 HOST_CONTRACT: frozenset[str] = frozenset(
     {
         # The host: the one value every entrypoint takes, and the services it is built from.
@@ -697,11 +702,21 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.REASONING_EFFORTS",
         "threetears.evals.schema.OUT_OF_RUN_PURPOSES",
         "threetears.evals.schema.REFUSAL_KINDS",
-        # The quick path, what it returns, and the pieces the host guide hands a host of its own.
-        "threetears.evals.quick.run_eval",
-        "threetears.evals.quick.compare",
-        "threetears.evals.quick.Comparison",
-        "threetears.evals.quick.ArmKey",
+        # The quick path at the package root, what it returns, and the host bridge a host adopting it builds.
+        "threetears.evals.Eval",
+        "threetears.evals.Result",
+        "threetears.evals.Judge",
+        "threetears.evals.Example",
+        "threetears.evals.grader",
+        "threetears.evals.World",
+        "threetears.evals.Log",
+        "threetears.evals.Model",
+        "threetears.evals.Answer",
+        "threetears.evals.quick.as_host",
+        # Rung 4 serves its runs with one call over as_host(...) (examples/4-booking/serve.py).
+        "threetears.evals.transports.fastmcp.mount_fastmcp",
+        # A judge's rubric dimension, which states a scale other than pass/fail.
+        "threetears.evals.schema.RubricDim",
         "threetears.evals.analysis.EvalSummary",
         "threetears.evals.analysis.Report",
         # What a summary says each apparatus role was asked for and actually sent, which a host's own surface reads to
@@ -709,21 +724,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.RequestSettingsReading",
         "threetears.evals.analysis.SentSettingsState",
         "threetears.evals.analysis.SentSettingsShare",
-        "threetears.evals.quick.callable_host",
-        "threetears.evals.quick.CALLABLE_KIND",
-        "threetears.evals.quick.Answer",
-        "threetears.evals.quick.Judge",
-        "threetears.evals.quick.JudgeExample",
-        "threetears.evals.quick.Guardrail",
-        "threetears.evals.quick.CandidateTools",
-        "threetears.evals.quick.World",
-        "threetears.evals.quick.WorldTool",
-        "threetears.evals.quick.WorldTools",
-        "threetears.evals.quick.Dimension",
         "threetears.evals.quick.measure",
-        "threetears.evals.quick.callable_kind",
-        "threetears.evals.quick.callable_kind_contracts",
-        # Reading runs back, as the tutorial and the examples do.
+        # Reading runs back, as the serving guide and the examples do.
         "threetears.evals.ops.scope_history",
         "threetears.evals.run.list_results",
         "threetears.evals.run.get_result_trace",
@@ -765,21 +767,334 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.negotiation.anthropic_thinking",
         "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET",
         "threetears.evals.negotiation.RefusedSetting",
-        # The shipped provider adapter: a host that brings no client of its own binds to these.
-        "threetears.evals.providers.models_client",
-        "threetears.evals.providers.models_clients",
-        "threetears.evals.providers.ModelsFailureDescriber",
-        # The factory's own type, whose `aclose_all()` a host calls at shutdown, and the adapter's refusal of a
-        # setting it cannot carry, a role with no model or a provider with no key, which a host catches.
-        "threetears.evals.providers.ModelsClients",
-        "threetears.evals.providers.ModelsClientRefused",
+        # The shipped completion client: a host that brings no client of its own binds to these. `Model` is the
+        # client (also exported from the package root), `Clients` the role factory, `describe_failure` its
+        # failure describer, and `ProviderError` the one error a host catches; `Catalogue` is what models share.
+        "threetears.evals.Model",
+        "threetears.evals.providers.Model",
+        "threetears.evals.providers.Clients",
+        "threetears.evals.providers.Catalogue",
+        "threetears.evals.providers.describe_failure",
+        "threetears.evals.providers.ProviderError",
     }
 )
 
 
+#: The rest of the declared surface: every public name beyond :data:`HOST_CONTRACT` that a reader is told about, by
+#: ``root.name``. Each moves only with a ``MIGRATIONS.toml`` record, never shimmed. With the host contract it is what
+#: ``docs/reference.md`` documents and ``docs/surface.md`` maps by rung, and it is held under :data:`DECLARED_CEILING`.
+#:
+#: The ruling is what someone is shown or already binds: every name a topic guide, the README, an example or an
+#: example host (``tests/fixtures/toyhost/``, ``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py``
+#: holds it), the quick path's whole root, and what Discodon's production code imports, the one production host. A
+#: name a declared signature reaches but nobody imports is ``provisional``: still exported, so the surface stays
+#: closed (``tests/test_public_surface_is_closed.py``), and promoted here when someone binds to it.
+STABLE: frozenset[str] = frozenset(
+    {
+        # Rungs 0 and 1: the command line a TOML file or a host's own entry runs through, its exit codes, and the
+        # quick path's seams beside the root's names: a grader, a measure, a world's runner and outcome, a calibration.
+        "threetears.evals.quick.DEFAULT_PROG",
+        "threetears.evals.quick.ENGINE_COMMANDS",
+        "threetears.evals.quick.EXIT_FAILED",
+        "threetears.evals.quick.EXIT_GATE_FAILED",
+        "threetears.evals.quick.EXIT_OK",
+        "threetears.evals.quick.EXIT_REFUSED",
+        "threetears.evals.quick.EXIT_RUN_DID_NOT_COMPLETE",
+        "threetears.evals.quick.Grader",
+        "threetears.evals.quick.HostCommand",
+        "threetears.evals.quick.HostFactory",
+        "threetears.evals.quick.JudgeCalibration",
+        "threetears.evals.quick.Measure",
+        "threetears.evals.quick.WorldOutcome",
+        "threetears.evals.quick.WorldRunner",
+        "threetears.evals.quick.build_parser",
+        "threetears.evals.quick.run_cli",
+        # What a `Result` hands back when it is read case by case, verdict by verdict, or label by label.
+        "threetears.evals.analysis.CaseResult",
+        "threetears.evals.analysis.LabelStatistics",
+        "threetears.evals.analysis.Verdict",
+        # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
+        # evidence-tier and profile readings over them, as `docs/judges-and-calibration.md` runs them.
+        "threetears.evals.analysis.inter_judge_agreement",
+        "threetears.evals.analysis.judge_agreement",
+        "threetears.evals.analysis.judge_drift",
+        "threetears.evals.analysis.judge_evidence_tiers",
+        "threetears.evals.analysis.judge_key",
+        "threetears.evals.analysis.judge_kind_readings",
+        "threetears.evals.analysis.judge_self_agreement",
+        "threetears.evals.analysis.read_judge_temperatures",
+        "threetears.evals.analysis.tier_sentence",
+        "threetears.evals.kernel.AuthoredJudgeCase",
+        "threetears.evals.kernel.AuthoredVerdict",
+        "threetears.evals.kernel.EvalJudgeProfile",
+        "threetears.evals.kernel.JUDGE_KIND",
+        "threetears.evals.kernel.JobLeases",
+        "threetears.evals.ops.JudgeProfilesRecord",
+        "threetears.evals.ops.judge_profiles_record",
+        "threetears.evals.run.JudgeRepeatReport",
+        "threetears.evals.run.JudgeService",
+        "threetears.evals.run.estimate_judge_repeat",
+        "threetears.evals.run.freeze_judge_cases",
+        "threetears.evals.run.judge_repeat_work",
+        "threetears.evals.run.judge_temperature_work",
+        "threetears.evals.run.rate_result",
+        "threetears.evals.run.run_job_work",
+        "threetears.evals.run.second_judge_work",
+        "threetears.evals.schema.CalibrationRating",
+        "threetears.evals.schema.DEFAULT_JUDGE_TEMPERATURE",
+        "threetears.evals.schema.RubricScore",
+        "threetears.evals.schema.SecondJudge",
+        "threetears.evals.schema.label_key_of",
+        # Rung 3: comparing arms and reading the outcome. A campaign's design, its report bundle and frontier, the gate
+        # a CI step reads, and the classifier measures `docs/building-an-inventory.md` builds on.
+        "threetears.evals.analysis.GATE_TOKENS",
+        "threetears.evals.analysis.GateOutcome",
+        "threetears.evals.analysis.GateResult",
+        "threetears.evals.analysis.GateToken",
+        "threetears.evals.analysis.assemble_context_bundle",
+        "threetears.evals.analysis.campaign_report",
+        "threetears.evals.analysis.create_campaign",
+        "threetears.evals.analysis.frontier",
+        "threetears.evals.analysis.gate_verdicts",
+        "threetears.evals.analysis.variant_key_of_run",
+        "threetears.evals.kernel.BarOverride",
+        "threetears.evals.kernel.CONFUSION_CELL_MEASURE",
+        "threetears.evals.kernel.CampaignDesign",
+        "threetears.evals.kernel.ControlDeclaration",
+        "threetears.evals.kernel.EvalInsight",
+        "threetears.evals.kernel.MATCH_MEASURE",
+        "threetears.evals.kernel.Question",
+        "threetears.evals.kernel.SweptAxis",
+        "threetears.evals.kernel.confusion_cell",
+        "threetears.evals.kernel.resolve_variant_identity",
+        "threetears.evals.run.get_run",
+        "threetears.evals.run.list_runs",
+        "threetears.evals.schema.EvalCaseStratum",
+        "threetears.evals.schema.LatencyMetrics",
+        "threetears.evals.schema.omit_paths",
+        # Rung 4: a world, a log and a host of one's own. What a kind, a launcher and a world are built from beyond
+        # the host contract, as the agent guide and the example hosts under `tests/fixtures/` build them.
+        "threetears.evals.kernel.DEFAULT_JOB_LEASE_S",
+        "threetears.evals.kernel.MeasureFamily",
+        "threetears.evals.kernel.host.ActsOn",
+        "threetears.evals.kernel.host.ApparatusError",
+        "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER",
+        "threetears.evals.kernel.host.Interval",
+        "threetears.evals.kernel.host.Ordinal",
+        "threetears.evals.kernel.host.RolePins",
+        "threetears.evals.kernel.host.StyleProfile",
+        "threetears.evals.kernel.host.Triggered",
+        "threetears.evals.kernel.host.WorldConformanceError",
+        "threetears.evals.kernel.host.WorldConformanceReport",
+        "threetears.evals.kernel.host.check_world_conformance",
+        "threetears.evals.run.ArmPlan",
+        "threetears.evals.run.ArmPrice",
+        "threetears.evals.run.ArmQuote",
+        "threetears.evals.run.CellExecutor",
+        "threetears.evals.run.FidelityContract",
+        "threetears.evals.run.GoalCheckUnevaluable",
+        "threetears.evals.run.create_template",
+        "threetears.evals.run.grade_goal_checks",
+        "threetears.evals.run.require_candidate_model",
+        "threetears.evals.schema.CallLedger",
+        "threetears.evals.schema.BoundCompletionClient",
+        "threetears.evals.schema.CellIdentity",
+        "threetears.evals.schema.CellTrace",
+        "threetears.evals.schema.ControlEndState",
+        "threetears.evals.schema.GoalCheckControl",
+        "threetears.evals.schema.GoalCheckControls",
+        "threetears.evals.schema.GoalStateOutcome",
+        "threetears.evals.schema.JudgeEvidence",
+        "threetears.evals.schema.Precondition",
+        "threetears.evals.schema.RecordedCall",
+        "threetears.evals.schema.WorldPlacement",
+        # Serving: the action catalogue a transport drives, the FastMCP mount, and the regression watch a
+        # deployment runs.
+        "threetears.evals.actions.Action",
+        "threetears.evals.actions.ActionCatalogue",
+        "threetears.evals.actions.ActionOutcome",
+        "threetears.evals.actions.Caller",
+        "threetears.evals.actions.ConformanceStage",
+        "threetears.evals.actions.eval_catalogue",
+        "threetears.evals.actions.standard_tools",
+        "threetears.evals.ops.OpsHost",
+        "threetears.evals.ops.RegressionWatch",
+        "threetears.evals.transports.fastmcp.CallTimedOut",
+        "threetears.evals.transports.fastmcp.CallerResolver",
+        "threetears.evals.transports.fastmcp.HostResolution",
+        "threetears.evals.transports.fastmcp.ToolCall",
+        # The shipped client's reply and its provider names, beside the host-contract client names.
+        "threetears.evals.providers.Completion",
+        "threetears.evals.providers.Provider",
+        # A production host's further bindings in `threetears.evals.analysis`: what Discodon's production code imports.
+        "threetears.evals.analysis.AsRecordedReporterKind",
+        "threetears.evals.analysis.CampaignReadStore",
+        "threetears.evals.analysis.REPORTER_KIND",
+        "threetears.evals.analysis.ReporterKind",
+        "threetears.evals.analysis.ReporterOverlays",
+        "threetears.evals.analysis.dollars_text",
+        "threetears.evals.analysis.generation_ceiling_s",
+        "threetears.evals.analysis.judge_phase_ceiling_s",
+        "threetears.evals.analysis.refuse_undeliverable_reporter_template",
+        "threetears.evals.analysis.reporter_cell_timeout_s",
+        "threetears.evals.analysis.reporter_kind_contract",
+        # A production host's further bindings in `threetears.evals.gen`: what Discodon's production code imports.
+        "threetears.evals.gen.PROPOSER_MAX_TOKENS",
+        "threetears.evals.gen.generate_variations",
+        "threetears.evals.gen.plan_draft",
+        "threetears.evals.gen.propose_draft",
+        # A production host's further bindings in `threetears.evals.kernel`: what Discodon's production code imports.
+        "threetears.evals.kernel.ActionSeam",
+        "threetears.evals.kernel.AdmittedCall",
+        "threetears.evals.kernel.DeliveryRecorder",
+        "threetears.evals.kernel.DeliveryReplay",
+        "threetears.evals.kernel.DeliverySeam",
+        "threetears.evals.kernel.DeliveryTicket",
+        "threetears.evals.kernel.EvalJobTimeout",
+        "threetears.evals.kernel.ExclusionCause",
+        "threetears.evals.kernel.ExternalRateTable",
+        "threetears.evals.kernel.FIND_TEMPLATE",
+        "threetears.evals.kernel.JUDGE_KIND_CONTRACT",
+        "threetears.evals.kernel.JUDGE_KIND_MEASURES",
+        "threetears.evals.kernel.KIND_TEMPLATE",
+        "threetears.evals.kernel.KIND_TEXT",
+        "threetears.evals.kernel.MeritAxis",
+        "threetears.evals.kernel.OutOfRunBudget",
+        "threetears.evals.kernel.PlannedCall",
+        "threetears.evals.kernel.PromptDrift",
+        "threetears.evals.kernel.Recordable",
+        "threetears.evals.kernel.ReplayedDelivery",
+        "threetears.evals.kernel.RoleUsageLedger",
+        "threetears.evals.kernel.SEED_PROMPTS",
+        "threetears.evals.kernel.SEED_REMEDY",
+        "threetears.evals.kernel.SeedPrompt",
+        "threetears.evals.kernel.SeedSection",
+        "threetears.evals.kernel.SeedTemplate",
+        "threetears.evals.kernel.ToolWrap",
+        "threetears.evals.kernel.extract_json",
+        "threetears.evals.kernel.extract_json_array",
+        "threetears.evals.kernel.fold_phase_timings",
+        "threetears.evals.kernel.prompt_drift",
+        "threetears.evals.kernel.seed_digest",
+        # A production host's further bindings in `threetears.evals.kernel.host`: what Discodon's production code
+        # imports.
+        "threetears.evals.kernel.host.EvalCellTimeout",
+        "threetears.evals.kernel.host.ResolvesInto",
+        "threetears.evals.kernel.host.UnsupportedSchemaError",
+        "threetears.evals.kernel.host.check_seed",
+        # A production host's further bindings in `threetears.evals.ops`: what Discodon's production code imports.
+        "threetears.evals.ops.AnalysisGeneration",
+        "threetears.evals.ops.CampaignDefinition",
+        "threetears.evals.ops.CampaignLine",
+        "threetears.evals.ops.CampaignListing",
+        "threetears.evals.ops.EvalSummary",
+        "threetears.evals.ops.JobStatus",
+        "threetears.evals.ops.JobsStarted",
+        "threetears.evals.ops.LaunchArguments",
+        "threetears.evals.ops.REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
+        "threetears.evals.ops.ReporterAdmitted",
+        "threetears.evals.ops.ReporterModelResolver",
+        "threetears.evals.ops.ReporterModelRole",
+        "threetears.evals.ops.RunLine",
+        "threetears.evals.ops.RunListing",
+        "threetears.evals.ops.TemplateListing",
+        "threetears.evals.ops.admit_reporter_launch",
+        "threetears.evals.ops.campaign_create",
+        "threetears.evals.ops.campaigns_list",
+        "threetears.evals.ops.history_launch_pricer",
+        "threetears.evals.ops.job_cancel",
+        "threetears.evals.ops.job_poll",
+        "threetears.evals.ops.plan_reporter_arm",
+        "threetears.evals.ops.price_largest_reporter_call",
+        "threetears.evals.ops.report_read",
+        "threetears.evals.ops.run_get",
+        "threetears.evals.ops.run_label",
+        "threetears.evals.ops.run_launch",
+        "threetears.evals.ops.runs_list",
+        "threetears.evals.ops.start_action_job",
+        "threetears.evals.ops.start_paid_call",
+        "threetears.evals.ops.templates_list",
+        # A production host's further bindings in `threetears.evals.run`: what Discodon's production code imports.
+        "threetears.evals.run.AbandonedRunSweepReport",
+        "threetears.evals.run.CallCeiling",
+        "threetears.evals.run.CandidateTurn",
+        "threetears.evals.run.CellContext",
+        "threetears.evals.run.JUDGE_CALL_ATTEMPTS",
+        "threetears.evals.run.JUDGE_MAX_TOKENS",
+        "threetears.evals.run.MeteredCallLedger",
+        "threetears.evals.run.MeteredCallTally",
+        "threetears.evals.run.SCHEDULER_CALL_ATTEMPTS",
+        "threetears.evals.run.SIMULATOR_ANSWER_BUDGET_TOKENS",
+        "threetears.evals.run.SIMULATOR_MAX_TOKENS",
+        "threetears.evals.run.SeedCorpus",
+        "threetears.evals.run.SeedOutcome",
+        "threetears.evals.run.SimulatorTurn",
+        "threetears.evals.run.TemplateField",
+        "threetears.evals.run.TurnDriver",
+        "threetears.evals.run.assert_preconditions",
+        "threetears.evals.run.build_judge_service",
+        "threetears.evals.run.delete_run",
+        "threetears.evals.run.drive_conversation",
+        "threetears.evals.run.fold_metered_cell",
+        "threetears.evals.run.launchable_judge_kind",
+        "threetears.evals.run.metered_cell_tally",
+        "threetears.evals.run.plan_judge",
+        "threetears.evals.run.precondition_failure_text",
+        "threetears.evals.run.refuse_ignored_template_fields",
+        "threetears.evals.run.resolve_judge_pin",
+        "threetears.evals.run.run_judge_llm",
+        "threetears.evals.run.seed_eval_definitions",
+        "threetears.evals.run.sweep_abandoned_runs",
+        # A production host's further bindings in `threetears.evals.schema`: what Discodon's production code imports.
+        "threetears.evals.schema.ActorPolicy",
+        "threetears.evals.schema.AsyncDelivery",
+        "threetears.evals.schema.AsyncDeliveryStatus",
+        "threetears.evals.schema.AsyncExternalSpend",
+        "threetears.evals.schema.CatalogRubricDim",
+        "threetears.evals.schema.ConversationSpec",
+        "threetears.evals.schema.ConversationStopCause",
+        "threetears.evals.schema.DOC_TYPE_FACTS",
+        "threetears.evals.schema.DURABLE_DOC_TYPES",
+        "threetears.evals.schema.EVAL_DOC_TYPES",
+        "threetears.evals.schema.EvalBaseModel",
+        "threetears.evals.schema.ExternalSpend",
+        "threetears.evals.schema.JudgeConfig",
+        "threetears.evals.schema.NON_TERMINAL_RUN_STATUSES",
+        "threetears.evals.schema.OutOfRunSpend",
+        "threetears.evals.schema.PROSE_SCHEMA_KEY",
+        "threetears.evals.schema.ProviderFailure",
+        "threetears.evals.schema.RESERVED_DIM_IDS",
+        "threetears.evals.schema.RefusedCall",
+        "threetears.evals.schema.RubricAxis",
+        "threetears.evals.schema.RubricProposal",
+        "threetears.evals.schema.VariationAxis",
+        "threetears.evals.schema.VariationCounts",
+        "threetears.evals.schema.nested_schemas",
+        # A production host's further bindings in `threetears.evals.storage`: what Discodon's production code imports.
+        "threetears.evals.storage.CoreReset",
+        "threetears.evals.storage.MisplacedDocument",
+        "threetears.evals.storage.ROUTING_RECORD_DOC_TYPE",
+        "threetears.evals.storage.RouteChanged",
+    }
+)
+
+#: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
+#: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
+DECLARED_CEILING = 450
+
+
 def tier_of(qualified: str) -> Tier:
-    """A public name's tier, by ``root.name``: ``host-contract`` when :data:`HOST_CONTRACT` lists it."""
-    return "host-contract" if qualified in HOST_CONTRACT else "closure"
+    """A public name's tier, by ``root.name``: ``host-contract`` when :data:`HOST_CONTRACT` lists it, ``stable`` when
+    :data:`STABLE` does, otherwise ``provisional``."""
+    if qualified in HOST_CONTRACT:
+        return "host-contract"
+    return "stable" if qualified in STABLE else "provisional"
+
+
+def declared(tier: Tier) -> bool:
+    """Whether a tier is part of the declared surface: promised, documented in ``docs/reference.md`` and held to its
+    signature by the snapshot."""
+    return tier != "provisional"
 
 
 def installed_surface() -> dict[str, SurfaceEntry]:
@@ -787,7 +1102,10 @@ def installed_surface() -> dict[str, SurfaceEntry]:
     surface = {}
     for root, name, obj in public_names():
         qualified = f"{root}.{name}"
-        surface[qualified] = dataclasses.replace(surface_entry(root, name, obj), tier=tier_of(qualified))
+        tier = tier_of(qualified)
+        entry = surface_entry(root, name, obj)
+        # A provisional name's signature is not a promise, so it is not recorded and a change to it is no diff here.
+        surface[qualified] = dataclasses.replace(entry, tier=tier, signature=entry.signature if declared(tier) else "")
     return surface
 
 
@@ -846,8 +1164,8 @@ REMOVED = "removed"
 UNRELEASED = "unreleased"
 
 #: The snapshot file's own format version, so a reader of an older layout is refused rather than misread. 2 added
-#: each entry's ``tier``.
-SNAPSHOT_FORMAT = 2
+#: each entry's ``tier``; 3 split ``closure`` into ``stable`` and ``provisional``, whose entries carry no signature.
+SNAPSHOT_FORMAT = 3
 
 
 class _Record(BaseModel):
@@ -1020,7 +1338,7 @@ def load_snapshot(path: Path = SNAPSHOT_PATH) -> dict[str, SurfaceEntry]:
         raise SystemExit(f"{path} is format {data.get('format')!r}, not {SNAPSHOT_FORMAT}; regenerate it")
     for name, entry in data["names"].items():
         if entry.get("tier") not in TIERS:
-            # An entry's tier is never defaulted on a read: a missing one would read as ``closure`` and drop a
+            # An entry's tier is never defaulted on a read: a missing one would read as ``provisional`` and drop a
             # promise without a diff saying so.
             raise SystemExit(
                 f"{path} records {name} with tier {entry.get('tier')!r}, not one of {TIERS}; regenerate it"
@@ -1118,7 +1436,8 @@ def snapshot_findings(
         if now.tier != was.tier:
             findings.append(
                 Finding(
-                    f"{name} moved from tier {was.tier} to {now.tier} (HOST_CONTRACT in scripts/public_surface.py). "
+                    f"{name} moved from tier {was.tier} to {now.tier} (HOST_CONTRACT and STABLE in "
+                    f"scripts/public_surface.py). "
                     f"Run `{REGENERATE_SNAPSHOT}`; once a release has shipped it as host-contract, leaving that tier "
                     f"is a breaking change for the newest section's `notes`.",
                     True,
@@ -1128,15 +1447,24 @@ def snapshot_findings(
 
 
 def tier_findings(installed: dict[str, SurfaceEntry]) -> list[Finding]:
-    """Names :data:`HOST_CONTRACT` lists that no public root exports: a list naming a name that moved or left, which
-    would promise nothing while reading as a promise."""
+    """Names :data:`HOST_CONTRACT` or :data:`STABLE` lists that no public root exports, which would promise nothing
+    while reading as a promise, and names both list, which would leave a name's tier to whichever is read first."""
     return [
-        Finding(
-            f"HOST_CONTRACT in scripts/public_surface.py lists {name}, which no public root exports: name it at the "
-            f"root that exports it now, or drop it once its record in MIGRATIONS.toml says it left.",
-            False,
-        )
-        for name in sorted(HOST_CONTRACT - installed.keys())
+        *(
+            Finding(
+                f"{label} in scripts/public_surface.py lists {name}, which no public root exports: name it at the "
+                f"root that exports it now, or drop it once its record in MIGRATIONS.toml says it left.",
+                False,
+            )
+            for label, listed in (("HOST_CONTRACT", HOST_CONTRACT), ("STABLE", STABLE))
+            for name in sorted(listed - installed.keys())
+        ),
+        *(
+            Finding(
+                f"HOST_CONTRACT and STABLE in scripts/public_surface.py both list {name}: drop it from STABLE.", False
+            )
+            for name in sorted(HOST_CONTRACT & STABLE)
+        ),
     ]
 
 

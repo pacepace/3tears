@@ -11,8 +11,7 @@ lets the goal language say which it is reading (``state.<dimension>`` against ``
 **Any kind fills one.** A kind records each action its candidate took that succeeded, from what the
 tool actually returned — never what a simulation reported — and hands the ledger back on
 :attr:`~threetears.evals.kernel.candidate_kind.CandidateOutput.call_ledger`. The runner stores it
-beside the cell's output, which is what lets a stored result be re-graded later under today's rule
-without re-running it (:mod:`threetears.evals.run.recheck`).
+beside the cell's output, so what the candidate did stays readable after the run.
 
 **A refused call is recorded apart, never among the calls.** A call the tool refused changed nothing, and a
 check that counted it would grade an attempt as an effect, so :attr:`CallLedger.calls` holds successes only and
@@ -21,7 +20,8 @@ something the candidate did, and a candidate whose every call was refused must n
 kind records each refusal with :meth:`CallLedger.record_refusal` (the tool, the parameters, the refusal's own
 reason, and where it fell among the calls), into :attr:`CallLedger.refused`, which ``refused()`` and
 ``refused_count()`` read and nothing else does. A refusal is the candidate's to be graded on; a tool that RAISED
-is the rig's fault and excludes the cell, and is not a refusal.
+is the rig's fault and excludes the cell, and is not a refusal. An eval action's outcome says which it was
+(:attr:`~threetears.evals.actions.ActionOutcome.ending`): only an outcome ending ``refused`` is recorded here.
 
 **A ledger that keeps no refusal record says so.** ``refused`` is ``None`` on a ledger whose kind does not record
 refusals, and on every ledger stored before refusals were recorded (core v15.0); a refusal check reading one

@@ -268,11 +268,19 @@ def test_the_actions_record_and_list_profiles_and_render_their_receipts() -> Non
     assert (record.permission, listing.permission) == ("write", "read")
 
     text = record.render(judge_profiles_record(host, JudgeProfilesRecord(judge_run_ids=[run_id]), TOYHOST_SCOPE))
-    assert text.startswith("1 judge profile(s) recorded")
-    assert f"{TOYHOST_JUDGED_DIMENSION} ({_JUDGE}, temperature 0, request settings unconfirmed)" in text
-    assert ": calibrated" in text
-    assert "on 30 cases" in text and "runs judge-arm" in text
-    assert listing.render(judge_profiles_list(host, TOYHOST_SCOPE)).startswith("1 judge profile(s)")
+    assert "profiles (1):" in text.splitlines()
+    (line,) = [line for line in text.splitlines() if line.startswith("- profile=")]
+    facts = (
+        f'"rubric_dim": "{TOYHOST_JUDGED_DIMENSION}"',
+        f'"judge_model": "{_JUDGE}"',
+        '"judge_temperature": 0',
+        '"judge_sent_settings": null',
+        '"cases": 30',
+        '"judge-arm',
+        "tier=calibrated",
+    )
+    assert all(fact in line for fact in facts), line
+    assert "profiles (1):" in listing.render(judge_profiles_list(host, TOYHOST_SCOPE)).splitlines()
 
 
 # --- reading: the done-condition --------------------------------------------------------------------

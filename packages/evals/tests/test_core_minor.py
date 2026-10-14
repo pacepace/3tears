@@ -462,7 +462,7 @@ def test_each_core_model_names_its_doc_type() -> None:
 def _host_over(store: InMemoryDocumentStore) -> Any:
     from dataclasses import replace
 
-    from threetears.evals.quick import callable_host
+    from threetears.evals.quick.one_call import callable_host
 
     return replace(callable_host(), storage=EvalStorage(store))
 

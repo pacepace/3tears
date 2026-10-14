@@ -1,11 +1,11 @@
-"""``Guardrail``: something every arm of a :func:`~threetears.evals.quick.compare` must not get worse on.
+"""``Guardrail``: something every arm of an :class:`~threetears.evals.quick.contract.Eval` must not get worse on.
 
 A scorer or a judged dimension is ordinarily capability: something an arm should do well, tested against the
 control in the contrasts table and traded against the other readings there. Some readings are not for trading
 — the answer never leaks a customer's email, never promises a refund — and a gain elsewhere must not pay for a
-loss on one. Named in ``compare(guardrails=...)``, a reading is a guardrail instead: kept out of every contrast
+loss on one. Declared ``grader(..., guard=margin)`` or ``Judge(guard={dimension: margin})``, a reading is a guardrail instead: kept out of every contrast
 and composite, and decided on its own for each arm against the control, ``held``, ``breached`` or
-``undecided``, in the report's guardrails table and :meth:`~threetears.evals.quick.Comparison.guardrails`.
+``undecided``, in the report's guardrails table and :meth:`~threetears.evals.quick.result.Result.guardrails`.
 
 **A guardrail declares its margin and its direction, and neither is assumed.** The margin is how much worse
 than the control an arm may be and still hold, in the reading's own units (0.02 is two points on a pass rate);
@@ -43,7 +43,7 @@ class Guardrail:
             ``"lower_is_better"`` (``leaked`` passes). Required, since "worse" needs one. A judged dimension
             is scored with higher better, so it takes ``"higher_is_better"``.
 
-    A scorer's range is declared beside it, as for any scorer (``compare(ranges=...)``): a pass/fail (``-> bool``)
+    A scorer's range is declared beside it, as for any grader (``grader(..., range=)``): a pass/fail (``-> bool``)
     is on 0 to 1 already, and a score declared on its range is too. **A guardrail on a scorer with no range is never
     ``held``**: with no range no test of a mean holds its error rate (a rare large drop can hide in a few cases), so
     such a guardrail can be shown ``breached`` but otherwise reads ``undecided``, its reason naming ``ranges=``. On a

@@ -31,7 +31,7 @@ from pydantic import ValidationError
 
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.prompts.catalogue import BOUNDARY_GEN_PROMPT, PROPOSER_PROMPT
-from threetears.evals.kernel.prompts.contract import OutputContract, require_output_contract
+from threetears.evals.kernel.prompts.contract import OutputContract, require_output_contract, template_text
 from threetears.evals.schema.models import SCALE_LEVELS, RubricAxis, RubricProposal
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.out_of_run import AdmittedCall, PlannedCall
@@ -119,8 +119,31 @@ class ProposedDraft(NamedTuple):
     spend: OutOfRunSpend
 
 
+def default_system_prompt(axis: RubricAxis) -> str:
+    """The shipped default system prompt for ``axis``'s proposal, as :func:`plan_draft` sends it when handed none.
+
+    Args:
+        axis: Which axis the draft is for.
+
+    Returns:
+        The default template's text (``EVAL_PROPOSER_TEMPLATE_DEFAULT`` or ``EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT``),
+        which carries :data:`RUBRIC_PROPOSAL_CONTRACT`'s line.
+    """
+    # The defaults state this module's contract line, so they import it; read here, after both modules load.
+    from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
+    from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
+
+    default = EVAL_PROPOSER_TEMPLATE_DEFAULT if axis == "capability" else EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
+    return template_text(default.sections)
+
+
 def plan_draft(
-    *, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str, reset: str
+    *,
+    axis: RubricAxis,
+    subject_feed: str,
+    catalog_feed: str,
+    system_prompt: str | None = None,
+    reset: str | None = None,
 ) -> PlannedCall:
     """The one call a rubric proposal sends, on either axis, built before anything is priced or made.
 
@@ -129,20 +152,22 @@ def plan_draft(
     then hands, admitted, to :func:`propose_draft`. The user message is the subject feed, then the catalog
     feed, because the catalog is read against the subject: which dims to reuse depends on what the subject is.
 
-    **A system prompt written for another draft shape is refused here**, before anything is priced: the prompt
-    is the host's stored copy of ``eval_proposer`` or ``eval_boundary_gen``, store-master once seeded, so a copy
-    seeded before the draft's shape changed would otherwise be paid for and then fail draft validation on every
-    call. It must carry :data:`RUBRIC_PROPOSAL_CONTRACT`'s line, as the shipped defaults do.
+    With no ``system_prompt`` the call runs the axis's shipped default (:func:`default_system_prompt`), and a
+    host that keeps no prompt registry passes nothing. **An override written for another draft shape is refused
+    here**, before anything is priced: a host's stored copy of ``eval_proposer`` or ``eval_boundary_gen`` seeded
+    before the draft's shape changed would otherwise be paid for and then fail draft validation on every call.
+    An override must carry :data:`RUBRIC_PROPOSAL_CONTRACT`'s line, as the shipped defaults do.
 
     Args:
         axis: Which axis the draft is for; names the prompt a refusal is about.
-        system_prompt: The rendered system prompt for the axis being proposed on.
+        system_prompt: The host's override of the axis's system prompt, rendered; ``None`` (the default) runs the
+            shipped default.
         subject_feed: The rendered description of the subject under test.
         catalog_feed: The rendered reusable catalog for the axis, each dim with its ``key`` so the model can
             name reuses in ``reused_dim_keys``.
-        reset: How an operator of this host resets the axis's prompt slot to the shipped default — an action or a
-            command, such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry is the host's,
-            so the engine cannot name it; a refusal's remedy does.
+        reset: With an override, how an operator of this host resets the axis's prompt slot to the shipped default —
+            an action or a command, such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry
+            is the host's, so the engine cannot name it; a refusal's remedy does. Required with ``system_prompt``.
 
     Returns:
         The planned call.
@@ -151,9 +176,17 @@ def plan_draft(
         PromptContractError: ``system_prompt`` declares another output contract than
             :data:`RUBRIC_PROPOSAL_CONTRACT`, or none — a stored copy that predates the draft's shape. Its remedy
             names the prompt to reset, and ``reset`` as the way to reset it.
-        ValueError: ``reset`` is blank.
+        ValueError: ``system_prompt`` is given and ``reset`` is missing or blank.
     """
-    require_output_contract(_AXIS_PROMPT[axis], system_prompt, RUBRIC_PROPOSAL_CONTRACT, reset=reset)
+    if system_prompt is None:
+        system_prompt = default_system_prompt(axis)
+    else:
+        if reset is None:
+            raise ValueError(
+                "an override system_prompt needs reset=: name how an operator of this host resets the prompt slot "
+                "to the shipped default, so a refusal of a stale copy can say it"
+            )
+        require_output_contract(_AXIS_PROMPT[axis], system_prompt, RUBRIC_PROPOSAL_CONTRACT, reset=reset)
     return PlannedCall(
         system=system_prompt,
         user=f"{subject_feed}\n{catalog_feed}".rstrip() + "\n",

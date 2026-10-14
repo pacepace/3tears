@@ -527,7 +527,10 @@ async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_
     action = next(action for action in engine_actions() if action.name == "judge_cases_freeze")
     assert action.permission == "write"
     text = action.render(report)
-    assert f"{len(source)} judge case(s) of template {template.id}" in text and "case set faithfulness v1" in text
+    lines = text.splitlines()
+    assert {f"template_id: {template.id}", f"cases ({len(source)}):", "  name: faithfulness", "  version: 1"} <= set(
+        lines
+    )
     # The same freeze again answers with the version already listing exactly these cases.
     assert off_loop(judge_cases_freeze, host, freeze, TOYHOST_SCOPE).case_set == report.case_set
 
@@ -967,7 +970,8 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
     assert case.labels[0].rater == _AUTHOR and frozen.authored_by == _AUTHOR
     action = next(action for action in engine_actions() if action.name == "judge_case_author")
     assert action.permission == "write"
-    assert f"{FAITHFULNESS_DIM} authored by {_AUTHOR}, its expected verdict its label" in action.render(report)
+    (line,) = [line for line in action.render(report).splitlines() if line.startswith("- test_case_id=")]
+    assert f"dim={FAITHFULNESS_DIM}" in line and f"authored_by={_AUTHOR}" in line
     # Authoring it again names the stored case.
     assert off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR).cases[0].created is False
     # A dimension the template does not have, and a verdict its scale cannot hold, are each refused by name.

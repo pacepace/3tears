@@ -15,16 +15,16 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, model_validator
 
 from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, AuthoredVerdict
+from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredVerdict
 from threetears.evals.kernel.remedies import FIND_TEMPLATE
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.runs import LaunchArguments, TemplateLine
 from threetears.evals.run.authoring import get_template
-from threetears.evals.run.judge_kind import JudgeCaseFreezeReport, freeze_judge_cases
+from threetears.evals.run.judge_kind import JudgeCaseFreezeReport, author_judge_case, freeze_judge_cases
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import EvalTemplate, JudgedArtifact
 
@@ -169,31 +169,18 @@ def judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, a
             dimension, or the dimension's scale cannot hold the verdict (naming both).
         StorageError: The case could not be persisted.
     """
-    subject = get_template(host, case.criterion_template_id, scope_id)
-    criteria = {dim.name: dim for dim in subject.rubric}
-    criterion = criteria.get(case.criterion)
-    if criterion is None:
-        raise ValidationFailedError(
-            f"template {subject.id!r} has no rubric dimension {case.criterion!r}; its rubric is {sorted(criteria)}",
-            remedy="name a dimension of that template's rubric, as templates_list shows it",
-        )
-    try:
-        authored = AuthoredJudgeCase(
-            criterion=criterion,
-            output=case.output,
-            case_material=case.case_material,
-            intent=case.scenario if case.scenario is not None else subject.intent,
-            expected=case.expected,
-            author=author,
-            note=case.note,
-            subject=case.subject,
-            judged_artifact=JudgedArtifact(case.judged_artifact),
-        )
-    except ValidationError as refused:
-        raise ValidationFailedError(
-            "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in refused.errors()),
-            remedy="give a verdict the dimension's scale holds: 'pass' or 'fail' on pass/fail, 1 to 5 on ordinal",
-        ) from refused
+    authored = author_judge_case(
+        get_template(host, case.criterion_template_id, scope_id),
+        case.criterion,
+        output=case.output,
+        case_material=case.case_material,
+        expected=case.expected,
+        note=case.note,
+        author=author,
+        scenario=case.scenario,
+        subject=case.subject,
+        judged_artifact=JudgedArtifact(case.judged_artifact),
+    )
     return freeze_judge_cases(
         host.storage, template=get_template(host, case.template_id, scope_id), scope_id=scope_id, authored=[authored]
     )

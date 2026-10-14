@@ -1,6 +1,6 @@
 """A stored comparison re-read in a new process is decided on what it was launched under, never on who reads it.
 
-``compare(margins=, ranges=, guardrails=)`` declares how each scorer is read on the host it builds, and a later
+``grader(margin=, range=, guard=)`` declares how each grader is read on the host an eval builds, and a later
 process reads the stored campaign through a host of its own (``callable_host(..., store=)``). Before launches
 recorded their declarations, that reader's host decided the verdicts: one that declared no margin read no
 ``equivalent``, one that declared another margin read against it, and one that declared no guardrail read a
@@ -27,7 +27,8 @@ from typing import Any
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, get_campaign
 from threetears.evals.schema import EvalRun, MeasureDeclaration
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.quick import Comparison, Guardrail, callable_host, compare
+from threetears.evals import Eval, Result, grader
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore
 from packages.evals.tests.off_loop import off_loop
@@ -59,7 +60,8 @@ import json
 from collections.abc import Mapping
 from typing import Any
 from threetears.evals.analysis import DisclosureBlock, campaign_report
-from threetears.evals.quick import Guardrail, callable_host
+from threetears.evals.quick.guardrails import Guardrail
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.storage import SqliteDocumentStore
 
 {scorers}
@@ -73,19 +75,14 @@ print(json.dumps({{
 """
 
 
-async def _compare(path: Path) -> Comparison:
+async def _compare(path: Path) -> Result:
     with SqliteDocumentStore(path) as store:
-        return await compare(
+        return await Eval(
             CASES,
             {"current": same, "cheaper": same},
-            [correct, no_leak],
-            control="current",
-            scope_id="kept",
+            [grader(correct, margin=0.1), grader(no_leak, guard=0.1)],
             k=1,
-            store=store,
-            margins={"correct": 0.1},
-            guardrails={"no_leak": Guardrail(margin=0.1, direction="higher_is_better")},
-        )
+        ).run(store=store, scope="kept")
 
 
 def _read(path: Path, campaign_id: str, declares: str) -> tuple[Verdicts, list[str]]:
@@ -100,7 +97,7 @@ def _read(path: Path, campaign_id: str, declares: str) -> tuple[Verdicts, list[s
     ]
 
 
-def _launched(comparison: Comparison) -> Verdicts:
+def _launched(comparison: Result) -> Verdicts:
     return sorted((v.kind, v.name, v.arm, v.outcome, v.margin) for v in comparison.report.verdicts)
 
 
@@ -112,7 +109,7 @@ def _rewrite_runs(host: EvalHost, rewrite: Any) -> None:
         host.storage.save_eval_run(rewrite(run))
 
 
-def _bundle(host: EvalHost, comparison: Comparison) -> AnalysisContextBundle:
+def _bundle(host: EvalHost, comparison: Result) -> AnalysisContextBundle:
     return assemble_context_bundle(
         get_campaign(host.storage, comparison.campaign_id, "kept"), storage=host.storage, profile=host.profile
     )

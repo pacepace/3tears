@@ -6,7 +6,7 @@ never authored, or archived, was judged by the engine's wording while it believe
 registered apart from its judge says which judge scores it (``RubricDim.judge``: ``"builtin"`` or ``"configured"``),
 registration (create, seed, an update writing the rubric) refuses one that does not or that the scope contradicts,
 and every launch refuses the same before any spend, for a template stored before the declaration or a scope that
-moved since. The quick path's ``Judge`` is the declaration, so a ``run_eval`` caller states nothing new.
+moved since. The quick path's ``Judge`` is the declaration, so an eval's author states nothing new.
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ from typing import Any, Self
 import pytest
 
 from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.quick import Judge, callable_host, run_eval
+from threetears.evals import Eval, Judge
+from threetears.evals.quick import as_host
 from threetears.evals.run import build_judge_service, create_template, get_template, plan_judge, update_template
 from threetears.evals.run.definition_seed import SeedCorpus, seed_eval_definitions
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
@@ -211,12 +212,16 @@ class _Reply:
 
 # parity-with: threetears.evals.schema.CompletionClient
 class _FakeJudge:
-    """A judge scoring every dimension it is asked 4."""
+    """A judge scoring every dimension it is asked 4, or pass on a pass/fail one."""
+
+    model_name = "scripted/judge"
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
         assert response_format is not None
-        (name,) = response_format["json_schema"]["schema"]["properties"]["criteria_scores"]["required"]
-        return _Reply(json.dumps({"reasoning": "fine", "criteria_scores": {name: "4"}}))
+        scores = response_format["json_schema"]["schema"]["properties"]["criteria_scores"]
+        (name,) = scores["required"]
+        answer = "4" if "4" in scores["properties"][name]["enum"] else "pass"
+        return _Reply(json.dumps({"reasoning": "fine", "criteria_scores": {name: answer}}))
 
     async def aclose(self) -> None:
         return None
@@ -229,14 +234,16 @@ class _FakeJudge:
 
 
 async def _answer(case: Mapping[str, Any]) -> str:
+    """Answer the question."""
     return "an answer"
 
 
 async def test_a_quick_judge_s_dict_rubric_runs_and_its_stored_dimensions_say_builtin() -> None:
-    host = callable_host([])
-    judge = Judge(client=_FakeJudge(), model="scripted/judge", rubric={"helpful": "It helps."})
+    judge = Judge(_FakeJudge(), {"helpful": "It helps."})
+    ev = Eval([{"q": "x"}], _answer, [judge], k=1)
+    host = as_host([ev], store=":memory:")
 
-    summary = await run_eval([{"q": "x"}], _answer, judge=judge, scope_id="declared-quick", host=host, k=1)
+    summary = (await ev.run(host=host, scope="declared-quick")).summary
 
     assert summary.n_scored == 1
     template = off_loop(get_template, host, summary.template_id or "", "declared-quick")
@@ -245,17 +252,18 @@ async def test_a_quick_judge_s_dict_rubric_runs_and_its_stored_dimensions_say_bu
 
 def test_a_rubric_dim_handed_to_a_quick_judge_without_a_judge_is_declared_builtin() -> None:
     """No new required field on the quick path: the Judge declares what the caller did not."""
-    judge = Judge(client=_FakeJudge(), model="scripted/judge", rubric=[_dim()])
+    judge = Judge(_FakeJudge(), [_dim()])
 
     assert [dim.judge for dim in judge.dims] == ["builtin"]
 
 
 async def test_a_quick_judge_s_configured_dimension_with_no_config_is_refused_before_anything_runs() -> None:
-    host = callable_host([])
-    judge = Judge(client=_FakeJudge(), model="scripted/judge", rubric=[_dim(judge="configured")])
+    judge = Judge(_FakeJudge(), [_dim(judge="configured")])
+    ev = Eval([{"q": "x"}], _answer, [judge], k=1)
+    host = as_host([ev], store=":memory:")
 
     with pytest.raises(ValueError, match="holds no active judge config"):
-        await run_eval([{"q": "x"}], _answer, judge=judge, scope_id="declared-quick", host=host, k=1)
+        await ev.run(host=host, scope="declared-quick")
     assert off_loop(host.storage.query_templates, "declared-quick") == []
 
 

@@ -226,7 +226,7 @@ def scope_frontier(
     """Each subject's variants ranked on quality, cost and latency, and the cheapest that clears ``bar``.
 
     The frontier lens (:func:`~threetears.evals.analysis.frontier`) over the host's runs, read against the host's
-    sweepables so each point names what its runs set away from production. A :func:`~threetears.evals.quick.compare`
+    sweepables so each point names what its runs set away from production. An eval comparing arms
     files every arm under one subject, so its arms (models among them) are one frontier.
 
     Args:

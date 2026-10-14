@@ -2,8 +2,9 @@
 
 **For** the developer wiring 3tears-evals into an app for real: your own storage, your own launch path, runs
 you can compare over weeks. **Answers:** what you write (a host, a store, a kind, a launcher) and what the engine
-does with each. If you only want to grade a function, and keep its runs in a file, `run_eval` (as in the
-[tutorial](tutorial.md#8-keep-your-runs)) builds all of this for you. Read
+does with each. If you only want to grade a function, and keep its runs in a file, an `Eval` (as on
+[the ladder](ladder.md), and [kept and read back](serving.md#keep-your-runs-and-read-them-back)) builds all of this
+for you. Read
 [Concepts](concepts.md) first: this guide uses its terms (host, kind, lever, apparatus, scope, cell)
 without stopping to define them.
 
@@ -24,10 +25,10 @@ Everything past those — the trial loop, the stored documents, judging, pricing
 engine's. The sections after "Launching" cover what you need only if your subject has a stateful world,
 converses, does background work, or calls tools you want to record and replay.
 
-Quick's pieces build some of these as ordinary contract objects you mix with your own (all in
-`threetears.evals.quick`): `@measure(...)` declares a `MetricDescriptor` on the function that computes it, so you
-register its `.descriptor` and grade with the function; `callable_kind(candidate, scorers)` is the kind over a
-plain async function, declared under `callable_kind_contracts()`; and a quick `World`'s `registry` and
+Quick's pieces build some of these as ordinary contract objects you mix with your own: `@measure(...)`
+(`threetears.evals.quick`) declares a `MetricDescriptor` on the function that computes it, so you register its
+`.descriptor` and grade with the function; `as_host([evals], store=...)` (`threetears.evals.quick`) is the host an
+`Eval` runs on, its kind over a plain function; and a `World`'s (`threetears.evals.World`) `registry` and
 `bindings(state)` are a simple world's declaration and its handles. The toy host's kind computes its measures
 this way.
 
@@ -56,9 +57,9 @@ The stored documents and the ports you implement (`DocumentStore`, `CompletionCl
 `threetears.evals.schema`; the behaviour over them (identity, scoring, `EvalStorage`, the candidate kind) is in
 `threetears.evals.kernel`, with the host contract under `threetears.evals.kernel.host`.
 
-Two roots fail to import without an extra, and `threetears.evals.ROOT_EXTRAS` says which and what each needs: a
-`RootExtra` with the extra's name and every module the root imports past the base install (`providers` needs
-`anthropic` as much as `threetears.models`, and may fail on either first). A public-API gate reads it to skip a root
+One root fails to import without an extra, and `threetears.evals.ROOT_EXTRAS` says which and what it needs: a
+`RootExtra` with the extra's name and every module the root imports past the base install (`transports.fastmcp`
+needs `fastmcp`). A public-API gate reads it to skip a root
 whose modules are absent, and to name the missing one, without reading the manifest or keeping a list of its own:
 
 ```python
@@ -190,108 +191,81 @@ replay as the `k` answers they were. A prompt the recording does not hold, or on
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
 changed under its recording before a replay starts, hand
-`RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. One file can hold
-several clients' calls (two models answering one prompt, or one model under two settings): each replays its own,
-with `replay(path, settings=..., model=...)`.
+`RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
+model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays
+its own with `replay(path, settings=...)`; record a second model into a file of its own, since recording it onto
+the first is refused.
 
 Recording onto a file that exists appends to it, and only `replace=True` starts afresh. A replayed price
 (`cost_usd`, `price_source`) is what the call cost when it was recorded, not a quote at today's rates. Every
 attribute your completion type declares beyond the ten and `sent_settings` is kept under the replayed completion's
 `extra`, and one JSON cannot hold is refused when it is recorded.
 
-The package's own examples run this way: each that calls a model calls Claude through `models_client` when
-`ANTHROPIC_API_KEY` is set, records the run when `RECORD=1` is set too, and otherwise replays the recording kept
-beside it, so it runs offline on what Claude said rather than on a stand-in's text, and its test checks the
-recording still covers its prompts ([the examples' README](../examples/README.md#recording)).
+The package's own examples run this way: each calls a cheap model through `Model` (DeepSeek's flash model runs,
+Gemini's flash-lite judges, both through OpenRouter), records the run when `RECORD=1` is set with `OPENROUTER_API_KEY`,
+and otherwise replays the recording kept beside it, so it runs offline on what a real model said rather than on a
+stand-in's text, and its test checks the recording still covers its prompts ([the examples' README](../examples/README.md#recording)).
 
 ## Bringing a provider
 
 **The engine calls models through one port, and names no provider.** A client is anything with
 `async generate(*, system, user, response_format=None)` returning a `CompletionResult`, plus `aclose`
 (`CompletionClient`, in `threetears.evals.schema`); the failure half is your `failure_describer`. You can write
-both yourself, or bind to the adapter the package ships over 3tears-models (`threetears.evals.providers`, the
-`[models]` extra), which builds Anthropic, OpenAI and OpenRouter chat models through `create_chat_model`.
-
-**The `[models]` extra installs from PyPI once 0.68.0 ships** (`pip install "3tears-evals[models]"`). Until then
-it does not install from a git tag the way the base package does
-([the README's install step](../README.md#first-result-in-10-minutes)): it needs 3tears-models and the family
-packages models depends on at 0.68.0, and none of them is on PyPI yet. Use a checkout of the repository at the tag,
-where `uv sync --extra models` at the root installs it.
+both yourself, or use the client the package ships (`threetears.evals.providers`, on the base install), which speaks
+OpenRouter's, Anthropic's and any OpenAI-compatible chat API over `httpx`, with no SDK and no other 3tears package:
 
 ```python
-from threetears.evals.providers import ModelsFailureDescriber, models_clients
+from threetears.evals.providers import Clients, describe_failure
 
 async def build_host() -> EvalHost:
-    clients = models_clients(defaults={"judge": "claude-sonnet-4-6", "analysis": "claude-sonnet-4-6"})
+    clients = Clients(default="deepseek/deepseek-v4-flash", judge="google/gemini-3.5-flash-lite")
     unpriced = await clients.load_prices()  # once, at boot: {model: why} for any model left unpriced
-    return EvalHost(..., clients=clients, failure_describer=ModelsFailureDescriber())
+    return EvalHost(..., clients=clients, failure_describer=describe_failure)
 ```
 
-`models_clients` keeps one client per role, model, temperature and reasoning setting, reads each provider's key
-from `api_keys=` or the provider's own environment variable the first time a client for it is asked for, and
-`await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
-(`simulator={"reasoning_effort": "low", "provider": "openrouter"}`); `models_client` builds one client on its own.
-**The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records it asked for, as its
-`judge_asked_settings` (`max_tokens=10240`, `reasoning_max_tokens=8192`, `strict_output=True`): a `judge` role given no
-`max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that reasoning budget,
-sent as a thinking budget to an Anthropic model that takes one and as the effort word its share of the cap reads as
-(`high`) to every model that takes words only, and `strict_output` is the strict structured directive the judge
-already sends. Pass the judge's settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`) and the
-client asks for those instead, which the run's asked settings do not describe. The engine's other roles ask in effort
-words:
-the simulated user `low` (`SIMULATOR_REQUEST_SETTINGS`, strict, since every simulator call sends a strict reply
-schema) and the analysis generator `medium` (`analysis_gen_request_settings_for`, whose output cap is the answer
-budget plus a reasoning headroom of at least 1024 tokens, 8192 unless you set one; the headroom sizes the cap and is
-never sent, so a `*_reasoning_budget_tokens` setting your configuration kept is that headroom now). The adapter sends every request once (retries off; the only resends answer a
-provider's refusal of a setting, below), keeps a circuit breaker of its own that never opens, and prices Anthropic
-and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced is `None`
-with the reason, never `0`). Only the caller's own errors are refused: a reasoning word and a budget together, a
-budget below Anthropic's 1024 floor or not below the output cap, a budget off Anthropic with no `max_tokens`, a role
-with no model, a provider with no key; each raises `ModelsClientRefused` (a `ValueError`), naming the setting and
-what to pass instead.
+`Clients` builds one `Model` per role, model and temperature, all sharing one `Catalogue` (OpenRouter's public model
+list, fetched once: the rates and the parameters each model takes) and what any of them learned from a refusal, and
+`await clients.aclose()` closes them at shutdown. A role is a model id or a `Model` whose settings that role's models
+are built with: an id with a `/` goes to OpenRouter on `OPENROUTER_API_KEY`; a bare id needs
+`Model(id, provider="anthropic")` (`ANTHROPIC_API_KEY`) or `provider="openai"` (`OPENAI_API_KEY`), never guessed;
+`base_url=` takes any OpenAI-compatible endpoint. A missing key is refused when the model is built, naming the
+variable. **The judge is built from `JUDGE_REQUEST_SETTINGS`** when given as an id, the request settings a judged run
+records it asked for (`max_tokens=10240`, a reasoning budget of 8192, `strict_output=True`): sent as a budget wherever
+the provider takes one (Anthropic's `thinking.budget_tokens`, OpenRouter's `reasoning.max_tokens`), so the budget binds
+and not only the cap, and as the effort word its share of the cap reads as (`high`) where only words are taken
+(OpenAI's chat completions, a model that refused a budget), which the completion's `sent_settings` names
+(`unsent_reasoning_max_tokens=8192`); a budget not below `max_tokens` is refused naming both, never clamped;
+the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Nothing is retried: the only resends answer a
+provider's refusal of a setting, below. `describe_failure` reads the client's one error type, `ProviderError` (the
+provider, the status and its own message, never the body, and `account` for a refused key or spent credit, which
+stops a run), and an `httpx` transport error by the host it was sending to.
 
-**A model that lacks a setting still answers, sent the closest one it takes.** Each completion's `sent_settings`
-says what its request carried. A word the model lacks goes as its closest word, never more than asked (`max` on
-OpenAI is `xhigh`; `minimal` on Anthropic is `low`); a budget goes as the effort word its share of `max_tokens` maps
-to where a model takes words only (OpenAI, OpenRouter, Anthropic's adaptive-only models: the judge's 8192 of 10240
-is `high`), and a word as that share of the cap where a model takes budgets only; an Anthropic effort word rides
-adaptive thinking, with no temperature beside it; a strict reply format a model cannot take goes unenforced. What is
-known of a model comes from what a provider refused in the factory's life, then 3tears-models' capabilities, then
-OpenRouter's catalogue (once this factory's own `load_prices` read it, and only to leave out a parameter no endpoint
-takes); unknown is sent as asked. A provider's refusal of a setting the
-request carried (an Anthropic model on which `temperature` is deprecated or a thinking budget unsupported, an OpenAI
-model that takes only its default temperature or fewer effort words) is answered by sending the request once more
-with the closest setting the model then takes: the refused request generated nothing and is not billed, so the
-price ceiling is one request's; but a refused send can take up to one request timeout, so a call can take up to
-`MAX_RESENDS + 1` of them (`threetears.evals.negotiation.MAX_RESENDS`, 4), and a wall-clock ceiling of your own
-around a call allows for that. What a served resend proved the model refuses is learned: every client of the
-factory sends that way for the rest of its life, logged once at WARNING. On OpenRouter, a strict call whose
-`require_parameters` leaves no endpoint (a 404 naming no parameter) is resent without its temperature, keeping
-enforcement, and only if that still finds none, without
-enforcement, which its `sent_settings` records as `strict_output=False`. Enforcement is never learned: the next call
-asks for it again, since a router's "no endpoint" can be an outage. Any other refusal, and a refusal of a resend for
-a setting already dropped, is raised as before.
+**A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
+the resending are `threetears.evals.negotiation`'s, the same a client of your own uses (below), and each completion's
+`sent_settings` says what its request carried. What is known of a model before any request: a Claude 5.5 takes no
+temperature, and on OpenRouter the catalogue says which parameters no endpoint takes and the model's output cap;
+unknown is sent as asked. A refusal of a setting the request carried is answered by sending it once more with the
+closest setting the model then takes, learned for every model sharing the catalogue and logged once at WARNING; on
+OpenRouter a strict call no endpoint takes under `require_parameters` (a 404 naming nothing) is resent without its
+temperature, and only then without enforcement, for that call alone. The refused request generated nothing and is not
+billed, so the price ceiling is one request's, but each refused send can take up to a request timeout
+(`MAX_RESENDS`, 4).
 
-**Load prices once at boot.** `await clients.load_prices()` reads the price catalogue for every default model and
-returns, for each one left unpriced, why (`{}` when all are priced); a model the engine names beyond your defaults
-loads with `await clients(role, model).load_prices()`, and a client built alone with `await client.load_prices()`.
-Until a client's prices are loaded its `price_ceiling` is `None`, and the engine refuses every out-of-run call
-(analysis, case generation, a second judge, a rejudge) under an enforced `out_of_run_cap_usd` rather than send one
-it cannot bound. On Anthropic and OpenAI the first priced call also loads them; on OpenRouter only `load_prices`
-does, and its ceiling comes from the same catalogue while the stored cost stays OpenRouter's own figure. A failed
-fetch is logged and retried on the next call or load, never cached; an exception from a price source of your own
-propagates from `load_prices`, so a defect in it shows at boot.
+**Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
+figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
+without the upstream figure is unpriced. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
+for the matching `vendor/model` row, its `price_source` ending `;cache-approximate` when a prompt cache was read or
+written (the catalogue carries no cache rates). Unpriced is `None` with `pricing_failure` saying why, never `0`. A
+model's `price_ceiling` answers once its catalogue is loaded: `await clients.load_prices()` at boot, or
+`await catalogue.load()` on one you hand your models, and until then the engine refuses an out-of-run call under an
+enforced `out_of_run_cap_usd` rather than send one it cannot bound.
 
-**A cost that read the provider's prompt cache is approximate.** Providers bill cached input at their own rates,
-cheaper to read and, on Anthropic, dearer to write, and models' price catalogue carries neither, so the adapter
-prices those tokens at the full input rate: a cache read is overstated and an Anthropic cache write understated.
-Such a call's `price_source` ends `;cache-approximate`, so a stored cost is never read as exact. What the adapter
-reads off each provider's reply is in `threetears.evals.providers`' own docstring, member by member.
-
-**Keep a client of your own** when you price from a catalogue of your own or route through a gateway, when your
-provider is one 3tears-models has no factory for, or when you call Claude through a subscription: the adapter
-refuses the Claude CLI route, whose completions read as finished whatever stopped them, until models carries the
-CLI's real stop reason. Either way, run `check_completion_conformance` on your client's completions in your suite.
+**An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
+class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`
+members (and `sent_settings`, when it can say what the request carried), whose `aclose` releases what it owns, and a
+`failure_describer` over that SDK's errors. The package ships no adapter to any of them, so evals depends on no other
+3tears package; `check_completion_conformance` on your client's completions, and `check_refusal_negotiation` on the
+client, in your suite, hold the wrapper to what the engine reads.
 
 **A client builder of your own sends every reasoning field.** The judge asks by a token budget
 (`JUDGE_REQUEST_SETTINGS.reasoning_max_tokens`, with `reasoning_effort=None`), so its reasoning is bounded where a
@@ -348,7 +322,7 @@ calls were sent with, the simulator's included) and on each out-of-run spend row
   A client built with no output cap cannot report one, since `max_tokens` is required, and reports `None`.
 
 **Never fail a call for a setting, and drop enforcement last.** A client of your own keeps the rule the shipped
-adapter keeps: a model that lacks a setting still answers. When a provider refuses a request for a setting it
+client keeps: a model that lacks a setting still answers. When a provider refuses a request for a setting it
 carried, send it once more with the closest setting the model takes, or without it, and report what the resend
 carried. On a router that enforces parameters (OpenRouter's `require_parameters`, whose "no endpoint" answer names
 no parameter), drop the refused settings first, the temperature before any other, keeping enforcement; only when
@@ -366,7 +340,7 @@ reporting from the first `.25` deploy keeps your campaigns from splitting at a l
 ### A client of your own that never fails a request
 
 **No model may fail a request because it lacks a setting**: a judge model with no temperature, an effort word it
-does not have, a router that finds no endpoint for a strict call under `require_parameters`. The shipped adapter
+does not have, a router that finds no endpoint for a strict call under `require_parameters`. The shipped client
 never does, and neither should your own client, so the logic is one public root, on the base install
 (`threetears.evals.negotiation`, no SDK and no HTTP client): `negotiate` sends the closest settings the model is
 known to take (`closest_settings`), hands any failure to your refusal reader, and on a refusal of a setting the
@@ -437,7 +411,9 @@ class RouterClient:
                 body["max_tokens"] = wire.max_tokens
             if wire.temperature is not None:
                 body["temperature"] = wire.temperature
-            if wire.reasoning_effort is not None:
+            if wire.reasoning_max_tokens is not None:  # a budget, as OpenRouter takes one: never beside a word
+                body["reasoning"] = {"max_tokens": wire.reasoning_max_tokens}
+            elif wire.reasoning_effort is not None:
                 body["reasoning"] = {"effort": wire.reasoning_effort}
             if response_format is not None:
                 body["response_format"] = response_format
@@ -485,7 +461,7 @@ never from constants copied by hand.
 
 **What a refusal teaches lasts for the process; enforcement is decided per call.** `LearnedSettings` holds what a
 served request proved the model refuses, keyed by your provider name and the model, and every client sharing it
-sends without that setting from then on: keep one per process, or per client factory as the shipped adapter does,
+sends without that setting from then on: keep one per process, or per client factory as the shipped client does,
 never one per call, or every call pays the refusal again. Only what was proved is learned: a temperature dropped on
 the way to a request that was served only once enforcement went too taught nothing, and is sent again. Enforcement
 itself is never learned. Every call that asks for it starts enforced and drops it for that call alone, because a
@@ -498,17 +474,19 @@ keeps both on its exception, `exc.status_code` and `exc.body`), and `anthropic_t
 `thinking` for the settings sent. **Hold your suite to it** with `check_refusal_negotiation`
 (`threetears.evals.testing`): it scripts routers that refuse the temperature, then enforcement, then an effort word
 and an output cap, and fails naming each mistake unless your client resends in that order, reports what was served,
-sends its next call at once without what a served request proved, and asks for enforcement again on every call:
+sends its next call at once without what a served request proved, and asks for enforcement again on every call. It
+refuses an effort word, so build the client asking for one (the simulator's settings do; the judge's ask by a budget,
+which goes as `reasoning.max_tokens`):
 
 ```python
 from threetears.evals.negotiation import wire_settings_for
-from threetears.evals.run import JUDGE_REQUEST_SETTINGS
+from threetears.evals.run import SIMULATOR_REQUEST_SETTINGS
 from threetears.evals.testing import check_refusal_negotiation
 
 await check_refusal_negotiation(
     lambda transport: RouterClient(
         "openai/gpt-6-luna",
-        asked=wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0),  # the temperature the engine names
+        asked=wire_settings_for(SIMULATOR_REQUEST_SETTINGS, 0.0),  # an effort word, and a temperature
         post=transport,
         learned=LearnedSettings(),
     )
@@ -519,8 +497,8 @@ await check_refusal_negotiation(
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
 engine never interprets it, defaults it or branches on it: it is your tenant, project or environment,
-whatever you partition by. (The one default is the quick path's `"quick"`, used only in the in-memory store a
-`run_eval` or `compare` call builds and drops; pass a `host=` or `store=` and `scope_id=` is required.) All of it goes through one `DocumentStore` you implement, keyed by
+whatever you partition by. (The one default is the quick path's: an `Eval` runs under a scope named after
+itself unless `run(scope=...)` names one.) All of it goes through one `DocumentStore` you implement, keyed by
 `(scope_id, doc_type, id)`. Every port call names its scope (an upsert takes it from the document it
 writes), and there is no scope-free read: a caller that
 needs several scopes is told which by you and asks each. A campaign and the runs it compares live in one
@@ -646,8 +624,8 @@ can make it again.
 control end states, a judged dimension's judge declaration and a judge reply's cut-short record, and reads every
 v15.0 document), durable v15.1 (`DURABLE_SCHEMA_VERSION` and
 `DURABLE_SCHEMA_MINOR`: a rating carries what was rated), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and
-cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` and `DURABLE_UPGRADERS`
-are empty): there is nothing older for it to read. A durable document `.25` wrote (as core v15.0) reads as durable
+cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (the core ships none, ever, and
+`DURABLE_UPGRADERS` is empty): there is nothing older for it to read. A durable document `.25` wrote (as core v15.0) reads as durable
 v15.0 with no step.
 
 **A core version is a major and a minor, and your store needs no migration for either.** Every core document
@@ -670,11 +648,11 @@ or the other, an added optional field included:
   store, with a `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has
   a floor, `.25` (`v0.67.0-evaladopt.25`):** it wrote the v15 baseline, and every build before it reads and writes
   core v14 or older, so it refuses every core document `.25` or a later build writes. Roll back no further than `.25`.
-- **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
-  tested against frozen stored documents from every core major since the baseline. Reading an older core
-  document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
-  today; the stored bytes stay as they are until the engine next writes that document, at the current version. A
-  newer major is refused, so every process sharing the store moves to it together.
+- **A major is everything else**, and is a baseline reset: it moves `CORE_BASELINE_VERSION` with
+  `CORE_SCHEMA_VERSION`, ships no upgrade step, and refuses every core document below it by name, and its release
+  notes say to delete them before deploying it (`EvalStorage.reset_core`). A newer major is refused too, so every
+  process sharing the store moves to it together. The durable space is the one with upgrade steps
+  (`DURABLE_UPGRADERS`): its baseline never moves.
 
 So one scope can hold documents at several core versions. Neither a minor nor a step changes a field the store
 filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`, which the minor is not one of), so an index your adapter
@@ -871,27 +849,32 @@ release, on:
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
   launching, the stored documents a kind builds, the store port with its conformance kits and the engine's own
   stores, the refusals, the version constants, the `Known*` vocabularies and their value tuples (`USAGE_ROLES`, …),
-  the quick path and what it returns, and every name this guide, the [tutorial](tutorial.md), the README or an
+  the quick path and what it returns, and every name this guide, the [ladder](ladder.md), the README or an
   example imports. Such a name moves only with
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
   old name, recorded as any removal is.
-- **`closure`** is every other public name: public because a public signature reaches it (a field's type, a value
-  a function returns, an exception it documents), so you can type your code without reaching below a root. Such a
-  name may move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
+- **`stable`** is the rest of the declared surface: what a topic guide, the agent and MCP guides or an example host
+  imports, the quick path's whole root, and what the one production host binds beyond the contract. Such a name may
+  move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
+- **`provisional`** is every other name a root exports, most of them because a declared signature reaches them (a
+  field's type, a value a function returns, an exception it documents), so you can type your code without reaching
+  below a root. Such a name is promised nothing: it may change or move in any release, and the
+  [reference](reference.md#public-api) does not list it.
 
-`packages/evals/api/surface.json` records each name's tier beside its kind and signature, and `HOST_CONTRACT` in
-`packages/evals/scripts/public_surface.py` declares the first tier, with the reason for each group of names. The
-[reference](reference.md#public-api) marks each host-contract name *host contract*. A name
-a topic guide imports and the list does not hold is `closure`. If your host binds to one, ask for it to be
+The first two tiers are the declared surface, about 450 names, mapped by rung in [the surface](surface.md).
+`packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
+signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
+tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
+and marks each host-contract one *host contract*. If your host binds to a provisional name, ask for it to be
 promoted: promoting a name costs nothing, and demoting one is a break.
 
 ## Upgrading: names that move
 
 **Every name that leaves a public root is written down, and only a host-contract name is kept for compatibility.**
 When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
-records it under that release: the old name, its new home or `removed`, and why. A `closure` name has no shim at the
-old name; a `host-contract` one keeps working for a minor release first (above). The record starts
+records it under that release: the old name, its new home or `removed`, and why. A `stable` or `provisional` name
+has no shim at the old name; a `host-contract` one keeps working for a minor release first (above). The record starts
 at 0.68.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
@@ -919,7 +902,7 @@ snapshot:
 - **A name added, or a kind, signature or tier changed.** The test fails until you regenerate the snapshot, so the
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
   callers, add it to the newest section's `notes`. A tier changes only by editing `HOST_CONTRACT`, and every name
-  the README, this guide, the tutorial or an example imports must be on it (`tests/test_api_tiers.py`).
+  the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
   prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
@@ -1093,7 +1076,7 @@ releases the client on every path that does not reach `make`. Work of any other 
 ```python
 async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
     budget = my_budget(host, caller.scope_id)
-    call = plan_draft(axis=params.axis, system_prompt=..., subject_feed=..., catalog_feed=..., reset=...)
+    call = plan_draft(axis=params.axis, subject_feed=..., catalog_feed=...)   # the shipped prompt
 
     async def draft(client: BoundCompletionClient, admitted: AdmittedCall) -> RubricProposal:
         async with client:                                    # the job's work owns the client from here
@@ -1190,85 +1173,57 @@ launcher reads every one off `request.apparatus_settings` with no default of its
 the rig as set up (`EvalRun.apparatus_settings`), a component of its measurement context — a launch naming
 a default and one leaving it out are one condition.
 
-## The engine's prompts: seeded into your registry
+## The engine's prompts: shipped defaults, optional overrides
 
-The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`,
-one string), the capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`),
-both sectioned templates (`SeedSection`'s zones are [provisional](#provisional-mechanisms)). Each is store-master. Your prompt registry holds the copy that runs, an operator
-tunes it with no deploy, and the engine ships only the default a fresh deployment starts from.
+The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`), the
+capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`). **A new host does
+nothing here.** Each call runs the default the package ships (`EVAL_ANALYSIS_GEN_DEFAULT` in `analysis`,
+`EVAL_PROPOSER_TEMPLATE_DEFAULT` and `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt
+of your own: an `AnalysisGeneration` with no `resolve_prompt`, and `plan_draft(axis=..., subject_feed=...,
+catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
 
-`SEED_PROMPTS` (from `threetears.evals.kernel`) is that list, one `SeedPrompt` per prompt. Each names its id
-(`prompt_type`), which registry seeds it (`kind`: `template` or `text`), and where the default lives:
-`seed_ref` is the `(module, constant)` to import it from. Seed an empty slot from each entry and never overwrite a
-stored one:
+**An override is yours to keep.** If an operator tunes a prompt without a deploy, keep the copy in your own
+registry and hand it in: `AnalysisGeneration(resolve_prompt=..., prompt_id=...)` (the id is recorded on every
+analysis as its provenance), and `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
+`threetears.evals.kernel`) lists the three, one `SeedPrompt` each: its id (`prompt_type`), its registry kind
+(`template` or `text`) and `seed_ref`, the `(module, constant)` its default is imported from. Seed an empty slot
+from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
+other name.
 
-```python
-for entry in SEED_PROMPTS:
-    module, constant = entry.seed_ref
-    default = getattr(importlib.import_module(module), constant)
-    registry.seed_if_empty(entry.prompt_type, entry.kind, default)  # your registry's own call
-```
+**A proposer override states the draft shape it was written for, and the engine checks it.** Each shipped
+proposer default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
+(`gen.RUBRIC_PROPOSAL_CONTRACT.line`): the digest of the draft's schema as the call sends it, its field
+documentation aside, and of a revision for the rules the schema cannot state. `plan_draft` reads an override
+before anything is priced and raises `PromptContractError` (a `ConflictError`, status 409) when it carries
+another fingerprint (`outdated`) or none (`undeclared`). The error names the prompt and the remedy: reset the slot
+to the shipped default, or rewrite the edit's output instructions for the current shape and make its line read the
+current one. The registry is yours, so name your reset as `reset=` (an action or a command your operator can
+run), which an override requires. An edited copy that carries the current line passes: the line is the editor's
+statement that the edit was written for this shape. The analysis generator's prompt states no shape (its schema is
+sent and its grammar appended by code), so it binds no contract.
 
-Key the slots by the exported constants rather than by the strings. Declare your own prompts with the
-same `SeedPrompt` type and seed from both lists. The engine's ids start with `eval_`, so your own can use
-any other name. A `SeedPrompt` refuses an unknown `kind` or a blank field when it is constructed.
-
-**See a stored copy the package has moved past, before you pay for it.** A slot seeded from an older default
-keeps being sent after an upgrade changes the default, and if the change is one the package's own validation
-depends on, every call it steers can fail. Record `seed_digest(default)` when you seed a slot, and on start-up
-read each slot with `prompt_drift`:
+**The drift check is opt-in.** A stored copy seeded from an older default keeps being sent after an upgrade
+changes the default. To see that before you pay for it, record `seed_digest(default)` when you seed a slot and read
+each slot with `prompt_drift` on start-up:
 
 ```python
 drift = prompt_drift(entry, shipped=default, stored=stored_copy, seeded_digest=recorded_digest,
                      reset=f"call prompt_reset with prompt_type={entry.prompt_type!r}",  # your own reset
                      customized=operator_owns_it)
-if drift.stale:
-    log.warning("%s: %s", drift.prompt_type, drift.remedy)
-```
-
-A stored copy reads `current` when it is the shipped default, `customized` when it changed since you seeded it
-or you say it is deliberately yours (`customized=True`), and `stale` otherwise: untouched since seeding, or with
-no record of its seeding, and not the default. Pass a template's stored copy as
-`SeedTemplate.from_dict(payload)` and a text prompt's as its string. The digest names content, not the revision
-number. A copy you tune is never reported stale. A provenance stamp does the same job as a recorded digest: if your registry marks a slot as
-the system's seed until someone edits it, pass `customized=True` for an edited slot and `seeded_digest=None`, and an
-untouched slot the package has moved past reads `stale`.
-
-**A proposer prompt states the draft shape it was written for, and the engine checks it.** A tuned copy is
-never stale, but it can still teach a draft shape the engine no longer reads. So each shipped proposer
-default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
-(`gen.RUBRIC_PROPOSAL_CONTRACT.line`). The fingerprint is the digest of the draft's schema as the call sends
-it, its field documentation aside, and of a revision for the rules the schema cannot state. `plan_draft`
-reads the rendered prompt you hand it, before anything is priced, and raises `PromptContractError` (a
-`ConflictError`, status 409) when the prompt carries another fingerprint (`outdated`) or none
-(`undeclared`, which is every copy seeded before the line existed). The error names the prompt
-(`prompt_type`) and the remedy: reset the slot to the shipped default, or keep an edit by rewriting its
-output instructions for the current shape and making its line read the current one. The registry is yours,
-so the engine cannot name your reset: pass it as `reset=` (an action or a command your operator can run), and
-the remedy names it. `prompt_drift` takes the same `reset=`. An edited copy that carries the current line passes:
-the line is the editor's statement that the edit was written for this shape, and the strict response
-format and the draft's validation still stand behind it. The analysis generator's prompt states no shape
-(its schema is sent and its grammar appended by code), so it binds no contract.
-
-`prompt_drift` reads the same thing before any call. Each reading carries `contract` (`current`,
-`outdated`, `undeclared`, or `unbound` for a prompt with no contract), `expected_contract` (the line the
-shipped default carries) and `refused`, which is true when a call the copy steers is refused, whether the
-copy is stale or customized. Show `refused` readings with their `remedy` wherever you list your prompts,
-so an operator sees a copy that will be refused before a call is.
-
-```python
 if drift.stale or drift.refused:
     log.warning("%s: %s", drift.prompt_type, drift.remedy)
 ```
 
-After an upgrade that moves a contract's fingerprint, every stored copy of that prompt is refused until it
-is reset or its line updated. Check `prompt_drift` on start-up, so the reset happens before the first call
-is refused.
+A stored copy reads `current` when it is the shipped default, `customized` when it changed since you seeded it or
+you say it is deliberately yours (`customized=True`), and `stale` otherwise. `refused` is true when `plan_draft`
+would refuse the copy (`contract` is `outdated` or `undeclared`). Pass a template's stored copy as
+`SeedTemplate.from_dict(payload)` and a text prompt's as its string. A host that keeps no copies has nothing to
+check.
 
 ### Launching the analysis reporter
 
 The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
-bundles (see [Agents and MCP](agents-and-mcp.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
+bundles (see [Serving](serving.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
 candidate is a preset of the `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
 which replays the memo each campaign got.
 
@@ -1329,9 +1284,9 @@ Skip this section if your subject is stateless (a classifier, an extractor). A w
 acts on something — a ticket queue it can close tickets in, a game table — whose state you want seeded
 before each cell and checked after it.
 
-Before building a host for one, try the quick path: `run_eval(..., world=World(...), seed=..., goal_checks=[...])`
-declares a small world, seeds each case's starting state through this same session, hands the candidate
-tools that act on it and grades the end state with the engine's goal-state checks (`examples/world.py`).
+Before building a host for one, try the quick path: `Eval(cases, World(State, tools=[...])(agent), [goal checks])`
+declares a small world, seeds each case's starting state (its `world` key) through this same session, hands the candidate
+tools that act on it and grades the end state with the engine's goal-state checks (`examples/4-booking/agent.py`).
 What follows is the host-side contract that path is built on.
 
 **A world, through the cell's session.** A host whose subject lives in a stateful world declares it
@@ -1352,8 +1307,7 @@ on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSe
   `world.bind(<that cell's handle table>)` before `seed` — every call the session makes then lands in
   that cell's world, and a session that seeds unbound is refused.
 - **Grading.** A goal check reads the end state as `state.<dimension>`, the calls the kind recorded on its
-  `CallLedger`, and what fired as `fired("<dimension>")`; grade them with `grade_goal_checks`, and a
-  stored run re-grades from all three with `recheck_goal_states`.
+  `CallLedger`, and what fired as `fired("<dimension>")`; grade them with `grade_goal_checks`.
 - **Witnessed cells.** The runner's session is `commissioned`; a host grading a cell it witnessed through
   a session of its own constructs `WorldSession(registry, provenance="witnessed")`, so `fired_armed(...)`
   is not established there — no seed armed the session — and `record_witnessed_cell` refuses any world
@@ -1368,7 +1322,21 @@ refuse a dimension that declares neither, naming every one at once; a `"configur
 (the seed counts a config the same corpus seeds), and a `"builtin"` one must have none. Every launch checks the same
 before any spend, so a template stored before the declaration existed is refused until `update_template` declares
 its dimensions, and a configured dimension whose config was archived since is refused rather than scored by the
-engine's prompt. A quick-path `Judge` declares its own dimensions, so `run_eval` callers state nothing.
+engine's prompt. A quick-path `Judge` declares its own dimensions, so an `Eval` that grades with one states
+nothing.
+
+**Your boot seed corpus carries authored judge cases too.** Beside `templates/`, `rubric_dims/` and `judge_configs/`,
+`load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (`threetears.evals.run.definition_seed`;
+in memory, `SeedCorpus(judge_cases=...)`): `judge_case_author`'s arguments with its two templates named by `name`
+(`judge_template`, `criterion_template`, since a corpus cannot know a seeded template's id), the `criterion`, the
+`output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`. `seed_eval_definitions`
+builds each through the door `judge_case_author` uses (`author_judge_case`: the criterion read from the template
+that words it, the verdict held to its scale) before anything is written, refusing the whole seed by name for any
+case authoring would refuse, then freezes it into its judge template after the templates are written, as the same
+`AuthoredJudgeCase` under the same content-derived id. A case already stored is reported `already present` under
+`judge_case`, and one whose words or verdict changed is a new case beside it, never an update. A launch naming no
+case set runs every live case of the judge template, so a host boots with its hard negatives in place and no
+authoring tool of its own over `judge_case_author`.
 
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
@@ -1414,8 +1382,8 @@ in [Cost and budgets: how a result's cost is counted](cost-and-budgets.md#how-a-
 
 ## Cassettes: recording and replaying tools
 
-A [cassette](concepts.md#cassette) lets two arms face exactly the same tool answers. `run_eval` and `compare`
-do the wiring below for you (`tools=`, `cassette_mode=`; `examples/cassettes.py`); this section is for a kind of
+A [cassette](concepts.md#cassette) lets two arms face exactly the same tool answers. An `Eval` does the wiring
+below for you (`World(tools=[...], recording=path)`); this section is for a kind of
 your own.
 
 **Cassettes record and replay through seams the kind supplies.** Launch a run with
@@ -1488,6 +1456,5 @@ so it goes through the deprecation cycle, never straight out in one release's no
   can ask what `fired(...)` ([A world](#a-world-through-the-cells-session)).
 - **`SeedSection`'s zones** (`primacy`, `reference`, `recency`, in `kernel`). The sectioned prompt template the
   two proposer prompts are declared in, ordered by zone, each section with its own condition, formatter and
-  cache class. Without a registry for sectioned templates, you render those sections into the system prompt
-  you hand the proposer yourself (`plan_draft` reads the rendered prompt;
-  [The engine's prompts](#the-engines-prompts-seeded-into-your-registry)).
+  cache class. A host with no registry for sectioned templates never meets them: `plan_draft` sends the shipped
+  default when handed no prompt ([The engine's prompts](#the-engines-prompts-shipped-defaults-optional-overrides)).

@@ -1,20 +1,253 @@
 # Measuring soundly
 
-**For** anyone about to design a campaign, choose k and a case count, pick a judge, or decide whether to believe
-a surprising result. **Answers:** which practices keep an eval's numbers honest, and what went wrong without
-them. These are practice notes from building the engine against one production host between May and October
-2026: a conversational agent with tools, its three-label classifier, a retrieval sub-agent it calls, and the
-engine's own analysis writer.
+**For** anyone about to spend on a campaign, choose its arms, k and a case count, pick a judge, or decide whether to
+believe a surprising result. **Answers:** which design answers which question and what it cannot answer; how to
+declare the design and its control; how cases and repeats trade off; which read gives the answer; and which
+practices keep an eval's numbers honest, with what went wrong without them. Arm, lever, variant, k and campaign are as
+[Concepts](concepts.md) defines them.
 
-Each finding is a rule, its reason and an *Evidence:* line; "replicated" means two or more independent
-campaigns or arm pairs showed it. The Evidence lines summarise campaigns run in that private application; the
-campaigns themselves are not published. Every "in simulation" figure is reproducible from the package's
+The second half is practice notes from building the engine against one production host between May and October
+2026: a conversational agent with tools, its three-label classifier, a retrieval sub-agent it calls, and the engine's
+own analysis writer. Each finding is a rule, its reason and an *Evidence:* line; "replicated" means two or more
+independent campaigns or arm pairs showed it. The Evidence lines summarise campaigns run in that private application;
+the campaigns themselves are not published. Every "in simulation" figure is reproducible from the package's
 known-answer suite (`packages/evals/tests/test_sim_*.py` and `test_simulated_*.py`, on
-`tests/simulation_support.py`). Terms are as [Concepts](concepts.md) defines them. To choose the arms, the
-control, k and the case count for a question, start with [Choosing a campaign design](choosing-a-design.md).
-**pass^k** is the chance that k attempts at a case all pass: per case C(c, k) / C(n, k) from c passes in
-n ≥ k repeats, averaged over the cases measured that deep (field `pass_hat_k`). It is not pass@k, the chance
-that at least one of k passes.
+`tests/simulation_support.py`). **pass^k** is the chance that k attempts at a case all pass: per case C(c, k) / C(n, k)
+from c passes in n ≥ k repeats, averaged over the cases measured that deep (field `pass_hat_k`). It is not pass@k, the
+chance that at least one of k passes.
+
+The code blocks run in order, in one async context (`python -m asyncio`, or inside `async def main()`), each using
+names an earlier one defined. The frontier block also uses `ROOM`, the world declared in the first block of
+[Evaluating a tool-using agent, step 1](evaluating-agents.md#step-1-declare-the-world): run that block first.
+
+Two more terms, and a rule:
+
+- **Control:** the arm every other arm is tested against. It is a variant (one configuration), not a run.
+- **Shape:** what the engine derives from what ran (`bundle.design.shape`). `one_factor_at_a_time` means each
+  arm moves at most one lever off the control. `multi_factor` means some arm moves more than one.
+  `undesignated` means no control resolved, so nothing is known to be controlled.
+- Only goal-state checks and judged dimensions decide a pass for pass^k; guardrails take no part.
+
+## Start from the question
+
+| Your question | Run these arms | Shape | Read the answer from | It cannot tell you |
+|---|---|---|---|---|
+| Is B better than A? | A and B, differing in one lever; A is the control | `one_factor_at_a_time` | [the contrasts against the control](reading-reports.md#reading-a-comparison) | why B differs, or whether another level would do better |
+| Which of several single changes helps? | the control, plus one arm per change, each moving one lever | `one_factor_at_a_time` | the contrasts, Holm-corrected across the arms | how the changes combine |
+| Which combination wins? | every combination of the levers' levels (a full grid) | `multi_factor` | the contrasts, read again against other controls (`Result.against`) | which lever made a combination's gain, except where the grid holds that lever's two levels with all else equal |
+| Which arm is cheapest among those good enough? | arms that differ in cost (model, effort), all run at one k, under one subject | any | the [frontier](#the-frontier-passk-against-cost): pass^k, cost and latency against a bar | whether two arms differ on a measure; that is a contrast |
+
+**"One lever per arm" is a rule for the first two questions, not a law.** It is what makes each contrast
+attributable to its lever. In a grid, arms that move several levers are the point. A lever's effect is clean
+only between two arms that differ in that lever alone. A 2×2 grid holds two such pairs for each lever: the
+report tests the lever at the control's level of the other lever, and `Result.against` tests it at the
+other level. The engine does not test the interaction itself. When those two effects differ, the combination
+matters more than either lever. Each `against` is its own Holm family. The bundle's row for each lever
+(`bundle.coverage`) lists in `confounded_by` every other lever that varied across its runs. While that list
+is non-empty, the row is a comparison averaged over the other levers, not a controlled one.
+[`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) names the arms of a 2×2, prompt by reasoning
+effort, in its closing comment.
+
+**The winner of a grid needs a test against the runner-up.** The contrasts test every combination against the
+control, never against each other. To test the leader against the rest, `await comparison.against(leader)`. You
+chose that control after seeing the results, so treat what it shows as a lead to confirm in a fresh campaign. An
+analysis can draw a `sweep_ranking` chart, which orders the combinations by their mean and tests nothing. The
+decision surface's row order is not a ranking either.
+
+## Declare the design and its control
+
+**On the quick path, an `Eval` over a mapping of arms declares it for you.** It sets one axis per factor, with the
+levels the arms ran, and the control from the mapping's first key. It sets `intended_repetitions` to `k`, and states the stimulus held
+fixed and the rig commissioned. It launches every arm together, so time and load do not differ between them.
+
+```python
+from threetears.evals.analysis import inspect_campaign_bundle
+from threetears.evals import Eval
+from threetears.evals.run import run_blocking
+
+CASES = [
+    {"ticket": "I was charged twice for March.", "queue": "billing"},
+    {"ticket": "Refund the plan I bought yesterday.", "queue": "billing"},
+    {"ticket": "The export button does nothing.", "queue": "bug"},
+    {"ticket": "The app crashes on large photos.", "queue": "bug"},
+    {"ticket": "The reset email never arrives.", "queue": "account"},
+    {"ticket": "Change the email on my account.", "queue": "account"},
+]
+
+def classifier(prompt):  # an offline stand-in for a model call under each prompt
+    async def classify(case):
+        text = case["ticket"].lower()
+        if "email" in text and prompt == "v2":
+            return "account"
+        return "billing" if "charged" in text or "refund" in text else "bug"
+    return classify
+
+comparison = await Eval(CASES, {"v1": classifier("v1"), "v2": classifier("v2")}, ["queue"], k=3).run(
+    store=":memory:", scope="triage"
+)
+host = comparison.host
+# A store read, so it runs off the event loop, on the host's executor.
+inspected = await run_blocking(
+    host.blocking_executor, inspect_campaign_bundle, host, comparison.campaign_id, comparison.scope_id
+)
+design = inspected.bundle.design
+print(design.shape, [arm.moved for arm in design.contrasts])  # one_factor_at_a_time [{'candidate': 'v2'}]
+```
+
+**On your own host, declare it when you create the campaign.** Call `create_campaign` (the `campaign_create`
+action takes the same fields). Pass `declared_design`, and name the control by one of its runs with
+`control_from_run_id`. The engine resolves that run's variant key, so you never type a digest. A campaign you
+create without a design is one you say is exploratory (`exploratory=True`); creating one that says neither is
+refused, so no campaign is exploratory by accident. To change the control later, call `update_campaign` with
+`control_from_run_id` (the `campaign_update` action), or `set_campaign_control`. A design that names an axis your
+host cannot vary, or a bar looser than the registered one, is refused when the campaign is created. So create it
+before you launch, with no runs, then add each run with `add_runs_to_campaign` (the `campaign_runs_add` action)
+and name the control from one of them; a run can be
+named as the control before it has any results. This declares the runs above by hand:
+
+```python
+from threetears.evals.analysis import create_campaign
+
+runs = {arm: summary.run_id for arm, summary in comparison.arms.items()}
+levels = [{"content": arm, "display": arm} for arm in runs]
+campaign = await run_blocking(  # a store write, so it runs off the event loop too
+    comparison.host.blocking_executor,
+    create_campaign,
+    comparison.host.storage,
+    {
+        "name": "triage v2", "subject_id": "triage", "behavior": "routing", "run_ids": list(runs.values()),
+        "declared_design": {
+            "axes": [{"axis_id": "candidate", "values": levels}],
+            "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+            "intended_repetitions": 3,
+            "questions": [{"text": "Does v2 route more tickets right?", "merit_axes": ["quality"]}],
+        },
+    },
+    control_from_run_id=runs["v1"], scope_id="triage", created_by="you", profile=comparison.host.profile,
+)
+```
+
+| `declared_design` field | What it does | Needed for |
+|---|---|---|
+| `axes` (required) | The levers and levels you meant to compare. Each declared axis gets a row in `bundle.coverage`, `unswept` if it held one level; compare the row's `levels` with yours. | every question |
+| `held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every question |
+| `control` | The reference variant, set from `control_from_run_id` (on create or update) or `set_campaign_control`. With none, the shape is `undesignated` and nothing is tested against a control. | A/B, single changes, grid |
+| `intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
+| `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). | a confirmatory answer |
+| `bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
+| `crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
+
+**Declare a design when you know the question; explore when you do not.** Either is a choice you state when the
+campaign is created: `declared_design`, or `exploratory=True`. Declare
+one when the question is settled before the runs: you know which lever you are comparing, against which
+control, and what answer would change what you do. Only a declared question can confirm anything, so a
+decision you will act on needs one. Leave it out when you are learning how to run evals, or testing an
+intuition you cannot yet put as a question. A campaign with no design is **exploratory**: its report and its
+bundle say so once, at the top, and its readings confirm nothing. Its analysis reads the design inferred from
+the runs, and never calls that design declared. Do not declare a design you do not have just to get past this:
+a made-up question makes leads read as answers, which is worse than declaring none. When an exploratory
+campaign finds something worth knowing, declare a design for the campaign that tests it. A question that settles
+while a campaign is still running is declared on that campaign with `update_campaign` (the `campaign_update`
+action), and the campaign is declared from then on: whether a campaign is exploratory is read off whether it
+declares a design, never stored beside it. Withdrawing a declaration is said the same way, with
+`declared_design` set to None and `exploratory=True`. A design that names
+an axis your host cannot vary is refused naming `declarable_axes()`, which lists the levers and open families
+your host accepts.
+
+**The control is a variant, not an earlier baseline run.** It is a configuration, resolved through any member
+run that carries it. A run of the incumbent from last month is not a control: run the control in the same
+launch as the other arms, on the same rig. A run of the same configuration from another launch pools into the
+control arm, and the report discloses runs that did not overlap in time.
+
+**Check the design before you read it.** `inspect_campaign_bundle` costs nothing. Check `design.shape`, and
+each arm's `moved` in `design.contrasts`. If you meant single changes and the shape says `multi_factor`, some
+arm moved a lever you did not intend. `design.control_excluded` says why a declared control did not resolve,
+and `short_cells` names the cells that got fewer repeats than intended.
+
+## How many cases, how many repeats
+
+**For a difference in means, add cases first.** That covers the A/B, the single changes and the grid. Every
+interval is computed over cases, so six cases at k = 3 are as wide as six draws, not eighteen. Repeats only
+steady each case's mean, and k = 1 to 3 is enough. Size the bank from an effect you have measured:
+[Variance, k and how many cases](#variance-k-and-how-many-cases) gives the numbers. A grid
+multiplies the cost, since each combination is a cell: 2 × 3 levels at 20 cases and k = 3 is 360 trials.
+[Cost and budgets](cost-and-budgets.md) prices a launch before it runs.
+
+**For the frontier, set k first, then add cases.** pass^k counts a case only once it has run at least k times.
+The frontier reads every arm of a subject at one depth, the smallest k among its runs, so one arm launched at
+k = 1 reads the whole subject at pass^1. So:
+
+1. Choose the depth the question needs (k = 3 for "passes three times out of three").
+2. Launch every arm at that k, and declare it as `intended_repetitions`.
+3. Then add cases: the bar is decided on the interval, and the interval narrows with cases.
+
+An arm that passed every attempt reads [0.70, 1.00] on 12 cases, which straddles a bar of 0.8, so it is
+undecided. On 20 cases it reads [0.82, 1.00] and clears the bar. Repeats beyond k add little when a case's
+attempts agree.
+
+## The frontier: pass^k against cost
+
+`frontier` ranks the arms of every completed run in a scope, not one campaign's, on pass^k, cost and latency,
+one subject at a time. With a `bar`, it decides each arm's pass^k against the bar on its interval
+(`bar_decision`). It then picks the cheapest arm that cleared, and says whether that arm is shown cheaper than
+the others that cleared (`verdict.cost_decision`). Here two stand-in agents act on the room from
+[Evaluating a tool-using agent](evaluating-agents.md#step-1-declare-the-world). The high-effort one costs more
+and never slips:
+
+```python
+from functools import partial
+
+from threetears.evals.analysis import frontier
+from threetears.evals import Answer
+from threetears.evals.run import list_runs
+
+def agent(cost, skips):  # an offline stand-in that leaves the light alone in the rooms named in `skips`
+    async def act(case, room):
+        seen = await room.view()
+        wanted = "on" if seen["daylight"] == "dark" else "off"
+        if seen["light"] != wanted and case["room"] not in skips:
+            await room["switch_light"](to=wanted)
+        return Answer("Done.", model="m", cost_usd=cost)
+    return act
+
+ROOMS = [{"room": f"{light}-{day}-{i}", "world": {"light": light, "daylight": day}}
+         for light in ("on", "off") for day in ("dark", "bright") for i in range(5)]
+arms = {  # named as k=v pairs: each pair a factor, the first arm the control
+    "model=m, effort=high": ROOM(agent(0.002, set())),
+    "model=m, effort=low": ROOM(agent(0.0005, {"off-dark-0", "off-dark-1"})),
+}
+rooms = await Eval(ROOMS, arms, ['(state.light == "on") == (state.daylight == "dark")'], k=3).run(
+    store=":memory:", scope="lights"
+)
+read = await run_blocking(  # a store read
+    rooms.host.blocking_executor, frontier, rooms.host.storage, "lights",
+    list_runs=partial(list_runs, rooms.host), bar=0.8,
+)
+for point in read["subjects"][0]["points"]:
+    print(point["production_replicating_cost"], point["pass_hat_k"], round(point["pass_hat_k_ci_low"], 2),
+          point["bar_decision"])
+# 0.002 1.0 0.82 cleared       high effort: passed all 20 rooms, every attempt
+# 0.0005 0.9 0.67 undecided    low effort: missed 2 rooms of 20
+print(read["subjects"][0]["verdict"]["cost_decision"])  # only_cleared: high is the only arm that cleared
+```
+
+The cheaper arm may still be good enough; 20 rooms cannot say. To decide it, add rooms.
+
+Before you rely on it, check two things:
+
+- **Every arm must run under one subject.** The frontier never ranks across subjects. On the quick path,
+  every arm of one comparison runs under the comparison's subject (its name), so its models and its named arms
+  rank on one frontier. On your own host, run every arm under the subject it measures.
+- **pass^k needs goal checks or a judge.** An arm graded by neither, such as a classifier scored only by
+  a field grader, has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and no bar
+  is decided on it. Read such an arm from the contrasts.
+
+The same frontier is the `scope_frontier` action and the `frontier` command
+([Serving](serving.md#frontier)); `scope_frontier` in `threetears.evals.ops` returns it as a
+`FrontierResult`.
+
+The bundle carries a frontier too (`bundle.frontier`). Check `bundle.frontier_bar_withheld` before reading
+its clearing counts.
 
 ## Variance, k and how many cases
 
@@ -32,11 +265,11 @@ and it has 80% power only for a true d_z near 1.7, so "not separated" there says
 from a measured effect: 80% power needs about 17 cases for d_z ≈ 0.74 and about 34 for d_z ≈ 0.50. The
 exception is pass^k, and with it the frontier: a case counts toward pass^k only once it has run k times, so set
 k to the depth the question needs first, then add cases
-([Choosing a campaign design](choosing-a-design.md#how-many-cases-how-many-repeats)).
+([above](#how-many-cases-how-many-repeats)).
 *Evidence:* agent with tools, two independent arm pairs at n=5, 2026-08, pass^k 0.2 → 0.8 gave p=0.174 and p=0.629, replicated; in simulation (2026-09) a 95% interval over observations from 5 cases × k=3 covered the truth 70.3% of the time, against 94.3% over case means; from 2 to 15 cases at k=1 to 5 the engine's interval over cases covered 95% on average for a mean, every configuration within Monte-Carlo error, and at least 96% for a rate, against as little as 51% and 67% over observations (`tests/test_sim_reading_intervals.py`, 2026-10).
 
 **A small bank misses whole failure classes.** A hand-picked handful covers the cases its author thought of. See
-[How many cases](designing-classifier-evals.md#4-how-many-cases).
+[How many cases](building-an-inventory.md#how-many-cases).
 *Evidence:* three-label classifier, k=3, 8 then 20 cases, 2026-09: the 20-case bank held a failure class (5 cases, all failed) the 8-case bank had no case of. The prompt also changed between the two banks, so the score's fall (0.875 → 0.750) is not attributable to the bank alone; single campaign.
 
 **Pair by case.** Between-case variance dominates small banks, so compare per-case differences, as the engine
@@ -106,7 +339,7 @@ result, not a low score; never retry it as transient.
 
 **In a before/after, change one thing at a time; a judge change voids it.** The engine never pools
 observations across [apparatus classes](concepts.md#apparatus-class). A grid that varies several levers on
-purpose is a different design ([Choosing a campaign design](choosing-a-design.md#start-from-the-question)).
+purpose is a different design ([Start from the question](#start-from-the-question)).
 *Evidence:* agent with tools, 2026-07, a dimension rose 2.7 → 4.4 when a fix and a judge swap landed together, while the four dimensions judged identically moved between −0.3 and +0.5; ruled unanswerable, single campaign.
 
 **Give every arm the same inputs by construction.** A key-wise overlay leaves keys it omits as they were. The
@@ -139,7 +372,7 @@ candidate for a turn truncated at its output cap, and never excludes a trial a f
   now a rig failure, and a failed candidate fails every check.
 - **The judge could not see results delivered asynchronously,** so it scored grounding 1 every time.
 - **The eval measured a stub,** and the classifier scored 32.8% against a 33.3% chance floor. See
-  [Feed the classifier exactly what production feeds it](designing-classifier-evals.md#5-feed-the-classifier-exactly-what-production-feeds-it).
+  [Feed the classifier exactly what production feeds it](building-an-inventory.md#feed-the-classifier-exactly-what-production-feeds-it).
 
 *Evidence:* agent with tools and its classifier, 2026-05 to 2026-10, eight separate defects, each reproduced live.
 
@@ -147,7 +380,7 @@ candidate for a turn truncated at its output cap, and never excludes a trial a f
 candidate acted or did nothing grades nothing. Authoring refuses a check that gives one verdict on its control end
 state and on the untouched seed, and every run marks a check not so proven (`unproven`, `refuted`) beside its pass
 rate; a quick world run also states how many cases a do-nothing candidate would pass
-([world model](world-model.md#the-rules-the-contract-enforces)). Calibrate any script that reads verdicts on a
+([the world model](evaluating-agents.md#the-rules-the-contract-enforces)). Calibrate any script that reads verdicts on a
 known pass and a known fail, and classify on reported counts, not exit codes: a run that never happened and a run
 that failed both exit non-zero.
 *Evidence:* agent with tools, 2026-10, an audit found a hold check reading a parameter rather than its effect, and goal checks reading the static seed rather than the end state, single audit.

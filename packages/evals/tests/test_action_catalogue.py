@@ -298,7 +298,7 @@ async def test_a_result_carries_its_text_and_its_model_as_data(tools: dict[str, 
     )
     assert not outcome.is_error and outcome.action == "run_archive"
     assert RunLine.model_validate(outcome.structured).archived is True
-    assert outcome.text.startswith(f"- {run_id}:") and outcome.text.endswith(", archived")
+    assert {f"id: {run_id}", "archived: True"} <= set(outcome.text.splitlines()), "the text carries the facts"
 
 
 # =============================================================================

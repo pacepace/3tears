@@ -61,7 +61,9 @@ def _body(wire: WireSettings, response_format: object) -> dict[str, Any]:
         body["max_tokens"] = wire.max_tokens
     if wire.temperature is not None:
         body["temperature"] = wire.temperature
-    if wire.reasoning_effort is not None:
+    if wire.reasoning_max_tokens is not None:
+        body["reasoning"] = {"max_tokens": wire.reasoning_max_tokens}
+    elif wire.reasoning_effort is not None:
         body["reasoning"] = {"effort": wire.reasoning_effort}
     if response_format is not None:
         body["response_format"] = response_format

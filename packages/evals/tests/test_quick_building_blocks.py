@@ -1,13 +1,14 @@
-"""Quick's building blocks inside a host of your own: ``@measure`` and ``callable_kind``, mixed with hand-written parts.
+"""Quick's building blocks inside a host of your own: ``@measure`` and the callable kind, mixed with hand-written parts.
 
-``callable_host`` is one host shape: its store, the shared-core sweepables and one measure per scorer. A host that
-needs its own store or its own declarations used to drop to the contract and write by hand what quick generated.
-Here a host built by hand — its own SQLite store, a hand-written measure beside an ``@measure`` one, a lever of its
-own on the callable kind — launches the quick kind through the engine's own ``start_run``.
+``as_host`` is one host shape: its store, the shared-core sweepables and one measure per function grader. A host that
+needs its own store or its own declarations drops to the contract and writes by hand what quick generates. Here a host
+built by hand — its own SQLite store, a hand-written measure beside an ``@measure`` one, a lever of its own on the
+callable kind — launches the quick kind (built by ``threetears.evals.quick.one_call``'s internals, no longer public)
+through the engine's own ``start_run``.
 
 Mutations that turn this file red: a ``Measure`` that stops being callable or loses its descriptor; a descriptor
 built apart from the decorated function's name and docstring; ``callable_kind`` ignoring a ``Measure``'s range;
-``callable_host`` writing its own descriptor over a ``Measure``'s.
+``callable_host`` or ``as_host`` writing its own descriptor over a ``Measure``'s.
 """
 
 from __future__ import annotations
@@ -24,14 +25,9 @@ from threetears.evals.kernel import MetricDescriptor
 from threetears.evals.kernel.host import SHARED_CORE, EvalHost, HostProfile, MeasureRegistry, default_cell_timeout
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.kernel.storage import EvalStorage
-from threetears.evals.quick import (
-    CALLABLE_KIND,
-    Measure,
-    callable_host,
-    callable_kind,
-    callable_kind_contracts,
-    measure,
-)
+from threetears.evals import Eval, grader
+from threetears.evals.quick import Measure, as_host, measure
+from threetears.evals.quick.one_call import CALLABLE_KIND, callable_host, callable_kind, callable_kind_contracts
 from threetears.evals.run import (
     KindWiring,
     LaunchableKind,
@@ -100,6 +96,14 @@ def test_callable_host_registers_a_measure_s_own_descriptor_and_refuses_a_second
     assert callable_host([exact]).profile.measures.get("exact") == exact.descriptor
     with pytest.raises(ValueError, match="on its own @measure"):
         callable_host([exact], margins={"exact": 0.1})
+
+
+def test_as_host_registers_a_measure_s_own_descriptor_and_refuses_a_second_one() -> None:
+    cases = [{"n": 0, "want": "yes"}]
+    host = as_host([Eval(cases, candidate, [exact])], store=":memory:")
+    assert host.profile.measures.get("exact") == exact.descriptor
+    with pytest.raises(ValueError, match="on its own @measure"):
+        as_host([Eval(cases, candidate, [grader(exact, margin=0.1)])], store=":memory:")
 
 
 async def test_a_host_of_your_own_launches_the_quick_kind_through_start_run(tmp_path: Path) -> None:

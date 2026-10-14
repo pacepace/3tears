@@ -6,8 +6,8 @@ arm to its kind's launcher, found in a registry the host supplies (:class:`Launc
 than by name. The kind's launcher builds what only that kind has — its subject, its case set, its
 clients — and hands the shared tail (:func:`launch_run`) a typed :class:`KindWiring`; the tail stamps
 everything the request and template already say, assembles and bounds the run and gives its work
-function to the :class:`LaunchGroup` the launch starts together. The universal battery (:func:`start_universal_battery`) and the judge-service
-build (:func:`build_judge_service`) are here for the same reason: neither names a kind.
+function to the :class:`LaunchGroup` the launch starts together. The judge-service build
+(:func:`build_judge_service`) is here for the same reason: it names no kind.
 
 What only a host can answer arrives on the :class:`LaunchHost` every entrypoint here takes: the
 :class:`~threetears.evals.kernel.host.eval_host.EvalHost` the rest of the engine reads (vocabulary,
@@ -100,7 +100,7 @@ if TYPE_CHECKING:
     from threetears.evals.schema.subject import SubjectSnapshot
     from threetears.evals.kernel.host.sweepables import SweepableRegistry
     from threetears.evals.schema.models import JudgeConfig, VariationCounts
-    from threetears.evals.schema.completion import BoundCompletionClient, PricedCompletion
+    from threetears.evals.schema.completion import BoundCompletionClient
     from threetears.evals.kernel.scoring import CellSummary
     from threetears.evals.kernel.storage import DefinitionStore
     from threetears.evals.kernel.usage_capture import ExternalRateTable
@@ -125,8 +125,7 @@ class LaunchSettings(BaseModel):
     travels to every arm's tail on its request (:attr:`LaunchRequest.settings`), which records and
     enforces the run's ceilings and judge concurrency from it. So a reload part-way through cannot turn
     a launch that was admitted under one ceiling into a run refused, after its generation was paid for,
-    under another — nor leave a run recording a ceiling it did not run under. A battery reads once for
-    every template it launches.
+    under another — nor leave a run recording a ceiling it did not run under.
 
     Attributes:
         max_launch_arms: How many runs one launch may start together. A group starts every member
@@ -149,9 +148,8 @@ class LaunchSettings(BaseModel):
         max_out_of_run_cost_usd: The most a launch's out-of-run calls — its case generation, which runs
             before any run exists and so under no run's cap — may together be priced at before they are
             made (:class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget`). Enforced exactly when
-            ``enforcement_enabled`` is. Per LAUNCH, as ``max_cost_usd`` is per run: a battery is one launch
-            per template, so a battery of N generating templates may spend up to N times this out of run,
-            as its runs may spend up to their count times their cap. An analysis generation is held to it
+            ``enforcement_enabled`` is. Per LAUNCH, as ``max_cost_usd`` is per run: N launches may spend up to N
+            times this out of run, as their runs may spend up to their count times their cap. An analysis generation is held to it
             too, per generation (:func:`~threetears.evals.ops.analysis_generate`): its calls run after the
             runs it reads, under no run's cap.
         judge_alternate_model: The judge a launch's arms are scored by instead of the judge role's default
@@ -495,7 +493,7 @@ SubjectResolver = Callable[[str, str], UnknownSubject | None]
 class LaunchHost:
     """An :class:`~threetears.evals.kernel.host.eval_host.EvalHost`, and what starting its runs needs.
 
-    What :func:`start_run`, :func:`start_universal_battery` and the launch tail take. It COMPOSES the
+    What :func:`start_run` and the launch tail take. It COMPOSES the
     host rather than extending it: the host is built once and handed in whole, so no field of it can
     be dropped on the way, and the analysis side is handed the same :attr:`eval_host` this launches
     through.
@@ -1527,10 +1525,7 @@ def _launchable(
     overlays: Mapping[str, Any] | None,
     apparatus_settings: Mapping[str, Any] | None,
 ) -> _Launchable:
-    """Make every refusal that reads the template and its kind's registry entry — the dispatch's, and the battery's pre-flight.
-
-    One function for both callers, so a battery refuses before launching anything exactly what each
-    of its launches would refuse once it had begun.
+    """Make every refusal that reads the template and its kind's registry entry, before the launch begins.
 
     Args:
         host: The host, whose launch registry and profile declare the kind.
@@ -2019,8 +2014,8 @@ def _refuse_raised_ceilings(
 
     The rule is :func:`~threetears.evals.run.ceilings.refuse_raised_ceiling`, stated once for both
     currencies; this applies it to a launch's two overrides against its one settings snapshot and
-    turns its refusal into the launch's own error. Every launch surface — a single launch, its quote and
-    a battery — reaches it, so none can admit a raised ceiling another refuses.
+    turns its refusal into the launch's own error. Every launch surface — a single launch and its quote —
+    reaches it, so none can admit a raised ceiling another refuses.
 
     Args:
         settings: The launch's settings snapshot.
@@ -2159,15 +2154,6 @@ def _refuse_launch_arguments(
     return mode
 
 
-async def _start_run(host: LaunchHost, settings: LaunchSettings, **arguments: Any) -> list[EvalRun]:
-    """:func:`start_run` under a settings snapshot its caller read: :func:`_admit_run`, then the admitted launch started.
-
-    Raises:
-        See :func:`start_run`.
-    """
-    return await (await _admit_run(host, settings, **arguments)).start()
-
-
 async def _admit_run(
     host: LaunchHost,
     settings: LaunchSettings,
@@ -2190,18 +2176,14 @@ async def _admit_run(
     scope_id: str,
     launch_group: LaunchGroup | None,
     admission: AdmissionTicket | None,
-    priced_arms: _PricedArms | None = None,
     cell_timeout_s: float | None = None,
     case_set: CaseSetRef | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
 ) -> AdmittedLaunch:
-    """:func:`admit_launch` under a settings snapshot its caller read — the launch's own, or a battery's.
+    """:func:`admit_launch` under a settings snapshot its caller read.
 
     Args as :func:`start_run`; ``settings`` is the one read every refusal and every arm's tail is made under.
-    ``priced_arms`` is the battery's: its arms as its pre-flight already planned and priced them under the same
-    snapshot, which this launch then carries rather than pricing a second time — ``None`` for a launch that prices
-    its own arms.
 
     Returns:
         The admitted launch: every refusal made and every arm priced, no launcher run.
@@ -2280,16 +2262,10 @@ async def _admit_run(
             requests = [replace(request, margins=declared_margins) for request in requests]
         # Every arm priced before the first launcher runs, whether it generates or not: a launcher is what
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
-        # it would refuse a launch already billed. Priced exactly once — here, or by the battery's
-        # pre-flight, whose plans the arms then carry.
-        priced_requests = (
-            priced_arms.carried_by(requests)
-            if priced_arms is not None
-            else await price_arms(host, dispatched.launchable, requests)
-        )
-        # And the generation's own calls, admitted here, in the call, against the out-of-run cap — the battery's
-        # pre-flight quotes its templates' the same way. Admitted rather than only quoted, so the launcher makes
-        # exactly the calls priced here, on the writer they were priced on, and admits nothing in the job.
+        # it would refuse a launch already billed. Priced exactly once, here.
+        priced_requests = await price_arms(host, dispatched.launchable, requests)
+        # And the generation's own calls, admitted here, in the call, against the out-of-run cap. Admitted rather
+        # than only quoted, so the launcher makes exactly the calls priced here, on the writer they were priced on, and admits nothing in the job.
         return await _with_admitted_generation(
             host,
             dispatched.template,
@@ -2307,23 +2283,13 @@ async def _admit_run(
                 await held.enter_async_context(writer)
             return [await dispatched.launchable.launch(request) for request in requests]
 
-    async def dispatched_once() -> _Dispatched:
-        """The launch's dispatch — or, for a battery's launch, the one its pre-flight priced, template and all.
-
-        Returns:
-            What the dispatch resolved.
-        """
-        # A battery's launch runs the template its pre-flight loaded and priced, never one re-read since:
-        # a template edited mid-battery would otherwise launch under plans made for another.
-        return priced_arms.dispatched if priced_arms is not None else await dispatch()
-
     async def prepare(_group: LaunchGroup, formed: tuple[_Dispatched, list[LaunchRequest]]) -> list[EvalRun]:
         return await launched(*formed)
 
     # Preparing arms into a caller's group: that caller admitted the launch, and it starts the
     # group once every arm is prepared or abandons it on a refusal, so this launch only prepares.
     if launch_group is not None:
-        dispatched = await dispatched_once()
+        dispatched = await dispatch()
         return AdmittedLaunch.into(launch_group, (dispatched, await priced(launch_group, dispatched)), prepare)
 
     async def form() -> tuple[LaunchGroup, tuple[_Dispatched, list[LaunchRequest]]]:
@@ -2332,11 +2298,11 @@ async def _admit_run(
         Returns:
             The group, and what the dispatch resolved with the priced requests.
         """
-        dispatched = await dispatched_once()
+        dispatched = await dispatch()
         group = LaunchGroup(candidate_models=models)
         return group, (dispatched, await priced(group, dispatched))
 
-    # This call is the whole launch. A caller holding a ticket for several launches (the battery)
+    # This call is the whole launch. A caller holding a ticket for several launches
     # hands this one its share rather than letting it compete for room with launches that arrived
     # after the caller was admitted.
     return await admit_group(
@@ -2362,8 +2328,8 @@ async def _with_admitted_generation(
 ) -> list[LaunchRequest]:
     """Admit a launch's case generation in its call, and carry the admission on every arm's request.
 
-    The plan and the budget are the ones the battery's pre-flight quotes (:func:`plan_variation_calls`,
-    :func:`_generation_budget`), so a generation the pre-flight passes is one this admits. The writer is built here
+    The plan and the budget are the ones a quote reads (:func:`plan_variation_calls`,
+    :func:`_generation_budget`), so a generation a quote passes is one this admits. The writer is built here
     and every call admitted on it, so the launcher makes exactly what was priced, on the client it was priced on;
     it is kept in ``writers`` for the launch to hold open around its launchers and release. A launch that
     generates nothing, or whose template no model writes, admits nothing and carries no generation.
@@ -2416,9 +2382,7 @@ def _generation_budget(
 ) -> OutOfRunBudget:
     """The out-of-run budget one launch's generation is admitted under: the host's cap, ledgered under the launch.
 
-    One construction for both of its readers — the launch that hands it to its launcher, and the battery
-    that prices every template's generation against it before any template launches — so the battery
-    cannot pass a generation its launch would refuse.
+    One construction for every reader, so nothing can pass a generation the launch would refuse.
 
     Args:
         host: The host, whose store ledgers the calls.
@@ -2903,7 +2867,7 @@ async def price_arms(
     """Plan and price every arm of one launch by the engine's one rule, refusing before any launcher runs.
 
     The step every launch takes between building its arms' requests and calling their launchers —
-    :func:`start_run` and the battery call it, and a host composing its own launch through
+    :func:`start_run` calls it, and a host composing its own launch through
     :func:`launch_as_group` must call it too: under an enforced cap the launch tail refuses an arm that did
     not come through here (:attr:`LaunchRequest.arm_price`). Every arm is planned before any is priced, and
     every arm is priced before the first launcher runs. With the host's enforcement off no cap is in force
@@ -3108,64 +3072,6 @@ async def quote_launch(
         case_count=case_count,
         arms=tuple([_judged(request, await _arm_price(host, request)) for request in planned]),
     )
-
-
-@dataclass(frozen=True)
-class _PricedArms:
-    """One launch's arms as a battery's pre-flight planned and priced them, carried into the launch.
-
-    The battery prices every template's arms before launching any, so the launch it then makes must not
-    price them again — a second pricing is a second read of history that could disagree with the first,
-    and a second place the rule could drift. The launch carries these plans and prices instead, and its
-    tail holds each launcher to them. It carries the dispatch too — the template as the pre-flight loaded
-    and priced it — so the launch runs the template it priced, not one edited since.
-
-    Attributes:
-        dispatched: What the pre-flight's dispatch resolved: the template, its kind and its launcher.
-        arms: Each arm's plan and price, in arm order (``None`` for a kind that plans nothing, and for a
-            price where no cap is in force).
-    """
-
-    dispatched: _Dispatched
-    arms: tuple[tuple[ArmPlan | None, ArmPrice | None], ...]
-
-    @classmethod
-    def of(cls, dispatched: _Dispatched, requests: Sequence[LaunchRequest]) -> _PricedArms:
-        """The plans and prices ``requests`` carry, as :func:`price_arms` returned them.
-
-        Args:
-            dispatched: What the pre-flight's dispatch resolved.
-            requests: One launch's priced arms.
-
-        Returns:
-            Their plans and prices, with the dispatch they were priced under.
-        """
-        return cls(dispatched, tuple((request.arm_plan, request.arm_price) for request in requests))
-
-    def carried_by(self, requests: Sequence[LaunchRequest]) -> list[LaunchRequest]:
-        """``requests``, each carrying the plan and price it was priced at.
-
-        Args:
-            requests: The launch's arms — built by :func:`_arm_requests` from :attr:`dispatched` and the same
-                models the pre-flight priced, so in the same order and number.
-
-        Returns:
-            The requests with their plans and prices.
-
-        Raises:
-            ValueError: ``requests`` are not this template's arms, or not as many as were priced — an engine
-                defect that would launch arms at prices made for others.
-        """
-        template_id = self.dispatched.template.id
-        if len(requests) != len(self.arms) or any(request.template.id != template_id for request in requests):
-            raise ValueError(
-                f"a battery's launch of template {template_id!r} carries the {len(self.arms)} arm(s) it priced, and "
-                f"was handed {len(requests)} of template(s) {sorted({request.template.id for request in requests})}"
-            )
-        return [
-            replace(request, arm_plan=plan, arm_price=price)
-            for request, (plan, price) in zip(requests, self.arms, strict=True)
-        ]
 
 
 class AdmittedLaunch:
@@ -4053,394 +3959,6 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
     return run
 
 
-def _battery_refusal(refused: str) -> str:
-    """Render a per-template refusal's message as a battery refusal's.
-
-    The per-run message cannot know that nothing was launched, and an operator reading a
-    battery failure has to. Punctuated rather than concatenated: the refusals it wraps end
-    in prose, a bracket or a period depending on which one fired, and ``… names it wrongly
-    Nothing was launched.`` is what naive concatenation produced.
-
-    Args:
-        refused: The message of the refusal raised for one template — its remedy is carried apart.
-
-    Returns:
-        The message with the battery's own suffix.
-    """
-    message = refused.rstrip()
-    separator = "" if message.endswith((".", "!", "?")) else "."
-    return f"{message}{separator} Nothing was launched."
-
-
-#: Checks one of a battery's templates the way its launch would, before any template launches.
-#: ``(template, cassette_mode) -> None``, raising the launch's own refusal.
-TemplatePreflight = Callable[["EvalTemplate", str], Awaitable[None]]
-
-#: Prepares a battery's pre-flight for one subject and the battery's models, once, and returns the
-#: per-template check. A host's arms are built on a captured subject, so what every template's check
-#: reads is captured here once rather than per template. ``(subject_id, models) -> TemplatePreflight``.
-BatteryPreflight = Callable[[str, Sequence[str]], Awaitable[TemplatePreflight]]
-
-
-async def start_universal_battery(
-    host: LaunchHost,
-    subject_id: str,
-    *,
-    scope_id: str,
-    models: list[str],
-    k_runs: int = DEFAULT_LAUNCH_K_RUNS,
-    n_variations: int = 0,
-    variation_model: str | None = None,
-    judge_model: str | None = None,
-    simulator_model: str | None = None,
-    cassette_mode: str | None = "off",
-    apparatus_settings: Mapping[str, Any] | None = None,
-    max_cost_usd: float | None = None,
-    preflight: BatteryPreflight,
-    measure_latency: bool = False,
-) -> list[str]:
-    """Launch the operator-curated boundary battery against one subject.
-
-    Queries every active ``universal`` template in ``scope_id`` and launches a separate :func:`start_run` per
-    template, all against the same subject and models. The battery deliberately respects the
-    one-template-per-run model rather than unioning test cases: a run's rubric is its template's,
-    so each universal template scores against its own boundary rubric.
-
-    **No judge-configuration selection here, for the same reason.** A launch selects configs per
-    scored DIM, and these templates score different dims — so one set would be refused by the first
-    template that does not score a named dim, and a set narrowed to the intersection would silently
-    mean something different per template. Each battery run therefore inherits its dims' active
-    configs. Select per run by calling :func:`start_run` directly.
-
-    **All or nothing.** Every template's arms are prepared — every launcher called, every tail's checks
-    made — before any template's runs start, so a refusal any template's preparation makes starts nothing.
-    Each template's launch runs the template its pre-flight loaded and priced, never one edited since. And
-    every refusal an arm of any template would make is made over the whole set before anything is prepared: the engine's own — the dispatch's refusals, every template's arms priced
-    against their run caps (by the one rule a launch prices its arms by, and only once: each template's
-    launch carries the plans its arms were priced at), and every generating template's ``llm`` writer calls
-    priced on the host's ``variation`` client against the out-of-run cap its launch will be held to — and
-    then the host's, through ``preflight``, the check that calls what its launchers call. A battery that
-    generates therefore pays for no template's cases until every template's have been priced.
-
-    **Preparing a template whose cases a model writes pays for them** — its launcher generates — so those
-    templates are prepared after every other: a refusal any stored-case or enumerated template's preparation
-    makes is made before any generation is paid. A model-written template's preparation refusing after an
-    earlier model-written template's generation was paid still loses that generation (held to that
-    template's own out-of-run cap) and starts nothing; the pricing above is what keeps that rare — such a
-    refusal is one only a launcher or its tail makes, against something that changed since the pre-flight.
-
-    **Its bounds are per launch, as a launch's are.** Each template is one launch, so each template's
-    generation is held to the host's ``max_out_of_run_cost_usd`` on its own — a battery of N generating
-    templates may spend up to N times that out of run — and each of its runs to its own cost cap, exactly
-    as N separate launches would be. ``max_cost_usd`` names that per-run cap for every run of the
-    battery; without it every run inherits the host's, and a template whose arms no history can price is
-    then refused (unknown is not $0, and an inherited cap is nobody's decision about it).
-    The host's settings are read once, for the whole battery.
-
-    Args:
-        host: The host, whose launch registry names the kind's launcher.
-        subject_id: The subject every template's runs measure.
-        scope_id: The scope the battery's templates are read in and its runs live in.
-        models: Candidate models, one arm and one run each, per template.
-        k_runs: Repeats per ``(test_case, model)`` for ``pass^k``.
-        n_variations: New test cases to generate per run (0 = reuse existing).
-        variation_model: The model that writes the ``llm`` variation axes' values, handed to each
-            template's launch that has such an axis and to no other — a battery's templates differ, and
-            one without an ``llm`` axis has no cases a model writes. Required when the battery generates
-            and any of its templates has an ``llm`` axis; refused when it generates nothing or none of
-            its templates has one.
-        judge_model: Model for the rubric judge (role default if ``None``).
-        simulator_model: Model driving the simulated user (role default if ``None``).
-        cassette_mode: ``'off'`` (default, and what blank spells), ``'capture'`` or ``'replay'``,
-            applied to every template in the battery.
-        apparatus_settings: Host-declared apparatus values every template's runs are set up with, as
-            :func:`start_run` takes them — refused before anything launches when any template's kind
-            does not honour one.
-        max_cost_usd: Optional per-run cost-cap override for every run the battery launches, as
-            :func:`start_run` takes it; must be ``> 0`` and at most the host's configured ceiling. Also the cap
-            each template's arms are priced against before anything launches.
-        measure_latency: Declare latency under test for every template's runs, as :func:`start_run` takes it.
-        preflight: The host's pre-flight, prepared once for the subject and models and then asked
-            of every template before any launches, after the engine's own pricing. It checks what only the
-            host's launchers know; a generation's calls and every template's arms the battery prices itself.
-
-    Returns:
-        The ids of the launched runs: for each active universal template, one per model. An empty
-        battery (no active universal templates) returns ``[]``.
-
-    Raises:
-        AdmissionRefusedError: Every template's runs together would pass the host's admission
-            ceiling — raised once the set is listed and before any subject is read or arm prepared,
-            so nothing launches.
-        ValidationFailedError: An unrecognised ``cassette_mode``, ``'replay'`` (a corpus serves one
-            template, and a battery runs many), a non-positive ``max_cost_usd`` or one above the host's configured
-            ceiling, a generating template whose
-            writer's calls cannot be priced under an enforced out-of-run cap or are priced above it, or any
-            refusal a template or its arm would make at launch — raised before any template launches, so
-            nothing does.
-    """
-    templates = await run_blocking(
-        host.eval_host.blocking_executor,
-        host.eval_host.storage.query_templates,
-        scope_id,
-        universal=True,
-        archived=False,
-    )
-    # Every template's runs are admitted together, here, before the pre-flight reads a subject or
-    # prepares an arm — the count is known once the set is, and a battery admitted template by
-    # template could be refused part-way, launching the partial set it promises never to.
-    # The battery's ONE read of the host's settings: its admission, every template's pre-flight pricing
-    # and every template's launch are made under it, so the pre-flight cannot pass a launch a reload then
-    # refuses part-way through the set.
-    settings = host.settings()
-    if max_cost_usd is not None and max_cost_usd <= 0:
-        raise ValidationFailedError(
-            _battery_refusal(f"max_cost_usd must be > 0 (got {max_cost_usd})"),
-            remedy="pass one above 0, or omit it for the host's",
-        )
-    try:
-        _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=None)
-    except ValidationFailedError as refused:
-        raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
-    # Every template is one launch of one run per model, so a launch's own argument refusals — a model named
-    # twice, more arms than one launch may start — read the battery's arguments alone, and are made here once.
-    try:
-        _refuse_repeated_models(models)
-        _refuse_oversized_launch(max(1, len(models)), settings.max_launch_arms, settings.name_of("max_launch_arms"))
-    except ValidationFailedError as refused:
-        raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
-    ticket = host.job_manager.admit(
-        len(templates) * max(1, len(models)),
-        limit=settings.max_admitted_runs,
-        limit_name=settings.name_of("max_admitted_runs"),
-    )
-    try:
-        # Pre-flight the whole set before launching any of it. Every other run-param
-        # refusal is a property of the ARGUMENTS, so it fires on the first template and
-        # the all-or-nothing promise above holds for free. The refusals that depend on the
-        # TEMPLATE do not: a battery whose third template trips one would launch and pay
-        # for the first two, then abort — the partial set the docstring says cannot happen.
-        # So every template-dependent refusal the launch makes is pre-flighted here over
-        # the whole set, through the host's check, so nothing here is a copy.
-        # Read through the SAME helper start_run uses, not compared raw: blank spells 'off',
-        # and a surface may accept a bare `str`, so a raw compare refuses `cassette_mode=""` —
-        # a battery that would have launched every template cleanly with cassettes off — and
-        # blames the operator's templates for it. An unrecognised mode is refused HERE, before
-        # the seeding check: that guard tests `!= "off"`, which a typo also satisfies, and
-        # because this pre-flight fires before the loop, start_run's own refusal is never
-        # reached — so a typo would be answered by telling the operator to archive templates
-        # that are fine.
-        try:
-            battery_cassette_mode = _normalized_cassette_mode(cassette_mode)
-        except ValidationFailedError as refused:
-            raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
-        # A replay serves ONE capture run's corpus, and a capture run recorded one template; a battery
-        # launches many templates, so no single corpus could serve it.
-        if battery_cassette_mode == "replay":
-            raise ValidationFailedError(
-                _battery_refusal(
-                    "a replay serves the corpus of one capture run, which recorded one template, and a battery "
-                    "launches every universal template"
-                ),
-                remedy="replay each template with a run_launch of its own, over the corpus its own capture recorded",
-            )
-        # A variation model reaches only the templates with an llm axis, so per template it is honoured
-        # or absent — and one no template could use is refused here, since no template's launch would.
-        if variation_model is not None and templates and not any(_llm_axes(t) for t in templates):
-            raise ValidationFailedError(
-                _battery_refusal(
-                    f"variation_model={variation_model!r} names the model that writes llm-generated axis values, "
-                    "and none of the battery's templates has an llm axis"
-                ),
-                remedy="launch it without variation_model",
-            )
-        # The refusals the dispatch itself makes, per template — a kind with no launcher, a battery
-        # argument the kind cannot honour, a stored spec its model now refuses — through the same
-        # function the dispatch calls, so a battery cannot launch its first templates and then be
-        # refused one of them. Then every template's arms are priced — by the one rule every launch's are,
-        # stored-case and generating alike — and, for a generating battery, every template's writer calls,
-        # so it cannot launch (or pay for the generations of) its first templates and then be refused a
-        # later one. Each template's priced plans are carried into its launch, which prices nothing again.
-        # The writer is the host's, built in the role each launch builds it in; here it is asked its prices
-        # and never called.
-        priced: dict[str, _PricedArms] = {}
-        subject_resolved_for: set[str] = set()
-        async with contextlib.AsyncExitStack() as pricing:
-            writer: PricedCompletion | None = None
-            for universal_template in templates:
-                writes_with_a_model = bool(_llm_axes(universal_template))
-                template_variation_model = variation_model if writes_with_a_model else None
-                try:
-                    resolved = _launchable(
-                        host,
-                        universal_template,
-                        n_variations=n_variations,
-                        variation_model=template_variation_model,
-                        judge_model=judge_model,
-                        judge_config_ids=None,
-                        simulator_model=simulator_model,
-                        cassette_mode=battery_cassette_mode,
-                        overlays=None,
-                        apparatus_settings=apparatus_settings,
-                    )
-                    # Asked of each kind the set launches, once, as each launch would ask it — a battery mixing
-                    # kinds whose subjects mean different things refuses the subject one of them does not hold.
-                    if resolved.kind not in subject_resolved_for:
-                        await _refuse_an_unknown_subject(host, resolved.launchable, subject_id, scope_id)
-                        subject_resolved_for.add(resolved.kind)
-                    # Through the functions each launch builds and prices its arms with. The group is
-                    # provisional: nothing joins it, and its id stamps only a budget nothing is admitted to.
-                    dispatched = _Dispatched(
-                        universal_template,
-                        resolved.kind,
-                        resolved.launchable,
-                        resolved.overlays,
-                        resolved.kind_spec,
-                        resolved.apparatus_settings,
-                    )
-                    requests = await price_arms(
-                        host,
-                        resolved.launchable,
-                        _arm_requests(
-                            host,
-                            settings,
-                            dispatched,
-                            LaunchGroup(candidate_models=models),
-                            subject_id=subject_id,
-                            models=models,
-                            k_runs=k_runs,
-                            scope_id=scope_id,
-                            n_variations=n_variations,
-                            variation_model=template_variation_model,
-                            judge_model=judge_model,
-                            judge_config_ids=None,
-                            simulator_model=simulator_model,
-                            cassette_mode=battery_cassette_mode,
-                            cassette_corpus_id=None,
-                            max_cost_usd=max_cost_usd,
-                            max_metered_calls=None,
-                        ),
-                    )
-                    priced[universal_template.id] = _PricedArms.of(dispatched, requests)
-                    if template_variation_model is None:
-                        continue
-                    # The calls this template's launch would make, quoted against the budget it would be
-                    # admitted under — the same plan and the same budget construction the launch uses.
-                    # One writer for every template: the battery names one variation model, and each
-                    # launch builds its writer from the same factory, role and model.
-                    quoted_on: PricedCompletion = (
-                        writer
-                        if writer is not None
-                        else await pricing.enter_async_context(
-                            host.eval_host.completion_clients("a battery's generation pricing")(
-                                "variation", template_variation_model
-                            )
-                        )
-                    )
-                    writer = quoted_on
-                    budget = requests[0].generation_budget
-                    assert budget is not None, "a generating launch's every arm carries its budget"
-                    existing = await run_blocking(
-                        host.eval_host.blocking_executor,
-                        partial(host.eval_host.storage.query_test_cases, scope_id, template_id=universal_template.id),
-                    )
-                    budget.quote(
-                        quoted_on,
-                        "variation",
-                        list(plan_variation_calls(universal_template, n_variations, existing).values()),
-                    )
-                except ValidationFailedError as refused:
-                    raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
-        # Every refusal an arm of any template would make, made here over the whole set before anything
-        # launches — through the host's check, which calls what its launchers call. The subject is read
-        # once for the check and not shared with the launches, which each capture their own.
-        if templates:
-            check = await preflight(subject_id, models)
-            for universal_template in templates:
-                try:
-                    await check(universal_template, battery_cassette_mode)
-                except ValidationFailedError as refused:
-                    raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
-
-        # Every template's arms PREPARED before any template's runs start — each launcher called, each case
-        # set frozen, each tail's checks made against the plans priced above — and only then is every group
-        # started. So a refusal any template's preparation makes (a stored case added since its pre-flight,
-        # which its tail refuses as more cases than planned; a refusal only its launcher makes) abandons every
-        # prepared group and starts nothing, where launching template by template would have left the
-        # templates ahead of it running. Each template is still its own group, its runs sharing one slot.
-        #
-        # Preparing a template whose cases a model writes PAYS: its launcher generates them. So those are
-        # prepared last — every template whose preparation spends nothing (stored cases, or cases enumerated
-        # without a model) makes its refusals first, and a refusal there costs no generation. What ordering
-        # cannot close: a later model-written template's preparation refusing after an earlier one's
-        # generation was paid — that spend is spent, held to its own launch's out-of-run cap, and its runs are
-        # abandoned with the rest. The ids are still returned, and the groups started, in the templates' order.
-        def pays_to_prepare(template: EvalTemplate) -> bool:
-            return n_variations > 0 and bool(_llm_axes(template))
-
-        prepared_runs: dict[str, list[str]] = {}
-        group_of: dict[str, LaunchGroup] = {}
-        groups: list[LaunchGroup] = []
-        started: set[str] = set()
-        try:
-            for template in sorted(templates, key=pays_to_prepare):
-                group = LaunchGroup(candidate_models=models)
-                groups.append(group)
-                group_of[template.id] = group
-                runs = await _start_run(
-                    host,
-                    settings,
-                    template_id=template.id,
-                    scope_id=scope_id,
-                    subject_id=subject_id,
-                    models=models,
-                    k_runs=k_runs,
-                    n_variations=n_variations,
-                    variation_model=variation_model if _llm_axes(template) else None,
-                    judge_model=judge_model,
-                    judge_config_ids=None,
-                    simulator_model=simulator_model,
-                    cassette_mode=cassette_mode,
-                    cassette_corpus_id=None,
-                    overlays=None,
-                    apparatus_settings=apparatus_settings,
-                    max_cost_usd=max_cost_usd,
-                    max_metered_calls=None,
-                    # Prepare only: the battery admitted every run above, and starts the groups itself.
-                    launch_group=group,
-                    admission=None,
-                    priced_arms=priced[template.id],
-                    measure_latency=measure_latency,
-                )
-                prepared_runs[template.id] = [run.id for run in runs]
-            for group in (group_of[template.id] for template in templates):
-                await host.job_manager.start_group(group.members, measure_latency=bool(group.measure_latency))
-                started.add(group.id)
-                log.info(
-                    "eval.start_universal_battery group=%s started runs=%s",
-                    group.id,
-                    [r.id for r, _, _ in group.members],
-                )
-        except BaseException:
-            # A started group's runs are live and release their own clients; only the unstarted are abandoned.
-            # Starting is a storage write per group, so a store refusing a later group's save leaves the
-            # earlier groups running — the one window this ordering does not close.
-            for group in groups:
-                if group.id not in started:
-                    await group.abandon()
-            raise
-        run_ids = [run_id for template in templates for run_id in prepared_runs[template.id]]
-        log.info(
-            "eval.start_universal_battery subject=%s launched=%d runs=%s",
-            subject_id,
-            len(run_ids),
-            ",".join(run_ids),
-        )
-        return run_ids
-    finally:
-        ticket.release()
-
-
 def build_judge_service(
     host: EvalHost,
     template: EvalTemplate,
@@ -4681,7 +4199,6 @@ __all__ = [
     "ArmPrice",
     "ArmQuote",
     "ArmVerdict",
-    "BatteryPreflight",
     "KindLauncher",
     "KindWiring",
     "LaunchArgument",
@@ -4698,7 +4215,6 @@ __all__ = [
     "LaunchSettings",
     "PlannedJudge",
     "RunJudge",
-    "TemplatePreflight",
     "build_judge_service",
     "launch_as_group",
     "launch_run",
@@ -4711,5 +4227,4 @@ __all__ = [
     "resolve_judge_pin",
     "settable_apparatus",
     "start_run",
-    "start_universal_battery",
 ]

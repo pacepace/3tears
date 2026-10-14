@@ -1,6 +1,6 @@
 """Names an adopter's own suite reaches, exported from the public root that owns them.
 
-A host may import only from the public roots (``nonpublic_evals_imports`` reports anything else), so a
+A host may import only from the public roots (each root's ``__all__``), so a
 helper an adopter needs and reaches through a module below a root is one it cannot use honestly. Each
 is pinned here as the defining object, re-exported — not a copy that could drift.
 """

@@ -1,6 +1,7 @@
 """A G2-shaped report: the campaign the failed production memo was written over, as a fixture.
 
-Two arms over 4 cases × 3 repeats, run through the quick path, whose stored results are then given G2's losses:
+Two arms over 4 cases × 3 repeats, run through the quick path (an :class:`~threetears.evals.Eval` comparing two
+runners), whose stored results are then given G2's losses:
 the control lost 4 of its 12 trials to the test setup, the challenger 10 of its 12 — 7 to a judge whose reply was
 cut off at the 10240-token cap it was sent (``judge_cut_short``, as the judge's cut-short path records it), 3 to the
 test setup — and no question was declared. The bundle is then assembled again over them, so its ``exclusions``,
@@ -29,7 +30,7 @@ from threetears.evals.kernel.evidence_tiers import (
     JudgeEvidenceTier,
     TierCriterion,
 )
-from threetears.evals.quick import Comparison, compare
+from threetears.evals import Eval, Result
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.evals.schema import EvalResult, JudgeCutShort
 from packages.evals.tests.off_loop import off_loop
@@ -104,7 +105,7 @@ def _lose(result: EvalResult, cause: str) -> EvalResult:
     return result.model_copy(update={"infra_error": "the simulator failed"})
 
 
-def g2_bundle(comparison: Comparison) -> AnalysisContextBundle:
+def g2_bundle(comparison: Result) -> AnalysisContextBundle:
     """The campaign's bundle once each arm's first trials, in trial order, are lost by :data:`LOSSES`.
 
     The losses are written onto the stored results and the bundle assembled again over them, so every count the
@@ -126,13 +127,8 @@ def g2_bundle(comparison: Comparison) -> AnalysisContextBundle:
 
 async def g2_report() -> Report:
     """The G2-shaped campaign's code-only report, assembled at a fixed instant."""
-    comparison = await compare(
-        CASES,
-        {"v4.1-flash": _queue, "v4-flash": _queue},
-        expected=lambda case: str(case["label"]),
-        control="v4.1-flash",
-        k=3,
-        name="Kairo queue discipline",
-    )
+    ev = Eval(CASES, {"v4.1-flash": _queue, "v4-flash": _queue}, ["label"], k=3, name="Kairo queue discipline")
+    # The scope the quick path once defaulted to, so the fixture's stored documents are where they were.
+    comparison = await ev.run(store=":memory:", scope="quick")
     bundle = off_loop(g2_bundle, comparison)
     return build_code_only_report(bundle, assembled_at="2026-10-14T01:31:58+00:00", campaign_name=comparison.name)

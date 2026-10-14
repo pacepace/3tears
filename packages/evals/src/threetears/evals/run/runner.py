@@ -2978,9 +2978,7 @@ def grade_goal_checks(
     as its candidate acts, reads its end state, and grades here; :func:`evaluate_goal_state` is the
     same call over a template's checks. The check-controls gate
     (:mod:`threetears.evals.run.check_controls`) grades a template's control end states through here,
-    so a check proven to discriminate at authoring is proven under the rule a run will grade it by,
-    and the re-check (:mod:`threetears.evals.run.recheck`) re-grades a stored result through here,
-    so a ledger rule's change reaches results stored before it under that same rule.
+    so a check proven to discriminate at authoring is proven under the rule a run will grade it by.
 
     Args:
         expressions: The goal checks, in order.

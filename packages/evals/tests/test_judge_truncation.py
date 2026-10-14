@@ -31,7 +31,7 @@ from threetears.evals.kernel.result_condition import (
     trial_exclusion,
 )
 from threetears.evals.negotiation import SettingFacts, closest_settings, wire_settings_for
-from threetears.evals.quick import Judge, compare
+from threetears.evals import Eval, Judge
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS, list_results
 from threetears.evals.run.judge import (
     JUDGE_ANSWER_BUDGET_TOKENS,
@@ -39,7 +39,7 @@ from threetears.evals.run.judge import (
     JUDGE_REASONING_HEADROOM_TOKENS,
     run_judge_llm,
 )
-from threetears.evals.schema import ClientRequestSettings, JudgeCutShort, StopReason
+from threetears.evals.schema import ClientRequestSettings, JudgeCutShort, RubricDim, StopReason
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
 
@@ -70,6 +70,8 @@ class _Reply:
 # parity-with: threetears.evals.schema.CompletionClient
 class _FakeCuttingJudge:
     """A judge that runs out of room on every answer saying LONG, and scores every other answer 4."""
+
+    model_name = "scripted/judge"
 
     def __init__(self, *, sent: ClientRequestSettings | None = JUDGE_REQUEST_SETTINGS) -> None:
         self.calls: list[str] = []
@@ -185,13 +187,11 @@ async def _control(case: Mapping[str, Any]) -> str:
 
 
 async def _compare(long_cases: int, judge: _FakeCuttingJudge) -> Any:
-    comparison = await compare(
-        _CASES,
-        {"control": _control, "challenger": _challenger(long_cases)},
-        control="control",
-        judge=Judge(client=judge, model="scripted/judge", rubric={"helpful": "It helps."}),
-        k=1,
-    )
+    # Scored 1-5, as the judge answers every answer it can finish.
+    rubric = [RubricDim(name=DIM, description="It helps.", scale="ordinal")]
+    comparison = await Eval(
+        _CASES, {"control": _control, "challenger": _challenger(long_cases)}, [Judge(judge, rubric)], k=1
+    ).run(store=":memory:")
     campaign = off_loop(get_campaign, comparison.host.storage, comparison.campaign_id, comparison.scope_id)
     bundle = off_loop(
         assemble_context_bundle, campaign, storage=comparison.host.storage, profile=comparison.host.profile
@@ -247,12 +247,24 @@ def test_the_judge_asks_its_reasoning_as_a_budget_under_a_cap_one_answer_above_i
     assert JUDGE_REQUEST_SETTINGS.strict_output
 
 
-@pytest.mark.parametrize("family", ["openai", "router"])
-def test_a_model_taking_words_only_is_sent_the_word_it_was_sent_before(family: Any) -> None:
-    """Wire-neutral where words are all a model takes: 8192 of 10240 is 0.80, which is `high`."""
-    sent, _notes = closest_settings(wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0), SettingFacts(), family)
+@pytest.mark.parametrize(
+    ("family", "facts"),
+    [("openai", SettingFacts()), ("router", SettingFacts(reasoning_budget=False))],
+    ids=["openai", "router-refusing-a-budget"],
+)
+def test_a_model_taking_words_only_is_sent_the_word_it_was_sent_before(family: Any, facts: SettingFacts) -> None:
+    """Wire-neutral where words are all a model takes: 8192 of 10240 is 0.80, which is `high`, the budget named unsent."""
+    sent, _notes = closest_settings(wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0), facts, family)
 
     assert (sent.reasoning_effort, sent.reasoning_max_tokens, sent.max_tokens) == (JUDGE_REASONING_EFFORT, None, CAP)
+    assert sent.unsent_reasoning_max_tokens == 8192
+
+
+def test_a_router_is_sent_the_bound() -> None:
+    """OpenRouter takes a budget as ``reasoning.max_tokens``: the judge's budget binds there, not only the cap."""
+    sent, _notes = closest_settings(wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0), SettingFacts(), "router")
+
+    assert (sent.reasoning_max_tokens, sent.reasoning_effort, sent.max_tokens) == (8192, None, CAP)
 
 
 def test_an_anthropic_model_taking_a_budget_is_sent_the_bound() -> None:

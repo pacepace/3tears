@@ -11,16 +11,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import pytest
+from pydantic import BaseModel, Field
 
+from threetears.evals import Eval, World
 from threetears.evals.kernel.dsl import evaluate
-from threetears.evals.quick import Dimension, ToolRefused, World, WorldTool, WorldTools, callable_host, run_eval
-from threetears.evals.run import GoalCheckUnevaluable, get_result_trace, grade_goal_checks, list_results, recheck_result
-from threetears.evals.schema import CallLedger, GoalStateOutcome, RecordedCall, RefusedCall
+from threetears.evals.quick import as_host
+from threetears.evals.quick.world import ToolRefused
+from threetears.evals.run import get_result_trace, grade_goal_checks, list_results, GoalCheckUnevaluable
+from threetears.evals.schema import CallLedger, RecordedCall, RefusedCall
 from threetears.evals.schema.goal_grammar import DSLError, parse, reads_call_ledger, reads_refusals, referenced_actions
-from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "refused-calls-tests"
@@ -127,7 +129,7 @@ def test_a_refusal_builtin_takes_one_tool_action_literal_as_every_call_builtin_d
         parse(expression)
 
 
-def test_the_refusal_builtins_name_their_actions_and_read_the_ledger_for_the_authoring_gate_and_the_recheck() -> None:
+def test_the_refusal_builtins_name_their_actions_and_read_the_ledger_for_the_authoring_gate() -> None:
     expression = f'refused_count("{QUEUE}") == 0 and call_count("player.search") >= 1'
 
     assert referenced_actions(expression) == (("player", "queue_track"), ("player", "search"))
@@ -140,38 +142,39 @@ def test_the_refusal_builtins_name_their_actions_and_read_the_ledger_for_the_aut
 # =============================================================================
 
 
-def switch(room: dict[str, Any], to: str) -> str:
+class Room(BaseModel):
+    """A room with a lamp."""
+
+    lamp: Literal["on", "off"] = Field(description="What the agent switches.")
+
+
+def switch(state: Room, to: Literal["on", "off"]) -> str:
     """Turn the lamp on or off."""
-    room["lamp"] = to
+    state.lamp = to
     return f"lamp {to}"
 
 
 def _room() -> World:
-    return World(
-        "room",
-        [Dimension("lamp", {"enum": ["on", "off"]}, "What the candidate switches.")],
-        tools=[WorldTool(switch, to={"enum": ["on", "off"]})],
-    )
+    return World(Room, tools=[switch])
 
 
-def _start(case: Mapping[str, Any]) -> Mapping[str, Any]:
-    return {"lamp": case["lamp"]}
+#: One case, starting with the lamp off.
+CASES = [{"lamp": "off", "world": {"lamp": "off"}}]
 
 
 async def test_every_call_the_world_refuses_is_recorded_before_it_is_refused_and_a_check_grades_it() -> None:
-    async def sloppy(case: Mapping[str, Any], tools: WorldTools) -> str:
+    async def sloppy(case: Mapping[str, Any], tools: Any) -> str:
+        """Try a dim lamp and a shout, then switch the lamp on."""
         with pytest.raises(ToolRefused, match="dim"):
             await tools.call("switch", to="dim")
         with pytest.raises(ToolRefused, match="no tool 'shout'"):
             await tools.call("shout", loud=True)
         return await tools.call("switch", to="on")
 
-    world = _room()
-    host = callable_host(world=world)
     checks = ['refused_count("room.switch") == 1', 'call_count("room.switch") == 1', 'not refused("room.switch")']
-    summary = await run_eval(
-        [{"lamp": "off"}], sloppy, host=host, world=world, seed=_start, goal_checks=checks, scope_id=SCOPE, k=1
-    )
+    ev = Eval(CASES, _room()(sloppy), checks, k=1)
+    host = as_host([ev], store=":memory:")
+    summary = (await ev.run(host=host, scope=SCOPE)).summary
 
     (result,) = off_loop(list_results, host.storage, summary.run_id, SCOPE)
     trace = off_loop(get_result_trace, host.storage, result)
@@ -189,55 +192,16 @@ async def test_every_call_the_world_refuses_is_recorded_before_it_is_refused_and
 
 
 async def test_a_world_cell_with_no_refusal_keeps_an_empty_record_so_a_refusal_check_grades_it() -> None:
-    async def tidy(case: Mapping[str, Any], tools: WorldTools) -> str:
+    async def tidy(case: Mapping[str, Any], tools: Any) -> str:
+        """Switch the lamp on."""
         return await tools.call("switch", to="on")
 
-    world = _room()
-    host = callable_host(world=world)
     check = 'refused_count("room.switch") == 0'
-    summary = await run_eval(
-        [{"lamp": "off"}], tidy, host=host, world=world, seed=_start, goal_checks=[check], scope_id=SCOPE, k=1
-    )
+    ev = Eval(CASES, _room()(tidy), [check], k=1)
+    host = as_host([ev], store=":memory:")
+    summary = (await ev.run(host=host, scope=SCOPE)).summary
 
     (result,) = off_loop(list_results, host.storage, summary.run_id, SCOPE)
     trace = off_loop(get_result_trace, host.storage, result)
     assert trace is not None and trace.call_ledger is not None and trace.call_ledger.refused == []
     assert [(o.expression, o.passed) for o in result.goal_state_outcomes] == [(check, True)]
-
-
-# =============================================================================
-# The re-check
-# =============================================================================
-
-
-def test_a_refusal_check_on_a_ledger_keeping_no_refusal_record_is_kept_as_stored() -> None:
-    check = f'refused_count("{QUEUE}") == 0'
-    report, outcomes = recheck_result(
-        make_eval_result(goal_state_outcomes=[GoalStateOutcome(expression=check, passed=False)]),
-        ledger=CallLedger(),
-        end_state=None,
-        world=None,
-        variation={},
-        provenance="commissioned",
-    )
-
-    assert outcomes is None and report.not_rechecked is None and report.regraded == 0
-    (kept,) = report.kept_as_stored
-    assert kept.expression == check and "keeps no refusal record" in kept.reason
-
-
-def test_a_refusal_check_re_grades_from_a_stored_refusal_record() -> None:
-    check = f'refused_count("{QUEUE}") == 0'
-    ledger = CallLedger(refused=[])
-    ledger.record_refusal("player", "queue_track", {}, reason="locked")
-    report, outcomes = recheck_result(
-        make_eval_result(goal_state_outcomes=[GoalStateOutcome(expression=check, passed=True)]),
-        ledger=ledger,
-        end_state=None,
-        world=None,
-        variation={},
-        provenance="commissioned",
-    )
-
-    assert [(flip.expression, flip.was, flip.now) for flip in report.flips] == [(check, True, False)]
-    assert outcomes is not None and [outcome.passed for outcome in outcomes] == [False]

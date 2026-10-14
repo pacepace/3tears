@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 
-from threetears.evals.actions import Caller, eval_catalogue, read_only_tools
+from threetears.evals.actions import Caller, eval_catalogue, read_only_tools, standard_tools
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SUBJECT, OpsFixture, ops_fixture
@@ -55,7 +55,7 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
 
         listed, _, _ = await _text(client, "evals", {"action": "templates_list"})
-        assert listed.startswith("templates (1)") and toyhost_template().id in listed
+        assert "templates (1):" in listed.splitlines() and toyhost_template().id in listed
 
         launch = {
             "action": "run_launch",
@@ -93,7 +93,7 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
         text, structured, is_error = await _text(
             client, "evals", {"action": "job_poll", "job_id": "run:r", "analysis_id": "a"}
         )
-    assert is_error and structured == {"refusal": {"kind": "validation_failed", "status": 422}}
+    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "validation_failed", "status": 422}}
     assert text.startswith(
         "refused: job_poll does not take analysis_id.\njob_poll accepts:\n- job_id (string, required)"
     )
@@ -103,7 +103,7 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
 async def test_an_engine_refusal_reaches_the_client_with_its_kind_and_status() -> None:
     async with Client(_served(off_loop(ops_fixture))) as client:
         text, structured, is_error = await _text(client, "evals", {"action": "run_get", "run_id": "no-such-run"})
-    assert is_error and structured == {"refusal": {"kind": "not_found", "status": 404}}
+    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "not_found", "status": 404}}
     assert text.startswith("refused: run_get:") and "no-such-run" in text, "the teaching text is unchanged"
 
 
@@ -145,7 +145,9 @@ async def test_the_caller_is_resolved_for_every_call_and_may_be_async() -> None:
         first, _, _ = await _text(client, "evals", {"action": "campaigns_list"})
         second, _, _ = await _text(client, "evals", {"action": "templates_list"})
     assert asked == ["asked", "asked"]
-    assert first == "campaigns (0)" and second == "templates (0)", "the resolved scope, not the toy host's, was read"
+    assert "campaigns: []" in first.splitlines() and "templates: []" in second.splitlines(), (
+        "the resolved scope, not the toy host's, was read"
+    )
 
 
 async def test_a_cap_above_the_hosts_is_refused_through_the_transport() -> None:
@@ -215,8 +217,62 @@ async def test_a_model_calling_actions_refusal_in_the_call_reaches_the_client_as
         text, structured, is_error = await _text(
             client, "evals", {"action": "judge_second", "run_id": "no-such-run", "second_judge_model": "judge/other"}
         )
-    assert is_error and structured == {"refusal": {"kind": "not_found", "status": 404}}
+    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "not_found", "status": 404}}
     assert "no-such-run" in text
+
+
+async def test_an_eval_host_is_served_in_one_line_read_only_in_one_scope() -> None:
+    """``mount_fastmcp(as_host(...), scope=...)``: the server, the catalogue, a reading OpsHost and the read-only tool."""
+    fixture = off_loop(ops_fixture)
+    server = mount_fastmcp(fixture.host.eval_host, scope=CALLER.scope_id)
+    async with Client(server) as client:
+        (tool,) = await client.list_tools()
+        listed, _, _ = await _text(client, "evals", {"action": "templates_list"})
+        refused, _, is_error = await _text(
+            client, "evals", {"action": "run_launch", "template_id": "t", "subject_id": "s"}
+        )
+    assert server.name == "evals" and tool.name == "evals" and tool.annotations is not None
+    assert tool.annotations.readOnlyHint is True
+    assert toyhost_template().id in listed, "the scope named, over the eval host's own storage"
+    assert is_error and "carries read actions only" in refused
+
+
+async def test_a_reading_host_refuses_a_launch_by_name_under_the_full_tools() -> None:
+    fixture = off_loop(ops_fixture)
+    server = FastMCP("toyhost")
+    mount_fastmcp(server, host=fixture.host.eval_host, scope=CALLER.scope_id, tools=standard_tools())
+    launch = {
+        "action": "run_launch",
+        "template_id": toyhost_template().id,
+        "subject_id": TOYHOST_SUBJECT.subject_id,
+        "models": [RUN_MODELS[0]],
+    }
+    async with Client(server) as client:
+        text, structured, is_error = await _text(client, "evals", launch)
+    assert is_error and structured is not None and structured["ending"] == "refused", text
+
+
+async def test_an_ops_host_handed_alone_keeps_its_launch_tools() -> None:
+    async with Client(mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id)) as client:
+        assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
+
+
+@pytest.mark.parametrize(
+    ("mount", "refusal"),
+    [
+        ({"caller": lambda: CALLER, "scope": "dev"}, "a caller resolver .caller=. or the one scope"),
+        ({}, "a caller resolver .caller=. or the one scope"),
+    ],
+)
+def test_a_mount_names_its_caller_once(mount: dict[str, Any], refusal: str) -> None:
+    with pytest.raises(ValueError, match=refusal):
+        mount_fastmcp(FastMCP("toyhost"), host=ops_fixture().host, **mount)
+
+
+def test_a_host_handed_alone_takes_no_other_host() -> None:
+    fixture = ops_fixture()
+    with pytest.raises(ValueError, match="serves the host it is handed"):
+        mount_fastmcp(fixture.host.eval_host, scope="dev", host=fixture.host)  # type: ignore[call-overload]
 
 
 def test_importing_the_transport_leaves_fastmcps_server_stack_unloaded() -> None:

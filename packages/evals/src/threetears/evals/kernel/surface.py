@@ -239,7 +239,7 @@ class JudgedDimensionFacts(EvalDocumentModel):
 #: The fewest distinct cases a stratum holds before its figures are read on their own. Below it a
 #: stratum's figures are still stated, with their intervals and n, and the report says the stratum is too
 #: small to read: at ten cases a 90% rate's Wilson interval runs from about 60% to 98%, which is the floor
-#: the classifier guide sets per label (``docs/designing-classifier-evals.md`` § 4). Flagged, never a
+#: the classifier guide sets per label (``docs/building-an-inventory.md``, "How many cases"). Flagged, never a
 #: reason to leave a stratum out.
 STRATUM_MIN_CASES = 10
 

@@ -117,9 +117,10 @@ def released_corpus_refusal(version: int, tag: str | None) -> str | None:
         return None
     return (
         f"{tag} shipped {corpus}/, so the v{version} corpus is what a store that release wrote holds: it is frozen, "
-        f"and a released version's corpus is never regenerated. A core shape change from it is a major: copy "
-        f"v{version}/ to v{version + 1}/, move CORE_SCHEMA_VERSION to {version + 1} with its ledger line and an "
-        f"upgrader from {version}, and run {REGENERATE} again (it writes v{version + 1}/ only)."
+        f"and a released version's corpus is never regenerated. A core shape change from it is a major, a baseline "
+        f"reset with no upgrader: move CORE_SCHEMA_VERSION and CORE_BASELINE_VERSION to {version + 1} with its ledger "
+        f"line, remove v{version}/ (the reset refuses and deletes every v{version} document), and run {REGENERATE} "
+        f"again (it writes v{version + 1}/ only)."
     )
 
 
@@ -206,8 +207,8 @@ def write_corpus(root: Path, version: int, *, rewrite_all: bool = False) -> dict
             f"{', '.join(path.name for path in newer)} exists beside the current core version v{version}: "
             f"regenerating v{version} would rewrite a superseded corpus, and a released version's corpus is never "
             f"regenerated. If {newer[-1].name} is the corpus of a version this build has yet to declare, move "
-            f"CORE_SCHEMA_VERSION to it (with its ledger line and upgrader) and run {REGENERATE} again; if it is "
-            f"stray, remove it."
+            f"CORE_SCHEMA_VERSION and CORE_BASELINE_VERSION to it (with its ledger line) and run {REGENERATE} "
+            f"again; if it is stray, remove it."
         )
     released = released_corpus_refusal(version, newest_tag())
     if released is not None:

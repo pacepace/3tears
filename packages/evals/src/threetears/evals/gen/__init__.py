@@ -17,6 +17,7 @@ from threetears.evals.gen.proposers import (
     PROPOSER_MAX_TOKENS,
     RUBRIC_PROPOSAL_CONTRACT,
     ProposedDraft,
+    default_system_prompt,
     plan_draft,
     propose_draft,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "EvalTestCaseStore",
     "GeneratedVariations",
     "ProposedDraft",
+    "default_system_prompt",
     "generate_variations",
     "plan_draft",
     "price_variations",

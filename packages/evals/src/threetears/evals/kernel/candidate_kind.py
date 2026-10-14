@@ -264,9 +264,8 @@ class CandidateOutput(EvalBaseModel):
 
     The ledger the kind graded its goal checks against
     (:func:`~threetears.evals.run.runner.grade_goal_checks`), stored on the cell's
-    :class:`~threetears.evals.schema.models.EvalTrace` so a re-check
-    (:mod:`threetears.evals.run.recheck`) re-grades the stored result from exactly what the
-    candidate did, under today's rule, without re-running it. ``None`` for a kind that keeps no
+    :class:`~threetears.evals.schema.models.EvalTrace`, a record of exactly what the candidate did.
+    ``None`` for a kind that keeps no
     ledger — nobody recorded, which is a different fact from an empty ledger, where the kind
     recorded and the candidate called nothing.
     """

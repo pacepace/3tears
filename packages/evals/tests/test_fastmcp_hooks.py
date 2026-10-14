@@ -2,8 +2,9 @@
 
 What a host gets without rebuilding :meth:`CatalogueTool.over`:
 
-- **Every refusal kind reaches the client as data**: ``{"refusal": {"kind", "status"}}`` in the
-  structured content of an error result, for each public engine error a handler raises.
+- **Every refusal kind reaches the client as data**: ``{"ending", "refusal": {"kind", "status"}}`` in the
+  structured content of an error result, for each public engine error a handler raises; ``ending`` is
+  ``raised`` for a 5xx status (a store, a provider, a host unavailable) and ``refused`` otherwise.
 - **The host is resolved per call** — sync or async, after the caller — when ``host_resolver`` is given
   in place of ``host``; exactly one of the two is accepted, refused before any tool is added.
 - **A resolver that fails fails the call before anything runs**: no action, no hook. One that answers
@@ -172,9 +173,13 @@ async def test_every_refusal_kind_round_trips_through_the_client(error: str) -> 
     raised = _ERRORS[error]()
     text, structured, is_error = await _call(off_loop(_served, _Host()), {"action": "note_take", "note": error})
     expected = Refusal.of(raised)
-    assert is_error and structured == {"refusal": {"kind": expected.kind, "status": raised.status_code}}
+    assert is_error and structured == {
+        "ending": "raised" if raised.status_code >= 500 else "refused",
+        "refusal": {"kind": expected.kind, "status": raised.status_code},
+    }
     remedy = "" if raised.remedy is None else f"\nremedy: {raised.remedy}"
-    assert text == f"refused: note_take: {raised.message}{remedy}"
+    head = "raised" if raised.status_code >= 500 else "refused"
+    assert text == f"{head}: note_take: {raised.message}{remedy}"
 
 
 # =============================================================================
@@ -313,8 +318,8 @@ async def test_the_hook_sees_the_call_and_its_outcome_and_wraps_the_action() -> 
     assert no_call.action == "note_take" and no.refusal == Refusal(kind="conflict", status=409)
     assert bad_call.action is None, "an action argument that is no string is shown as none"
     assert bad.refusal == Refusal(kind="validation_failed", status=422)
-    assert refused == {"refusal": {"kind": "conflict", "status": 409}}
-    assert unknown == {"refusal": {"kind": "validation_failed", "status": 422}}
+    assert refused == {"ending": "refused", "refusal": {"kind": "conflict", "status": 409}}
+    assert unknown == {"ending": "refused", "refusal": {"kind": "validation_failed", "status": 422}}
 
 
 async def test_a_defect_is_thrown_into_the_hook_and_still_propagates() -> None:
@@ -601,8 +606,8 @@ async def test_a_resolver_that_refuses_answers_a_refusal_before_any_action_runs(
     text, structured, is_error = await _call(
         off_loop(_served, actions, around=around, **mount), {"action": "note_take", "note": "ok"}
     )
-    assert is_error and structured == {"refusal": {"kind": "refused", "status": 503}}
-    assert text == "refused: note_take: this host is still booting\nremedy: call again in a minute"
+    assert is_error and structured == {"ending": "raised", "refusal": {"kind": "refused", "status": 503}}
+    assert text == "raised: note_take: this host is still booting\nremedy: call again in a minute"
     assert actions.ran_in == [], "no action ran"
     if "caller" in mount:
         assert entered == [], "with no caller there is no ToolCall, so the hook is never entered"
@@ -647,7 +652,7 @@ async def test_a_resolver_refusal_is_the_outcome_the_binding_returns() -> None:
 
     unnamed = await binding.call({"action": "no_such", "note": "ok"})
     assert unnamed.action is None, "the action was never checked, so an outcome names only one the tool has"
-    assert unnamed.text == "refused: host: this host is still booting\nremedy: call again in a minute"
+    assert unnamed.text == "raised: host: this host is still booting\nremedy: call again in a minute"
 
 
 async def test_a_resolver_refusal_of_a_public_class_keeps_that_class_s_kind() -> None:
@@ -655,7 +660,7 @@ async def test_a_resolver_refusal_of_a_public_class_keeps_that_class_s_kind() ->
         raise ConflictError("this tenant is suspended", remedy="ask its owner to reinstate it")
 
     _, structured, is_error = await _call(_served(_Host(), host_resolver=suspended), {"action": "note_take"})
-    assert is_error and structured == {"refusal": {"kind": "conflict", "status": 409}}
+    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "conflict", "status": 409}}
 
 
 # =============================================================================
@@ -764,7 +769,7 @@ async def test_a_note_follows_a_host_resolver_s_refusal_but_not_a_caller_resolve
     blocks, structured, _ = await _blocks(
         _served(_Host(), host_resolver=_booting, annotate=annotate), {"action": "note_take", "note": "ok"}
     )
-    assert structured == {"refusal": {"kind": "refused", "status": 503}}
+    assert structured == {"ending": "raised", "refusal": {"kind": "refused", "status": 503}}
     assert blocks[1:] == ["host note on note_take"]
     blocks, _, _ = await _blocks(
         off_loop(_served, _Host(), caller=_booting, annotate=annotate), {"action": "note_take"}
@@ -930,7 +935,7 @@ async def test_a_host_resolver_s_refusal_shows_the_hooks_no_host_and_no_context(
         _served(_Host(), host_resolver=_booting, around=seen.around, annotate=seen.annotate),
         {"action": "note_take", "note": "ok"},
     )
-    assert structured == {"refusal": {"kind": "refused", "status": 503}}
+    assert structured == {"ending": "raised", "refusal": {"kind": "refused", "status": 503}}
     assert [(hook, call.host, call.context) for hook, call in seen.calls] == [
         ("around", None, None),
         ("annotate", None, None),
@@ -959,7 +964,9 @@ async def test_the_hooks_see_the_exact_error_a_host_resolver_refused_with() -> N
     server = _served(_Host(), host_resolver=host_resolver, around=seen.around, annotate=seen.annotate)
     for _ in range(2):
         _, structured, _ = await _call(server, {"action": "note_take", "note": "ok"})
-        assert structured == {"refusal": {"kind": "refused", "status": 503}}, "the outcome cannot tell them apart"
+        assert structured == {"ending": "raised", "refusal": {"kind": "refused", "status": 503}}, (
+            "the outcome cannot tell them apart"
+        )
     assert [hook for hook, _ in seen.calls] == ["around", "annotate", "around", "annotate"]
     for (_, call), error in zip(seen.calls, [thrown[0], thrown[0], thrown[1], thrown[1]], strict=True):
         assert call.refused is error, "each hook holds the very instance the resolver raised"
@@ -985,7 +992,7 @@ async def test_a_caller_resolver_s_refusal_enters_no_hook_and_refuses_with_nothi
     _, structured, _ = await _call(
         off_loop(_served, _Host(), caller=_booting, around=seen.around, annotate=seen.annotate), {"action": "note_take"}
     )
-    assert structured == {"refusal": {"kind": "refused", "status": 503}}
+    assert structured == {"ending": "raised", "refusal": {"kind": "refused", "status": 503}}
     assert seen.calls == [], "with no caller there is no ToolCall, so no hook sees a refused error"
 
 

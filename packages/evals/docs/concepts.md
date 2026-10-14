@@ -1,17 +1,77 @@
-# Concepts: the nouns of 3tears-evals, and how they fit together
+# Concepts
 
-**For** anyone stopped by a word in the README or a guide. **Answers:** how the pieces relate (one picture),
-and what every term of art means, in plain words with one running example. Nothing here assumes you have
-built an eval before. Why the pieces are shaped this way is in
-[Design rationale](design-rationale.md) and [The world model](world-model.md).
+**For** anyone stopped by a word in the README, the ladder or a guide. **Answers:** the six concepts every eval is
+made of, the rung that teaches each word past them, and, below, the glossary of every term the host contract and the
+reports use. Nothing here assumes you have built an eval before. Why the pieces are shaped this way is in
+[Design](design.md#rationale).
 
-**The running example.** You own a support-ticket triage classifier: it reads a ticket's subject and body
-and picks one queue, `billing`, `bug`, `account` or `other`. You have a prompt in production (call it v1),
-a rewrite you think is better (v2), and 40 hand-written tickets whose right queue you know. You want to
-know whether v2 routes tickets better than v1, by how much, at what cost, and whether the evidence can
-tell at all. (The same classifier appears in [Designing a classifier eval set](designing-classifier-evals.md).)
+## Six concepts
 
-## The picture
+An eval is three slots, `Eval(cases, runner, grader)`. Run it, and it gives you a result you read; give it two
+runners, and it is a comparison. That is the whole of it: [World](ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves)
+and `Log` are shapes of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
+modifiers.
+
+### Case (test case)
+
+One input and what a good answer looks like: one email and the triage a person gave it. A case is a dict, or a line
+of a `.jsonl` file, frozen once stored, which is what lets two runs over the same cases be compared. Three keys are
+reserved and never handed to the runner: `id` names the case, `stratum` names its kind (a `lookalike`, say) so every
+reading is also split by kind, and `world` is an agent's starting state.
+
+### Runner
+
+The code under test: any function from one case to an answer, async or not. It is one **arm**, one version under
+test. A runner may also be a `World`'s, which hosts your agent in a seeded state, or a `Log` of outputs your app
+pushed when it cannot be wrapped as a function.
+
+### Grader
+
+What counts as right, in the `grader` list. A field name (`"category"`) grades the answer's field against the
+case's: the first is read as a classifier, with a confusion matrix and each label's precision and recall, any other as
+a pass rate. A function `(case, answer) -> bool | float` is a grader named by its `__name__`, and every grader is
+higher-is-better. A string that is not a name is a [goal-state check](#goal-state-check) over a world. A grader that
+raises excludes its trial: it is part of the measuring setup, not the runner.
+
+### Judge
+
+A model that grades an answer against a rubric when no code can: one written dimension per call, pass/fail by
+default, with "can't tell" an answer of its own. A `Judge` is a grader, listed with the others. A judge is a model
+too, so it is checked against people's labels before its scores are leaned on, and every judged reading carries the
+[evidence tier](#evidence-tier) its checks reached.
+
+### Comparison
+
+A runner given as a mapping, `{"v1": ..., "v2": ...}`: each runner is an arm, every arm runs over the same cases, and
+the first key is the **control** the others are tested against. Each reading gets a delta, an interval, and a
+**verdict**: separated (`improved` or `regressed`), `not separated` (the cases could not tell the arms apart, which
+never means "no difference"), `equivalent` (shown inside a margin you declared), or `untested`. A guardrail is
+decided apart, `held`, `breached` or `undecided`, so a gain elsewhere cannot pay for it.
+
+### Report
+
+What a run tells you. Printed, it is quiet: the verdict, each arm's readings, the top misses, and where the runs and
+the report are kept. Written, it is one page, verdict first ([Reading reports](reading-reports.md)). Never quieted:
+errors, exclusions and their causes, truncation, unpriced spend, the self-judging warning, and how the judge stands
+against people.
+
+## Every other word is a rung
+
+| Word | In one line | Taught at |
+|---|---|---|
+| k | how many times each case is played, because model answers vary | [rung 1](ladder.md#rung-1-your-own-function) |
+| miss | a result the runner got wrong, with why; read them before the means | [rung 1](ladder.md#rung-1-your-own-function) |
+| stratum | a case's kind, so each reading is split by kind | [rung 1](ladder.md#rung-1-your-own-function) |
+| labels, κ, evidence tier | a person's ratings of judged answers, the judge's agreement with them, and how far its scores can be leaned on | [rung 2](ladder.md#rung-2-a-judge-checked-against-a-person) |
+| arm, control, verdict | one version; the version the others are tested against; what the evidence supports | [rung 3](ladder.md#rung-3-two-prompts-compared) |
+| margin, guardrail, gate | the difference too small to matter; a reading no arm may get worse on; the CI check over the verdicts | [rung 3](ladder.md#rung-3-two-prompts-compared) |
+| world, goal check, did-nothing control | the state an agent acts on; a check of the state it left; the proof that a check can fail | [rung 4](ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) |
+| store, scope, host | where runs are kept; the name they are found by; the value that serves them | [serving](serving.md#keep-your-runs-and-read-them-back) |
+
+## The picture underneath
+
+An `Eval` builds all of this for you (`as_host`); a host of your own declares it
+([Adopting the engine](adopting-a-host.md)). The glossary below defines each box.
 
 ```
   template  "triage a support ticket"
@@ -26,7 +86,7 @@ tell at all. (The same classifier appears in [Designing a classifier eval set](d
      |
      v
   results   one per case x repeat (the trial loop calls each one a "cell")
-            graded by  measures         -- numbers code computes: match, latency, cost, your scorers
+            graded by  measures         -- numbers code computes: match, latency, cost, your graders
                   and  judged dimensions -- scores an LLM judge gives against a rubric (tone, say)
      |
      |  you put the runs you want compared into
@@ -44,56 +104,29 @@ tell at all. (The same classifier appears in [Designing a classifier eval set](d
 
 Underneath all of it sits your **host**: the one value through which your app tells the engine what it can
 change (levers), what it can see (measures), how to run your code (a kind), and where to store things.
-`run_eval` builds a throwaway host for you, which is why the README's first example needs none.
-
-## Terms to learn first
-
-The one short list: the README links here rather than keeping its own.
-
-| Term | In one line |
-|---|---|
-| [case](#case-test-case) | One input and what a good answer looks like: one ticket and its right queue. |
-| [candidate](#candidate) | The code under test, which answers each case. |
-| [scorer](#scorer) | A function that grades an answer with a number, when code can check it. |
-| [measure](#measure) | A number code computes about a result: did it match, how long it took, what it cost. |
-| [judge](#judge) | A model that grades an answer against a rubric, when code cannot. |
-| [judged dimension](#judged-dimension-rubric-dimension) | One written quality of a rubric, which the judge scores. |
-| [k](#k-repeats) | How many times each case is played, because model answers vary. |
-| [run](#run) | One batch of trials: one arm, played over every case, `k` times each. |
-| [result](#result-observation) | One trial: one case, one repeat, with every grade it got. |
-| [arm](#arm) | One version under test, run over every case. |
-| [control](#control) | The arm every other arm is tested against. |
-| [campaign](#campaign) | The runs you want compared, grouped so they can be analysed together. |
-| [verdict](#verdict) | Separated, not separated or equivalent: what the evidence supports. |
-| [interval and p](#delta-interval-and-adjusted-p) | Where the true difference plausibly lies, and the Holm-adjusted p a verdict is decided on. |
-| [report](#report) | The one document you read: tables, charts, and (if generated) findings in words. |
-| [world](#world) | The state an agent acts on, set for each case and read back after. |
+An `Eval` builds one for you (`as_host`), which is why the README's first example needs none.
 
 ## Glossary
 
-Terms are grouped by where you meet them. Code names are in backticks; the module or class named is
+The words past the ladder, grouped by where you meet them. Code names are in backticks; the module or class named is
 where the definition lives in the source.
 
 ### What you test
-
-#### Case (test case)
-One concrete input, frozen once written (`EvalTestCase`). A case's content never changes after it is
-stored, which is what lets two runs over the same cases be compared. *Example:* ticket 17, "I was charged
-twice this month", expected queue `billing`.
 
 #### Case set
 A named, versioned, frozen list of one template's cases (`CaseSet`, minted by `mint_case_set` or the
 `case_set_mint` action). It is append-only: changing it mints the next version, and rewriting a stored
 version is refused. A launch can name one (`case_set_name` and `case_set_version`), runs exactly its cases,
 and records it on the run, so history reads a change of suite as `smoke v1` to `smoke v2`. It labels the
-run's frozen case ids, never a second identity. Not a [battery](#battery). *Example:* `smoke v2`, the three
+run's frozen case ids, never a second identity. *Example:* `smoke v2`, the three
 tickets every release is checked on.
 
 #### Template
 The blueprint the cases belong to (`EvalTemplate`): what is being tested (its intent), how to score it
 (goal-state checks and rubric dimensions), the axes cases vary along, and anything only its kind reads (its
-spec). *Example:* "route a support ticket to a queue", with the four labels in its spec. `run_eval` takes its
-intent from `intent=` or a candidate's docstring: see [what the engine reads from your
+spec). A template marked `universal=True` applies to every subject, whatever tools it requires. *Example:* "route a
+support ticket to a queue", with the four labels in its spec. An `Eval` takes its
+intent from the runner's docstring: see [what the engine reads from your
 code](#what-the-engine-reads-from-your-code).
 
 #### Variation axis
@@ -104,11 +137,12 @@ One direction along which a template's cases differ (`VariationAxis`): `enum` yi
 #### Stratum
 The kind of case a case is, in your own words (`EvalTestCase.stratum`), so results can be broken down by it.
 It is never shown to the thing under test. *Example:* the 12 tickets marked `lookalike` (a billing question
-that reads like a bug report) get their own column in the report.
+that reads like a bug report) get their own column in the report. An `Eval`'s cases carry it under the reserved
+key `stratum`.
 
 #### Subject
 What is being measured, as your host names it, frozen at launch (`SubjectSnapshot`). *Example:* "the triage
-service". In `run_eval`, the subject is just the candidate's name.
+service". In an `Eval`, the subject is just the runner's name, or a comparison's name for every arm.
 
 #### Candidate
 The thing that answers a case during a trial: your code, built for one cell by the kind's `prepare` and
@@ -140,8 +174,9 @@ measurement context, not the variant. *Example:* the label set `["billing", "bug
 A stateful environment the subject acts in, declared on the profile (`WorldRegistry`) and handed to each
 cell as a `WorldSession`. Seeded before the first turn and read back after the last. A classifier has none.
 *Example:* for a support *agent* (not the classifier), a ticketing system whose open tickets it can close.
-In `run_eval`, `world=`, `seed=` and `goal_checks=` (`examples/world.py`). Why a subject runs in a seeded
-world at all: [The world model](world-model.md).
+In an `Eval`, `World(State, tools=[...])` declares one from a pydantic state model, each case carries its starting
+state under the reserved key `world`, and goal checks are graders (`examples/4-booking/agent.py`). Why a subject runs in a seeded
+world at all: [The world model](evaluating-agents.md#why-a-world-the-world-model).
 
 ### What you vary, and what must hold still
 
@@ -154,10 +189,10 @@ ships the ones every LLM product has (`SHARED_CORE`); you add your own.
 A sweepable you deliberately change to see what it does (role `lever`). The engine always resolves two
 itself, the candidate model (`model`) and the candidate kind (`candidate_kind`); your kind's overlays add
 more. *Example:* `model` and `ticket_router.prompt_version`.
-With no host of your own, `run_eval(..., levers={"prompt": "v2"})` states one beside the model, as
-`callable.prompt` (`callable-judged.prompt` on a judged run), and `compare(..., factors=("model", "prompt"))`
-keys each arm by its level of both (`examples/prompt_x_effort.py` crosses the prompt with a reasoning effort, the
-model named as a factor at its one level).
+With no host of your own, an arm named as `k=v` pairs (`{"prompt=v2": runner}`) states one beside the model, as
+`callable.prompt` (`callable-judged.prompt` on a judged run), and arms named `"model=m1, prompt=v2"` are keyed by
+their level of both (`examples/3-invoices/extract.py`'s closing comment crosses the prompt with a reasoning
+effort).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is
@@ -197,7 +232,7 @@ of them and compared. *Example:* who sits in an adjudicator's seat: `{"adjudicat
 A place in the rig a kind's runs actually fill (`KindContract.seats`): a pinned role such as `judge` or
 `simulator`, or one apparatus dimension. A dimension a kind does not seat does not apply to its runs, so
 its blank there is not a confound. `None`, the default, holds the kind to every dimension. *Example:* the
-callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling; its
+callable kind an `Eval` runs seats none of the judge, simulator or spend ceiling; its
 judged kind, `callable-judged`, seats the judge and nothing else.
 
 #### Measurement context
@@ -234,7 +269,7 @@ whose runs are prepared together and started together, or none of them are. A **
 code your host supplies: it receives a `LaunchRequest` and returns `launch_run(host, request, KindWiring(...))`.
 
 #### Latency under test (`measure_latency`)
-The one declaration that latency is being measured, on a launch (`start_run`, `run_eval`, `compare`, CLI
+The one declaration that latency is being measured, on a launch (`start_run`, `Eval(measure_latency=True)`, CLI
 `--measure-latency`) and on a campaign's design. Declared, a run executes its cells one at a time and a
 launch's arms one after another, so their latency is read clean; not declared (the default), cells run
 several at once — as many as the kind declares it is safe at (`CandidateKind.max_concurrent_cells`; a kind that
@@ -245,7 +280,7 @@ bar, a question or a ranking on it) without declaring it is refused. Each run re
 (`measure_latency`, `cell_concurrency`).
 
 #### k (repeats)
-How many times each case is played in a run (`k_runs`, `run_eval(k=...)`, CLI `--k`; default 3). LLM
+How many times each case is played in a run (`k_runs`, `Eval(k=...)`, CLI `--k`; default 3). LLM
 answers vary, so one play per case under-reports that variance. *Example:* 40 tickets, `k=3`, 120 trials.
 
 #### Cell
@@ -271,14 +306,12 @@ profiles and cassettes are outside it: a release that changes their format refus
 ([what is kept](adopting-a-host.md#stored-data-what-is-kept)). A cassette's format has a version of its own, so a
 change to the analyses never refuses a corpus.
 
-#### Battery
-The universal templates, run as one pre-flighted set (`start_universal_battery`): templates marked
-`universal=True` apply to every subject.
-
 #### Cassette
-A recording of what a candidate's tools answered. A run in `cassette_mode="capture"` records one; a run in
-`"replay"` is served that recording instead of calling the tools live, so two arms can face exactly the
-same tool answers. It records the tools only, never the candidate (`examples/cassettes.py`). Its stored format has
+A recording of what a candidate's tools answered, kept by a host's own runs. A run in `cassette_mode="capture"`
+records one; a run in `"replay"` is served that recording instead of calling the tools live, so two arms can face
+exactly the same tool answers. It records the tools only, never the candidate. An `Eval` keeps its own the same
+way in a file: a world of lookups with `recording=` (`World(tools=[search], recording="search.jsonl")`) records
+its answers once and replays them after. Its stored format has
 its own version (`CASSETTE_SCHEMA_VERSION`), apart from the analyses': a corpus is refused only when the cassette's
 own format changes, and is then re-captured.
 
@@ -297,7 +330,7 @@ every process. The record carries the running process's lease; a job whose lease
 
 #### Measure
 A number code computes about a result, declared in your host's measure registry with its unit, direction
-(is higher better?) and family. `run_eval` makes one per scorer, named by the scorer's `__name__`. A
+(is higher better?) and family. An `Eval` makes one per function grader, named by its `__name__`. A
 classifier lands two core measures, `match` and `confusion_cell`, and the analysis derives `accuracy` from
 `match`. A host may not declare a measure named like a core one (`score`, `f1`, `cost_usd` and the rest), whose
 readings would pool with the engine's own; the runner likewise refuses a kind that lands a core-named key on
@@ -305,9 +338,7 @@ readings would pool with the engine's own; the runner likewise refuses a kind th
 release made its key engine-owned has the key dropped on read and named as unreported. A result's covariates are held to the same rule. *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer
-In `run_eval`, a plain function `(case, answer) -> bool | number` that becomes one measure, named by its
-`__name__` (never a core measure's name) and described by its docstring's first line. A scorer that raises
-excludes the cell: it is part of the rig, not the candidate.
+A function grader's older name, still the word for the measure it reports. See [grader](#grader).
 
 #### Goal-state check
 A code check over a cell's end state (`state.<dimension>`), the calls the candidate made (`calls(...)`) and
@@ -316,10 +347,6 @@ rate measures the behaviour only when a control proves the check beats doing not
 marks it `unproven` or `refuted`. A case parameter (`variation.<name>`) is one string, as the case stores it:
 compare it or look for it (`contains(state.tags, variation.category)`), and write a set of values as a list
 literal (`intersects(state.tags, ["toys", "games"])`). Reading a parameter as a collection is refused.
-
-#### Judge
-A model the engine asks to score a result against a rubric, reading only the evidence the kind rendered
-(`JudgeEvidence`). Each dimension is scored 1-5 (`ordinal`) or `pass_fail`; "can't tell" is an answer.
 
 #### Judged dimension (rubric dimension)
 One subjective quality a judge scores (`RubricDim`): a name, a description and a scoring guide. *Example:*
@@ -333,8 +360,9 @@ none, and each score records what was sent.
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
 on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score and every "can't tell") or a
-measure the host declares `guardrail=True` is one; on the quick path, `compare(guardrails=...)` declares either,
-with its margin and direction (`Guardrail`). Guardrails never join the composite, pass^k or a comparison
+measure the host declares `guardrail=True` is one; on the quick path, `grader(fn, guard=0.02)` declares a
+function's and `Judge(..., guard={"dimension": 0.02})` a dimension's, each with its margin; every grade is
+higher-is-better, so no direction is stated. Guardrails never join the composite, pass^k or a comparison
 family, so a "can't tell" on one leaves the trial in both; the bundle decides each one for every arm against
 the control as `held`, `breached` or `undecided`. A catalog dim's `axis` is its embedded dim's, so copying a
 boundary catalog dim into a template keeps it a guardrail. *Example:*
@@ -357,11 +385,12 @@ controlled or not, and the apparatus, commissioned or witnessed). A campaign wit
 **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing design, never stored,
 so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:* "triage v1 vs v2",
 control = the v1 variant, held fixed = one case battery on a commissioned rig. Which design to declare for a question:
-[Choosing a campaign design](choosing-a-design.md).
+[Measuring soundly](measuring-soundly.md#declare-the-design-and-its-control).
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
-so any run of that configuration counts toward it. `compare` sets it from `control=`; elsewhere it is addressed
+so any run of that configuration counts toward it. An `Eval` comparison sets it from its runner mapping's first
+key; elsewhere it is addressed
 from a run (`control_from_run_id`), which records the run's lever map and identity version beside the key, as a
 run records its own; nobody sets those by hand. Every read resolves it through `resolve_declared_control` to the
 keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
@@ -387,16 +416,16 @@ zero. See
 What a comparison's evidence supports, per arm and reading: **separated** (printed `improved` or `regressed`
 on the control), **not separated** (the cases could not tell the arms apart, which never means "no
 difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
-enough"), or **untested** (no test could decide). A report from `compare` names, in a line above its contrasts
+enough"), or **untested** (no test could decide). A comparison's report names, in a line above its contrasts
 table, each measure that declares no margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
-`undecided`. Each is also a typed value a program reads (`Comparison.verdicts()`), which the printed words are
+`undecided`. Each is also a typed value a program reads (`Result.verdicts()`), which the printed words are
 rendered from. See [reading a comparison](reading-reports.md#reading-a-comparison).
 
 #### Miss
-A result the candidate got wrong: a wrong label, a scorer on the wrong side of 0 (0 or less where higher is better,
+A result the runner got wrong: a wrong label, a grader on the wrong side of 0 (0 or less where higher is better,
 above 0 where lower is better, as `leaked` is; never for a measure with no direction), a failed goal check, a failed
-pass/fail judgement, or a result the candidate failed outright (it raised, say). An excluded result is never a
-miss. `summary.misses()` lists them, each with its reason; the [tutorial](tutorial.md#3-read-your-misses) says how
+pass/fail judgement, or a result the runner failed outright (it raised, say). An excluded result is never a
+miss. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
 to read them.
 
 #### Analysis bundle
@@ -410,13 +439,6 @@ written: the bundle is the whole context. The CLI's `bundle` prints it inside a 
 Findings a model wrote over a bundle (`EvalAnalysis`): findings, recommendations and next steps, with every number
 in its prose replaced by the value code read, stored with the bundle it was written over. Optional, and it costs
 money; the verdict and every count on the report are code's either way.
-
-#### Report
-The one page a campaign is read through (`Report`), verdict first: a basis line, code's verdict line and each arm's
-scoreboard, then the memo and the contrasts, the cases, one drill-down per trial, what was not tested and the methods
-([Reading reports](reading-reports.md)). `Report.write(dir)` writes it as one scriptless HTML page, as Markdown, and
-the bundle it was computed from. Without an analysis it is a **code-only report** (`basis="code_only"`): the
-evidence, with no author's words.
 
 #### Trial
 One case run once on one arm — one stored result. It is passed, failed (the candidate's failure: its model, its
@@ -454,7 +476,7 @@ not declare it. *Example:* routing accuracy of at least 0.9 for the `routing` be
 A set of checks you run in your own test suite against what you implemented, so a gap fails there and not in a
 measurement: `STORE_CONFORMANCE_CASES` for a store, `check_completion_conformance` for a completion client,
 `jobs_conformance_cases` for the action catalogue you mount (your own actions among them),
-`check_world_conformance` for a world, and `nonpublic_evals_imports` for your imports. A world check the kit
+and `check_world_conformance` for a world. A world check the kit
 cannot run is reported `unavailable` with its reason, never passed. See
 [the store's kit](adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it) and
 [the world's](evaluating-agents.md#step-5-run-the-conformance-kit-against-your-world).
@@ -488,7 +510,7 @@ kept runs, a cassette by capturing it anew. A store can route each lifecycle to 
 #### Lease
 A running [job](#job)'s claim on its record: the process running it renews it on a schedule (`JobLeases`,
 `LaunchHost.job_lease_s`), stamped in the store's own time when the store offers a `StoreClock`. A job whose lease
-lapses before it ends reads `lost` everywhere. See [Operations and jobs](agents-and-mcp.md#operations-and-jobs).
+lapses before it ends reads `lost` everywhere. See [Operations and jobs](serving.md#operations-and-jobs).
 
 #### Seam
 A place the engine calls code your host supplies, through a protocol the engine declares: the kind seam
@@ -519,16 +541,15 @@ report, the bundle, an action's reply. "Said on every surface" means each of the
 
 ## What the engine reads from your code
 
-`run_eval` and `compare` take plain functions, so a few things you might think of as documentation are
-read as data. Everything they read is below, with the way to state it outright instead.
+An `Eval` takes plain functions, so a few things you might think of as documentation are read as data. Everything they read is below, with the way to state it outright instead.
 
 | What | Which part | Who reads it | To state it instead |
 |---|---|---|---|
-| A candidate's docstring | its first line | The [template](#template)'s intent, which a [judge](#judge) reads beside every answer, so rewording it can move judged scores. With several arms, it is read only when every arm's docstring shares that first line. | `intent=` on `run_eval` or `compare`; a judged run's `summary.render()` prints the intent and where it came from. |
-| A candidate's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant. | `model=` on `run_eval`. `compare` names each arm by its key on the `candidate` lever, every arm at one model; with `factors=("model",)` the key is the model. |
-| A scorer's `__name__` | the whole name | The [measure](#measure)'s name, in the summary, reports and the analysis bundle. | Rename the function. |
-| A scorer's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on a [host](#host) of your own (`host=`). |
-| A `WorldTool`'s function: `__name__` and docstring | the name, and the docstring's first line | The tool's name and description, which the model is shown, as in any tool-use API. | None: the function's name and docstring are the tool's. |
+| A runner's docstring | its first line | The [template](#template)'s intent, which a [judge](#judge) reads beside every answer, so rewording it can move judged scores. With several arms, it is read only when every arm's docstring shares that first line. | Reword the docstring; a judged run's `summary.render()` prints the intent and where it came from. |
+| A runner's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant, and the eval's default name. | Name the arm: a runner mapping of one (`{"arm-a": runner}`). A comparison names each arm by its key on the `candidate` lever, every arm at one model; keys named `"model=m1"` are models. |
+| A function grader's `__name__` | the whole name | The [measure](#measure)'s name, in the summary, reports and the analysis bundle. | Rename the function. |
+| A function grader's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on the function (`@measure(...)`), or on a [host](#host) of your own (`host=`). |
+| A world tool's function: `__name__`, docstring and type hints | the name, the docstring's first line, and each parameter's type | The tool's name, description and parameter schema, which the model is shown, as in any tool-use API. | None: the function's name, docstring and types are the tool's. |
 
-With no docstring, a scorer is described as "The score the `<name>` function gave the candidate's answer.",
+With no docstring, a function grader is described as "The score the `<name>` function gave the candidate's answer.",
 a tool as "The `<name>` tool.", and the intent is a generic sentence the summary labels as such.

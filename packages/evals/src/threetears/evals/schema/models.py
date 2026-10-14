@@ -1665,10 +1665,8 @@ class EvalTemplate(DurableDocumentModel):
     set, a game master's table — is ``kind_spec``, which the kind's own model
     validates.
 
-    Applicability is scoped by ``tools_required``, or — for the operator-curated
-    boundary battery — by ``universal=True``, which marks the template as
-    applying to every subject; ``start_universal_battery`` launches one run per
-    active universal template.
+    Applicability is scoped by ``tools_required``, or by ``universal=True``,
+    which marks the template as applying to every subject.
 
     ``tools_allowed`` is the one tool field that is NOT about applicability: it
     bounds what the candidate may call, and so what the run can spend on third
@@ -1706,10 +1704,7 @@ class EvalTemplate(DurableDocumentModel):
     tools_required: list[str] = Field(default_factory=list)
     universal: bool = Field(
         default=False,
-        description=(
-            "When True the template applies to every subject (the boundary battery), and "
-            "start_universal_battery includes it."
-        ),
+        description="When True the template applies to every subject, whatever tools it requires.",
     )
 
     # Spend bound — NOT applicability. ``tools_required`` above answers "which
@@ -2395,8 +2390,8 @@ class EvalTestCase(DurableDocumentModel):
             "engine puts it in no prompt — not the candidate's variation, the simulated user's or the judge's — "
             "and a kind, which is handed the whole case, must leave it out of what it renders, so naming a case a "
             "lookalike never tells the candidate what to look out for. Not part of `content_hash` or of any identity key: "
-            "two arms over the same cases share their strata, and a case re-labelled in place (as `run_eval` and "
-            "`compare` store a changed `stratum_key=` value on the same case) keeps its id and its history, every "
+            "two arms over the same cases share their strata, and a case re-labelled in place (as an `Eval` stores a "
+            "changed `stratum` value on the same case) keeps its id and its history, every "
             "run over it then read under the new stratum. None when the case declares none; a run none of whose cases declares one reads "
             "exactly as an unstratified run. A generated case takes it from the template's nominated axis "
             "(`VariationAxis.stratum`)."
@@ -3062,6 +3057,16 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
             "actually enforced (False for a request resent without enforcement). False = no enforcement."
         ),
     )
+    unsent_reasoning_max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Sent settings only: the reasoning budget the client was asked for that the request could not carry as a "
+            "budget (OpenAI's chat completions take effort words only, or the model refused a budget), so it went as "
+            "`reasoning_effort` or as no reasoning parameter. None = no budget was asked, or it went as one (or the "
+            "client did not say). Never set beside `reasoning_max_tokens`, and never on asked settings."
+        ),
+    )
 
     @model_validator(mode="after")
     def _one_way_to_ask_for_reasoning(self) -> Self:
@@ -3071,12 +3076,18 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
             The settings, unchanged.
 
         Raises:
-            ValueError: Both ``reasoning_max_tokens`` and ``reasoning_effort`` are set.
+            ValueError: Both ``reasoning_max_tokens`` and ``reasoning_effort`` are set, or a budget is named both as
+                sent and as unsent.
         """
         if self.reasoning_max_tokens is not None and self.reasoning_effort is not None:
             raise ValueError(
                 "reasoning is asked for by a token budget (reasoning_max_tokens) or by an effort level "
                 "(reasoning_effort), not both: the provider would pick one and the record could not say which"
+            )
+        if self.reasoning_max_tokens is not None and self.unsent_reasoning_max_tokens is not None:
+            raise ValueError(
+                "a request that carried a reasoning budget (reasoning_max_tokens) left none unsent "
+                "(unsent_reasoning_max_tokens): name one or the other"
             )
         return self
 
@@ -3117,6 +3128,8 @@ def request_settings_words(settings: ClientRequestSettings) -> str:
         parts.append(f"reasoning_max_tokens={settings.reasoning_max_tokens}")
     else:
         parts.append("no reasoning parameter")
+    if settings.unsent_reasoning_max_tokens is not None:
+        parts.append(f"reasoning budget {settings.unsent_reasoning_max_tokens} not sendable")
     parts.append("strict" if settings.strict_output else "not strict")
     return "{" + ", ".join(parts) + "}"
 
@@ -3150,7 +3163,7 @@ class MeasureDeclaration(EvalBaseModel, CoreShapeModel):
 
     The reading-side half of a :class:`~threetears.evals.kernel.metrics.MetricDescriptor`: which way is better,
     the merit axis it serves, whether it is a guardrail, its margin and its range. A host builds these in code, and
-    the quick path builds them from ``compare(margins=, ranges=, guardrails=)``, so a later reader's host may declare
+    the quick path builds them from ``grader(..., margin=, range=, guard=)``, so a later reader's host may declare
     them differently, or not at all. A comparison of stored runs is read on what the runs were launched under
     (:attr:`EvalRun.declared_measures`), never on whoever reads it.
     """

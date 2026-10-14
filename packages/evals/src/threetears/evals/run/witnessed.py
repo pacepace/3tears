@@ -264,11 +264,10 @@ async def record_witnessed_cell(
     itself (they arrive on ``output``), and builds what fired with
     ``Firings.of(world_events, provenance="witnessed")`` — or, grading through a
     :class:`~threetears.evals.kernel.world_session.WorldSession`, by constructing that session with
-    ``provenance="witnessed"``, whose ``fired`` reads the same rule — the rule a re-check reads the stored
-    cell back by (:func:`~threetears.evals.run.recheck.recheck_goal_states`). No seed armed the session, so
+    ``provenance="witnessed"``, whose ``fired`` reads the same rule. No seed armed the session, so
     its events say ``armed=False`` because nothing could mark them armed, and ``fired_armed()`` is not
-    established, negated or not; read under any other provenance it would be graded as a verdict a re-check
-    then contradicts. For the same reason a world event claiming ``armed=True`` or ``caused_by="rig"`` is
+    established, negated or not; read under any other provenance it would be graded as a verdict the stored
+    events contradict. For the same reason a world event claiming ``armed=True`` or ``caused_by="rig"`` is
     refused: no seed armed it and no rig made it happen, so it is a rig's record, not an observation.
 
     **What the host writes around it.** A witnessed session has no template that set it, so its case

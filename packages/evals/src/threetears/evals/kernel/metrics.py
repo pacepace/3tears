@@ -2897,8 +2897,8 @@ def _describable_measures(measures: MeasureRegistry) -> dict[str, MetricDescript
 
     The core is applied last so it wins a tie, matching :func:`describe_measure`'s resolution
     order. No registry can hold a tie: :class:`~threetears.evals.kernel.host.measures.MeasureRegistry`
-    refuses a host descriptor named like a core measure at construction, and :func:`run_eval
-    <threetears.evals.quick.run_eval>` refuses a scorer so named before anything runs. The order
+    refuses a host descriptor named like a core measure at construction, and an eval
+    (:class:`~threetears.evals.quick.contract.Eval`) refuses a grader so named before anything runs. The order
     here is that rule stated where it can be read, not a second defence.
 
     Args:

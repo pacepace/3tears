@@ -8,7 +8,7 @@ ties going lower; a budget to the word its share of the cap maps to on a model t
 that share of the cap on a model that takes budgets only; Anthropic's effort words over adaptive thinking with no
 temperature beside any thinking; ``max`` and ``none`` per provider; the strict reply format sent unenforced where it
 cannot be enforced; the output cap clamped to the model's own. Facts left unknown are sent as asked. The shares are
-one constant, pinned here. What reaches the wire is ``test_models_adapter*.py``; what is learned from a refusal,
+one constant, pinned here. What reaches the wire is ``test_providers_model.py``; what is learned from a refusal,
 ``test_negotiation_loop.py``.
 """
 
@@ -186,7 +186,7 @@ ROWS: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = [
         "anthropic",
         {"max_tokens": 10240, "reasoning_max_tokens": 8192},
         SONNET_5,
-        {"max_tokens": 10240, "reasoning_effort": "high"},
+        {"max_tokens": 10240, "reasoning_effort": "high", "unsent_reasoning_max_tokens": 8192},
     ),
     (
         "anthropic-budget-under-a-clamped-cap",
@@ -200,7 +200,7 @@ ROWS: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = [
         "anthropic",
         {"max_tokens": 10240, "reasoning_max_tokens": 8192},
         {"max_output_tokens": 1024},
-        {"max_tokens": 1024, "reasoning_effort": "high"},
+        {"max_tokens": 1024, "reasoning_effort": "high", "unsent_reasoning_max_tokens": 8192},
     ),
     # --- OpenAI -----------------------------------------------------------------------------------------------------
     ("openai-max-is-xhigh", "openai", {"reasoning_effort": "max"}, {}, {"reasoning_effort": "xhigh"}),
@@ -221,14 +221,14 @@ ROWS: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = [
         "openai",
         {"max_tokens": 10240, "reasoning_max_tokens": 8192},
         {},
-        {"max_tokens": 10240, "reasoning_effort": "high"},
+        {"max_tokens": 10240, "reasoning_effort": "high", "unsent_reasoning_max_tokens": 8192},
     ),
     (
         "openai-analysis-budget-is-low",
         "openai",
         {"max_tokens": 40960, "reasoning_max_tokens": 8192},
         {},
-        {"max_tokens": 40960, "reasoning_effort": "low"},
+        {"max_tokens": 40960, "reasoning_effort": "low", "unsent_reasoning_max_tokens": 8192},
     ),
     ("openai-cap-clamped", "openai", {"max_tokens": 10240}, {"max_output_tokens": 4096}, {"max_tokens": 4096}),
     (
@@ -236,19 +236,41 @@ ROWS: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = [
         "openai",
         {"reasoning_max_tokens": 4096},
         {},
-        {},
+        {"unsent_reasoning_max_tokens": 4096},
     ),
     # --- OpenRouter -------------------------------------------------------------------------------------------------
     *[
         (f"openrouter-{word}-as-asked", "router", {"reasoning_effort": word}, {}, {"reasoning_effort": word})
         for word in EFFORT_LADDER
     ],
+    # A router takes a budget as reasoning.max_tokens: the judge's 8192 goes as 8192, never as its word.
     (
-        "openrouter-budget-is-a-word",
+        "openrouter-budget-as-asked",
         "router",
         {"max_tokens": 10240, "reasoning_max_tokens": 8192},
         {},
-        {"max_tokens": 10240, "reasoning_effort": "high"},
+        {"max_tokens": 10240, "reasoning_max_tokens": 8192},
+    ),
+    (
+        "openrouter-budget-under-a-clamped-cap",
+        "router",
+        {"max_tokens": 10240, "reasoning_max_tokens": 8192},
+        {"max_output_tokens": 8000},
+        {"max_tokens": 8000, "reasoning_max_tokens": 7999},
+    ),
+    (
+        "openrouter-budget-refused-is-a-word",
+        "router",
+        {"max_tokens": 10240, "reasoning_max_tokens": 8192},
+        {"reasoning_budget": False},
+        {"max_tokens": 10240, "reasoning_effort": "high", "unsent_reasoning_max_tokens": 8192},
+    ),
+    (
+        "openrouter-budget-on-no-reasoning-catalogued",
+        "router",
+        {"max_tokens": 10240, "reasoning_max_tokens": 8192},
+        {"reasoning_efforts": (), "reasoning_budget": False},
+        {"max_tokens": 10240, "unsent_reasoning_max_tokens": 8192},
     ),
     (
         "openrouter-no-reasoning-catalogued",
@@ -333,8 +355,8 @@ def test_a_budget_s_share_maps_to_the_nearest_word_and_a_tie_goes_lower(budget: 
 
 
 def test_a_word_sent_back_as_a_budget_is_the_budget_asked() -> None:
-    """The judge's 8192 of 10240 goes to OpenRouter as ``high``; ``high`` on a budget model is 8192 again."""
-    to_word, _ = closest_settings(WireSettings(max_tokens=10240, reasoning_max_tokens=8192), SettingFacts(), "router")
+    """The judge's 8192 of 10240 goes to OpenAI as ``high``; ``high`` on a budget model is 8192 again."""
+    to_word, _ = closest_settings(WireSettings(max_tokens=10240, reasoning_max_tokens=8192), SettingFacts(), "openai")
     back, _ = closest_settings(to_word, SettingFacts(**HAIKU_4_5), "anthropic")
     assert to_word.reasoning_effort == "high" and back.reasoning_max_tokens == 8192
 
@@ -378,8 +400,26 @@ def test_a_router_catalogue_states_only_what_no_endpoint_takes() -> None:
     listed = facts_from_router_catalogue(["temperature", "reasoning", "structured_outputs", "max_tokens"])
     assert listed == SettingFacts(), "listed says only that SOME endpoint takes it"
     assert facts_from_router_catalogue(["max_tokens"]) == SettingFacts(
-        accepts_temperature=False, reasoning_efforts=(), structured_output=False
+        accepts_temperature=False, reasoning_efforts=(), reasoning_budget=False, structured_output=False
     )
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "router"])
+@pytest.mark.parametrize("budget", [10240, 20000])
+def test_a_budget_not_below_the_asked_cap_is_refused_naming_both_never_clamped(provider: Any, budget: int) -> None:
+    """The caller's own error: a budget the cap includes leaves the answer no room, on every family."""
+    with pytest.raises(ValueError, match=rf"reasoning budget \({budget}\) not below max_tokens \(10240\)"):
+        closest_settings(WireSettings(max_tokens=10240, reasoning_max_tokens=budget), SettingFacts(), provider)
+
+
+def test_a_budget_sent_as_a_word_is_named_unsent_on_the_report() -> None:
+    """OpenAI's chat completions take no budget: the word goes, and the report names the budget it stood in for."""
+    sent, _ = closest_settings(WireSettings(max_tokens=10240, reasoning_max_tokens=8192), SettingFacts(), "openai")
+    assert sent.reported() == ClientRequestSettings(
+        max_tokens=10240, reasoning_effort="high", unsent_reasoning_max_tokens=8192
+    )
+    with pytest.raises(ValueError, match="name one or the other"):
+        ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192, unsent_reasoning_max_tokens=8192)
 
 
 @pytest.mark.parametrize("settings", [JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS], ids=["judge", "simulator"])

@@ -1682,13 +1682,17 @@ def _request_settings(settings: Any) -> dict[str, Any] | None:
         The settings as a plain mapping — ``reasoning_max_tokens: None`` and ``reasoning_effort:
         None`` inside it are a recorded level (no reasoning parameter was sent), so the mapping is
         never blank — or ``None`` when the run carries no stamp. ``strict_output`` appears only when
-        True, so a strict stamp reads as a level of its own and every other stamp as its settings alone.
+        True, so a strict stamp reads as a level of its own and every other stamp as its settings alone;
+        ``unsent_reasoning_max_tokens`` only when set, so a level recorded before the field existed reads
+        as it did.
     """
     if settings is None:
         return None
     level: dict[str, Any] = settings.model_dump(mode="json")
     if not level["strict_output"]:
         del level["strict_output"]
+    if level["unsent_reasoning_max_tokens"] is None:
+        del level["unsent_reasoning_max_tokens"]
     return level
 
 

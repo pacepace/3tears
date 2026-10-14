@@ -19,7 +19,7 @@ import pytest
 
 from threetears.evals.analysis import ChartBlock, IntervalRow, MIN_CASES, OutcomeBar, OutcomeSegment, report_html
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg
-from threetears.evals.quick import compare
+from threetears.evals import Eval
 
 
 def _bar_chart() -> ChartBlock:
@@ -113,9 +113,8 @@ def _cases(n: int) -> list[dict[str, str]]:
 
 
 async def test_a_campaign_with_enough_cases_draws_its_contrast_as_interval_rows() -> None:
-    comparison = await compare(
-        _cases(MIN_CASES + 3), {"never": _never, "classify": _classify}, expected=lambda c: c["label"], control="never"
-    )
+    ev = Eval(_cases(MIN_CASES + 3), {"never": _never, "classify": _classify}, ["label"])
+    comparison = await ev.run(store=":memory:")
     charts = [block for block in comparison.report.blocks if isinstance(block, ChartBlock)]
     assert [block.chart for block in charts] == ["outcome_bar", "interval_rows"]
     page = report_html(comparison.report)
@@ -123,9 +122,8 @@ async def test_a_campaign_with_enough_cases_draws_its_contrast_as_interval_rows(
 
 
 async def test_an_arm_under_the_case_floor_is_not_charted_and_the_scoreboard_says_so_once() -> None:
-    comparison = await compare(
-        _cases(MIN_CASES - 1), {"never": _never, "classify": _classify}, expected=lambda c: c["label"], control="never"
-    )
+    ev = Eval(_cases(MIN_CASES - 1), {"never": _never, "classify": _classify}, ["label"])
+    comparison = await ev.run(store=":memory:")
     charts = [block for block in comparison.report.blocks if isinstance(block, ChartBlock)]
     assert [block.chart for block in charts] == ["outcome_bar"]
     page = report_html(comparison.report)

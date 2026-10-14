@@ -45,9 +45,10 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.kernel.host.sweepables import SHARED_CORE
 from threetears.evals.kernel.judge_cases import JudgeTrial
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
-from threetears.evals.quick import Judge, callable_host, run_eval
+from threetears.evals import Eval, Judge
+from threetears.evals.quick import as_host
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS, run_judge_llm
-from threetears.evals.schema import CompletionProtocolDefect
+from threetears.evals.schema import CompletionProtocolDefect, RubricDim
 from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.schema.models import (
     CalibrationRating,
@@ -109,6 +110,8 @@ def _scored(dim: str) -> str:
 # parity-with: threetears.evals.schema.CompletionClient
 class _FakeJudge:
     """A judge client answering each call with the next of ``replies`` (the last one repeats)."""
+
+    model_name = _JUDGE
 
     def __init__(self, replies: Sequence[_Reply]) -> None:
         self.replies = list(replies)
@@ -181,19 +184,13 @@ class TestTheJudgeCallRecordsWhatItWasSent:
         assert (raised.value.calls, raised.value.cost_usd) == (1, 0.25)
 
     async def test_a_judged_run_stores_it_on_every_score_and_discloses_the_gap(self) -> None:
-        host = callable_host()
-        summary = await run_eval(
-            [{"q": "a"}, {"q": "b"}],
-            _answer,
-            judge=Judge(
-                client=_FakeJudge([_ReportingReply("<score>", sent_settings=_WORD)]),
-                model=_JUDGE,
-                rubric={"helpful": "It helps."},
-            ),
-            scope_id="sent-settings",
-            host=host,
-            k=1,
+        judge = Judge(
+            _FakeJudge([_ReportingReply("<score>", sent_settings=_WORD)]),
+            [RubricDim(name="answer.helpful", description="It helps.", scale="ordinal")],
         )
+        ev = Eval([{"q": "a"}, {"q": "b"}], _answer, [judge], k=1)
+        host = as_host([ev], store=":memory:")
+        summary = (await ev.run(host=host, scope="sent-settings")).summary
 
         results = off_loop(lambda: host.storage.query_eval_results_by_run(summary.run_id, summary.scope_id))
         assert [score.judge_sent_settings for result in results for score in result.rubric_scores] == [_WORD] * 2

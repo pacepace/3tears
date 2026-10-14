@@ -32,8 +32,9 @@ __all__ = [
 #: The request shape a client speaks, which decides how a setting goes on the wire: ``anthropic`` (Anthropic's
 #: Messages API: thinking budgets, adaptive thinking with effort words, no temperature beside thinking), ``openai``
 #: (OpenAI's ``reasoning_effort``, no budget) and ``router`` (a router's chat completions: ``reasoning.effort`` with
-#: all seven words, no budget, and enforcement as ``provider.require_parameters``, under which a router that finds no
-#: endpoint taking every parameter refuses the request). A client of an OpenAI-compatible gateway speaks ``openai``.
+#: all seven words or a ``reasoning.max_tokens`` budget, never both, and enforcement as
+#: ``provider.require_parameters``, under which a router that finds no endpoint taking every parameter refuses the
+#: request). A client of an OpenAI-compatible gateway speaks ``openai``.
 ProviderFamily = Literal["anthropic", "openai", "router"]
 
 #: The engine's seven reasoning words (:data:`~threetears.evals.schema.REASONING_EFFORTS`) as a ladder, lowest
@@ -41,8 +42,8 @@ ProviderFamily = Literal["anthropic", "openai", "router"]
 EFFORT_LADDER: Final[tuple[str, ...]] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 #: The share of the output cap each effort word stands for: the ``router`` family's documented ratios for turning an
-#: effort into a reasoning budget on a model that takes budgets, so a budget sent to a router as its word comes back as
-#: about the budget asked (the judge's 8192 of 10240 is 0.80, ``high``, and ``high`` is 0.80 of the cap again).
+#: effort into a reasoning budget on a model that takes budgets, so a budget sent as its word comes back as about the
+#: budget asked (the judge's 8192 of 10240 is 0.80, ``high``, and ``high`` is 0.80 of the cap again).
 #: Read both ways: a budget asked of a model that takes words only is sent as the word whose share is nearest its
 #: own (ties go to the lower word, so the boundaries 0.15, 0.35, 0.65 and 0.875 all go lower), and a word asked of a
 #: model that takes budgets only is sent as that share of the cap. ``max`` has no share of its own above ``xhigh``'s
@@ -86,6 +87,10 @@ class WireSettings:
         reasoning_max_tokens: A reasoning budget in tokens, or ``None``; never beside ``reasoning_effort``.
         strict_output: Whether the request is enforced: a strict reply schema a direct provider refuses rather than
             ignores, or a router's ``require_parameters``.
+        unsent_reasoning_max_tokens: On sent settings, the reasoning budget asked that the request could not carry
+            as a budget (the wire takes effort words only, or the model refused a budget), so it went as
+            ``reasoning_effort`` or as no reasoning parameter; ``None`` when no budget was asked or it went as one.
+            Never beside ``reasoning_max_tokens``, and never set on asked settings.
     """
 
     max_tokens: int | None = None
@@ -93,6 +98,7 @@ class WireSettings:
     reasoning_effort: str | None = None
     reasoning_max_tokens: int | None = None
     strict_output: bool = False
+    unsent_reasoning_max_tokens: int | None = None
 
     def reported(self) -> ClientRequestSettings | None:
         """These settings as a completion's ``sent_settings``, or ``None`` when they name no output cap.
@@ -107,6 +113,7 @@ class WireSettings:
             reasoning_max_tokens=self.reasoning_max_tokens,
             reasoning_effort=self.reasoning_effort,
             strict_output=self.strict_output,
+            unsent_reasoning_max_tokens=self.unsent_reasoning_max_tokens,
         )
 
 
@@ -140,7 +147,7 @@ def wire_settings_for(settings: ClientRequestSettings, temperature: float | None
 class SettingFacts:
     """What is known of the request settings one model accepts: each fact ``None`` while nothing says.
 
-    A caller fills what it knows before any request (3tears-models' capability fields of the same names, a router's
+    A caller fills what it knows before any request (a registry's capability fields of the same names, a router's
     catalogue through :func:`~threetears.evals.negotiation.facts_from_router_catalogue`, its own configuration), and
     a refusal the provider answered fills the rest for as long as the caller's
     :class:`~threetears.evals.negotiation.LearnedSettings` lives: the process, or the client factory that keeps it.
@@ -154,7 +161,8 @@ class SettingFacts:
         reasoning_efforts: The provider-native effort words the model takes; ``()`` when it takes no effort
             parameter at all. Anthropic's off switch is not a word here but ``reasoning_disable``.
         refused_efforts: Words the provider refused for this model, whatever ``reasoning_efforts`` says.
-        reasoning_budget: Whether a reasoning token budget is taken (Anthropic's ``thinking.budget_tokens``).
+        reasoning_budget: Whether a reasoning token budget is taken (Anthropic's ``thinking.budget_tokens``, a
+            router's ``reasoning.max_tokens``).
         adaptive_reasoning: Whether Anthropic's adaptive thinking is taken, which its effort words ride on.
         reasoning_disable: Whether reasoning can be switched off (Anthropic's thinking disabled, or a provider's
             ``none``).
@@ -240,6 +248,15 @@ def _word_for_share(budget: int, cap: int) -> str:
     )
 
 
+def _takes_budget(family: ProviderFamily, facts: SettingFacts) -> bool:
+    """Whether a reasoning budget goes as a budget: Anthropic's ``thinking.budget_tokens``, a router's
+    ``reasoning.max_tokens``; never OpenAI's, whose request has no budget parameter. A router model whose catalogue
+    row lists no ``reasoning`` (or that refused every effort) takes no reasoning parameter at all."""
+    if facts.reasoning_budget is False:
+        return False
+    return family == "anthropic" or (family == "router" and facts.reasoning_efforts != ())
+
+
 def _budget_for_word(word: str, cap: int) -> int | None:
     """A thinking budget for ``word``: its share of the cap, at least Anthropic's floor and below the cap, if any is."""
     if cap <= ANTHROPIC_MIN_THINKING_BUDGET:
@@ -268,13 +285,13 @@ def _closest_reasoning(
     notes: list[str],
 ) -> tuple[str | None, int | None]:
     """The reasoning word and budget to send: one, the other, or neither."""
-    takes_budget = family == "anthropic" and facts.reasoning_budget is not False
+    takes_budget = _takes_budget(family, facts)
     effort, budget = asked.reasoning_effort, asked.reasoning_max_tokens
     if budget is not None:
         if takes_budget:
             if cap is None or budget < cap:
                 return None, budget
-            if cap - 1 >= ANTHROPIC_MIN_THINKING_BUDGET:
+            if cap - 1 >= (ANTHROPIC_MIN_THINKING_BUDGET if family == "anthropic" else 1):
                 notes.append(f"reasoning budget {budget} sent as {cap - 1}, below the model's output cap {cap}")
                 return None, cap - 1
         if asked.max_tokens is None:
@@ -331,9 +348,12 @@ def closest_settings(
       ``anthropic`` is ``low``), less any it refused. A model that takes no effort word is sent none, except an
       Anthropic model that takes a budget, which is sent the word's share of the cap (:data:`BUDGET_SHARES`), at
       least :data:`ANTHROPIC_MIN_THINKING_BUDGET` and below the cap.
-    * **Budget**: as asked on an Anthropic model that takes one (lowered below a cap the clamp moved under it);
-      otherwise the effort word its share of ``max_tokens`` maps to (:data:`BUDGET_SHARES`), then as a word. OpenAI
-      takes no budget, and a router's request types none, so there a budget is always a word.
+    * **Budget**: as asked where the model takes one: on Anthropic as ``thinking.budget_tokens``, on a router as
+      ``reasoning.max_tokens`` (lowered below a cap the clamp moved under it). Otherwise the effort word its share of
+      ``max_tokens`` maps to (:data:`BUDGET_SHARES`), then as a word, and the sent settings name the budget that
+      went unsent (``unsent_reasoning_max_tokens``). OpenAI's chat completions take no budget, so there a budget is
+      always a word. A budget not below the asked ``max_tokens`` is the caller's error, refused naming both: it
+      leaves the answer no room, and is never clamped.
     * **Temperature**: dropped when the model takes none; beside reasoning (an effort word other than ``none``, or a
       budget) when it takes none there (``temperature_beside_reasoning``); and on Anthropic beside any thinking (a
       budget, or an effort word over adaptive thinking), which the API refuses.
@@ -347,7 +367,16 @@ def closest_settings(
 
     Returns:
         The settings the request carries, and one sentence per setting that moved, for a log.
+
+    Raises:
+        ValueError: ``asked`` carries a reasoning budget not below its ``max_tokens``, naming both.
     """
+    budget_asked = asked.reasoning_max_tokens
+    if budget_asked is not None and asked.max_tokens is not None and budget_asked >= asked.max_tokens:
+        raise ValueError(
+            f"a reasoning budget ({budget_asked}) not below max_tokens ({asked.max_tokens}) leaves the answer no "
+            "room: ask for a max_tokens above the budget"
+        )
     notes: list[str] = []
     cap = asked.max_tokens
     if cap is not None and facts.max_output_tokens is not None and cap > facts.max_output_tokens:
@@ -377,6 +406,8 @@ def closest_settings(
         reasoning_effort=effort,
         reasoning_max_tokens=budget,
         strict_output=strict,
+        # A budget asked and not sent as one is named, never left for a reader to infer from the word beside it.
+        unsent_reasoning_max_tokens=budget_asked if budget_asked is not None and budget is None else None,
     )
     return sent, tuple(notes)
 

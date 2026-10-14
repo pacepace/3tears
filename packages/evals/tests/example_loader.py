@@ -1,16 +1,14 @@
-"""Load a file under ``examples/`` as a module, and run a model-calling example against its recording.
+"""The ladder's rung directories under ``examples/``, and a model-calling file run against its recording.
 
-Run as a script, an example reads ``ANTHROPIC_API_KEY``: with it the example calls Claude through
-:func:`threetears.evals.providers.models_client`, and without it it replays ``examples/recordings/<example>.jsonl``.
-A test runs the second way only: :func:`replaying` takes the key out of the environment, makes building a live
-client fail the test, and counts every call the example's clients serve from the recording, keeping each refusal a
-replay raised so the test can name it rather than read it as a missing result.
+The file is one that builds its client as the generate_analysis fixture (``fixtures/generate_analysis/llm_analysis.py``)
+does: with ``ANTHROPIC_API_KEY`` it calls Claude through :class:`threetears.evals.providers.Model`, and without it it
+replays its recording. A test runs the second way only: :func:`replaying` takes the key out of the environment, makes
+building a live client fail the test, and counts every call the file's clients serve from the recording, keeping each
+refusal a replay raised so the test can name it rather than read it as a missing result.
 """
 
 from __future__ import annotations
 
-import importlib.util
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -19,38 +17,13 @@ from typing import Any
 import pytest
 
 from threetears.evals.schema import ClientRequestSettings
-from threetears.evals.testing import RecordedCompletions, RecordedPrompt, RecordingRefused
+from threetears.evals.testing import RecordedCompletions, RecordingRefused
 
 #: The examples directory.
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
-#: Every example that calls a model, and so builds its clients live or from its recording.
-MODEL_CALLING = (
-    "compare_two_efforts.py",
-    "compare_two_prompts.py",
-    "guardrails.py",
-    "llm_analysis.py",
-    "llm_judge.py",
-    "prompt_x_effort.py",
-    "world.py",
-)
-
-
-def load_example(name: str) -> ModuleType:
-    """Execute ``examples/<name>`` as a fresh module.
-
-    Args:
-        name: The file's name, ``"llm_judge.py"``.
-
-    Returns:
-        The module, its ``main`` not yet run.
-    """
-    path = EXAMPLES / name
-    spec = importlib.util.spec_from_file_location(f"{path.stem}_example", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+#: The ladder: every example under ``examples/`` lives in one of these directories, a rung each.
+RUNGS = ("1-triage", "2-replies", "3-invoices", "4-booking")
 
 
 @dataclass
@@ -92,7 +65,7 @@ def replaying(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Replay:
     def no_live_client(model: str, **_: Any) -> Any:
         pytest.fail(f"a replay built a live client for {model}")
 
-    monkeypatch.setattr(module, "models_client", no_live_client)
+    monkeypatch.setattr(module, "Model", no_live_client)
     replay, build = Replay(), module.client
 
     def counted(model: str, settings: ClientRequestSettings) -> Any:
@@ -112,22 +85,3 @@ def replaying(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Replay:
 
     monkeypatch.setattr(module, "client", counted)
     return replay
-
-
-def check_covers(
-    module: ModuleType, prompts: Iterable[RecordedPrompt], *, settings: ClientRequestSettings, model: str
-) -> None:
-    """Refuse, naming each prompt, when ``module``'s recording no longer covers ``prompts``, before anything runs.
-
-    Args:
-        module: A loaded model-calling example.
-        prompts: The calls it will make that are known before it runs (each repeat listed once per repeat).
-        settings: The request settings the client making them is built with.
-        model: The model it calls.
-
-    Raises:
-        RecordingRefused: The recording does not exist, or no longer covers one of the prompts.
-    """
-    RecordedCompletions.check_covers(
-        module.RECORDING, list(prompts), settings=settings, model=model, rerecord=module.RERECORD
-    )

@@ -93,7 +93,6 @@ from threetears.evals.run import (
     launch_run,
     run_blocking,
 )
-from threetears.evals.quick import CALLABLE_KIND
 from threetears.evals.storage import InMemoryDocumentStore
 
 COURIER_ID = "courier"
@@ -218,7 +217,7 @@ def courier_world() -> WorldRegistry:
 def courier_levers(run: EvalRun) -> dict[str, SweepableValue]:
     """A run's level of the courier's own lever, its search depth; the engine resolves the planner model.
 
-    A run of another kind in the courier's store — one ``run_eval`` launched over a plain function,
+    A run of another kind in the courier's store — an eval's run over a plain function,
     say — has no search depth, and sits at the engine's "not a run of this kind" level rather than at a
     number it never had: that level is the one a report knows not to name an arm by.
     """
@@ -230,9 +229,13 @@ def courier_levers(run: EvalRun) -> dict[str, SweepableValue]:
 
 #: The seats the planner fills: the traffic feed it plans against, and its spend ceiling. Nothing here is
 #: graded by a model or talks to a simulated user, so the judge and simulator seats are not filled. Its
-#: store also receives ``run_eval`` runs, which read the same feed and run uncapped.
+#: store also receives an eval's runs, which read the same feed and run uncapped.
 COURIER_CONTRACT = KindContract(COURIER_KIND, seats=frozenset({"traffic_feed", "max_cost_usd"}))
-CALLABLE_CONTRACT = KindContract(CALLABLE_KIND, seats=frozenset({"traffic_feed"}))
+
+#: The kind an eval's runs are of (``Eval(...).run(host=...)``), by the name its template states: the courier declares
+#: it so the evals it runs into its store are held to the seats they fill, the traffic feed and nothing of the engine's.
+EVAL_KIND = "callable"
+CALLABLE_CONTRACT = KindContract(EVAL_KIND, seats=frozenset({"traffic_feed"}))
 
 
 def courier_profile() -> HostProfile:

@@ -98,9 +98,7 @@ async def test_the_runs_list_action_says_how_many_it_left_out_and_where_they_are
     assert not outcome.is_error, outcome.text
     assert RunListing.model_validate(outcome.structured).unreadable == 1
     assert readable in outcome.text and unreadable not in outcome.text
-    assert outcome.text.splitlines()[-1] == (
-        "not listed: 1 stored run(s) this build cannot read; runs_unreadable names each with why"
-    )
+    assert "unreadable: 1" in outcome.text.splitlines(), "the text says how many stored runs it left out"
 
 
 # =============================================================================

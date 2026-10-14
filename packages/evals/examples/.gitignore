@@ -1,2 +1,3 @@
-# What running the examples writes beside them (llm_analysis.py: ./eval-analysis/bundle.json); never committed.
-eval-analysis/
+# What running a rung writes beside it (its store and reports under .evals/, rung 3's report/); never committed.
+.evals/
+report/

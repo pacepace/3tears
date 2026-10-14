@@ -60,6 +60,7 @@ FIRST_HOST = "discodon"
 #: :func:`test_the_dependency_map_is_the_manifests`, so a dependency added to one and not the other
 #: fails rather than widening or narrowing the walk below in silence.
 IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
+    "httpx": ("httpx",),
     "pydantic": ("pydantic",),
 }
 
@@ -72,14 +73,6 @@ IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
 #: extras together.
 IMPORT_ROOTS_BY_EXTRA: dict[str, tuple[str, dict[str, tuple[str, ...]]]] = {
     "fastmcp": ("threetears.evals.transports.fastmcp", {"fastmcp": ("fastmcp",)}),
-    # The provider adapter names 3tears-models and the provider layer it is built on, every one of them a runtime
-    # dependency of 3tears-models itself (``langchain-core``, ``anthropic`` and ``openrouter`` directly, ``openai``
-    # through ``langchain-openai``, ``httpx`` through every SDK): it reads LangChain's message types and the SDKs'
-    # exception types, and holds a pin on the models extra, not on each SDK.
-    "models": (
-        "threetears.evals.providers",
-        {"3tears-models": ("threetears.models", "langchain_core", "anthropic", "openai", "openrouter", "httpx")},
-    ),
 }
 
 #: Packages the portable test support may neither name nor load: the first host, and the web and
@@ -188,8 +181,8 @@ def _probe(source: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
-        # A guard against a hung interpreter, not a speed bound: importing every root loads the provider
-        # adapter's LangChain stack too, and on a loaded machine that alone ran past a minute.
+        # A guard against a hung interpreter, not a speed bound: importing every root loads the FastMCP stack
+        # too, and on a loaded machine importing every root ran past a minute.
         timeout=300,
         cwd=REPO_ROOT,
         check=False,
@@ -269,8 +262,10 @@ def test_root_extras_lists_every_module_its_root_names_past_the_base_install(roo
 
 
 def test_the_root_extras_walk_finds_a_module_named_past_the_base_install():
-    """Non-vacuity: the walk behind the equality above sees the providers root's own SDK imports."""
-    assert {"anthropic", "threetears.models"} <= _names_outside_the_base_install("threetears.evals.providers")
+    """Non-vacuity: the walk behind the equality above sees the FastMCP transport's own import, and nothing the base
+    install provides (the client's ``httpx`` is a base dependency)."""
+    assert _names_outside_the_base_install("threetears.evals.transports.fastmcp") == {"fastmcp"}
+    assert _names_outside_the_base_install("threetears.evals.providers") == set()
 
 
 #: A probe's preamble: makes every import root named in ``sys.argv[1]`` (a JSON list) unimportable, as an install
@@ -318,11 +313,10 @@ print(json.dumps(sorted(root for root in PUBLIC_ROOTS if not importable(root))))
 
 
 #: Each extra dependency's own import root: what is absent when that distribution alone is not installed. Narrower
-#: than :data:`IMPORT_ROOTS_BY_EXTRA`'s roots, which also name what a distribution brings in itself (``httpx`` comes with
-#: ``3tears-models`` and with ``fastmcp`` alike), so an install with one extra and not another still has those.
+#: than :data:`IMPORT_ROOTS_BY_EXTRA`'s roots, which may also name what a distribution brings in itself, so an install
+#: with one extra and not another still has those.
 _DISTRIBUTION_ROOT: dict[str, str] = {
     "fastmcp": "fastmcp",
-    "3tears-models": "threetears.models",
 }
 
 
@@ -452,6 +446,9 @@ def test_every_module_the_engine_names_is_declared():
         ("import json\n", True),
         ("from threetears.evals.schema import models\n", True),
         ("from pydantic import BaseModel\n", True),
+        # The client's HTTP is a base dependency; a provider SDK is not one.
+        ("import httpx\n", True),
+        ("import anthropic\n", False),
         # No 3tears package is a dependency, observe included.
         ("from threetears.observe import get_logger\n", False),
         ("import discodon.config\n", False),
@@ -476,7 +473,7 @@ def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path, source,
         ("threetears.evals.transports.fastmcp", True),
         ("threetears.evals.transports", False),
         ("threetears.evals.actions.catalogue", False),
-        ("threetears.evals.providers.adapter", False),
+        ("threetears.evals.providers.model", False),
         ("threetears.evals", False),
     ],
 )
@@ -485,8 +482,8 @@ def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed
     assert _allowed("fastmcp.tools", importer=importer) is allowed
 
 
-def test_one_extras_subpackage_may_not_name_another_extras_dependency():
-    """The extras stay independent: the transport may not name the provider adapter's dependency."""
+def test_an_extras_subpackage_may_not_name_an_undeclared_dependency():
+    """An extra admits its own dependencies and nothing more: the transport may not name another 3tears package."""
     assert _allowed("threetears.models", importer="threetears.evals.transports.fastmcp") is False
 
 

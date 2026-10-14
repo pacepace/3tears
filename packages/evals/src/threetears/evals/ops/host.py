@@ -13,8 +13,32 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.run.launch import LaunchHost
+from threetears.evals.kernel.job_timeout import default_job_timeout
+from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
+from threetears.evals.run.launch import LaunchHost, LaunchSettings
+from threetears.evals.schema import EvalRun, WorldPlacement
+
+
+def _reading_settings() -> LaunchSettings:
+    """The settings of a host that launches nothing (:meth:`OpsHost.reading`), built fresh on every read.
+
+    One run at a time, uncapped, no metered tools. Read only by the launch and the out-of-run cap, and a reading
+    host has no kind to launch. Built per call rather than held at module level, so no two hosts share an instance.
+
+    Returns:
+        The settings.
+    """
+    return LaunchSettings(
+        max_launch_arms=1,
+        max_admitted_runs=1,
+        judge_concurrency=1,
+        enforcement_enabled=False,
+        max_cost_usd=1.0,
+        max_metered_calls=None,
+        max_out_of_run_cost_usd=1.0,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -23,8 +47,10 @@ class AnalysisGeneration:
 
     Attributes:
         prompt_id: The registry key the generator prompt resolves under, recorded on every analysis as
-            its provenance.
-        resolve_prompt: Resolves the generator prompt; awaited once a generation's bundle has evidence.
+            its provenance; :data:`~threetears.evals.kernel.ANALYSIS_GEN_PROMPT` unless the host names its own.
+        resolve_prompt: The host's override of the generator prompt, awaited once a generation's bundle has
+            evidence; ``None`` (the default) runs the shipped default,
+            :data:`~threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT`.
         max_output_tokens: The output cap the host's generator clients are built with, for the
             pre-spend disclosure.
         budget_s: The job's wall-clock ceiling on its generator calls; a generation that outruns it is recorded
@@ -34,10 +60,20 @@ class AnalysisGeneration:
             its cap, after both calls were billed.
     """
 
-    prompt_id: str
-    resolve_prompt: Callable[[], Awaitable[str]]
+    prompt_id: str = ANALYSIS_GEN_PROMPT
+    resolve_prompt: Callable[[], Awaitable[str]] | None = None
     max_output_tokens: int
     budget_s: float
+
+    async def prompt(self) -> str:
+        """The generator prompt a generation runs: the host's override when it registered one, else the shipped default.
+
+        Returns:
+            The prompt text.
+        """
+        if self.resolve_prompt is None:
+            return EVAL_ANALYSIS_GEN_DEFAULT
+        return await self.resolve_prompt()
 
     def __post_init__(self) -> None:
         """Refuse an empty prompt id, and a cap or budget that is not positive.
@@ -53,6 +89,11 @@ class AnalysisGeneration:
             raise ValueError(f"AnalysisGeneration.budget_s must be positive; got {self.budget_s}")
 
 
+def _placed_nowhere(run: EvalRun) -> dict[str, WorldPlacement]:
+    """No placement: a reading host's world is declared for its runs' reads, and it launches none to place."""
+    return {}
+
+
 @dataclass(frozen=True, kw_only=True)
 class OpsHost:
     """The host the operations, and the actions over them, work in.
@@ -66,6 +107,29 @@ class OpsHost:
 
     launch: LaunchHost
     generation: AnalysisGeneration | None = None
+
+    @classmethod
+    def reading(cls, eval_host: EvalHost) -> OpsHost:
+        """The host an eval host's runs are read through, and nothing launched: what serving ``as_host(...)`` needs.
+
+        Its launching host declares no kind, so a launch is refused by name, and it generates no analysis. Every read
+        (templates, runs, campaigns, reports, gates) works over ``eval_host``'s storage.
+
+        Args:
+            eval_host: The host whose runs are read, as :func:`~threetears.evals.quick.as_host` builds one.
+
+        Returns:
+            The host.
+        """
+        launch = LaunchHost(
+            eval_host=eval_host,
+            kinds={},
+            settings=_reading_settings,
+            job_timeout_factory=default_job_timeout,
+            # A world's placement is stamped on a launched run, and nothing launches here.
+            world_placements=None if eval_host.profile.world is None else _placed_nowhere,
+        )
+        return cls(launch=launch)
 
     @property
     def eval_host(self) -> EvalHost:

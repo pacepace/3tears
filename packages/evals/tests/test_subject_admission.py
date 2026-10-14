@@ -25,7 +25,6 @@ from threetears.evals.run import (
     UnknownSubject,
     launchable_judge_kind,
     quote_launch,
-    start_universal_battery,
 )
 from threetears.evals.schema import EvalTemplate
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
@@ -125,33 +124,3 @@ async def test_the_kinds_resolver_decides_not_one_the_host_holds() -> None:
     host = OpsHost(launch=dataclasses.replace(fixture.host.launch, kinds={name: admitting}))
     estimate = await launch_estimate(host, _arguments("Vera"), TOYHOST_SCOPE)
     assert estimate.subject_id == "Vera"
-
-
-async def test_a_battery_asks_each_kind_it_launches_before_any_arm_is_priced() -> None:
-    fixture = off_loop(ops_fixture)
-    priced: list[object] = []
-    pricer = fixture.host.launch.launch_pricer
-    assert pricer is not None
-
-    def counting(*args: object, **kwargs: object) -> object:
-        priced.append(args)
-        return pricer(*args, **kwargs)  # type: ignore[arg-type]
-
-    host = dataclasses.replace(fixture.host.launch, launch_pricer=counting)  # type: ignore[arg-type]
-    off_loop(
-        host.eval_host.storage.save_template,
-        toyhost_template().model_copy(update={"id": "universal", "universal": True}),
-    )
-
-    async def no_preflight(_subject_id: str, _models: list[str]) -> object:  # pragma: no cover - never reached
-        raise AssertionError("the subject is refused before the pre-flight")
-
-    with pytest.raises(NotFoundError, match="subject 'Vera' not found"):
-        await start_universal_battery(
-            host,
-            "Vera",
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            preflight=no_preflight,  # type: ignore[arg-type]
-        )
-    assert priced == []

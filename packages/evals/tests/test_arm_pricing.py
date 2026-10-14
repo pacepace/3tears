@@ -11,9 +11,6 @@ on the toy host, whose kind generates nothing and plans every arm over its store
 - **Every refusal fires, and fires before any launcher runs**: predicted above the cap; unpriceable
   (no prediction, no pricer, or no plan) under an inherited cap. An unpriceable arm under a cap the launch
   named runs. The plan holds the launcher at the tail, and a plan the kind cannot make is refused before it.
-- **The battery prices every template's arms once**, stored-case templates included, and its launches carry
-  those plans rather than pricing again; it prepares every template before starting any, and launches each
-  template as it priced it.
 - **An arm is priced by the judges it will be scored by** (``plan_judge``: a dim's config can override the
   pin) and held to them, and to its simulator, at the tail.
 - **A kind's plan refusals come before any pricing refusal**, and an arm of a kind that plans nothing is told
@@ -22,8 +19,7 @@ on the toy host, whose kind generates nothing and plans every arm over its store
 
 Mutations that turn this file red (each applied to a saved copy and restored): the tail's judge, simulator or
 unpriced check removed; planning's judge-pin check removed; arms priced before they are planned; the quote
-handed ``judge=None``; the battery starting each template's group as soon as it is prepared; the battery
-re-dispatching its template at launch.
+handed ``judge=None``.
 """
 
 from __future__ import annotations
@@ -59,7 +55,6 @@ from threetears.evals.run import (
     require_candidate_model,
     resolve_judge_pin,
     start_run,
-    start_universal_battery,
 )
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_judge_config
@@ -266,23 +261,6 @@ async def test_a_quote_naming_a_cap_above_the_hosts_is_refused():
     assert launched.quotes == []
 
 
-async def test_a_battery_naming_a_cap_above_the_hosts_is_refused_before_launching_any():
-    launched = off_loop(_Launched, _universal("first"), _universal("second"))
-
-    with pytest.raises(ValidationFailedError, match="a launch may only lower the host's ceiling.*Nothing was launched"):
-        await start_universal_battery(
-            launched.host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            max_cost_usd=_ABOVE_THE_HOSTS_USD,
-            preflight=_no_preflight,
-        )
-
-    assert launched.quotes == []
-    off_loop(launched.assert_nothing_launched)
-
-
 @pytest.mark.parametrize(
     ("unpriceable", "said"),
     [
@@ -346,61 +324,6 @@ async def test_an_arm_its_kind_cannot_plan_is_refused_before_its_launcher_runs()
         await launched.launch(models=[])
 
     assert launched.quotes == []
-    off_loop(launched.assert_nothing_launched)
-
-
-# =============================================================================
-# The battery: every template's arms priced once, before any launches
-# =============================================================================
-
-
-async def _no_preflight(_subject_id: str, _models: Any) -> Any:
-    async def check(_template: EvalTemplate, _cassette_mode: str) -> None:
-        return None
-
-    return check
-
-
-def _universal(template_id: str) -> EvalTemplate:
-    return toyhost_template().model_copy(update={"id": template_id, "universal": True})
-
-
-async def test_a_battery_prices_every_arm_of_every_template_once():
-    """The battery's pre-flight prices each arm; the launch it then makes carries that plan rather than pricing again."""
-    launched = off_loop(_Launched, _universal("first"), _universal("second"))
-
-    run_ids = await start_universal_battery(
-        launched.host,
-        TOYHOST_SUBJECT.subject_id,
-        scope_id=TOYHOST_SCOPE,
-        models=list(RUN_MODELS),
-        preflight=_no_preflight,
-    )
-    async with asyncio.timeout(10):
-        while any(launched.host.job_manager.is_active(run_id) for run_id in run_ids):
-            await asyncio.sleep(0.01)
-
-    assert sorted((q.template_id, q.candidate_model) for q in launched.quotes) == sorted(
-        (template, model) for template in ("first", "second") for model in RUN_MODELS
-    ), "every arm quoted exactly once"
-    assert len(run_ids) == 4 and all(request.arm_plan is not None for request in launched.launched)
-
-
-async def test_a_battery_refuses_a_stored_case_template_over_its_cap_before_launching_any():
-    def by_template(quote: ArmQuote) -> ArmPrice:
-        return ArmPrice(predicted_usd=50.0 if quote.template_id == "dear" else 0.0, basis="a rate card")
-
-    launched = off_loop(_Launched, _universal("cheap"), _universal("dear"), pricer=by_template)
-
-    with pytest.raises(ValidationFailedError, match="predicted to cost \\$50\\.00.*Nothing was launched"):
-        await start_universal_battery(
-            launched.host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            preflight=_no_preflight,
-        )
-
     off_loop(launched.assert_nothing_launched)
 
 
@@ -723,63 +646,6 @@ async def test_a_launch_composed_through_launch_as_group_must_price_its_arms():
     async with asyncio.timeout(10):
         while host.job_manager.is_active(run.id):
             await asyncio.sleep(0.01)
-
-
-# =============================================================================
-# The battery: every template prepared before any starts, each launching the template it priced
-# =============================================================================
-
-
-async def test_a_battery_starts_no_template_when_a_later_templates_preparation_refuses():
-    """A refusal only a launcher can make, on the second template, used to leave the first template's runs running."""
-    launched = off_loop(_Launched, _universal("first"), _universal("second"))
-    (launchable,) = launched.host.kinds.values()
-    prepared: list[str] = []
-
-    async def refuses_second(request: LaunchRequest) -> EvalRun:
-        prepared.append(request.template.id)
-        if request.template.id == "second":
-            raise ValidationFailedError(
-                "the second template's subject cannot be captured", remedy="launch another subject"
-            )
-        return await launchable.launch(request)
-
-    host = replace(launched.host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=refuses_second)})
-
-    with pytest.raises(ValidationFailedError, match="cannot be captured"):
-        await start_universal_battery(
-            host, TOYHOST_SUBJECT.subject_id, scope_id=TOYHOST_SCOPE, models=[RUN_MODELS[0]], preflight=_no_preflight
-        )
-
-    assert sorted(set(prepared)) == ["first", "second"], "the first template was prepared, and abandoned"
-    assert off_loop(launched.storage.query_eval_runs, TOYHOST_SCOPE) == [] and host.job_manager.active_count == 0
-    assert host.job_manager.admitted_count == 0
-
-
-async def test_a_battery_launches_the_template_it_priced_not_one_edited_since():
-    """A template edited between the pre-flight and its launch would otherwise launch under plans made for another."""
-    launched = off_loop(_Launched, _universal("first"))
-
-    async def edits_the_template(_subject_id: str, _models: Any) -> Any:
-        async def check(template: EvalTemplate, _cassette_mode: str) -> None:
-            off_loop(
-                launched.storage.save_template, template.model_copy(update={"candidate_kind": "no-launcher-for-this"})
-            )
-
-        return check
-
-    run_ids = await start_universal_battery(
-        launched.host,
-        TOYHOST_SUBJECT.subject_id,
-        scope_id=TOYHOST_SCOPE,
-        models=[RUN_MODELS[0]],
-        preflight=edits_the_template,
-    )
-    async with asyncio.timeout(10):
-        while any(launched.host.job_manager.is_active(run_id) for run_id in run_ids):
-            await asyncio.sleep(0.01)
-
-    assert len(run_ids) == 1 and launched.launched[0].template.candidate_kind == TOY_EXTRACTOR_KIND
 
 
 # =============================================================================

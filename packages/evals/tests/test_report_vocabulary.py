@@ -20,7 +20,7 @@ from threetears.evals.analysis.report.verdict import FAIL_CAUSE_WORDS, LOSS_CAUS
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
 from threetears.evals.analysis.bundle.schema import FailCause
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
-from threetears.evals.quick import compare
+from threetears.evals import Eval
 from packages.evals.tests.report_support import toy_report
 from packages.evals.tests.g2_support import g2_report
 
@@ -61,9 +61,7 @@ async def test_a_comparison_s_first_two_screens_use_none_of_the_engine_s_nouns()
     cases = [{"text": f"refund {n}", "label": "billing"} for n in range(5)] + [
         {"text": f"refund crash {n}", "label": "billing"} for n in range(5)
     ]
-    comparison = await compare(
-        cases, {"hasty": _hasty, "careful": _classify}, expected=lambda c: c["label"], control="hasty"
-    )
+    comparison = await Eval(cases, {"hasty": _hasty, "careful": _classify}, ["label"]).run(store=":memory:")
     text = _screens_one_and_two(comparison.report)
     assert _banned(text) == []
     assert "improved on the control" in text

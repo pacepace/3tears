@@ -178,7 +178,11 @@ EVAL_ROOT = _REPO_ROOT / "threetears" / "evals"
 #: verbatim. Paths are relative to ``threetears/evals/``. ``analysis`` is a whole tree, so a file
 #: added to it is covered the day it lands rather than the day someone remembers.
 _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
-    # `python -m threetears.evals`: hands over to the command line in `quick`, a whole shared tree.
+    # The package's front door: its public roots, its extras map and its lazily loaded exports. It named the
+    # `openrouter` module while `ROOT_EXTRAS` listed the provider adapter's SDKs; the client needs no extra, so it
+    # names no host and is scanned like every other shared module.
+    "__init__.py",
+    # `python -m threetears.evals`: hands over to an eval file or the command line in `quick`, a whole shared tree.
     "__main__.py",
     # The stored analysis shapes, which are kernel rather than analysis (the stored campaign,
     # analysis and insight models, the campaign declaration, the decision surface, the authored
@@ -234,6 +238,11 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # registry's self-contradiction check and the prose gate all walk.
     "schema/schema_nesting.py",
     "kernel/errors.py",
+    # The spend ledger a runner call's model calls are counted in: the engine's own usage vocabulary.
+    "kernel/runner_spend.py",
+    # Where an eval file's relative paths resolve while `python -m threetears.evals FILE` loads it:
+    # the engine's own loading vocabulary, read by Eval, Model, World, Judge and Log alike.
+    "kernel/eval_file.py",
     "kernel/refusals.py",
     "kernel/remedies.py",
     # The write-seam refusal of an undeclared authoring field, and the lock every writer of an
@@ -426,10 +435,6 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The registry of stored document types and their facts, which a host partitions its storage by: the
     # engine's own types only, so a host noun here would be one host's document written into every host's list.
     "schema/doc_types.py",
-    # The re-check that re-grades a stored run from the ledgers its cells stored, through the run's
-    # own grading function. It reads no kind's trace shape, so a host noun here would be one kind's
-    # replay written back into the engine.
-    "run/recheck.py",
     # Moved off _HOST_COUPLED_MODULES when a launch's overlays became one map the kind's own model
     # validates: the launch names no overlay of any host's, so a host noun arriving
     # here would be one host's knob written into every host's launch signature.
@@ -513,7 +518,7 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: ``storage`` and ``testing`` are whole trees from birth: the adapters the engine ships behind the
 #: store port (the in-memory reference store) and the conformance kits any host runs against its own
 #: adapter. Each exists to serve every host, so a host noun in either would be a leak. ``quick``, the
-#: batteries (``run_eval`` and the command line), is whole from birth on the same terms, and so are the
+#: batteries (``Eval`` and the command line), is whole from birth on the same terms, and so are the
 #: surfaces an agent drives the engine through — ``ops``, ``actions`` and ``transports`` — which every
 #: host mounts.
 #:
@@ -545,12 +550,11 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
 #: Host nouns that, inside one shared-contract tree, name a PROVIDER the tree builds clients for, by tree.
 #:
 #: ``openrouter`` is a host noun because the engine names no provider: the first host's client was the reason it
-#: reached engine code, and everywhere else it still fails. The provider adapter's purpose is naming providers by
-#: the names 3tears-models' registry gives them (its ``SupportedProvider`` vocabulary, each provider's key
-#: variable, the per-provider mapping tables), so there it is the provider's name rather than a host's. A
-#: violation in the tree is exempt only when every noun it carries is listed here, so a ``persona`` or a
-#: ``discord`` in the adapter fails like anywhere else, and :func:`test_every_provider_name_exemption_is_still_needed`
-#: fails on an entry the tree no longer needs.
+#: reached engine code, and everywhere else it still fails. The completion client's purpose is naming the providers
+#: it speaks to (its ``Provider`` vocabulary, each provider's key variable and API root, the per-provider mapping
+#: tables), so there it is the provider's name rather than a host's. A violation in the tree is exempt only when every
+#: noun it carries is listed here, so a ``persona`` or a ``discord`` in the client fails like anywhere else, and
+#: :func:`test_every_provider_name_exemption_is_still_needed` fails on an entry the tree no longer needs.
 _PROVIDER_NAMES: dict[str, frozenset[str]] = {"providers": frozenset({"openrouter"})}
 
 _HOST_NOUN_RE = re.compile(rf"^(?:{'|'.join(HOST_NOUNS)})s?$", re.IGNORECASE)
@@ -812,11 +816,7 @@ def _scan_declared_set() -> list[Violation]:
 #: the module the extraction boundary is defined around, so the scan skipped the one module the
 #: boundary is named after. :func:`test_every_host_coupled_module_still_exhibits_host_coupling` is
 #: the gate that catches that now.
-_HOST_COUPLED_MODULES: frozenset[str] = frozenset(
-    {
-        "__init__.py",
-    }
-)
+_HOST_COUPLED_MODULES: frozenset[str] = frozenset()
 
 
 def _host_module_imports(source: str, path: Path) -> set[str]:
@@ -879,7 +879,7 @@ def _host_module_imports(source: str, path: Path) -> set[str]:
 #: debt decays into, so each entry says which it is and an entry with no reason fails.
 #:
 #: EMPTY today. ``__init__.py`` sat here as the package's front door until ``ROOT_EXTRAS`` began naming
-#: the ``openrouter`` module the ``providers`` root imports; the scan now sees its coupling directly.
+#: the ``openrouter`` module the ``providers`` root imported, and is shared contract now that it names none.
 _HOST_COUPLED_BY_ROLE: dict[str, str] = {}
 
 
@@ -1139,9 +1139,9 @@ def test_every_provider_name_exemption_is_still_needed() -> None:
 
 def test_a_provider_name_is_exempt_only_alone_and_only_in_its_tree() -> None:
     """``openrouter`` in the provider tree passes; beside another host noun, or in any other tree, it fails."""
-    provider = Violation("providers/adapter.py", "literal-member", "openrouter", 1, ("openrouter",))
-    mixed = Violation("providers/adapter.py", "name", "openrouter_persona", 1, ("openrouter", "persona"))
-    other_noun = Violation("providers/adapter.py", "name", "persona_id", 1, ("persona",))
+    provider = Violation("providers/model.py", "literal-member", "openrouter", 1, ("openrouter",))
+    mixed = Violation("providers/model.py", "name", "openrouter_persona", 1, ("openrouter", "persona"))
+    other_noun = Violation("providers/model.py", "name", "persona_id", 1, ("persona",))
     elsewhere = Violation("analysis/reporting.py", "literal-member", "openrouter", 1, ("openrouter",))
     assert _names_a_provider(provider)
     assert not _names_a_provider(mixed)

@@ -13,7 +13,7 @@ extractor driven by a launcher that generates the way an adopter's does (once pe
 - **Every refusal fires before any spend**: a generation that needs a writer and names none, a writer
   named for a launch that generates nothing or for a template with no ``llm`` axis, and a launcher
   whose generation recorded another model than the one named.
-- **Every launch surface carries it** — ``start_run``, the battery, ``run_launch`` (ops and action),
+- **Every launch surface carries it** — ``start_run``, ``run_launch`` (ops and action),
   ``launch_estimate`` and the CLI's ``run``.
 """
 
@@ -61,7 +61,6 @@ from threetears.evals.run import (
     PlannedJudge,
     launch_run,
     start_run,
-    start_universal_battery,
 )
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
@@ -398,144 +397,6 @@ async def test_a_generation_recording_another_writer_than_the_one_named_is_refus
 
 
 # =============================================================================
-# The battery: the writer reaches the templates a model writes, and only those
-# =============================================================================
-
-
-async def _no_preflight(_subject_id: str, _models: Any) -> Any:
-    async def check(_template: EvalTemplate, _cassette_mode: str) -> None:
-        return None
-
-    return check
-
-
-async def test_a_battery_hands_the_writer_only_to_the_templates_with_an_llm_axis():
-    written = _template(LLM_AXIS, template_id="written", universal=True)
-    enumerated = _template(ENUM_AXIS, template_id="enumerated", universal=True)
-    host, storage, clients, handed = off_loop(_generating_host, written, enumerated)
-
-    run_ids = await start_universal_battery(
-        host,
-        TOYHOST_SUBJECT.subject_id,
-        scope_id=TOYHOST_SCOPE,
-        models=[RUN_MODELS[0]],
-        n_variations=2,
-        variation_model=WRITER,
-        preflight=_no_preflight,
-    )
-    await _settled(host, run_ids)
-
-    assert {request.template.id: request.variation_model for request in handed} == {
-        "written": WRITER,
-        "enumerated": None,
-    }
-    # Twice, both in the writer's own role: once by the battery to price the written template's calls
-    # before anything launched — asked its prices and never called — and once by that template's launch.
-    assert clients.asked == [("variation", WRITER), ("variation", WRITER)]
-    assert [writer.calls for writer in clients.writers] == [0, 1]
-    writers = {}
-    for run_id in run_ids:
-        stored = off_loop(storage.load_eval_run, run_id, TOYHOST_SCOPE)
-        assert stored is not None and stored.variation_counts is not None
-        writers[stored.template_id] = stored.variation_counts.variation_model
-    assert writers == {"written": WRITER, "enumerated": None}
-
-
-async def test_a_battery_prepares_the_templates_a_model_writes_last_so_an_earlier_refusal_pays_for_no_generation():
-    """The model-written template is listed FIRST; the enumerated one's preparation refuses, and no writer call is bought.
-
-    Preparing a model-written template generates its cases, which is paid; in listed order its generation would be
-    bought and then abandoned with everything else.
-    """
-    written = _template(LLM_AXIS, template_id="written", universal=True)
-    enumerated = _template(ENUM_AXIS, template_id="enumerated", universal=True)
-    host, storage, clients, handed = off_loop(_generating_host, written, enumerated)
-    (launchable,) = host.kinds.values()
-
-    async def refuses_enumerated(request: LaunchRequest) -> EvalRun:
-        if request.template.id == "enumerated":
-            handed.append(request)
-            raise ValidationFailedError(
-                "the enumerated template's subject cannot be captured", remedy="launch another subject"
-            )
-        return await launchable.launch(request)
-
-    refusing = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=refuses_enumerated)})
-
-    with pytest.raises(ValidationFailedError, match="cannot be captured"):
-        await start_universal_battery(
-            refusing,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            n_variations=2,
-            variation_model=WRITER,
-            preflight=_no_preflight,
-        )
-
-    assert [request.template.id for request in handed] == ["enumerated"], "the written template was never prepared"
-    assert sum(writer.calls for writer in clients.writers) == 0, "no generation was paid for"
-    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
-
-
-async def test_a_battery_returns_its_run_ids_in_the_templates_order_whatever_order_it_prepared_them_in():
-    written = _template(LLM_AXIS, template_id="written", universal=True)
-    enumerated = _template(ENUM_AXIS, template_id="enumerated", universal=True)
-    host, storage, _clients, handed = off_loop(_generating_host, written, enumerated)
-
-    run_ids = await start_universal_battery(
-        host,
-        TOYHOST_SUBJECT.subject_id,
-        scope_id=TOYHOST_SCOPE,
-        models=[RUN_MODELS[0]],
-        n_variations=2,
-        variation_model=WRITER,
-        preflight=_no_preflight,
-    )
-    await _settled(host, run_ids)
-
-    templates_listed = [t.id for t in off_loop(storage.query_templates, TOYHOST_SCOPE) if t.universal]
-    stored = [off_loop(storage.load_eval_run, run_id, TOYHOST_SCOPE) for run_id in run_ids]
-    assert [run.template_id for run in stored if run is not None] == templates_listed
-    assert [request.template.id for request in handed] == ["enumerated", "written"], "prepared paying-last"
-
-
-async def test_a_battery_refuses_a_writer_none_of_its_templates_uses():
-    host, storage, clients, handed = off_loop(_generating_host, _template(ENUM_AXIS, universal=True))
-
-    with pytest.raises(ValidationFailedError, match="none of the battery's templates has an llm axis.*Nothing was"):
-        await start_universal_battery(
-            host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            n_variations=2,
-            variation_model=WRITER,
-            preflight=_no_preflight,
-        )
-
-    assert handed == [] and clients.asked == [] and off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
-
-
-async def test_a_battery_that_needs_a_writer_and_names_none_launches_nothing():
-    written = _template(LLM_AXIS, template_id="written", universal=True)
-    enumerated = _template(ENUM_AXIS, template_id="enumerated", universal=True)
-    host, storage, clients, handed = off_loop(_generating_host, enumerated, written)
-
-    with pytest.raises(ValidationFailedError, match="without naming one.*Nothing was launched"):
-        await start_universal_battery(
-            host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            n_variations=2,
-            preflight=_no_preflight,
-        )
-
-    assert handed == [] and clients.asked == [] and off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
-
-
-# =============================================================================
 # The surfaces: each carries both arguments to the launch
 # =============================================================================
 #
@@ -664,7 +525,7 @@ async def test_a_generation_priced_above_the_out_of_run_cap_is_refused_before_it
 
 
 async def test_a_launch_through_the_job_contract_refuses_a_generation_above_the_cap_in_its_call():
-    """The call prices the generation, as the battery's pre-flight does: it used to return a job that then failed."""
+    """The call prices the generation: it used to return a job that then failed."""
     template = _template(LLM_AXIS)
     host, storage, clients, handed = off_loop(_generating_host, template, clients=_FakeClients(ceiling=1000.0))
     arguments = LaunchArguments(
@@ -849,145 +710,6 @@ def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad, said):
         ArmPrice(**bad)
 
 
-async def test_a_battery_prices_every_templates_generating_arms_before_launching_any():
-    """The third template's arm over its cap used to surface only after the first two were generated and paid for."""
-    cheap = _template(ENUM_AXIS, template_id="cheap", universal=True)
-    dear = _template(ENUM_AXIS, template_id="dear", universal=True)
-
-    def by_template(quote: ArmQuote) -> ArmPrice:
-        return ArmPrice(predicted_usd=50.0 if quote.template_id == "dear" else 0.0, basis="a rate card")
-
-    host, storage, clients, handed = off_loop(_generating_host, cheap, dear, pricer=by_template)
-
-    with pytest.raises(ValidationFailedError, match="predicted to cost \\$50\\.00.*Nothing was launched"):
-        await start_universal_battery(
-            host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            n_variations=2,
-            preflight=_no_preflight,
-        )
-
-    assert handed == []
-    off_loop(_nothing_was_paid_for, host, storage, clients)
-
-
-async def test_a_generating_battery_prices_each_arm_once():
-    """The pre-flight prices each arm and the template's launch carries that plan — the launch never prices it again."""
-    first = _template(ENUM_AXIS, template_id="first", universal=True)
-    second = _template(ENUM_AXIS, template_id="second", universal=True)
-    quotes: list[ArmQuote] = []
-
-    def recording(quote: ArmQuote) -> ArmPrice:
-        quotes.append(quote)
-        return ArmPrice(predicted_usd=0.0, basis="a rate card")
-
-    host, _storage, _clients, handed = off_loop(_generating_host, first, second, pricer=recording)
-
-    run_ids = await start_universal_battery(
-        host,
-        TOYHOST_SUBJECT.subject_id,
-        scope_id=TOYHOST_SCOPE,
-        models=list(RUN_MODELS),
-        n_variations=2,
-        preflight=_no_preflight,
-    )
-    await _settled(host, run_ids)
-
-    assert sorted((q.template_id, q.candidate_model, q.case_source) for q in quotes) == sorted(
-        (template, model, "generated") for template in ("first", "second") for model in RUN_MODELS
-    )
-    assert len(handed) == 4 and all(request.arm_plan is not None for request in handed)
-
-
-async def test_a_battery_prices_every_templates_generation_calls_before_launching_any():
-    """The second template's writer calls over the out-of-run cap used to surface inside its own launch,
-    after the first template had paid for its generation and started its runs — whose ids were then lost."""
-    cheap = _template(LLM_AXIS, template_id="cheap", universal=True)
-    dear_axis = LLM_AXIS.model_copy(update={"description": "an invoice id, DEAR to write"})
-    dear = _template(dear_axis, template_id="dear", universal=True)
-    host, storage, clients, handed = off_loop(_generating_host, cheap, dear, clients=_FakeClients(dear_marker="DEAR"))
-    templates = off_loop(host.eval_host.storage.query_templates, TOYHOST_SCOPE, universal=True, archived=False)
-    assert [template.id for template in templates] == ["cheap", "dear"], "the cheap template would launch first"
-
-    with pytest.raises(ValidationFailedError, match="above the out-of-run cap.*Nothing was launched"):
-        await start_universal_battery(
-            host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            n_variations=2,
-            variation_model=WRITER,
-            preflight=_no_preflight,
-        )
-
-    assert handed == [], "no template's launcher ran"
-    assert clients.asked == [("variation", WRITER)], "one writer, built to be priced"
-    off_loop(_nothing_was_paid_for, host, storage, clients)
-
-
-async def test_a_battery_prices_a_generation_its_writer_cannot_price_before_launching_any():
-    written = _template(LLM_AXIS, template_id="written", universal=True)
-    host, storage, clients, handed = off_loop(_generating_host, written, clients=_FakeClients(ceiling=None))
-
-    with pytest.raises(ValidationFailedError, match="cannot be priced before they are made.*Nothing was launched"):
-        await start_universal_battery(
-            host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            n_variations=2,
-            variation_model=WRITER,
-            preflight=_no_preflight,
-        )
-
-    assert handed == []
-    off_loop(_nothing_was_paid_for, host, storage, clients)
-
-
-async def test_a_battery_names_the_cap_its_runs_are_priced_against_and_held_to():
-    """Without it every run inherits the host's cap, and an arm no history prices is refused — with no way out."""
-    template = _template(ENUM_AXIS, template_id="unpriced", universal=True)
-
-    def unknown(_quote: ArmQuote) -> ArmPrice:
-        return ArmPrice(predicted_usd=None, basis="no priced result of this template on that model")
-
-    host, storage, clients, handed = off_loop(_generating_host, template, pricer=unknown)
-    battery = {
-        "scope_id": TOYHOST_SCOPE,
-        "models": [RUN_MODELS[0]],
-        "n_variations": 2,
-        "preflight": _no_preflight,
-    }
-
-    with pytest.raises(ValidationFailedError, match="cannot be priced.*inherited.*Nothing was launched"):
-        await start_universal_battery(host, TOYHOST_SUBJECT.subject_id, **battery)
-    assert handed == []
-
-    run_ids = await start_universal_battery(host, TOYHOST_SUBJECT.subject_id, max_cost_usd=1.5, **battery)
-    await _settled(host, run_ids)
-    stored = [off_loop(storage.load_eval_run, run_id, TOYHOST_SCOPE) for run_id in run_ids]
-    assert [(run.max_cost_usd, run.max_cost_usd_origin) for run in stored if run is not None] == [(1.5, "chosen")]
-
-
-@pytest.mark.parametrize("cap", [0.0, -1.0])
-async def test_a_battery_naming_a_cap_that_is_not_positive_is_refused_before_anything(cap):
-    host, storage, clients, handed = off_loop(_generating_host, _template(ENUM_AXIS, universal=True))
-
-    with pytest.raises(ValidationFailedError, match=f"max_cost_usd must be > 0 \\(got {cap}\\).*Nothing was launched"):
-        await start_universal_battery(
-            host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            max_cost_usd=cap,
-            preflight=_no_preflight,
-        )
-
-    assert handed == [] and host.job_manager.admitted_count == 0
-
-
 async def test_an_arm_its_launcher_runs_on_another_model_than_its_plan_is_refused_at_the_tail():
     """An arm naming no model is planned on one and run on the launcher's default: priced as one, run as another."""
     template = _template(ENUM_AXIS)
@@ -1044,26 +766,6 @@ async def test_a_launch_reads_the_hosts_settings_once_so_a_reload_cannot_refuse_
 
     assert moving.reads == 1
     assert all(run.max_metered_calls == 5 and run.max_metered_calls_origin == "chosen" for run in runs)
-
-
-async def test_a_battery_reads_the_hosts_settings_once_for_every_template():
-    first = _template(LLM_AXIS, template_id="first", universal=True)
-    second = _template(LLM_AXIS, template_id="second", universal=True)
-    moving = _MovingSettings(TOYHOST_LAUNCH_SETTINGS)
-    host, _storage, _clients, _handed = off_loop(_generating_host, first, second, settings=moving)
-
-    run_ids = await start_universal_battery(
-        host,
-        TOYHOST_SUBJECT.subject_id,
-        scope_id=TOYHOST_SCOPE,
-        models=[RUN_MODELS[0]],
-        n_variations=2,
-        variation_model=WRITER,
-        preflight=_no_preflight,
-    )
-    await _settled(host, run_ids)
-
-    assert moving.reads == 1 and len(run_ids) == 2
 
 
 # =============================================================================

@@ -31,3 +31,13 @@ A refused call's `actions.Refusal` carries its kind, and a host's transport code
 `actions` alone. The set lives in `schema` because a job's record keeps the same kinds (`schema.JobRefusal`), below
 the catalogue; dropped from `actions`, the call's refusal and the set it is drawn from would sit in two roots.
 """
+
+[[reexport]]
+home = "threetears.evals.providers"
+also = ["threetears.evals"]
+names = ["Model"]
+why = """
+The package root is the first rung's one import (`from threetears.evals import Model`), loaded by name on first read
+so `import threetears.evals` stays as cheap as before. Dropped from the root, a newcomer's first program would import
+from a second root for the one model it calls.
+"""

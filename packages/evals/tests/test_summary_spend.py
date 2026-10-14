@@ -16,7 +16,7 @@ import pytest
 
 from threetears.evals.analysis import summarize_run
 from threetears.evals.kernel import EvalStorage
-from threetears.evals.quick import callable_host
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.schema import EvalResult, RoleUsage
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.storage import InMemoryDocumentStore

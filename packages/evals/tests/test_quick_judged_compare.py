@@ -1,9 +1,10 @@
-"""``compare(judge=)``, the contrast rows' ``arm`` key, the judge's temperature, and a judge grading its own model.
+"""A judged comparison, the contrast rows' ``arm`` key, the judge's temperature, and a judge grading its own model.
 
-- **A judged A/B from the quick path.** Every arm is judged by ONE judge — one model, one rubric, one
-  temperature — and the report contrasts every arm against the control on each judged dimension.
+- **A judged A/B from the quick path.** A :class:`~threetears.evals.Judge` in the grader list judges every arm —
+  one model, one rubric, one temperature — and the report contrasts every arm against the control (the runner
+  mapping's first key) on each judged dimension.
 - **Every contrast row names its arm by the caller's own key**, matched by variant key rather than read off
-  the report's words: a name for a single-factor comparison, a tuple of levels for a factorial one.
+  the report's words: the arm's name, plain or as ``k=v`` pairs for a factorial one.
 - **The judge's temperature reaches the caller's client.** The engine asks for 0; a client whose ``generate``
   takes ``temperature`` is handed it, and each score records what the client says it sent.
 - **A judge whose model also answered** is disclosed, in the summary and in a judged comparison's report.
@@ -22,9 +23,10 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis import DisclosureBlock, report_markdown
-from threetears.evals.schema import StopReason
-from threetears.evals.quick import Answer, Judge, callable_host, compare, run_eval
+from threetears.evals.analysis import DisclosureBlock, EvalSummary, report_markdown
+from threetears.evals import Answer, Eval, Judge, Result
+from threetears.evals.schema import RubricDim, StopReason
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import get_run, list_results
 from packages.evals.tests.off_loop import off_loop
 
@@ -63,6 +65,8 @@ def _score(system: str, user: str) -> str:
 class _FakeJudgeClient:
     """A judge client that takes the temperature it is asked for and reports it as the one it sent."""
 
+    model_name = JUDGE_MODEL
+
     def __init__(self) -> None:
         self.temperatures: list[float | None] = []
 
@@ -91,6 +95,8 @@ class _FakeJudgeClient:
 class _FakeFixedTemperatureClient:
     """A judge client whose ``generate`` takes no temperature: it sends none, and says so on each reply."""
 
+    model_name = JUDGE_MODEL
+
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
         return _Reply(content=_score(system, user), temperature=None)
 
@@ -105,7 +111,20 @@ class _FakeFixedTemperatureClient:
 
 
 def _judge(client: Any) -> Judge:
-    return Judge(client=client, model=JUDGE_MODEL, rubric={"helpful": "The answer resolves the question."})
+    """One 1-5 dimension, so a good answer's 5 and a vague one's 2 are the scores read."""
+    helpful = RubricDim(name="answer.helpful", description="The answer resolves the question.", scale="ordinal")
+    return Judge(client, [helpful])
+
+
+async def _compare(arms: Mapping[str, Any], graders: list[Any]) -> Result:
+    return await Eval(CASES, arms, graders, k=1).run(store=":memory:", scope=SCOPE)
+
+
+async def _one(runner: Any, client: Any, host: Any = None) -> EvalSummary:
+    ev = Eval(CASES, runner, [_judge(client)], k=1)
+    if host is not None:
+        return (await ev.run(host=host, scope=SCOPE)).summary
+    return (await ev.run(store=":memory:", scope=SCOPE)).summary
 
 
 async def vague(case: Mapping[str, Any]) -> str:
@@ -118,14 +137,7 @@ async def helpful(case: Mapping[str, Any]) -> str:
 
 async def test_a_judged_compare_contrasts_every_arm_on_each_judged_dimension_with_one_judge() -> None:
     client = _FakeJudgeClient()
-    comparison = await compare(
-        CASES,
-        {"baseline": vague, "candidate": helpful},
-        judge=_judge(client),
-        control="baseline",
-        scope_id=SCOPE,
-        k=1,
-    )
+    comparison = await _compare({"baseline": vague, "candidate": helpful}, [_judge(client)])
     (row,) = comparison.contrasts("answer.helpful (judged)")
     assert row["arm"] == "candidate" and row["delta"] == pytest.approx(1.5)
     assert row["verdict"].startswith("improved")
@@ -136,14 +148,7 @@ async def test_a_judged_compare_contrasts_every_arm_on_each_judged_dimension_wit
 
 
 async def test_a_judged_comparison_reads_against_another_control_on_the_judged_kinds_levers() -> None:
-    comparison = await compare(
-        CASES,
-        {"baseline": vague, "candidate": helpful},
-        judge=_judge(_FakeJudgeClient()),
-        control="baseline",
-        scope_id=SCOPE,
-        k=1,
-    )
+    comparison = await _compare({"baseline": vague, "candidate": helpful}, [_judge(_FakeJudgeClient())])
     flipped = await comparison.against("candidate")
     (row,) = flipped.contrasts("answer.helpful (judged)")
     assert row["arm"] == "baseline" and row["delta"] == pytest.approx(-1.5)
@@ -153,14 +158,8 @@ async def test_every_contrast_row_names_its_arm_by_the_callers_key() -> None:
     async def other(case: Mapping[str, Any]) -> str:
         return "a good answer"
 
-    comparison = await compare(
-        CASES,
-        {"baseline": vague, "candidate": helpful, "other": other},
-        judge=_judge(_FakeJudgeClient()),
-        control="baseline",
-        scope_id=SCOPE,
-        k=1,
-    )
+    arms = {"baseline": vague, "candidate": helpful, "other": other}
+    comparison = await _compare(arms, [_judge(_FakeJudgeClient())])
     rows = comparison.contrasts()
     assert sorted(row["arm"] for row in rows) == ["candidate", "other"]
     assert {row["contrast"]: row["arm"] for row in rows} == {
@@ -169,41 +168,31 @@ async def test_every_contrast_row_names_its_arm_by_the_callers_key() -> None:
     }
 
 
-async def test_a_factorial_contrast_row_names_its_arm_by_its_tuple_of_levels() -> None:
+async def test_a_factorial_contrast_row_names_its_arm_by_its_levels() -> None:
     def says_good(case: Mapping[str, Any], answer: Any) -> bool:
         return "good" in str(answer)
 
-    comparison = await compare(
-        CASES,
-        {("m", "v1"): vague, ("m", "v2"): helpful},
-        [says_good],
-        factors=("model", "prompt"),
-        control=("m", "v1"),
-        scope_id=SCOPE,
-        k=1,
-    )
+    comparison = await _compare({"model=m, prompt=v1": vague, "model=m, prompt=v2": helpful}, [says_good])
     (row,) = comparison.contrasts("says_good")
-    assert row["arm"] == ("m", "v2")
+    assert row["arm"] == "model=m, prompt=v2"
 
 
 async def test_the_judges_requested_temperature_reaches_the_client_on_every_call() -> None:
     client = _FakeJudgeClient()
-    await run_eval(CASES, helpful, judge=_judge(client), scope_id=SCOPE, k=1)
+    await _one(helpful, client)
     assert len(client.temperatures) == len(CASES) and set(client.temperatures) == {0.0}
 
 
 async def test_a_client_that_takes_no_temperature_is_called_without_one_and_its_scores_say_none_was_sent() -> None:
     host = callable_host()
-    summary = await run_eval(
-        CASES, helpful, judge=_judge(_FakeFixedTemperatureClient()), host=host, scope_id=SCOPE, k=1
-    )
+    summary = await _one(helpful, _FakeFixedTemperatureClient(), host)
     stored = off_loop(list_results, host.storage, summary.run_id, SCOPE)
     assert {score.judge_temperature for result in stored for score in result.rubric_scores} == {"model_default"}
 
 
 async def test_a_client_that_takes_the_temperature_has_it_recorded_as_sent_on_every_score() -> None:
     host = callable_host()
-    summary = await run_eval(CASES, helpful, judge=_judge(_FakeJudgeClient()), host=host, scope_id=SCOPE, k=1)
+    summary = await _one(helpful, _FakeJudgeClient(), host)
     stored = off_loop(list_results, host.storage, summary.run_id, SCOPE)
     assert {score.judge_temperature for result in stored for score in result.rubric_scores} == {0.0}
 
@@ -213,25 +202,20 @@ async def answered_by_the_judges_model(case: Mapping[str, Any]) -> Answer:
 
 
 async def test_a_judge_grading_answers_its_own_model_produced_is_disclosed_in_the_summary() -> None:
-    summary = await run_eval(CASES, answered_by_the_judges_model, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, k=1)
+    summary = await _one(answered_by_the_judges_model, _FakeJudgeClient())
     assert summary.judge_shares_candidate_model == [JUDGE_MODEL]
     assert f"self-judging: the judge's model {JUDGE_MODEL} also produced the candidate's answers" in summary.render()
 
 
 async def test_a_judge_of_another_model_discloses_nothing() -> None:
-    summary = await run_eval(CASES, helpful, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, k=1)
+    summary = await _one(helpful, _FakeJudgeClient())
     assert summary.judge_shares_candidate_model == []
     assert "self-judging" not in summary.render()
 
 
 async def test_a_judged_comparison_discloses_the_arm_whose_answers_the_judges_model_produced() -> None:
-    comparison = await compare(
-        CASES,
-        {"baseline": vague, "same-model": answered_by_the_judges_model},
-        judge=_judge(_FakeJudgeClient()),
-        control="baseline",
-        scope_id=SCOPE,
-        k=1,
+    comparison = await _compare(
+        {"baseline": vague, "same-model": answered_by_the_judges_model}, [_judge(_FakeJudgeClient())]
     )
     disclosures = [block.text for block in comparison.report.blocks if isinstance(block, DisclosureBlock)]
     (said,) = [text for text in disclosures if text.startswith("self-judging")]

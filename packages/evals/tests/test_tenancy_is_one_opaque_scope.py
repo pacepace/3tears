@@ -25,8 +25,8 @@ store method or a branch added later is checked without anyone remembering to ad
    ``# scope-default: <rationale>`` on the line above its ``def`` (or its first decorator) may give its
    scope parameter a default and test whether one was named (``scope_id is None``) — nothing else:
    every other read in it is flagged as anywhere. The rule exists so a writer to a store that outlives
-   the call chooses the scope its documents land in; the quick path's own in-memory store lives and
-   dies with one call, so the scope it falls back to partitions nothing anyone else reads. The marker
+   the call chooses the scope its documents land in; an eval's run, told no scope, takes the eval's own name,
+   which its result states beside the store, so the scope is named by the eval rather than fallen back to. The marker
    sits on the function, as ``# parity-exempt:`` does on a fake, so it moves with the code; the
    rationale is one line of at least 30 characters, and the marked functions are pinned by name below
    so a new one is a reviewed change.
@@ -517,8 +517,9 @@ def test_the_scan_reaches_the_storage_layer() -> None:
 def test_the_scope_defaults_are_only_the_quick_path_s_own_store() -> None:
     """The exception is pinned: a new ``# scope-default:`` marker fails here until it is reviewed and named.
 
-    Each is the quick path, whose store is the call's own in-memory one unless a ``host=`` or ``store=`` is
-    passed — and :func:`~threetears.evals.quick.one_call.quick_scope` refuses a missing scope with either.
+    The one is :meth:`~threetears.evals.quick.contract.Eval.run`, whose scope is the eval's own name unless the run
+    names one: a scope the eval names itself, which every result's footer states beside the store. Its parameter is
+    ``scope``, a name the detector does not read as a scope, so the marker is what keeps it a reviewed exception.
     """
     marked = {
         f"{path.relative_to(_SRC).as_posix()}:{name}"
@@ -526,12 +527,7 @@ def test_the_scope_defaults_are_only_the_quick_path_s_own_store() -> None:
         for name in marked_scope_defaults(path.read_text(encoding="utf-8"))
     }
 
-    assert marked == {
-        "quick/compare.py:compare",
-        "quick/one_call.py:quick_scope",
-        "quick/one_call.py:run_eval",
-        "quick/one_call.py:run_arms",
-    }
+    assert marked == {"quick/contract.py:run"}
 
 
 def test_no_code_in_src_reads_a_scope_s_value() -> None:

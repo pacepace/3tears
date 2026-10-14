@@ -82,7 +82,6 @@ from threetears.evals.run.launch import (
     LaunchSettings,
     PlannedJudge,
     RunJudge,
-    TemplatePreflight,
     build_judge_service,
     launch_as_group,
     launch_run,
@@ -95,7 +94,6 @@ from threetears.evals.run.launch import (
     resolve_judge_pin,
     settable_apparatus,
     start_run,
-    start_universal_battery,
 )
 from threetears.evals.run.lifecycle import (
     AbandonedRunSweepReport,
@@ -114,15 +112,6 @@ from threetears.evals.run.executor import (
 from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs, list_runs_disclosing
-from threetears.evals.run.recheck import (
-    CheckFlip,
-    KeptOutcome,
-    RecheckStore,
-    ResultRecheck,
-    RunRecheck,
-    recheck_goal_states,
-    recheck_result,
-)
 from threetears.evals.run.judge_repeat import (
     JudgeRepeatEstimate,
     JudgeRepeatReport,
@@ -221,10 +210,9 @@ from threetears.evals.run.ceilings import (
     resolve_effective_ceiling,
 )
 from threetears.evals.run.curation import CurationStore, UnreadableRunDeleteStore
-from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome
+from threetears.evals.run.definition_seed import SeedCorpus, SeedJudgeCase, SeedOutcome
 from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
-from threetears.evals.run.launch import BatteryPreflight
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunCallbacks
 
@@ -251,7 +239,6 @@ __all__ = [
     "ArmPrice",
     "ArmQuote",
     "ArmVerdict",
-    "BatteryPreflight",
     "BudgetStoppedError",
     "CallCeiling",
     "CandidateTurn",
@@ -262,7 +249,6 @@ __all__ = [
     "CellExecutor",
     "CellMeter",
     "CellWork",
-    "CheckFlip",
     "CurationStore",
     "UnreadableRunDeleteStore",
     "ErrorLedger",
@@ -283,7 +269,6 @@ __all__ = [
     "JudgeOutcome",
     "JudgeRequest",
     "JudgeService",
-    "KeptOutcome",
     "KindFactory",
     "KindLauncher",
     "KindWiring",
@@ -302,21 +287,18 @@ __all__ = [
     "MeteredCallLedger",
     "MeteredCallTally",
     "RatingStore",
-    "RecheckStore",
     "ReproducibleJudgeInputs",
     "RequestSettingsPolicy",
-    "ResultRecheck",
     "RunCallbacks",
-    "RunRecheck",
     "PlannedJudge",
     "RunJudge",
     "RunnerOptions",
     "SeedCorpus",
+    "SeedJudgeCase",
     "SeedOutcome",
     "SimulatorCall",
     "SimulatorReplyInvalid",
     "SimulatorTurn",
-    "TemplatePreflight",
     "TurnDriver",
     "WitnessedJudging",
     "WorkFn",
@@ -372,8 +354,6 @@ __all__ = [
     "settable_apparatus",
     "precondition_failure_text",
     "rate_result",
-    "recheck_goal_states",
-    "recheck_result",
     "record_witnessed_cell",
     "stamp_witnessed_judge",
     "refuse_stale_presumptions",
@@ -395,7 +375,6 @@ __all__ = [
     "set_campaign_archived",
     "set_run_archived",
     "start_run",
-    "start_universal_battery",
     "mint_case_set",
     "resolve_case_set",
     "sweep_abandoned_runs",

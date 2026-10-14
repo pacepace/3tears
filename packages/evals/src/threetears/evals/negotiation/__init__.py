@@ -5,7 +5,7 @@ enforced reply format), and the model a client calls may not take all of them: a
 effort word it lacks, a budget where it takes words only, a router that finds no endpoint under
 ``require_parameters``. None of that may fail the request (owner ruling, 2026-10-14: "we can't have an eval system
 that forbids models because of their temperature/etc capabilities"). This root is the one implementation of what a
-client does instead, used by the shipped adapter (:mod:`threetears.evals.providers`) and by a host's own client
+client does instead, used by the shipped client (:mod:`threetears.evals.providers`) and by a host's own client
 alike, so the next "this model can't be a judge" bug is fixed once:
 
 * :func:`closest_settings` chooses what a request carries for what was asked, from what is known of the model
