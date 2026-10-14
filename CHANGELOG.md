@@ -6,6 +6,64 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: a pod can list its own recorded exports
+
+A pod deletes each export once its load has proven it. A pod killed mid-load left its exports in the
+bucket with nothing to find them by: the pod held the only list in memory. The hub already records
+every export it ran (`platform.datasource_export_objects`); this is the ask that reads that record
+back for the pod it belongs to.
+
+- **Added, `DatasourceQueryClient.list_own_exports(datasource_name, *, correlation_id=None)`:**
+  every export the hub holds a record of for the calling pod on a datasource, read to the last page,
+  as `DatasourceExportRecord`s (`destination`, `object_prefix`, `date_created`). Each is deleted
+  through the existing `delete_export` by its `destination`. The ask names no pod: the hub answers
+  for the pod its verified identity token names, and the request has no field by which another
+  could be asked about. It takes its turn under `max_concurrent_asks` like every other ask. A
+  cursor the hub has already given is refused (`MALFORMED_RESPONSE`), as is a success carrying no
+  page; neither is read as "no exports".
+- **Added, the ask on the wire:** `DatasourceQueryRequest.export_list`
+  (`DatasourceExportListRequest`, one page by `cursor`) and `DatasourceQueryResponse.export_list`
+  (`DatasourceExportListResult`: `exports`, `next_cursor`), on the datasource's existing query
+  subject. No subject and no NATS grant is added. The field is left off every request that does not
+  make the ask, so a query, fingerprint, export or delete from this release is byte for byte what
+  an older hub reads.
+- **Added, `DatasourceExportListUnsupportedError`** (a `DatasourceQueryError`, code
+  `EXPORT_LIST_UNSUPPORTED`): the hub does not know the ask. Raised, and logged at WARNING, when
+  the hub answers the ask `MALFORMED_REQUEST`, which is what a hub on an earlier release answers a
+  field its request model forbids. It is its own type so that "the hub could not be asked" is never
+  read as "nothing recorded": a caller that lists in order to clear catches it and clears nothing.
+- **The hub's side is specified, not built here:** `packages/datasources/README.md`, "A pod's own
+  exports", sets out the message shapes, the verified-caller rule, the paging (by destination,
+  through `threetears.core.pagination.Keyset`) and what an older hub answers.
+- **Deploying it:** pods and hubs upgrade in either order. A pod on this release against a hub
+  that has no handler for the ask gets `DatasourceExportListUnsupportedError` from
+  `list_own_exports` and nothing else changes for it: its queries, exports and deletes are
+  answered as before, and exports a killed run left stay on the operator's surface
+  (`aibots datasource exports`) until the hub is upgraded. A hub that answers the ask breaks no
+  older pod, which never sends it and ignores the reply field. A hub moving its 3tears pin to this
+  release ships the handler in the same change. No migration, no new grant and no operator step.
+
+### Core: a bulk statement is sized by what the rail sends
+
+- **Fixed, `SchemaBackedCollection.save_rows` and `SqlL3Backend.upsert_many`:** a page of rows that
+  were mostly `bytes` could be split into statements larger than the bus allows. `bulk_batches`
+  measured a row as JSON with `bytes` in base64 (four characters for three bytes), and
+  `NatsProxyL3Backend` sends `bytes` as `\x` and hex (two characters a byte), so a statement
+  measured at `BULK_MAX_BYTES` (768 KB) carried up to 1.15 MB of parameters and could pass a NATS
+  deployment's default 1 MiB message. A row is now measured as the rail sends it, and
+  `BULK_MAX_BYTES` and `max_bytes` mean bytes of parameters on the wire. A page with no `bytes`
+  splits where it did before, to within a few bytes a datetime. A row larger than the bound still
+  travels alone.
+- **Added, `threetears.core.backends.schema_sql.transport_param` and `transport_params_bytes`:** the
+  form a statement parameter crosses the L3 rail in, and the bytes a statement's parameters occupy
+  there. The one owner of that form: `NatsProxyL3Backend` sends every parameter through
+  `transport_param` (its private copy is gone) and `bulk_batches` sizes by
+  `transport_params_bytes`, so the two cannot drift apart again; a test compares the measured size
+  with the bytes the proxy puts on the bus for each parameter type.
+- **For a caller that scaled `max_bytes` down to make room for hex** (the geography pod's
+  `WIRE_BYTES_PER_SIZED_BYTE`): that allowance is no longer needed and now only makes statements
+  smaller than they need be.
+
 ## v0.66.0 -- 2026-10-13
 
 ### Core: a replay guard owns its nonce bucket, on memory
