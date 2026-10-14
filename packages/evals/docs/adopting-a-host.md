@@ -846,22 +846,27 @@ release, on:
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
   old name, recorded as any removal is.
-- **`closure`** is every other public name: public because a public signature reaches it (a field's type, a value
-  a function returns, an exception it documents), so you can type your code without reaching below a root. Such a
-  name may move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
+- **`stable`** is the rest of the declared surface: what a topic guide, the agent and MCP guides or an example host
+  imports, the quick path's whole root, and what the one production host binds beyond the contract. Such a name may
+  move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
+- **`provisional`** is every other name a root exports, most of them because a declared signature reaches them (a
+  field's type, a value a function returns, an exception it documents), so you can type your code without reaching
+  below a root. Such a name is promised nothing: it may change or move in any release, and the
+  [reference](reference.md#public-api) does not list it.
 
-`packages/evals/api/surface.json` records each name's tier beside its kind and signature, and `HOST_CONTRACT` in
-`packages/evals/scripts/public_surface.py` declares the first tier, with the reason for each group of names. The
-[reference](reference.md#public-api) marks each host-contract name *host contract*. A name
-a topic guide imports and the list does not hold is `closure`. If your host binds to one, ask for it to be
+The first two tiers are the declared surface, about 450 names, mapped by rung in [the surface](surface.md).
+`packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
+signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
+tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
+and marks each host-contract one *host contract*. If your host binds to a provisional name, ask for it to be
 promoted: promoting a name costs nothing, and demoting one is a break.
 
 ## Upgrading: names that move
 
 **Every name that leaves a public root is written down, and only a host-contract name is kept for compatibility.**
 When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
-records it under that release: the old name, its new home or `removed`, and why. A `closure` name has no shim at the
-old name; a `host-contract` one keeps working for a minor release first (above). The record starts
+records it under that release: the old name, its new home or `removed`, and why. A `stable` or `provisional` name
+has no shim at the old name; a `host-contract` one keeps working for a minor release first (above). The record starts
 at 0.68.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub

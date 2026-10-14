@@ -1,14 +1,17 @@
-"""Every public name carries a stability tier, and every name a host is taught to import is ``host-contract``.
+"""Every public name carries a stability tier, every name a host is taught to import is ``host-contract``, and every
+name any page or example host imports is declared.
 
-A public name is ``host-contract`` (it moves only with a ``MIGRATIONS.toml`` record and a deprecation cycle) or
-``closure`` (public because a public signature reaches it; it may move in any release, recorded and never shimmed).
-``HOST_CONTRACT`` in ``scripts/public_surface.py`` is the one place the first tier is declared, and the snapshot
+A public name is ``host-contract`` (it moves only with a ``MIGRATIONS.toml`` record and a deprecation cycle),
+``stable`` (the rest of the declared surface: it may move in any release, recorded and never shimmed) or
+``provisional`` (exported, mostly because a declared signature reaches it, and promised nothing). ``HOST_CONTRACT``
+and ``STABLE`` in ``scripts/public_surface.py`` are the one place the first two are declared, and the snapshot
 (``api/surface.json``) records each entry's tier as the generator derives it.
 
-This holds the list's completeness, not its taste: a name the host guide, the tutorial, the README or an example
+This holds the lists' completeness, not their taste: a name the host guide, the tutorial, the README or an example
 imports is one a host was told to write against, so a release moving it without the deprecation cycle would break
-a host that did exactly what the docs said. What else belongs in the contract is a judgement the list's comments
-record, and nothing here second-guesses it.
+a host that did exactly what the docs said; and a name a topic guide or an example host imports is one a reader was
+shown, so it may not be provisional. What else belongs in either list is a judgement their comments record, and
+nothing here second-guesses it beyond the ceiling on how many names they hold.
 """
 
 from __future__ import annotations
@@ -31,13 +34,21 @@ Entry = surface.SurfaceEntry
 PACKAGE = Path(__file__).resolve().parents[1]
 
 #: What a host author is told to write against, in reading order: the README's first result, the host guide, the
-#: tutorial and every example. A topic guide's imports are not here: a name only it imports is ``closure`` until
-#: promoted, which is free, where demoting a name from the contract is a break.
+#: tutorial and every example. A topic guide's imports are not here (they are :data:`SHOWN`): a name only it imports
+#: is ``stable`` until promoted, which is free, where demoting a name from the contract is a break.
 HOST_GUIDES: tuple[Path, ...] = (
     PACKAGE / "README.md",
     PACKAGE / "docs" / "adopting-a-host.md",
     PACKAGE / "docs" / "tutorial.md",
     *sorted(p for p in (PACKAGE / "examples").iterdir() if p.suffix in (".py", ".md")),
+)
+
+#: Every page and example host a reader is shown, beyond the host guides: each topic guide and the example hosts under
+#: ``tests/fixtures/``, which the package matrix holds to the roots' ``__all__`` as an adopter's own code.
+SHOWN: tuple[Path, ...] = (
+    *sorted(p for p in (PACKAGE / "docs").glob("*.md") if p.name != "reference.md"),
+    *sorted((PACKAGE / "tests" / "fixtures" / "toyhost").rglob("*.py")),
+    *sorted((PACKAGE / "tests" / "fixtures" / "courierhost").rglob("*.py")),
 )
 
 #: One ``from threetears.evals… import …`` statement in prose or a fenced block, parenthesised across lines or not.
@@ -89,6 +100,51 @@ def test_every_name_a_host_is_taught_to_import_is_host_contract() -> None:
     )
 
 
+def test_every_name_a_page_or_an_example_host_imports_is_declared() -> None:
+    recorded = surface.load_snapshot()
+    shown = {name: path for path in (*HOST_GUIDES, *SHOWN) for name in sorted(imported_names(path))}
+    assert "threetears.evals.kernel.host.EvalHost" in shown, "the import reader found nothing, so this says nothing"
+    provisional = {
+        name: f"{path.relative_to(PACKAGE)} ({recorded[name].tier if name in recorded else 'not public'})"
+        for name, path in sorted(shown.items())
+        if name not in recorded or not surface.declared(recorded[name].tier)
+    }
+    assert not provisional, (
+        "A page or an example host imports these, so a reader was shown them: add each to STABLE in "
+        f"packages/evals/scripts/public_surface.py and run `{surface.REGENERATE_SNAPSHOT}`:\n  "
+        + "\n  ".join(f"{name} <- {where}" for name, where in provisional.items())
+    )
+
+
+def test_the_declared_surface_is_one_sitting() -> None:
+    """The declared surface is what a reader takes in at once; promoting a name past the ceiling demotes another."""
+    declared = surface.HOST_CONTRACT | surface.STABLE
+    assert len(declared) <= surface.DECLARED_CEILING, (
+        f"{len(declared)} declared names, over the ceiling of {surface.DECLARED_CEILING}: demote one to "
+        "provisional (drop it from STABLE) before promoting another."
+    )
+
+
+#: One root's line on ``docs/surface.md``: the root, ``threetears.evals.`` dropped, then its names.
+_SURFACE_LINE = re.compile(r"^- `([\w.]+)`: (.+)$", re.M)
+
+
+def test_the_surface_page_lists_exactly_the_declared_names() -> None:
+    """``docs/surface.md`` maps the declared surface by rung: every declared name once, and nothing provisional."""
+    page = (PACKAGE / "docs" / "surface.md").read_text(encoding="utf-8")
+    listed: list[str] = []
+    for label, names in _SURFACE_LINE.findall(page):
+        root = label if label == "threetears.evals" else f"threetears.evals.{label}"
+        listed += [f"{root}.{name}" for name in re.findall(r"`(\w+)`", names)]
+    declared = surface.HOST_CONTRACT | surface.STABLE
+    twice = sorted({name for name in listed if listed.count(name) > 1})
+    assert not twice, f"docs/surface.md lists these more than once: {twice}"
+    assert set(listed) == declared, (
+        f"docs/surface.md is not the declared surface. Missing: {sorted(declared - set(listed))}. "
+        f"Not declared: {sorted(set(listed) - declared)}."
+    )
+
+
 def test_the_import_reader_sees_every_spelling(tmp_path: Path) -> None:
     page = tmp_path / "page.md"
     page.write_text(
@@ -127,8 +183,17 @@ def test_the_import_reader_sees_every_spelling(tmp_path: Path) -> None:
 def test_a_tier_comes_from_the_declared_list() -> None:
     installed = surface.installed_surface()
     assert installed["threetears.evals.kernel.host.EvalHost"].tier == "host-contract"
-    assert installed["threetears.evals.quick.EXIT_FAILED"].tier == "closure"
+    assert installed["threetears.evals.quick.EXIT_FAILED"].tier == "stable"
+    assert installed["threetears.evals.kernel.AttemptOutcome"].tier == "provisional"
     assert {name for name, entry in installed.items() if entry.tier == "host-contract"} == surface.HOST_CONTRACT
+    assert {name for name, entry in installed.items() if entry.tier == "stable"} == surface.STABLE
+
+
+def test_a_provisional_name_records_no_signature() -> None:
+    """Its signature is no promise, so a change to it is not a diff the snapshot asks a reviewer to read."""
+    installed = surface.installed_surface()
+    assert all(entry.signature == "" for entry in installed.values() if entry.tier == "provisional")
+    assert installed["threetears.evals.kernel.host.EvalHost"].signature.startswith("EvalHost(")
 
 
 # --- the rules, on made-up surfaces ------------------------------------------------------------------------------
@@ -143,7 +208,7 @@ def _release() -> object:
 def test_a_listed_name_no_root_exports_is_a_finding_regenerating_does_not_fix() -> None:
     """A stale list would read as a promise about a name that is not there."""
     findings = surface.tier_findings({})
-    assert len(findings) == len(surface.HOST_CONTRACT)
+    assert len(findings) == len(surface.HOST_CONTRACT) + len(surface.STABLE)
     assert not any(f.regenerating_fixes for f in findings)
     assert "threetears.evals.kernel.host.EvalHost, which no public root exports" in "\n".join(
         f.problem for f in findings
@@ -152,13 +217,13 @@ def test_a_listed_name_no_root_exports_is_a_finding_regenerating_does_not_fix() 
 
 def test_a_tier_change_is_a_diff_in_review() -> None:
     [finding] = surface.snapshot_findings(
-        {f"{A}.f": Entry("function", "f()", "closure")},
+        {f"{A}.f": Entry("function", "f()", "stable")},
         {f"{A}.f": Entry("function", "f()", "host-contract")},
         _release(),
         {f"{A}.f"},
     )
     assert finding.regenerating_fixes
-    assert "moved from tier host-contract to closure" in finding.problem
+    assert "moved from tier host-contract to stable" in finding.problem
 
 
 def test_a_host_contract_name_leaving_unrecorded_names_the_deprecation_cycle() -> None:
