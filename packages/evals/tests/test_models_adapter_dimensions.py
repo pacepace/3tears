@@ -24,10 +24,18 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.schema.completion import COMPLETION_RESULT_ATTRIBUTES
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS
+from threetears.evals.schema import DEFAULT_JUDGE_TEMPERATURE, ClientRequestSettings
+from threetears.evals.schema.completion import COMPLETION_RESULT_ATTRIBUTES, OPTIONAL_COMPLETION_ATTRIBUTES
 from threetears.models import DEFAULT_CHAT_MODEL
 
-from packages.evals.tests.models_adapter_support import ProviderTransport, build, mocked_providers, plan_reply
+from packages.evals.tests.models_adapter_support import (
+    HOSTS,
+    ProviderTransport,
+    build,
+    mocked_providers,
+    plan_reply,
+)
 
 #: Populated or ``None``, per provider and member, for a full reply.
 POPULATED, ABSENT = "populated", "None"
@@ -48,6 +56,7 @@ PINNED: dict[str, dict[str, str]] = {
         "served_model": POPULATED,
         "temperature": POPULATED,
         "stop_reason": POPULATED,
+        "sent_settings": POPULATED,
         "served_provider": ABSENT,
     },
     "openai": {
@@ -61,6 +70,7 @@ PINNED: dict[str, dict[str, str]] = {
         "served_model": POPULATED,
         "temperature": POPULATED,
         "stop_reason": POPULATED,
+        "sent_settings": POPULATED,
         "served_provider": ABSENT,
     },
     "openrouter": {
@@ -74,6 +84,7 @@ PINNED: dict[str, dict[str, str]] = {
         "served_model": POPULATED,
         "temperature": POPULATED,
         "stop_reason": POPULATED,
+        "sent_settings": POPULATED,
         "served_provider": POPULATED,
     },
 }
@@ -90,15 +101,15 @@ def net(monkeypatch: pytest.MonkeyPatch) -> Iterator[ProviderTransport]:
 
 
 def test_the_pin_covers_every_member_of_the_port() -> None:
-    """Non-vacuity: every row names exactly the port's members and the adapter's ``served_provider``."""
+    """Non-vacuity: every row names exactly the port's members, its optional ones, and ``served_provider``."""
     for provider, row in PINNED.items():
-        assert set(row) == {*COMPLETION_RESULT_ATTRIBUTES, "served_provider"}, provider
+        assert set(row) == {*COMPLETION_RESULT_ATTRIBUTES, *OPTIONAL_COMPLETION_ATTRIBUTES, "served_provider"}, provider
 
 
 @pytest.mark.parametrize("provider", sorted(PINNED))
 async def test_what_the_adapter_reads_off_a_full_reply_is_pinned(net: ProviderTransport, provider: str) -> None:
     plan_reply(net, provider)
-    client = build(net, provider, model=_MODELS[provider], temperature=0.2)
+    client = build(net, provider, model=_MODELS[provider], temperature=0.2, max_tokens=4096)
     result: Any = await client.generate(system="You grade.", user="Grade this.")
     seen = {member: ABSENT if getattr(result, member) is None else POPULATED for member in PINNED[provider]}
     moved = {
@@ -112,3 +123,47 @@ async def test_what_the_adapter_reads_off_a_full_reply_is_pinned(net: ProviderTr
         "the member's value is right, move PINNED and the design's table in the same commit, and say in the commit "
         "message which upgrade moved which member."
     )
+
+
+#: What a judge built from ``JUDGE_REQUEST_SETTINGS`` sends, per provider, when nothing is known of the model: its
+#: settings exactly, over adaptive thinking on Anthropic with no temperature beside it, and the temperature as asked
+#: elsewhere. The wire keys pin where each setting goes (OpenAI's cap as LangChain sends it, ``max_completion_tokens``).
+SENT_PINNED: dict[str, tuple[float | None, dict[str, Any]]] = {
+    "anthropic": (None, {"thinking": {"type": "adaptive"}, "output_config.effort": "high", "max_tokens": 10240}),
+    "openai": (DEFAULT_JUDGE_TEMPERATURE, {"reasoning_effort": "high", "max_completion_tokens": 10240}),
+    "openrouter": (
+        DEFAULT_JUDGE_TEMPERATURE,
+        {"reasoning": {"effort": "high"}, "provider.require_parameters": True, "max_tokens": 10240},
+    ),
+}
+
+
+def _at(body: dict[str, Any], path: str) -> Any:
+    for key in path.split("."):
+        body = body.get(key, {}) if isinstance(body, dict) else {}
+    return body
+
+
+@pytest.mark.parametrize("provider", sorted(SENT_PINNED))
+async def test_what_a_judge_is_sent_is_pinned_per_provider(net: ProviderTransport, provider: str) -> None:
+    """``sent_settings`` is what the request carried, read off the same request the wire shows."""
+    plan_reply(net, provider)
+    client = build(
+        net,
+        provider,
+        model=_MODELS[provider],
+        temperature=DEFAULT_JUDGE_TEMPERATURE,
+        max_tokens=JUDGE_REQUEST_SETTINGS.max_tokens,
+        reasoning_effort=JUDGE_REQUEST_SETTINGS.reasoning_effort,
+    )
+    directive = {
+        "type": "json_schema",
+        "json_schema": {"name": "judge_reply", "strict": True, "schema": {"type": "object", "properties": {}}},
+    }
+    result: Any = await client.generate(system="You grade.", user="Grade this.", response_format=directive)
+    temperature, wire = SENT_PINNED[provider]
+    body = net.last(HOSTS[provider])
+    assert {path: _at(body, path) for path in wire} == wire
+    assert result.temperature == temperature and body.get("temperature") == temperature
+    assert result.sent_settings == JUDGE_REQUEST_SETTINGS
+    assert isinstance(result.sent_settings, ClientRequestSettings)

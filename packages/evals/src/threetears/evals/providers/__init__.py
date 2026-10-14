@@ -15,7 +15,8 @@ catch-all is OpenRouter's public catalogue, which prices Anthropic and OpenAI mo
 Three SDK adapters and a price table here would duplicate all of that and then drift from it. So the adapter
 builds through ``create_chat_model``, prices through ``threetears.models.price_lookup``, and adds what the port
 needs that models does not do for it: retries off, a private breaker, the stop reason in the engine's words, the
-served model as the reply named it, and refusals where a setting cannot be carried. It imports only public names
+served model as the reply named it, and the closest setting a model accepts where it lacks the one asked for, reported
+as sent. It imports only public names
 of models and the public roots of this package.
 
 **What it promises, member by member** (each provider's row is pinned by
@@ -40,11 +41,23 @@ member fails there, and the commit that moves the pin says so):
   provider-reported failure, is ``error``. The raw value is ``provider_stop_reason`` (on OpenRouter its
   ``native_finish_reason`` when LangChain carries it), and every ``truncated`` reply is logged at WARNING with it,
   since the engine stores only its own word.
-* ``temperature`` is what the request carried, read back from the built model: LangChain drops a temperature OpenAI's
-  ``gpt-5`` family refuses (at build, and again from a Responses-API request), and a thinking budget on Anthropic
-  is built with none. A model that refuses a temperature is not a failed call: the provider's refusal (unbilled) is
-  answered by sending the same request once more without it, the completion reports ``None``, and that client sends
-  none from then on, logged once at WARNING (``models_client``'s module has the detail).
+* ``temperature`` is what the request carried, read back from the model the call went through: LangChain drops a
+  temperature OpenAI's ``gpt-5`` family refuses (at build, and again from a Responses-API request), none goes beside
+  Anthropic thinking, and none goes to a model known not to take one. A model that refuses a temperature is not a
+  failed call: the provider's refusal (unbilled) is answered by sending the same request once more without it, the
+  completion reports ``None``, and every client of the factory sends none from then on, logged once at WARNING
+  (``models_client``'s module has the detail).
+* ``sent_settings`` (the port's optional member) is what the served request carried: its output cap, its reasoning
+  effort word or budget as it went on the wire, and ``strict_output`` exactly when the request enforced its reply
+  format; ``None`` when the request carried no output cap. **The closest setting the model accepts is sent, never a
+  refusal**: a word the model lacks as its closest word (``max`` on OpenAI is ``xhigh``, ``minimal`` on Anthropic is
+  ``low``), a budget as the effort word its share of the cap maps to where only words are taken (OpenAI, OpenRouter,
+  Anthropic's adaptive-only models) and a word as that share of the cap where only budgets are, a strict format a
+  model cannot take unenforced, a cap above the model's own as that cap. What is known of a model comes from what a
+  provider refused in the factory's life, 3tears-models' capabilities, and OpenRouter's catalogue, in that order;
+  unknown is sent as asked, and a refusal of it is learned the same way as a temperature's. On OpenRouter, whose
+  refusal (a 404 under ``require_parameters``) names nothing, the temperature goes first and enforcement last
+  (``strict_output=False``).
 * ``cost_usd`` and ``price_source``: OpenRouter's own reported figure (``openrouter:reported``; under
   bring-your-own-key that is OpenRouter's fee alone, since LangChain drops the flag that would tell the upstream's
   charge apart, so a BYOK call is understated); on Anthropic and OpenAI the
@@ -65,9 +78,10 @@ ceiling alone; the stored cost stays OpenRouter's reported figure.
 
 What the request carries: retries off on every provider (the Anthropic and OpenAI SDKs retry twice by default,
 OpenAI an exhausted quota too, and the OpenRouter SDK, given no retry setting of LangChain's, backs off on a 5XX for
-up to an hour; the adapter's one resend is a request refused for its temperature), streaming off, a breaker that
-never opens, the output cap and the reasoning setting as asked or a refusal by name (:func:`models_client` lists them per provider), and a ``response_format``
-through models' structured-output translation.
+up to an hour; the adapter's only resends answer a provider's refusal of a setting, above), streaming off, a breaker
+that never opens, the output cap and the reasoning setting as the closest the model accepts (:func:`models_client`
+lists them per provider; only the caller's own errors, a word and a budget together or a budget not below the cap,
+are refused by name), and a ``response_format`` through models' structured-output translation.
 
 **The Claude CLI route is refused, for now.** models routes an Anthropic subscription token to the Claude CLI,
 whose wrapper reports every completion as finished (it synthesises ``stop``) and drops the served model and the

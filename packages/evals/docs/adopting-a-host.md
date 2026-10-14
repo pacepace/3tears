@@ -217,21 +217,30 @@ for those instead, which the run's asked settings do not describe. The engine's 
 the simulated user `low` (`SIMULATOR_REQUEST_SETTINGS`, strict, since every simulator call sends a strict reply
 schema) and the analysis generator `medium` (`analysis_gen_request_settings_for`, whose output cap is the answer
 budget plus a reasoning headroom of at least 1024 tokens, 8192 unless you set one; the headroom sizes the cap and is
-never sent, so a `*_reasoning_budget_tokens` setting your configuration kept is that headroom now). The adapter sends every request once (retries off; the one resend, after a refused
-temperature, is below), keeps a circuit breaker of its own that never opens, prices Anthropic and OpenAI calls from
-models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced is `None` with the reason, never
-`0`), and refuses by name a reasoning word or budget the provider cannot carry rather than sending its nearest
-neighbour. That refusal, and a role with no model or a provider with no
-key, raise `ModelsClientRefused` (a `ValueError`), naming the setting and what to pass instead.
+never sent, so a `*_reasoning_budget_tokens` setting your configuration kept is that headroom now). The adapter sends every request once (retries off; the only resends answer a
+provider's refusal of a setting, below), keeps a circuit breaker of its own that never opens, and prices Anthropic
+and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced is `None`
+with the reason, never `0`). Only the caller's own errors are refused: a reasoning word and a budget together, a
+budget below Anthropic's 1024 floor or not below the output cap, a budget off Anthropic with no `max_tokens`, a role
+with no model, a provider with no key; each raises `ModelsClientRefused` (a `ValueError`), naming the setting and
+what to pass instead.
 
-**A model that refuses a temperature still answers.** The engine asks every judge call for a temperature, and some
-models refuse one outright (an Anthropic model on which `temperature` is deprecated, an OpenAI model that takes only
-its default). 3tears-models does not say which, so the adapter learns it from the provider's own refusal: the refused
-request, which generated nothing and is not billed, is sent once more without the temperature, the completion
-reports `temperature=None` (recorded as the model's default), and that client sends none for the rest of its life,
-logging it once at WARNING. On OpenRouter, which drops a parameter an upstream does not take, the same happens for
-a structured call whose `require_parameters` left no upstream that takes the temperature. Any other refusal, and a
-failure of that one resend, is raised as before.
+**A model that lacks a setting still answers, sent the closest one it takes.** Each completion's `sent_settings`
+says what its request carried. A word the model lacks goes as its closest word, never more than asked (`max` on
+OpenAI is `xhigh`; `minimal` on Anthropic is `low`); a budget goes as the effort word its share of `max_tokens` maps
+to where a model takes words only (OpenAI, OpenRouter, Anthropic's adaptive-only models: the judge's 8192 of 10240
+is `high`), and a word as that share of the cap where a model takes budgets only; an Anthropic effort word rides
+adaptive thinking, with no temperature beside it; a strict reply format a model cannot take goes unenforced. What is
+known of a model comes from what a provider refused in the factory's life, then 3tears-models' capabilities, then
+OpenRouter's catalogue (once `load_prices` read it); unknown is sent as asked. A provider's refusal of a setting the
+request carried (an Anthropic model on which `temperature` is deprecated or a thinking budget unsupported, an OpenAI
+model that takes only its default temperature or fewer effort words) is answered by sending the request once more
+with the closest setting the model then takes: the refused request generated nothing and is not billed. Once served,
+every client of the factory sends that way for the rest of its life, logged once at WARNING. On OpenRouter, a strict
+call whose `require_parameters` leaves no endpoint (a 404 naming no parameter) is resent without its temperature,
+keeping enforcement, and only if that still finds none, without enforcement, which its `sent_settings` records as
+`strict_output=False`. Any other refusal, and a refusal of a resend for a setting already dropped, is raised as
+before.
 
 **Load prices once at boot.** `await clients.load_prices()` reads the price catalogue for every default model and
 returns, for each one left unpriced, why (`{}` when all are priced); a model the engine names beyond your defaults

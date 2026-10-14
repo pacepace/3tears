@@ -7618,12 +7618,12 @@
     },
     "threetears.evals.providers.ModelsCompletion": {
       "kind": "dataclass",
-      "signature": "ModelsCompletion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, provider_stop_reason: str | None, served_provider: str | None, pricing_failure: str | None)",
+      "signature": "ModelsCompletion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, provider_stop_reason: str | None, served_provider: str | None, pricing_failure: str | None, sent_settings: ClientRequestSettings | None)",
       "tier": "closure"
     },
     "threetears.evals.providers.ModelsCompletionClient": {
       "kind": "class",
-      "signature": "ModelsCompletionClient(*, model_name: str, provider: SupportedProvider, chat_model: RunnableBinding[Any, Any], call_output_config: Mapping[str, Any], prices: HttpClient | None) -> None",
+      "signature": "ModelsCompletionClient(*, model_name: str, provider: SupportedProvider, chat_model: RunnableBinding[Any, Any], asked: WireSettings, prices: HttpClient | None) -> None",
       "tier": "closure"
     },
     "threetears.evals.providers.ModelsFailureDescriber": {

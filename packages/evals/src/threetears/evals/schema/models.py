@@ -2833,8 +2833,10 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
 
     **Reasoning is asked for one way or the other, never both.** ``reasoning_effort`` is a level
     (an effort word), which is how the engine's own constants ask; ``reasoning_max_tokens`` is a
-    budget in tokens, which some models take instead of a word. Nothing in this package converts one
-    into the other: a client that sends a model one in place of the other reports what it sent. A
+    budget in tokens, which some models take instead of a word. The engine never converts one into
+    the other; a client that sends a model one in place of the other (the shipped adapter, in
+    :mod:`threetears.evals.providers`, maps either onto the one a model takes by its share of
+    ``max_tokens``) reports what it sent. A
     request carrying both would leave the provider to pick, and the record could not say which it
     did, so a settings value naming both is refused rather than given a precedence.
     """

@@ -2,7 +2,8 @@
 
 What each test holds, by the port's terms: a completion meets :class:`~threetears.evals.schema.CompletionResult`
 on every provider; a schema's reply is the raw JSON text the model wrote; reasoning settings reach the wire as
-each provider takes them, and every one a provider cannot take is refused by name before anything is sent;
+each provider takes them, one a model does not take goes as the closest it does, and only the caller's own errors
+are refused by name before anything is sent;
 retries are off (on OpenRouter too, whose SDK has a default backoff of its own) and the client's breaker is its
 own; a call is priced from the catalogue or OpenRouter's own figure, and an unpriced one says why; the served
 model is the reply's, never a requested alias echoed back; the stop reason is the engine's word, with a refusal as
@@ -29,8 +30,9 @@ from langchain_core.runnables import RunnableBinding
 
 from threetears.evals.kernel import OutOfRunBudget, PlannedCall, ValidationFailedError
 from threetears.evals.providers import ModelsClientRefused, ModelsCompletion, ModelsCompletionClient, models_client
+from threetears.evals.providers.adapter import WireSettings
 from threetears.evals.run.judge import sent_temperature
-from threetears.evals.schema import MODEL_DEFAULT_TEMPERATURE, OutOfRunSpend
+from threetears.evals.schema import MODEL_DEFAULT_TEMPERATURE, ClientRequestSettings, OutOfRunSpend
 from threetears.evals.testing import check_completion_conformance
 from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL, CircuitOpenError, create_chat_model
 
@@ -160,14 +162,19 @@ async def test_an_unknown_directive_is_refused_before_anything_is_sent(net: Prov
 
 
 async def test_anthropic_s_effort_rides_one_output_config_beside_the_schema(net: ProviderTransport) -> None:
-    """A second bind would replace the first, losing the schema; the adapter merges them."""
+    """A second bind would replace the first, losing the schema; the adapter merges them.
+
+    The effort rides adaptive thinking (without it a newer model reasons nothing), and no temperature goes beside
+    thinking, which the API refuses: the completion says none was sent.
+    """
     plan_reply(net, "anthropic")
     client = build(net, "anthropic", reasoning_effort="low", temperature=0.2)
-    await _generate(client, response_format=SCHEMA_DIRECTIVE)
+    result = await _generate(client, response_format=SCHEMA_DIRECTIVE)
     body = net.last(ANTHROPIC_HOST)
     assert body["output_config"]["effort"] == "low"
     assert body["output_config"]["format"]["type"] == "json_schema"
-    assert body["temperature"] == 0.2
+    assert body["thinking"] == {"type": "adaptive"}
+    assert "temperature" not in body and result.temperature is None and client.temperature is None
     await _generate(client)
     assert net.last(ANTHROPIC_HOST)["output_config"] == {"effort": "low"}
 
@@ -197,19 +204,63 @@ async def test_openai_and_openrouter_take_the_effort_word(net: ProviderTransport
 
 
 @pytest.mark.parametrize(
-    ("provider", "settings", "setting", "says"),
+    ("provider", "settings", "wire", "sent"),
     [
-        ("anthropic", {"reasoning_effort": "minimal"}, "reasoning_effort", "ask for 'low'"),
-        ("openai", {"reasoning_effort": "max"}, "reasoning_effort", "ask for 'xhigh'"),
-        ("openai", {"reasoning_max_tokens": 4096}, "reasoning_max_tokens", "no reasoning token budget"),
-        ("openrouter", {"reasoning_max_tokens": 4096}, "reasoning_max_tokens", "strips reasoning.max_tokens"),
-        ("anthropic", {"reasoning_effort": "low", "reasoning_max_tokens": 2048}, "reasoning_effort", "never both"),
-        ("anthropic", {"reasoning_max_tokens": 512}, "reasoning_max_tokens", "below 1024"),
-        ("anthropic", {"reasoning_max_tokens": 4096, "max_tokens": 4096}, "reasoning_max_tokens", "not below"),
-        ("anthropic", {"reasoning_max_tokens": 70_000}, "reasoning_max_tokens", "default output cap"),
+        # Anthropic has no `minimal`: its lowest word, over adaptive thinking.
+        (
+            "anthropic",
+            {"reasoning_effort": "minimal", "max_tokens": 5120},
+            {"output_config": {"effort": "low"}, "thinking": {"type": "adaptive"}},
+            {"max_tokens": 5120, "reasoning_effort": "low"},
+        ),
+        # OpenAI's highest is `xhigh`.
+        (
+            "openai",
+            {"model": "gpt-5-mini", "reasoning_effort": "max", "max_tokens": 4096},
+            {"reasoning_effort": "xhigh"},
+            {"max_tokens": 4096, "reasoning_effort": "xhigh"},
+        ),
+        # OpenAI takes no budget: 4096 of 5120 is a 0.80 share, `high`.
+        (
+            "openai",
+            {"model": "gpt-5-mini", "reasoning_max_tokens": 4096, "max_tokens": 5120},
+            {"reasoning_effort": "high"},
+            {"max_tokens": 5120, "reasoning_effort": "high"},
+        ),
+        # OpenRouter's SDK types no budget: 1024 of 5120 is a 0.20 share, `low`.
+        (
+            "openrouter",
+            {"reasoning_max_tokens": 1024, "max_tokens": 5120},
+            {"reasoning": {"effort": "low"}},
+            {"max_tokens": 5120, "reasoning_effort": "low"},
+        ),
     ],
 )
-def test_a_reasoning_setting_a_provider_cannot_carry_is_refused_by_name(
+async def test_a_reasoning_setting_a_provider_does_not_take_is_sent_as_the_closest_one(
+    net: ProviderTransport, provider: str, settings: dict[str, Any], wire: dict[str, Any], sent: dict[str, Any]
+) -> None:
+    """Owner ruling, 2026-10-13: never refused for what the model lacks; sent as the closest, and reported so."""
+    plan_reply(net, provider)
+    result = await _generate(build(net, provider, **settings))
+    body = net.last(HOSTS[provider])
+    assert {key: body.get(key) for key in wire} == wire
+    assert result.sent_settings == ClientRequestSettings(**sent)
+
+
+@pytest.mark.parametrize(
+    ("provider", "settings", "setting", "says"),
+    [
+        ("anthropic", {"reasoning_effort": "low", "reasoning_max_tokens": 2048}, "reasoning_effort", "never both"),
+        ("openrouter", {"reasoning_effort": "extreme"}, "reasoning_effort", "not one of the engine's words"),
+        ("anthropic", {"reasoning_max_tokens": 512}, "reasoning_max_tokens", "below 1024"),
+        ("anthropic", {"reasoning_max_tokens": 4096, "max_tokens": 4096}, "reasoning_max_tokens", "not below"),
+        ("openai", {"reasoning_max_tokens": 4096, "max_tokens": 2048}, "reasoning_max_tokens", "not below"),
+        ("anthropic", {"reasoning_max_tokens": 70_000}, "reasoning_max_tokens", "default output cap"),
+        ("openai", {"reasoning_max_tokens": 4096}, "reasoning_max_tokens", "pass max_tokens"),
+        ("openrouter", {"reasoning_max_tokens": 4096}, "reasoning_max_tokens", "pass max_tokens"),
+    ],
+)
+def test_a_reasoning_setting_that_is_the_caller_s_error_is_refused_by_name(
     net: ProviderTransport, provider: str, settings: dict[str, Any], setting: str, says: str
 ) -> None:
     with pytest.raises(ModelsClientRefused, match=says) as refused:
@@ -500,7 +551,7 @@ async def test_any_other_refusal_is_raised_and_not_resent(
     assert client.temperature == 0.0, "nothing was learned"
 
 
-@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
 async def test_a_refusal_of_the_resend_is_raised(net: ProviderTransport, provider: str) -> None:
     """The resend is the one extra request: if it is refused too, that refusal is raised and nothing is learned."""
     net.plan(HOSTS[provider], TEMPERATURE_REFUSALS[provider])
@@ -510,6 +561,22 @@ async def test_a_refusal_of_the_resend_is_raised(net: ProviderTransport, provide
     refused, resent = net.sent(HOSTS[provider])
     assert refused["temperature"] == 0.0 and "temperature" not in resent
     assert client.temperature == 0.0, "nothing was learned from a resend that was not served"
+
+
+async def test_openrouter_s_last_resend_drops_enforcement_and_its_refusal_is_raised(net: ProviderTransport) -> None:
+    """Decision 8: a 404 under require_parameters drops the temperature, then enforcement; each is one resend.
+
+    When the request without either still finds no endpoint, that refusal is raised and nothing is learned.
+    """
+    net.plan(OPENROUTER_HOST, TEMPERATURE_REFUSALS["openrouter"])
+    client = build(net, "openrouter", temperature=0.0)
+    with pytest.raises(Exception):  # noqa: B017 -- the SDK's own error type; the count is what is held
+        await _generate(client, **REFUSED_CALL["openrouter"])
+    refused, without_temperature, unenforced = net.sent(OPENROUTER_HOST)
+    assert refused["temperature"] == 0.0 and refused["provider"]["require_parameters"] is True
+    assert "temperature" not in without_temperature and without_temperature["provider"]["require_parameters"] is True
+    assert "temperature" not in unenforced and unenforced["provider"]["require_parameters"] is False
+    assert client.temperature == 0.0, "nothing was learned from resends that were not served"
 
 
 async def test_a_client_built_without_a_temperature_is_never_resent(net: ProviderTransport) -> None:
@@ -900,7 +967,7 @@ async def test_openrouter_s_provider_stop_reason_is_its_native_finish_reason_whe
         model_name="x/y",
         provider="openrouter",
         chat_model=RunnableBinding(bound=GenericFakeChatModel(messages=iter([carried])), kwargs={}),
-        call_output_config={},
+        asked=WireSettings(),
         prices=FakeCatalogue(),
     )
     result = await _generate(client)
