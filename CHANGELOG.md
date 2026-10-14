@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: one report path, verdict first
+
+- **A report is one page, written by code.** Every door (`compare(...).report`, `campaign_report`, the command
+  line's `report`, the `report_read` action) renders the same page: a title and a basis line (a question declared
+  before the run, or `EXPLORATORY`), a verdict line code writes (the test setup failed and how to fix it, too few
+  cases, the declared questions, or leads only), a scoreboard counting each arm's trials as passed, failed or lost to
+  the test setup by cause, the memo's findings and recommendations, the contrasts against the control, every case,
+  one drill-down per trial, what was not tested, and the methods. No arm is called a winner, and below 5 usable cases
+  a rate is a count.
+- **`Report.write(dir)` / `Comparison.write(dir)`** write one scriptless HTML page, its Markdown and `bundle.json`;
+  the bundle is the machine form, and `report_read(format="json")` returns it. Two charts, an outcome bar and
+  interval rows, are drawn as inline SVG with every value written as text.
+- **Removed:** the `threetears.evals.vega` adapter and the `[vega]` extra, the chart renderer seam and
+  `report_charts`, `ChartPalette` and `ChartFont`, the published Report JSON schema, the chart intent root
+  `threetears.evals.analysis.viz`, the arm table and the decision surface table. The memo writer no longer writes
+  a headline, a summary or a chart; it refuses an adoption in an exploratory campaign. Analyses regenerate
+  (`REGENERABLE_SCHEMA_VERSION` 11), and the bundle's shape is 54. `packages/evals/MIGRATIONS.toml` has the detail.
+
 ## v0.67.0 -- 2026-10-13
 
 ### 3tears-evals joins the family: measuring what a change to an LLM-backed feature does

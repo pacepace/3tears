@@ -180,9 +180,8 @@ Subtract rubric criteria before adding them. Blind human ratings are a separate 
 *Evidence:* analysis writer, a latitude A/B with a pre-stated rule and a 2×2 form × input study, 2026-09: groundedness near 2 in every condition, the latitude arm failing its rule, and judge test–retest noise (0.42–0.46) exceeding every effect ranked; single campaign.
 
 **Code renders every number, and the model's prose references them.** A deterministic gate over prose never
-converges ([What the schema checks](reading-reports.md#what-the-schema-checks-and-what-only-the-model-does)).
-A headline or summary bullet names the findings it rests on, so code shows it at their weakest tier and refuses a
-common null phrasing over findings that established no null
+converges. The verdict line and every count on a report are code's; a recommendation names the findings it rests
+on, and code refuses a common null phrasing in a finding's title when the finding established no null
 ([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
 Never build a prompt's worked example from real output: it fossilises that output's errors.
 *Evidence:* analysis writer, 2026-07 to 2026-09, 10 of 10 checkable claims in two production memos were false, a prose fact gate grew to 4,099 lines in 33 days and was deleted, and an example taken from a real memo had its false claim reproduced near-verbatim; single program.

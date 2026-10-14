@@ -49,7 +49,7 @@ durable sibling, `SqliteDocumentStore`, keeps every document in one SQLite file 
 a host with no database of its own can use it as its store.
 
 Import only from a public root (`threetears.evals.PUBLIC_ROOTS` lists them, including
-`threetears.evals.kernel.host` and `threetears.evals.analysis.viz`), and only the names
+`threetears.evals.kernel.host`), and only the names
 its `__all__` declares; never from a module below one. Every engine type a public signature hands you — a protocol you implement, a value you
 receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
 The stored documents and the ports you implement (`DocumentStore`, `CompletionClient`, `TraceSink`) are in
@@ -651,10 +651,10 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.0), regenerable documents (v10), cassettes
-(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 53), the cell model
-(`CELL_MODEL_VERSION`, 13), the report (`REPORT_VERSION`, 10) and the identity keys (`IDENTITY_VERSION`, 24) carry
-separate versions, each at its first public release's value.
+**Each version space moves on its own.** Core documents (v15.0), regenerable documents (v11), cassettes
+(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 54), the cell model
+(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions. The report has
+none: it is a page rendered from the bundle, which is the versioned machine form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
 `<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its

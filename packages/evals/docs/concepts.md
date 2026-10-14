@@ -404,13 +404,21 @@ written: the bundle is the whole context. The CLI's `bundle` prints it inside a 
 `bundle.to_json()`.
 
 #### Analysis
-Findings a model wrote over a bundle (`EvalAnalysis`): a headline, findings, decisions and next steps, with
-every number in its prose replaced by the value code read. Optional, and it costs money.
+Findings a model wrote over a bundle (`EvalAnalysis`): findings, recommendations and next steps, with every number
+in its prose replaced by the value code read, stored with the bundle it was written over. Optional, and it costs
+money; the verdict and every count on the report are code's either way.
 
 #### Report
-The one document a campaign is read through (`Report`): ordered text, table, chart and disclosure blocks,
-serialised as Markdown, HTML or canonical JSON. Without an analysis it is a **code-only report**
-(`basis="code_only"`): the evidence, with no author's words.
+The one page a campaign is read through (`Report`), verdict first: a basis line, code's verdict line and each arm's
+scoreboard, then the memo and the contrasts, the cases, one drill-down per trial, what was not tested and the methods
+([Reading reports](reading-reports.md)). `Report.write(dir)` writes it as one scriptless HTML page, as Markdown, and
+the bundle it was computed from. Without an analysis it is a **code-only report** (`basis="code_only"`): the
+evidence, with no author's words.
+
+#### Trial
+One case run once on one arm — one stored result. It is passed, failed (the candidate's failure: its model, its
+budget, a check or a judged dimension) or lost (the test setup's: the harness faulted, the judge could not tell, or
+the judge's reply was cut off at its cap). A lost trial says nothing about the candidate.
 
 #### Decision surface
 The campaign's measured analysis cells (one `CellFacts` each) and the bars they were held to, frozen when

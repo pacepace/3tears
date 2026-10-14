@@ -1,126 +1,140 @@
 # Reading reports
 
-**For** anyone with a campaign (runs to compare) who wants to read what it found, render it, or build a renderer.
-**Answers:** what each part of a report means, which statistical method produced each number, how arms are
-named, how far a judged score can be trusted (evidence tiers), and how charts are drawn. Terms such as
-campaign, arm, cell and analysis are defined in [Concepts](concepts.md).
+**For** anyone with a campaign (runs to compare) who wants to read what it found, put it in front of someone, or
+embed it in a host. **Answers:** what each screen of a report says and where its numbers come from, which
+statistical method produced each number, how arms are named, and how far a judged score can be trusted (evidence
+tiers). Terms such as campaign, arm and analysis are defined in [Concepts](concepts.md).
 
-## The report
+## The report: one page, verdict first
 
-Every campaign is read through one document, the **report**: blocks in reading order, `text` (what an analysis's
-author wrote, with a role), `table`, `chart` and `disclosure` (what code must add), each linked to the findings it
-belongs to or rests on. With an **analysis** (a model reading the campaign's numbers and writing findings), the
-report carries those findings beside the evidence; without one it is a **code-only report**, every table and
-chart code can build and a line saying no analysis was generated. Either way the decision surface's charts lead its
-table, and a finding's evidence that compares arms is drawn ahead of its table unless the author's own chart drew:
-the chart is the reading form, the table the audit form. Either way every number comes from code, and a
-model never decides how much a judged score can be trusted. [`examples/reports.py`](../examples/reports.py) writes
-one to files, offline. `analysis_report(storage, analysis_id, scope_id)` returns a generated analysis's `Report`:
+Every campaign is read through one **report**, and every door into it returns the same page: the quick path's
+`comparison.report`, the command line's `report`, the `report_read` operation behind the MCP action, and
+`campaign_report(host, campaign_id, scope_id)`. Each door builds it with the one builder over the campaign's
+evidence bundle, so none adds, drops or reorders anything. Most of what a reader needs is countable — who ran, what
+got lost and why, which case failed, what the judge said — so code writes all of it; a model's analysis, when one
+was written, adds only findings and recommendations, each pinned to the evidence it rests on.
 
 ```python
-from threetears.evals.analysis import analysis_report, report_html, report_markdown
-
-report = analysis_report(host.storage, analysis_id, scope_id)
-report.to_canonical_json()   # validated by the published schema, report/schema.json (see below)
-report_markdown(report)      # for an agent, or to paste as a memo
-report_html(report)          # a page that reads without a script
+report = comparison.report                                   # the quick path
+report = campaign_report(host, campaign_id, scope_id)        # a host
+files = report.write("eval-report")    # report.html (one page, no script), report.md, bundle.json
 ```
 
-## The words are served with the numbers
+`report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
+page; its two charts are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each
+chart printed as the table of its values. `bundle.json` is the evidence bundle the page was computed from, with its
+`schema_version`; the page names its fingerprint, and `AnalysisContextBundle.from_json(...).fingerprint()` over the
+file returns the same one. **The bundle is the machine form**: there is no published JSON of the report, and a host
+that wants its own pictures reads the bundle. `report_read(format="json")` and the command line's `--format json`
+return it too. [`examples/reports.py`](../examples/reports.py) writes one, offline.
 
-A client renders a report from its JSON alone and prints only words this package wrote; it never formats a
-number or keeps its own copy of a heading. The JSON carries:
+### Words a reader is told
 
-| Where | Field | What it is |
-|---|---|---|
-| The report | `title`, `byline` | The line every serializer heads the report with, and the one under it. An analysis report's title is its headline, led by the campaign's name when the report carries it (`source.campaign_name`, which `analysis_report` and `campaign_report` set); a code-only report's names the campaign by its name, or else its id. |
-| Every block | `section_title` | The heading of its section (`SECTION_TITLES`), so a client groups blocks under the same words. |
-| Every block | `finding_number` | The finding it belongs to, counted from 1 as a reader counts (`finding` counts from 0); null when it belongs to none. |
-| Every block | `rests_on_numbers` | The findings it rests on, counted from 1 as `finding_number` counts (`rests_on` holds the same findings counted from 0), in `rests_on`'s order. |
-| A table block | `rows` | Each row keys every column, and each cell is `{"value": ..., "text": ...}`: the value to sort and draw by, the text to print — the number rule's spelling (`format_number`), a dash for an absent value, `yes`/`no` for a boolean. `TableBlock.values()` reads the rows as values alone. |
-| A chart block | `columns`, `rows` | Its values-as-drawn table, cells as above, its columns already chosen for printing (a distribution's `Shape` column is left out when no row knows a shape; the intent keeps it). The `intent` beside them is what a renderer draws from. |
+A **trial** is one case run once on one arm. It ends in exactly one of three states: **passed**; **failed**, the
+candidate's failure (its model failed, its turn budget or its output cap ended a turn, a check failed, or a judged
+dimension scored under the bar); or **lost**, the test setup's failure (the harness faulted, the judge could not tell
+on a dimension the trial needs, or the judge's reply was cut off at its output cap). A lost trial says nothing about
+the candidate. The first two screens never use the engine's own nouns for these things (cell, observation,
+excluded, rig, harness, apparatus) and never call an arm a winner: arms are named by the lever that differs, and an
+arm's standing is a code verdict or nothing.
 
-These are derived from the fields beside them: a report read back from its JSON re-derives them and discards what
-the document said, so a served word cannot drift from what it states, and the schema requires every one.
+A count of usable trials is never printed alone ("8 of 12 trials usable (4 lost to the test setup)") and never
+beside a pass rate. **Below `MIN_CASES` (5) cases with a usable trial, a rate is printed as a count** ("1 of 2"),
+never as a percentage, a difference or an interval, and a contrast reads `not tested (n=2)` with no Δ.
 
-A chart reaches a browser as the Vega-Lite adapter's compiled spec (`threetears.evals.vega`), whose axes carry
-their number formats: axis ticks are the one place a client formats a number, and the spec says how.
+### Screen 1: the title, the basis, the verdict and the scoreboard
 
-## The campaign's report
+The page's `<header>`. Line 1 is the **title**: the campaign, its arms (the control first), the date, and whether an
+analysis was written and by which model. Line 2 is the **basis**, always: `Question declared before the run: "..."`,
+or `EXPLORATORY — no question was declared before the run, so nothing below is a decision.` (and which questions
+were declared after the run began, when any were).
 
-**The campaign's report** is `campaign_report(host, campaign_id, scope_id)` — the one answer the CLI's
-`report` and the `report_read` action both give: the campaign's newest analysis that is not archived,
-or, when it has none, a **code-only report** of its evidence (`build_code_only_report`).
+Line 3 is the **verdict**, written by code, never by a memo. It is the first rule that fires:
 
-A code-only report has `basis="code_only"` and no author's words — no headline, no findings, no text block,
-which the published schema and the model both refuse. It holds:
+1. **The setup gate.** An arm lost more than a third of its trials to the test setup, or the arms' loss shares
+   differ by more than a third: `NO VERDICT. The test setup failed, not the models: <arm> lost N of M trials, most
+   because <cause>. Fix: <remedy>.` Every loss cause has its words and remedy (`LOSS_CAUSE_WORDS`); a judge cut off
+   at its cap is named with the cap it was sent (`max_tokens=10240`), and its remedy is to raise it and rerun.
+2. **Too small.** An arm has fewer than `MIN_CASES` cases with a usable trial: the run can show failures, not
+   differences.
+3. **A declared question.** One clause per question declared before the run, in the contrasts' and guardrails' own
+   words.
+4. **Exploratory.** `Leads only:` and the contrasts that separated, or that none did.
 
-- the campaign's declared questions, when it declares any, with the readings no question names
-  ([exploratory](#readings-no-question-asked-about-exploratory));
-- the arm table: each arm and every lever it ran, with no status column (every arm is unresolved, since
-  nothing decided) and no finding column (there are no findings);
-- the guardrails, each decided for each arm against the control ([below](#reading-the-guardrails));
-- the decision surface, led by a distribution chart per judged dimension and per measure with a better end,
-  drawn across the arms, except a label's statistics (they are in the labels table), `match` where `accuracy` is
-  charted, a cost no result reported, and a reading only one arm drew (nothing to compare);
-- the contrasts the evidence tested against the control;
-- for a classifier, one `labels` table of each label's precision, recall and F1, a row per label and arm:
-  precision and recall with their 95% Wilson intervals over the cases, F1 with none (it has none by construction), and
-  every figure with the n it is counted over;
-- the results by stratum when the cases declare strata ([below](#results-by-kind-of-case-strata));
-- every disclosure the evidence carries, opening with one line saying no analysis was generated.
+Then the **scoreboard**: per arm, the trials it ran, those lost to the test setup by cause (largest first), the
+usable ones, those that passed, those that failed by cause, what this test cost across every role, and what a reply
+cost in production's roles. Below it the **outcome bar** — one stacked bar per arm, passed, failed and lost cause by
+cause, every count written as text — then one line on the design (`4 cases × 3 repeats`) and one sentence naming
+every chart that was not drawn and why.
 
-**What an analysis would add.** A code-only report is what code computed; nothing in it reads the numbers.
-An analysis adds that reading: findings, each with the evidence it rests on and the caveats that qualify it;
-a decision per declared question, with its confidence; which arm won and why; and what to run next. No
-headline, finding, decision or answer to a declared question appears in a code-only report.
+### Screen 2: what it means
 
-**Coverage, joined.** An analysis's report opens What to run next with a `coverage` table: each lever of the
-coverage map, its status, the findings whose `axes` name it (or "no finding") and the next steps whose `lever`
-names it. A `thin` or `unswept` lever no step names reads "no next step names it". A step naming a lever with
-no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
-a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
+With an analysis, its **memo**: the answers to the declared questions, the findings (`F1`, `F2`, …, each with its
+confidence, what it stands on, the trials it is drawn from, its evidence table, an interval chart per reading where
+an arm has the cases for one, and its caveats), the **recommendations** (each naming the findings it rests on and
+linking the cases their trials show), what to run next, and the coverage map joined to the findings and next steps.
+The section opens by saying who wrote it, and that every number is code's. Without an analysis it is one line saying
+none was written, and the declared questions standing unanswered.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 10.
+Then the **contrasts against the control**: reading, control, arm, Δ with its interval, verdict and cases; the
+standardized effect, the pairing correlation and the Holm-adjusted p fold away in a `<details>`. Under it, one
+interval chart per reading, each arm minus the control with its interval, a zero line and the margin as a band. Then
+the guardrails, the readings by stratum and a classifier's per-label table, each in its own fold.
 
-## Reading the arm table
+### Screen 3: cases
 
-An analysis's arm table gives each arm a status, read off the decisions that name its cells:
+One row per case: its label (its stratum and the first words its first trial's transcript recorded, else its id),
+then each arm's trials as marks (`✓ ✓ ✗`, `– – – (lost: judge truncated ×3)`), and the trials to open. Regressions
+come first (the control passed and an arm failed), then cases an arm has no usable trial of, then the rest.
 
-| Status | What it means |
-|---|---|
-| winner | an adopted decision names it |
-| contradicted | one decision adopts it and another rejects it |
-| ruled out | a rejected decision names it |
-| replaced incumbent | the control, when some other arm won |
-| unresolved | no decision reached a verdict on it; a deferred decision is not a verdict |
+### Screen 4: trials
 
-Generation refuses a memo that adopts and rejects one arm, so a generated analysis does not carry
-**contradicted**. Where one does, neither verdict is shown as standing, and a disclosure names it.
+One drill-down per trial: what the case asked, the last part of what the judge was handed (at most 2,000
+characters, with how many came before), each failed check by its name with its expression, each judged dimension's
+criterion, score and reason, the recorded error for a lost or failed trial with the cause in words, and the stored
+result's id for `result_get`. The first 20 lost or failed trials start open. A bundle carries at most 500 trials,
+the lost and failed kept first; the scoreboard counts every one.
 
-## Reading the decision surface
+### Screen 5: not tested
 
-The decision surface is a row per cell (an arm under one rig) with every bar's verdict and the cost and
-latency figures. **Its row order is not a ranking**, and the table says so in its caption (`order` on the
-table block):
+A list, never a score: levers declared and not swept, cases an arm has no usable trial of, goal checks not shown to
+beat doing nothing, measures tested with no margin (so nothing on them can read `equivalent`, with how to declare one),
+guardrails left undecided, uncontrolled stimuli, and cost not measured.
 
-- The control's rows come first, marked `(control: the reference)`: every other arm is read against them.
-  They lead because they are the reference, not because they were picked.
-- The other arms follow in alphabetical order of their names, and an arm measured under several rigs lists
-  its rigs by id.
-- With no control row, no row is the reference, and the caption says that instead.
+Last, each judge not yet calibrated against people, as a state and its next step: "Judge … is uncalibrated on …: no
+human labels yet, so its numbers are directional. Rate about 20 of its outputs to calibrate it." A new judge has no
+labels, so a first campaign's report says this for every judge it used. It is where the judge stands, not something
+that went wrong, and it sits here rather than beside the trials the test setup lost.
 
-A bar on a judged dimension is only as trustworthy as its judges, so its verdict carries
-`judge_evidence_tier` and the cell states it beside the value (`3.5 ± 0.25 (n=6), judge tier separation`).
-A bar on a measured quantity or a goal check has none. A bar on `pass_hat_k` gets no row verdict, because no cell carries pass^k. The frontier reads
-it instead, decides each contestant's pass^k interval against it by the same three-valued rule, and names
-the variants below it (`frontier.bar`, each point's `bar_decision`). A bar on any other measure is never
-passed to the frontier: `frontier_bar_withheld` says which bars exist and that the frontier's `n_cleared_bar`
-is then no count.
+### Screen 6: methods and disclosures
 
-Read which arm the evidence favours from the contrasts against the control and the analysis's decisions,
-never from which row is on top. The results by stratum follow the same order, and so does the analysis
-writer's `cell_measures`, so when the control was measured its first cell (`c1`) is the control's.
+The judge (served model, configuration, temperature and the settings it was sent, its evidence tier), how many trials
+each arm lost to a truncated judge and the cap it was sent, any differential loss between arms, the candidates as
+served, the request settings, when each arm ran, member runs left out or short, the design's own confounds, the
+dataset (its case sets), whether the design was declared before the run and frozen, who wrote the memo, and the
+bundle's shape, fingerprint and the package version that built it. Every disclosure is computed from the bundle, so
+every door carries the same set — the self-judging, no-margin and guardrail-standing lines `compare` once added on
+its own included.
+
+### The two charts
+
+Two shapes, drawn by the package as inline SVG with no dependency: the **outcome bar** on the scoreboard (a census,
+always drawn) and **interval rows** (a dot and its interval per row, value, interval and cases written at the right,
+a zero line for a difference and a band for a declared margin). A row is drawn only for an arm with `MIN_CASES`
+usable cases and an interval; a chart with no such row is not built at all — no figure, no stub — and the
+scoreboard's one sentence says what was left out. Colours come from the page's CSS variables, stepped for light and
+dark; no colour is the only encoding, every count is text, each chart has a `<title>` and a `<desc>` stating its
+values, and a visually hidden table beside it holds them for a screen reader.
+
+### Embedding the page in a host
+
+Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`
+with a strict content security policy (`default-src 'none'; style-src 'unsafe-inline'` holds: the page has no
+script and inline SVG needs no `img-src`); or show that route in an `<iframe sandbox>` with no `allow-scripts`,
+changing the host's own `frame-ancestors` to `'self'`. Linking to the route needs no change at all.
+
+`Report.basis` says whether an analysis wrote the memo (`analysis`) or none did (`code_only`); `report.verdicts`
+holds every verdict typed — each guardrail, each bar on each arm, each contrast — for a program to branch on.
 
 ## Reading a comparison
 
@@ -161,10 +175,10 @@ Latency read while other cells or runs executed beside it is never in this table
 before anything reads it, a latency row whose arm has no other latency reads `untested` and says why, and
 one line (`latency_contended`) names the arms. Launch with `measure_latency=True` to read latency clean.
 
-A report from `compare` prints one line above this table when a tested measure declares no margin: "No margin
-is declared on …, so no contrast on it can read equivalent", with how to declare one for each kind of measure:
-a scorer's by its name (`compare(margins={"correct": 0.05})`), accuracy's the same way
-(`compare(margins={"accuracy": 0.05})`), and for an engine measure such as cost, that none can be declared.
+Every report lists, under Not tested, each tested measure that declares no margin: "No margin is declared on …, so
+no contrast on it can read equivalent", with how to declare one for each kind of measure: a scorer's by its name
+(`compare(margins={"correct": 0.05})`), accuracy's the same way (`compare(margins={"accuracy": 0.05})`), and for an
+engine measure such as cost, that none can be declared.
 
 Every verdict here is also a typed value (`report.verdicts`, `Comparison.verdicts()`, the `outcome` key of
 `Comparison.contrasts()`): its outcome, a reason code, the margin it read and where that came from
@@ -200,16 +214,14 @@ at the call. The p is corrected in the same Holm family as the separations, with
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
 
-A delta-table chart states each row's change relative to the baseline only on a ratio scale. A judged 1–5
-score (`MetricDescriptor.scale="interval"`) moves in points: one point up is +50% from 2 and +25% from 4,
-so no percent is stated for it.
+No report states a change as a percent of the control: a Δ is in the reading's own unit.
 
 ## Reading the guardrails
 
 A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
 measure the host declared `guardrail`. On the quick path, `compare(guardrails=...)` declares either, each with
 its margin and direction ([tutorial](tutorial.md#7-hold-a-guardrail)). The "Guardrails against the control" table
-(`guardrails` in the bundle, its own section of both reports, `Comparison.guardrails()` in code) decides each one
+(`guardrails` in the bundle, under the contrasts on every report, `Comparison.guardrails()` in code) decides each one
 for each arm, on its own 95% interval on `arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
 cannot hide a loss here.
 
@@ -217,7 +229,7 @@ cannot hide a loss here.
 |---|---|---|
 | held | the whole interval is on the good side of the margin, and the reading declares its range | nothing; the arm did not get worse by more than you tolerate |
 | breached | the whole interval is beyond the margin | do not adopt the arm, whatever it gained; the analysis writer is refused if it tries |
-| undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe. An arm can still be adopted, and the decision then carries a `Guardrails` fact naming it. To decide it, add cases, declare a margin, or declare the reading's range |
+| undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe; the contrasts open with a line naming the arm, and Not tested lists it. To decide it, add cases, declare a margin, or declare the reading's range |
 
 The margin is the measure's `materiality_threshold`, and a judged dimension's is the one its campaign declares
 (`CampaignDesign.guardrail_margins`). A guardrail with no margin declared is held at zero change: `held` then
@@ -250,7 +262,8 @@ A campaign's declared questions say what it set out to learn. A reading on no ax
 **exploratory**: worth reporting as a lead for the next campaign, never as a confirmed answer. Where
 questions are declared, the bundle lists those readings (`reading_scope`), the code-only report names them
 under the questions, and a finding resting only on them carries a `Scope` fact. Where none are declared,
-every finding is exploratory, and the report says so once at the top rather than on every row. A campaign
+every finding is exploratory: line 2 of the report says so, every finding carries the `Scope` fact, and the analysis
+writer may adopt nothing. A campaign
 that declared no design at all is an exploratory campaign, and that sentence says so: its readings confirm
 nothing, and the design its comparisons read was inferred from the runs, not declared
 ([when to declare one](choosing-a-design.md)). A guardrail is never exploratory.
@@ -302,25 +315,25 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
-**The headline and summary rest on findings, and are shown at the weakest of them.** Most readers read only those
-two. The writer names the findings the headline rests on (`headline_rests_on`) and those each summary bullet rests
-on (`summary_rests_on`, one entry per bullet, a bullet being a line opening with `-`, `*`, `+` or a number), and
-the generator refuses a link left empty over findings, one entry too many or too few, or a position past the
-findings, through the one repair round. Code derives each sentence's standing (`analysis/standing.py`): the weakest
-confidence among its findings, and the weakest evidence tier of every reading they cite. The report serves it as
-the `Confidence` and `Stands on` facts on a `headline` block that opens the summary section and on one `summary`
-block per bullet, each with its `rests_on`; `analyses_list` states it beside each headline; the memo the reporter
-judge reads carries it too.
+**The memo is findings and recommendations, and code checks their structure.** The writer authors no headline, no
+summary, no chart and no count: the first screen is code's. It reads the bundle's trials (their states, causes,
+failed checks and the judge's reasons, without the excerpts) and names, in each finding's `trials`, the trials a
+finding is drawn from. The generator refuses, through the one repair round, a recommendation that rests on no
+finding, a finding naming a trial the bundle does not hold, and any `adopted` recommendation in a campaign that
+declared no question before its first run — keeping the control included, since nothing in an exploratory campaign
+is a decision. Adopting a non-control arm still needs an `improved` contrast.
 
-**A headline or summary never states a null its findings did not establish.** "Halving the budget does not change
-latency, cost or delivery" decides as surely as a finding does, and over a contrast that did not separate it
+**A finding's title never states a null its evidence did not establish.** "Halving the budget does not change
+latency, cost or delivery" decides as surely as a measured result does, and over a contrast that did not separate it
 asserts a result the campaign never measured. The bundle establishes a null in two places only: a contrast reading
 `equivalent` (the equivalence test against a declared margin) and a guardrail reading `held`. The generator refuses
-a headline or bullet in a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was
-unchanged", "about the same", and a few more, listed in `analysis/null_claims.py`) when none of the findings that
-sentence rests on cites a reading the bundle established alike. A null one sentence's finding established
-licenses no other sentence. The join is structural; only the phrase is read off the words, so a reworded null
-passes, and the reporter eval measures the rest.
+a title in a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was unchanged",
+"about the same", and a few more, listed in `analysis/null_claims.py`) when its finding cites no reading the bundle
+established alike. The join is structural; only the phrase is read off the words, so a reworded null passes, and
+the reporter eval measures the rest.
+
+**The analysis keeps its evidence.** A stored analysis carries the bundle it was written over (`EvalAnalysis.bundle`),
+so its report is laid out over that frozen evidence, whatever is archived or re-run afterwards.
 
 The bundle stays closed: the generator has no tools to fetch more context, such as a `runs_bisect` or `scope_pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
@@ -331,10 +344,10 @@ bundle cannot answer is answered by adding a field to it.
 ## How a measure and a question are named
 
 A measure is headed by its reader-facing name (`MetricDescriptor.reader_name`, frozen on the decision surface as
-`MeasureFacts.reader_name`) in every surface table header, chart title and axis label, every evidence,
-contrast, guardrail and strata row, and the memo. A judged dimension is printed under its rubric name with
-`(judged)` after it. The key is still there to cite: on `SurfaceColumn.measure_id`, on each `EvidenceRow`, and
-as `measure_id` on each row `Comparison.contrasts()` returns (which filters on either the key or the heading).
+`MeasureFacts.reader_name`) in every table header and chart title, every evidence, contrast, guardrail and strata
+row, and the memo. A judged dimension is printed under its rubric name with `(judged)` after it, and a reserved judge
+axis as `transcript` or `outcome`. The key is still there to cite: on each `EvidenceRow`, and as `measure_id` on
+each row `Comparison.contrasts()` returns (which filters on either the key or the heading).
 A measure the surface froze no reader name for prints an engine measure by the engine's name, and a host
 measure nothing describes by its key.
 
@@ -344,16 +357,15 @@ one table (Arm, Measure, Value, n, Spread), laid out like the report's evidence 
 
 ## How an arm is named
 
-Every block that names an arm — decisions, evidence rows, the arm table, the decision surface, the
-results by stratum, the contrasts, the guardrails and labels tables, and every chart group — prints one name for it, built once
-(`threetears.evals.analysis.arms.arm_names`).
+Every block that names an arm — the title, the scoreboard, recommendations, evidence rows, the results by
+stratum, the contrasts, the guardrails and labels tables, the cases and every chart row — prints one name for it,
+built once (`threetears.evals.analysis.arms.arm_names`).
 
 - An arm is named by the levers whose levels differ across the report's arms, each lever compared only
   among the arms it applies to; one that differs on none is named by its candidate kind and model.
 - A lever that does not apply to the arm's kind is never named.
-- A cell adds `@ rig <digest>` when its arm was measured under more than one rig.
-- Each level is put on one line and cut in the middle past 48 characters, alike in Markdown, HTML and the
-  chart intents.
+- An arm measured under more than one test setup adds `(test setup <digest>)` where a table names it per setup.
+- Each level is put on one line and cut in the middle past 48 characters, alike in Markdown and HTML.
 - Two arms that would still read alike carry their variant keys' digests (`(arm <digest>)`), so no two
   arms of one report share a name.
 
@@ -363,49 +375,11 @@ results by stratum, the contrasts, the guardrails and labels tables, and every c
   is declared twice the first name wins, and an undeclared level keeps the host's display. Only the display
   changes, so no variant key moves.
 
-What an arm ran in full is stated once, in the arm table's "Every lever it ran" column
-(`ArmRow.settings`). A stored analysis's own charts keep the names they were drawn with at generation.
+What an arm ran in full is in the bundle's `variant_index`, not on the page: a report names an arm by what tells it
+apart, never by every lever it carried.
 
 *Example:* a campaign comparing the triage classifier's prompt v1 and v2 on one model names its arms by the
 prompt lever alone (`ticket_router.prompt_version=v1` and `ticket_router.prompt_version=v2`, as `lever=level` pairs), since the model is the same on both.
-
-## What the schema checks, and what only the model does
-
-`schema.json` ships in the package beside the model (`SCHEMA_PATH`; `published_report_schema()` reads it). It is
-generated from the model, a test holds it equal to the model's, and its `$id` names the report version it validates
-(`urn:threetears-evals:report:v10`), as its `report_version` const does. It holds the report's shape, every served
-word as required, and every cross-field rule JSON Schema can state:
-
-- a code-only report names no analysis or model and holds no headline, finding or text block;
-- an analysis report names both;
-- a report with no findings links no block to one;
-- a finding's own words name their finding;
-- a chart block carries exactly one of an intent and an error, the intent of its own type;
-- a table cell's unit qualifies only a number (never words, a boolean or an absent value).
-
-Three rules compare a value with a sibling's, which JSON Schema cannot: a block's finding positions are
-below `finding_count`, a table's `total_rows` is at least the rows it shows, and a row keys exactly its
-table's columns. Those only `Report.model_validate` holds, so a host that validates against the schema
-alone accepts exactly those three malformations as well.
-
-## Chart blocks carry an intent, not a library's spec
-
-A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.evals.analysis.viz`), never
-a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes
-(identity, length, position, interval with what it varies over, level, class, ordinal, count, label), its axes with
-their units and zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its
-values as drawn, which the HTML shows as a table. An interval is drawn as a band only over 5 or more cases
-(`SMALL_N_BAND_FLOOR`): below that a distribution draws each case's value as a point and says why, a timeseries
-leaves a stated gap, and a null result is refused. The interval itself still appears in the tables.
-
-How a chart looks is the host's: a renderer reads the intent and the host's palette —
-`StyleProfile.chart_palette`, a renderer-neutral `ChartPalette` (the eight numbered series slots, slots
-1-4 validated; a sequential ramp; background, ink, muted, grid, rule, context and on-fill), every colour
-resolved `#rrggbb` — and, optionally, its typeface, `StyleProfile.chart_font`. A `ChartFont` is a CSS
-family list plus the advance widths measured for its first face, because a renderer lays labels out from
-those widths: a font declared without them is refused, rather than fitted against another face's widths.
-The presentation rules are checked on the intent (`check_intent`), so they hold for any renderer, and the
-core ships no charting library.
 
 ## Did a lever take effect: mechanism checks and observed mechanisms
 
@@ -530,7 +504,7 @@ figure (`CellFacts.strata`, a list of `StratumFacts` on the decision surface). C
 such a cell are their own entry, so the strata add up to the cell. A cell none of whose cases declares a
 stratum is not broken down, and its report reads as if strata did not exist.
 
-**How it is shown.** Both reports carry it as a `strata` table: a row per arm and reading, the pooled
+**How it is shown.** Every report carries it as a `strata` table, folded under the contrasts: a row per arm and reading, the pooled
 figure under `All cases`, then a column per stratum. Each arm opens with a `cases` row giving the cases
 and observations behind each column. A stratum holding fewer than `STRATUM_MIN_CASES` (10) cases is still
 shown, marked too few to read alone, and named in a `strata` disclosure below the table. A rate is shown
@@ -646,122 +620,3 @@ judge scores: `judge_repeat_work` (operation `judge_repeat`, a job; `estimate_ju
 evidence its first judge read, under the apparatus the run recorded, and records each answer beside the
 score it repeats (`EvalResult.judge_repeats`) without changing the scores. Its spend is out-of-run
 ([Cost and budgets](cost-and-budgets.md#spend-outside-any-run)).
-
-## Drawing charts: the Vega-Lite adapter
-
-The package's own renderer is an optional adapter, `threetears.evals.vega`. Install the extra for its
-rasteriser (`vl-convert-python`):
-
-```bash
-pip install "3tears-evals[vega]"
-```
-
-That is the form once 0.67.0 is on PyPI. Until then, install the extra from the repository at the tag
-[the README names](../README.md#first-result-in-10-minutes):
-`pip install "3tears-evals[vega] @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
-
-```python
-from pathlib import Path
-
-from threetears.evals.analysis import finding_chart_intent
-from threetears.evals.vega import VegaRenderer
-
-# The host's declared palette and font, bound once; a host declaring none draws in the packaged "dark"
-# palette and the packaged face. `font_dir` holds the files of a host's own face; the packaged one needs none.
-renderer = VegaRenderer.for_style(host.profile.style, theme="dark", font_dir=Path("/srv/fonts"))
-intent = finding_chart_intent(host.storage, analysis_id, scope_id, "0")  # or a chart block's `intent`
-chart = renderer.draw(intent)   # a colourless Vega-Lite spec, chart.spec, for a browser to embed...
-renderer.config()               # ...with this config beside it
-renderer.png(chart)             # or rasterised, for a surface that cannot run a browser
-```
-
-Drawing a spec needs nothing past the core; only `png` and `svg` need the extra. Nothing in the core
-imports the adapter.
-
-To draw every chart of a report at once, use `report_charts` (from `threetears.evals.ops`) with any
-renderer:
-
-```python
-charts = report_charts(campaign_report(host, campaign_id, scope_id), renderer)
-for drawn in charts.drawn:       # block position, finding, chart type, and the renderer's drawing
-    ...
-for refused in charts.refused:   # block position, finding, chart type, cause and reason
-    ...
-```
-
-Each chart that cannot be drawn is refused on its own, and every other chart is still drawn. The cause is
-`undrawable` when the report could not decide the stored chart into an intent (its block's reason is
-carried), or `refused_by_renderer` when the renderer refused the intent by raising `ChartRefused` (from
-`threetears.evals.analysis.viz`; the Vega adapter's `SpecPolicyError` and `RasterRefused` are two). State a
-refusal where the chart would have been. A missing chart otherwise reads as a finding that carried none.
-Anything else a renderer raises, any other `ValueError` included, is a defect in the renderer or its compiler,
-and propagates; a renderer of your own refuses a chart with `ChartRefused`.
-
-The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
-`packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told
-apart as a set. The package's tests hold text to 4.5:1 against the chart surface, slot 1 (every single-series
-mark) and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
-and deuteranopia. Several categorical slots fall below 3:1 on the light surface, so a chart never relies on
-colour alone to identify a category: it labels the marks or names the level in the values table. A host's own
-`ChartPalette` built in code is held to the contract's shape only.
-
-To keep your colours in a file instead, write an artifact of the packaged one's shape. That is
-`chart_palette.json` beside `threetears/evals/vega/palette.py`: a `light` and a `dark` block whose keys are
-`ChartPalette`'s roles, plus `series_slots` and `validated_slots`. Then read it with `load_palette`:
-
-```python
-from threetears.evals.vega import load_palette
-
-style = StyleProfile(chart_palette=load_palette(Path("chart_palette.json"), "dark"))
-```
-
-`validated_slots` records how many slots you measured as separating for colourblind readers. The loader
-refuses one below `VALIDATED_SLOTS` (4), because the engine assigns that many slots to series it promises a
-reader can tell apart. It also refuses a `series_slots` other than `SERIES_SLOTS` (8), and any colour that
-is not resolved `#rrggbb`. The measurement itself is yours to make, as it is for a palette built in code.
-
-The packaged face is Liberation Sans (`Liberation Sans, Arial, sans-serif`), embedded by the rasteriser and
-metric-compatible with Arial, with digits of one width. To draw in your own face, measure it with the measurer
-the `[vega]` extra installs, from the directory holding the face's files, and declare the result:
-
-```bash
-python -m threetears.evals.vega.measure_font \
-    --family "Inter, Arial, sans-serif" --font-dir /srv/fonts --out inter_metrics.json
-```
-
-```python
-from threetears.evals.vega import VegaRenderer, load_chart_font
-
-style = StyleProfile(chart_font=load_chart_font(Path("inter_metrics.json")))
-renderer = VegaRenderer.for_style(style, font_dir=Path("/srv/fonts"))
-```
-
-The table records the metrics format it was written in and the SHA-256 of each file in `--font-dir` that
-declares the measured family (other faces in the directory are not recorded, so adding or updating one leaves
-the table valid). `load_chart_font` refuses a table written in another metrics format, or measured at weights
-other than the ones the chart type scale draws at, and a renderer given a font directory refuses a font whose
-files there are not the ones it was measured from: a recorded file missing or hashing differently, or a file
-declaring the face that the table did not record (a weight added to the family, say); each refusal names the
-command that re-measures the face. The table also records a digest of what the measurer probed (the
-characters, how each is framed, the size and the corpus), and `load_chart_font` refuses a table probed with
-anything else, so a change to the probes that forgot a format bump reads as drift too.
-
-Gate on it in your own CI, where nothing renders: `check_font_files` (from `threetears.evals.vega`) hashes the
-files and needs no rasteriser, so it runs wherever your image is built.
-
-```python
-from threetears.evals.vega import check_font_files, load_chart_font
-
-def test_the_shipped_face_is_the_measured_one() -> None:
-    check_font_files(load_chart_font(Path("inter_metrics.json")), [Path("/srv/fonts")])
-```
-
-## Bringing your own renderer
-
-A host bringing its own renderer implements `ChartRenderer` (`draw(intent)`, and `drawn_data(drawing)`
-reading its drawing back) and runs the one conformance check every renderer passes —
-`assert_renderer_conforms(renderer, intents)`, from `threetears.evals.analysis.viz`: what it draws agrees
-with the intent's marks (`data`), per identity, and the intent's values-as-drawn table agrees with those
-marks (`table_disagreements`, policy rule 12) — so a drawing that passes agrees with the table beside it.
-A table column spelled from a drawn number (a delta's `+72.7%`) or carried only by the table is the
-builder's to spell, and is compared with nothing drawn.
