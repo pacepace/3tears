@@ -454,7 +454,7 @@ not declare it. *Example:* routing accuracy of at least 0.9 for the `routing` be
 A set of checks you run in your own test suite against what you implemented, so a gap fails there and not in a
 measurement: `STORE_CONFORMANCE_CASES` for a store, `check_completion_conformance` for a completion client,
 `jobs_conformance_cases` for the action catalogue you mount (your own actions among them),
-`check_world_conformance` for a world, and `nonpublic_evals_imports` for your imports. A world check the kit
+and `check_world_conformance` for a world. A world check the kit
 cannot run is reported `unavailable` with its reason, never passed. See
 [the store's kit](adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it) and
 [the world's](evaluating-agents.md#step-5-run-the-conformance-kit-against-your-world).

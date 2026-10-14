@@ -276,7 +276,6 @@ CEILINGS: dict[str, dict[str, int]] = {
     "storage/memory.py": {},
     "testing/__init__.py": {},
     "testing/completion_conformance.py": {},
-    "testing/import_boundary.py": {},
     "testing/jobs_conformance.py": {},
     "testing/negotiation_conformance.py": {},
     "testing/reader_conformance.py": {},

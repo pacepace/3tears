@@ -9,8 +9,8 @@ properties keep it an adapter rather than a dependency:
   engine without models and never pays for it. ``tests/test_package_matrix.py`` holds the same at package level
   (the adapter's column is empty); this holds it name by name, strings included.
 * **The adapter imports only public names.** Every reach into ``threetears.evals`` from the adapter goes through
-  a public root's ``__all__``, checked by the same :func:`~threetears.evals.testing.nonpublic_evals_imports` a
-  host runs over its own tree, so the adapter is held to exactly what a host is. Every reach into
+  a public root's ``__all__`` (:func:`nonpublic_engine_reaches`), so the adapter is held to exactly what a host
+  is. Every reach into
   ``threetears.models`` names no underscored module, name or attribute: models' leading underscores are its
   stability contract as this package's are, and an adapter built on them would break on a models release that
   changed nothing public.
@@ -21,6 +21,7 @@ Each rule has a planted fixture proving it refuses what it should, so a walk tha
 from __future__ import annotations
 
 import ast
+import importlib
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -29,8 +30,6 @@ from pathlib import Path
 import pytest
 
 import threetears.evals
-from threetears.evals.testing import nonpublic_evals_imports
-
 from packages.evals.tests.import_resolution import absolute_module
 
 #: The package's ``src``: the directory holding the ``threetears`` namespace.
@@ -44,6 +43,9 @@ PROVIDERS_ROOT = EVAL_ROOT / "providers"
 
 #: The adapter's root, as a module name.
 PROVIDERS = "threetears.evals.providers"
+
+#: The engine's package.
+EVALS = "threetears.evals"
 
 #: The provider layer the adapter is built over.
 MODELS = "threetears.models"
@@ -115,6 +117,41 @@ def engine_reaches(source_root: Path) -> Iterator[str]:
                 yield f"{relative}:{node.lineno}: the string {node.value!r}"
 
 
+def _public_names(root: str) -> frozenset[str]:
+    """The names public root ``root`` declares in its ``__all__``."""
+    return frozenset(importlib.import_module(root).__all__)
+
+
+def nonpublic_engine_reaches(path: Path) -> Iterator[str]:
+    """Every name ``path`` imports from ``threetears.evals`` below a public root's ``__all__``, as ``module.name``.
+
+    A static walk: ``from M import n`` is a reach unless ``M`` is a public root and ``n`` is in its ``__all__``, and
+    ``import M`` is one unless ``M`` is a public root or the package itself.
+
+    Args:
+        path: One source file, or a directory whose ``.py`` files are walked.
+
+    Yields:
+        The dotted name of each reach.
+    """
+    files = sorted(path.rglob("*.py")) if path.is_dir() else [path]
+    for file in files:
+        tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                yield from (
+                    alias.name
+                    for alias in node.names
+                    if alias.name.startswith(f"{EVALS}.") and alias.name not in threetears.evals.PUBLIC_ROOTS
+                )
+            elif isinstance(node, ast.ImportFrom):
+                module = absolute_module(file, node, root=SOURCE_ROOT) if node.level else (node.module or "")
+                if module != EVALS and not module.startswith(f"{EVALS}."):
+                    continue
+                public = _public_names(module) if module in threetears.evals.PUBLIC_ROOTS else frozenset()
+                yield from (f"{module}.{alias.name}" for alias in node.names if alias.name not in public)
+
+
 def private_models_reaches(path: Path) -> Iterator[str]:
     """Every reach into ``threetears.models`` in ``path`` that names an underscored module, name or attribute.
 
@@ -180,19 +217,16 @@ def test_the_adapter_reaches_the_engine_only_through_public_roots() -> None:
     The one exception is :data:`PACKAGE_LOGGING`, the package's logger, named exactly.
     """
     findings = [
-        finding
-        for finding in nonpublic_evals_imports(PROVIDERS_ROOT)
-        if not _names_the_adapter(finding.target) and finding.target != PACKAGE_LOGGING
+        reach
+        for reach in nonpublic_engine_reaches(PROVIDERS_ROOT)
+        if not _names_the_adapter(reach) and reach != PACKAGE_LOGGING
     ]
-    assert not findings, "The adapter reaches below a public root of the engine:\n  " + "\n  ".join(
-        str(finding) for finding in findings
-    )
+    assert not findings, "The adapter reaches below a public root of the engine:\n  " + "\n  ".join(findings)
 
 
 def test_the_logging_exception_is_the_one_reach_it_names() -> None:
-    """Non-vacuity: the exception is in use, as a static import of exactly that name, and covers nothing else."""
-    reaches = [finding for finding in nonpublic_evals_imports(PROVIDERS_ROOT) if finding.target == PACKAGE_LOGGING]
-    assert reaches and {finding.rule for finding in reaches} == {"static_import"}
+    """Non-vacuity: the exception is in use, as an import of exactly that name."""
+    assert PACKAGE_LOGGING in set(nonpublic_engine_reaches(PROVIDERS_ROOT))
 
 
 def test_the_adapter_reaches_models_only_through_public_names() -> None:
@@ -290,8 +324,19 @@ def test_the_models_rule(tmp_path: Path, source: str, found: bool) -> None:
     assert bool(list(private_models_reaches(path))) is found
 
 
-def test_the_engine_side_rule_reads_through_nonpublic_evals_imports(tmp_path: Path) -> None:
-    """The adapter's reach into the engine is checked by the host's own checker, which refuses a submodule."""
+@pytest.mark.parametrize(
+    ("source", "found"),
+    [
+        ("from threetears.evals.schema.completion import CompletionClient\n", True),
+        ("import threetears.evals.schema.completion\n", True),
+        ("from threetears.evals.schema import _private_name\n", True),
+        ("from threetears.evals.schema import CompletionClient\n", False),
+        ("import threetears.evals.schema\n", False),
+        ("from threetears.models import create_chat_model\n", False),
+    ],
+)
+def test_the_adapter_side_rule(tmp_path: Path, source: str, found: bool) -> None:
+    """A submodule or a name outside a root's ``__all__`` is a reach; a public root's declared name is not."""
     path = tmp_path / "planted.py"
-    path.write_text("from threetears.evals.schema.completion import CompletionClient\n", encoding="utf-8")
-    assert [finding.rule for finding in nonpublic_evals_imports(path)] == ["static_import"]
+    path.write_text(source, encoding="utf-8")
+    assert bool(list(nonpublic_engine_reaches(path))) is found
