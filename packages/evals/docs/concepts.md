@@ -86,13 +86,14 @@ A named, versioned, frozen list of one template's cases (`CaseSet`, minted by `m
 `case_set_mint` action). It is append-only: changing it mints the next version, and rewriting a stored
 version is refused. A launch can name one (`case_set_name` and `case_set_version`), runs exactly its cases,
 and records it on the run, so history reads a change of suite as `smoke v1` to `smoke v2`. It labels the
-run's frozen case ids, never a second identity. Not a [battery](#battery). *Example:* `smoke v2`, the three
+run's frozen case ids, never a second identity. *Example:* `smoke v2`, the three
 tickets every release is checked on.
 
 #### Template
 The blueprint the cases belong to (`EvalTemplate`): what is being tested (its intent), how to score it
 (goal-state checks and rubric dimensions), the axes cases vary along, and anything only its kind reads (its
-spec). *Example:* "route a support ticket to a queue", with the four labels in its spec. `run_eval` takes its
+spec). A template marked `universal=True` applies to every subject, whatever tools it requires. *Example:* "route a
+support ticket to a queue", with the four labels in its spec. `run_eval` takes its
 intent from `intent=` or a candidate's docstring: see [what the engine reads from your
 code](#what-the-engine-reads-from-your-code).
 
@@ -270,10 +271,6 @@ Analyses, insights, judge
 profiles and cassettes are outside it: a release that changes their format refuses them, and they are made again
 ([what is kept](adopting-a-host.md#stored-data-what-is-kept)). A cassette's format has a version of its own, so a
 change to the analyses never refuses a corpus.
-
-#### Battery
-The universal templates, run as one pre-flighted set (`start_universal_battery`): templates marked
-`universal=True` apply to every subject.
 
 #### Cassette
 A recording of what a candidate's tools answered. A run in `cassette_mode="capture"` records one; a run in

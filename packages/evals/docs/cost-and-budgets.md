@@ -196,9 +196,6 @@ plan (no more cases, no other model, judges or simulator), and refuses an arm th
 an enforced cap — a host composing its own launch through `launch_as_group` prices its arms with
 `price_arms`.
 
-**Batteries.** A battery prices each template's arms once, in its pre-flight, prepares every template
-before starting any, and launches each template as it priced it.
-
 **Estimating without launching.** `launch_estimate` (`quote_launch` in `run`) runs the same steps
 read-only and reports each arm's price and the launch's verdict, word for word. Hand its result to a cost
 pivot as `predicted_cost`, and each prediction sits only in the cell of its model and template. Once the
@@ -255,11 +252,6 @@ stored proposer prompt written for another draft shape before anything is priced
 `budget.admit(client, "proposer", [call])` in its action's call (refusing there, with nothing called), and makes
 it in the action's job with `propose_draft(client, admitted, budget=..., axis=..., subject_id=...)`, which
 releases the client. A client admitted and never made is the host's to release.
-
-**Batteries that generate.** A battery prices every template's arms and every template's writer calls (on
-the host's `variation` client, against the budget each launch will be held to) before any template
-launches, so it pays for no template's cases until all have been priced; its caps are per launch, as a
-launch's are (`start_universal_battery(max_cost_usd=...)` names the per-run cap).
 
 **Analysis generation.** An analysis generation is held to the host's out-of-run cap
 (`LaunchSettings.max_out_of_run_cost_usd`): its first call is priced before the job starts

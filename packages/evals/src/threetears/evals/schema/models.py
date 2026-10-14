@@ -1665,10 +1665,8 @@ class EvalTemplate(DurableDocumentModel):
     set, a game master's table — is ``kind_spec``, which the kind's own model
     validates.
 
-    Applicability is scoped by ``tools_required``, or — for the operator-curated
-    boundary battery — by ``universal=True``, which marks the template as
-    applying to every subject; ``start_universal_battery`` launches one run per
-    active universal template.
+    Applicability is scoped by ``tools_required``, or by ``universal=True``,
+    which marks the template as applying to every subject.
 
     ``tools_allowed`` is the one tool field that is NOT about applicability: it
     bounds what the candidate may call, and so what the run can spend on third
@@ -1706,10 +1704,7 @@ class EvalTemplate(DurableDocumentModel):
     tools_required: list[str] = Field(default_factory=list)
     universal: bool = Field(
         default=False,
-        description=(
-            "When True the template applies to every subject (the boundary battery), and "
-            "start_universal_battery includes it."
-        ),
+        description="When True the template applies to every subject, whatever tools it requires.",
     )
 
     # Spend bound — NOT applicability. ``tools_required`` above answers "which

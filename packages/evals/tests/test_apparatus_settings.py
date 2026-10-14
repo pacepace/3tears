@@ -13,7 +13,7 @@ in a template's ``kind_spec``, so comparing two values took two templates. These
 - **Every refusal fires before anything is built**: a setting the template's kind does not read, a value
   the run could not store; and at registration, a kind claiming to read a setting the host does not
   declare as its own apparatus.
-- **Every launch surface carries it** — ``start_run``, the battery, ``run_launch`` (ops, action and the
+- **Every launch surface carries it** — ``start_run``, ``run_launch`` (ops, action and the
   FastMCP tool) and the CLI's ``run``.
 """
 
@@ -39,7 +39,6 @@ from threetears.evals.run import (
     LaunchRequest,
     settable_apparatus,
     start_run,
-    start_universal_battery,
 )
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.transports.fastmcp import mount_fastmcp
@@ -246,43 +245,6 @@ def test_the_settable_apparatus_is_the_hosts_own_and_none_of_the_engines():
 # =============================================================================
 # Every launch surface carries it
 # =============================================================================
-
-
-async def test_a_battery_sets_every_templates_runs_up_with_it_and_refuses_one_no_kind_reads():
-    host, storage = off_loop(_launching)
-    off_loop(storage.save_template, toyhost_template().model_copy(update={"universal": True}))
-
-    async def preflight(_subject_id: str, _models: Any) -> Any:
-        async def check(_template: Any, _cassette_mode: str) -> None:
-            return None
-
-        return check
-
-    with pytest.raises(
-        ValidationFailedError, match="no apparatus setting named 'grader_version'.*Nothing was launched"
-    ):
-        await start_universal_battery(
-            host,
-            TOYHOST_SUBJECT.subject_id,
-            scope_id=TOYHOST_SCOPE,
-            models=[RUN_MODELS[0]],
-            apparatus_settings={"grader_version": "g9"},
-            preflight=preflight,
-        )
-    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
-
-    run_ids = await start_universal_battery(
-        host,
-        TOYHOST_SUBJECT.subject_id,
-        scope_id=TOYHOST_SCOPE,
-        models=[RUN_MODELS[0]],
-        apparatus_settings={POOL: "pool-c"},
-        preflight=preflight,
-    )
-    await _settled(host, run_ids)
-    assert [off_loop(storage.load_eval_run, run_id, TOYHOST_SCOPE).apparatus_settings for run_id in run_ids] == [  # type: ignore[union-attr]
-        {POOL: "pool-c"}
-    ]
 
 
 async def test_run_launch_hands_the_launch_its_apparatus_settings():

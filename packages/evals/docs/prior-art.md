@@ -115,7 +115,7 @@ The principle behind each is in [principles](principles.md).
 | Task, test case (Anthropic); sample (Inspect) | [case](concepts.md#case-test-case) | Avoid "task": Inspect uses it for the whole eval, and Braintrust uses it for the system under test. |
 | Scenario (HELM); task definition | [template](concepts.md#template) | |
 | Case dimension (Husain & Shankar) | [variation axis](concepts.md#variation-axis) | |
-| Suite, dataset | [battery](concepts.md#battery); a template's frozen cases | |
+| Suite, dataset | [case set](concepts.md#case-set); a template's frozen cases | |
 | Trial (Anthropic); epoch (Inspect); repetition (LangSmith) | [result (observation)](concepts.md#result-observation); a cell while running | |
 | Trials per case; epochs; replicates (DOE) | [k](concepts.md#k-repeats) (`k_runs`) | `k_runs` counts trials, not runs. |
 | Eval run (Inspect); experiment (Braintrust, LangSmith); job (Harbor) | [run](concepts.md#run) | In DOE and W&B a "run" is one trial. |

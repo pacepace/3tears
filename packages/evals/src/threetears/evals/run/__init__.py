@@ -82,7 +82,6 @@ from threetears.evals.run.launch import (
     LaunchSettings,
     PlannedJudge,
     RunJudge,
-    TemplatePreflight,
     build_judge_service,
     launch_as_group,
     launch_run,
@@ -95,7 +94,6 @@ from threetears.evals.run.launch import (
     resolve_judge_pin,
     settable_apparatus,
     start_run,
-    start_universal_battery,
 )
 from threetears.evals.run.lifecycle import (
     AbandonedRunSweepReport,
@@ -215,7 +213,6 @@ from threetears.evals.run.curation import CurationStore, UnreadableRunDeleteStor
 from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome
 from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
-from threetears.evals.run.launch import BatteryPreflight
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunCallbacks
 
@@ -242,7 +239,6 @@ __all__ = [
     "ArmPrice",
     "ArmQuote",
     "ArmVerdict",
-    "BatteryPreflight",
     "BudgetStoppedError",
     "CallCeiling",
     "CandidateTurn",
@@ -302,7 +298,6 @@ __all__ = [
     "SimulatorCall",
     "SimulatorReplyInvalid",
     "SimulatorTurn",
-    "TemplatePreflight",
     "TurnDriver",
     "WitnessedJudging",
     "WorkFn",
@@ -379,7 +374,6 @@ __all__ = [
     "set_campaign_archived",
     "set_run_archived",
     "start_run",
-    "start_universal_battery",
     "mint_case_set",
     "resolve_case_set",
     "sweep_abandoned_runs",
