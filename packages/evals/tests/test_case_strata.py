@@ -11,7 +11,7 @@ assembled through a real store and read back:
 - **The report carries it**: a ``strata`` table, a column per stratum after the pooled one, each
   stratum's case count first, and a disclosure naming every stratum under
   :data:`~threetears.evals.kernel.STRATUM_MIN_CASES` cases — in the code-only report and in an
-  analysis's, in JSON the published schema accepts, Markdown and HTML.
+  analysis's, in Markdown and HTML; a rate over fewer cases than a rate is read on is stated as a count.
 - **The stored shapes refuse what cannot be true**: strata that do not add up to their cell, a stratum
   listed twice, a breakdown made only of undeclared cases, two nominated stratum axes, an ``llm`` one.
 - **Generation stamps it**: a case generated from a template that nominates an axis takes that axis's
@@ -20,11 +20,9 @@ assembled through a real store and read back:
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from typing import Any
 
-import jsonschema
 import pytest
 from pydantic import ValidationError
 
@@ -36,14 +34,13 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
     build_report,
-    published_report_schema,
     report_html,
     report_markdown,
 )
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
-from threetears.evals.analysis.surface_table import SURFACE_ORDER_NO_CONTROL
+from threetears.evals.analysis.report.figures import SURFACE_ORDER_NO_CONTROL
 from threetears.evals.kernel import (
     STRATUM_MIN_CASES,
     CellFacts,
@@ -167,7 +164,7 @@ def _strata(cell: CellFacts) -> dict[str | None, StratumFacts]:
 
 
 def _code_only(bundle: AnalysisContextBundle) -> Report:
-    return build_code_only_report(bundle, measures=_PROFILE.measures, assembled_at="2026-10-08T00:00:00+00:00")
+    return build_code_only_report(bundle, assembled_at="2026-10-08T00:00:00+00:00")
 
 
 def _strata_table(report: Report) -> TableBlock:
@@ -312,8 +309,9 @@ class TestTheReportCarriesStrata:
         assert accuracy["all"].startswith("0.875 ± ") and accuracy["all"].endswith("(n=16)")
         assert accuracy[_column(table, "lookalike")] == "0.3333 ± 0.3333 (n=3)"
         assert accuracy[_column(table, "plain")] == "1 ± 0 (n=12)"
-        # A rate carries its Wilson interval, which a stratum this small makes wide.
-        assert _row(table, "sonnet", "Label matched")[_column(table, "lookalike")] == "0.3333 [0.06149, 0.7923] (n=3)"
+        # A rate over fewer cases than one is estimated on is stated as a count, never as a rate or an interval.
+        assert _row(table, "sonnet", "Label matched")[_column(table, "lookalike")] == "1 of 3 (n=3)"
+        assert _row(table, "sonnet", "Label matched")[_column(table, "plain")] == "1 [0.7575, 1] (n=12)"
 
     def test_the_arms_follow_the_decision_surfaces_row_order_and_the_table_states_it(self) -> None:
         """No control here, so no reference row: the arms alphabetically by name (#645)."""
@@ -327,9 +325,9 @@ class TestTheReportCarriesStrata:
         table = _strata_table(_code_only(_bundle(*_mixed())))
         cases = _row(table, "sonnet", "cases")
 
-        assert cases["all"] == "16 cases, 16 obs"
-        assert cases[_column(table, "lookalike")] == f"3 cases, 3 obs — {TOO_FEW_CASES}"
-        assert cases[_column(table, "plain")] == "12 cases, 12 obs"
+        assert cases["all"] == "16 cases, 16 trials"
+        assert cases[_column(table, "lookalike")] == f"3 cases, 3 trials — {TOO_FEW_CASES}"
+        assert cases[_column(table, "plain")] == "12 cases, 12 trials"
         assert table.values().index(cases) < table.values().index(_row(table, "sonnet", "Accuracy"))
 
     def test_the_confusion_matrix_and_per_label_rows_are_per_stratum(self) -> None:
@@ -339,7 +337,7 @@ class TestTheReportCarriesStrata:
         assert matrix[_column(table, "lookalike")] == "NONE → DIRECT: 2; NONE → NONE: 1 (n=3)"
         assert matrix[_column(table, "plain")] == "NONE → NONE: 12 (n=12)"
         recall = _row(table, "sonnet", "Recall of NONE")
-        assert recall[_column(table, "lookalike")] == "0.3333 [0.06149, 0.7923] (n=3)"
+        assert recall[_column(table, "lookalike")] == "1 of 3 (n=3)"
         assert recall[_column(table, "plain")] == "1 [0.7575, 1] (n=12)"
         assert _row(table, "sonnet", f"{_TONE} (judged)")[_column(table, "lookalike")] == "2 ± 0 (n=3)"
 
@@ -363,30 +361,34 @@ class TestTheReportCarriesStrata:
         assert TOO_FEW_CASES not in _row(table, "sonnet", "cases")[_column(table, "plain")]
         assert TOO_FEW_CASES in _row(table, "sonnet", "cases")[_column(table, "lookalike")]
 
-    def test_the_report_validates_against_the_published_schema_and_serializes(self) -> None:
+    def test_the_report_serializes_the_strata_in_both_forms(self) -> None:
         report = _code_only(_bundle(*_mixed()))
 
-        document = json.loads(report.to_canonical_json())
-        jsonschema.Draft202012Validator(published_report_schema()).validate(document)
-        assert Report.model_validate(document) == report
         markdown = report_markdown(report)
         assert "**By stratum**" in markdown and "| lookalike |" in markdown and TOO_FEW_CASES in markdown
         html = report_html(report)
         assert "By stratum" in html and 'data-source="strata"' in html
 
-    def test_an_analysis_report_lays_out_the_strata_its_surface_froze(self) -> None:
+    def test_an_analysis_report_lays_out_the_strata_of_the_bundle_it_froze(self) -> None:
         bundle = _bundle(*_mixed())
-        analysis = make_analysis(decision_surface=bundle_decision_surface(bundle), variant_index=bundle.variant_index)
+        analysis = make_analysis(
+            decision_surface=bundle_decision_surface(bundle),
+            variant_index=bundle.variant_index,
+            bundle=bundle.to_dict(),
+        )
         report = build_report(analysis)
 
         table = _strata_table(report)
         assert [column.header for column in table.columns][2:] == ["All cases", "lookalike", "plain", NO_STRATUM]
         assert [block for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "strata"]
-        jsonschema.Draft202012Validator(published_report_schema()).validate(json.loads(report.to_canonical_json()))
 
     def test_the_stored_surface_round_trips_its_strata(self) -> None:
         bundle = _bundle(*_mixed())
-        analysis = make_analysis(decision_surface=bundle_decision_surface(bundle), variant_index=bundle.variant_index)
+        analysis = make_analysis(
+            decision_surface=bundle_decision_surface(bundle),
+            variant_index=bundle.variant_index,
+            bundle=bundle.to_dict(),
+        )
         storage = EvalStorage(InMemoryDocumentStore())
         storage.save_analysis(analysis)
 

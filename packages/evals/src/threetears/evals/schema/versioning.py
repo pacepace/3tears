@@ -22,10 +22,9 @@ refused on read, and the operator regenerates it.
 ran), refused at any :data:`CASSETTE_SCHEMA_VERSION` but this build's and replaced by a fresh capture under a new
 corpus. Its number moves only when the cassette's own format changes, never with the analysis shapes: an analysis is
 cheap to regenerate from the kept runs, but a corpus is re-captured by calling the third-party tools it exists to
-spare, so a new chart type on a finding must not refuse every corpus a host recorded.
+spare, so a new field on a finding must not refuse every corpus a host recorded.
 
-The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and the identity keys
-(``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
+The bundle (``schema_version``), the cell model and the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
 digest. A kept key is stored beside its pre-image and the identity version that computed
 it — a run's ``variant_levers`` beside the keys its results carry, a campaign control's ``control_levers`` and
 ``control_identity_version`` beside ``control`` — so no upgrader recomputes it. A read under a later
@@ -225,7 +224,12 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   includes the request settings its calls were sent with, so a stored judge profile carries
 #:   ``judge_sent_settings`` and its id derives from it, and an analysis's evidence tiers, agreements and bundle carry
 #:   it on every judge they name. Profiles and analyses regenerate from the core; nothing is upgraded.
-REGENERABLE_SCHEMA_VERSION: int = 10
+#: - **v11** — the report is code's (from ``v0.67.0-evaladopt.26``): an analysis stores the evidence bundle it was
+#:   written over (``EvalAnalysis.bundle``); its memo has no headline, summary or chart (``AuthoredAnalysis`` and
+#:   ``FindingResolution`` lose them) and each finding names the trials it is drawn from (``Finding.trials``). A v10
+#:   analysis is refused on read and regenerated. A stored bundle is read at its own ``schema_version``, so a later
+#:   bundle shape bumps this version too.
+REGENERABLE_SCHEMA_VERSION: int = 11
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
 A bump is a drop: regenerable documents written under the old version are refused on read

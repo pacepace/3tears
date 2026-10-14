@@ -1,25 +1,16 @@
-"""The ``timeseries`` chart: a time axis the bundle earns, a payload that draws it, and a gate on its order.
-
-Five parts, each pinned in both directions:
+"""A time axis the bundle earns: two builds the host labels, or failing that two days, and nothing else.
 
 - **The bundle's time axis** (``analysis/bundle/time_axis.py``). A campaign spanning two builds the host labels, or
   failing that two days, carries one; each position's cells are the decision surface's own algebra over that
   position's runs, so a position reads exactly as a campaign of only its runs would. Positions are ordered
   by when each first ran — never by name, which would put ``0.10`` before ``0.9``.
 - **The host's release label** (``kernel/host/profile.py``). It must name a registered ``label``.
-- **The builder** (``analysis/viz_refs.py``). A chart over a surface with no time axis is refused; every
-  point is the resolver's reading over its position; a position a cell lacks is a stated gap.
-- **The payload and the intent** (``analysis/viz/payloads.py``, ``analysis/viz/intents/timeseries.py``).
-  Every forbidden shape refused; the values-as-drawn table is the data. How the Vega-Lite renderer draws
-  it, and its spec gate's order rule, are ``test_vega_timeseries.py``'s.
-- **The generator** (``analysis/generator.py``). The menu offers ``timeseries`` only over a bundle with a
-  time axis, so a bundle without one cannot reference the chart — and the policy rule refuses a line
-  through categories whose order is unstated.
+- **The generation freezes it** on the analysis's decision surface, and the writer reads it by cell alias.
+- **A small cell records its cases**: below five, the bundle carries each case's mean.
 """
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import json
 import uuid
@@ -28,20 +19,11 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
-from threetears.evals.analysis.bundle.surface import cell_dimension_facts, cell_measure_facts
-from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
-from threetears.evals.analysis.generator import first_request, generate_analysis, prompt_content_version
-from threetears.evals.analysis.references import cell_aliases, resolve_reading
-from threetears.evals.analysis.viz import chart_intent
-from threetears.evals.analysis.viz.payloads import PayloadError, parse_payload
-from threetears.evals.analysis.viz_refs import TimeseriesRef, build_viz_payload, reference_from_chart
-from threetears.evals.kernel.authored import NO_CHART, Chart, MeasureRef
-from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
 from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
-from threetears.evals.kernel.analysis_measures import MeasureSummary
-from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts, TimeAxis, TimePosition
+from threetears.evals.kernel.surface import TimeAxis, TimePosition
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_NARROW,
     TOYHOST_WIDE,
@@ -54,8 +36,6 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.chart_examples import timeseries_ci as _ci
-from packages.evals.tests.chart_examples import timeseries_payload as _payload
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 
 _NAMESPACE = uuid.UUID("0b8e6a52-41d7-4f0e-9c3a-7d25e1f4a9b6")
@@ -259,13 +239,13 @@ class TestTheBundleEarnsATimeAxis:
 
     def test_every_measure_on_the_axis_is_described_on_the_frozen_surface(self) -> None:
         """A surface's facts cover every name in its cells — the axis's included."""
-        analysis = _generated(_two_days(), _timeseries_payload)
+        analysis = _generated(_two_days())
         surface = analysis.decision_surface
         named = {m.name for p in surface.time_axis.positions for cell in p.cells for m in cell.measures.measures}
         assert named <= set(surface.measures)
 
     def test_the_bundle_shape_version_moved(self) -> None:
-        assert _two_days().schema_version == 53
+        assert _two_days().schema_version == 54
 
 
 class TestTheTimeAxisContract:
@@ -333,439 +313,8 @@ class TestTheReleaseLabelIsARegisteredLabel:
 
 
 # =============================================================================
-# The builder
-# =============================================================================
-
-
-def _surface(bundle: Any) -> DecisionSurface:
-    """The surface a generation freezes from ``bundle`` — built here from the bundle's public facts.
-
-    That a generation freezes exactly this axis is asserted on a real generation below
-    (``test_a_bundle_with_one_draws_it_and_freezes_the_axis``).
-    """
-    return DecisionSurface(
-        cells=bundle.cell_measures,
-        measures=cell_measure_facts(bundle),
-        dimensions=cell_dimension_facts(bundle),
-        time_axis=bundle.time_axis,
-    )
-
-
-def _chart(cells: list[str], measure: str = "total_ms", reading: str = "measure") -> Chart:
-    return Chart(
-        type="timeseries",
-        cells=cells,
-        measures=[MeasureRef(measure_id=measure, reading=reading)],
-        axis="",
-        note="",
-        caption="",
-    )
-
-
-def _build(bundle: Any, chart: Chart, surface: DecisionSurface | None = None) -> dict[str, Any]:
-    return build_viz_payload(
-        reference_from_chart(chart),
-        surface if surface is not None else _surface(bundle),
-        bundle.variant_index,
-        measures=MeasureRegistry([]),
-    )
-
-
-class TestTheBuilder:
-    def test_a_surface_without_a_time_axis_cannot_draw_one(self) -> None:
-        bundle = _two_days()
-        flat = _surface(bundle).model_copy(update={"time_axis": None})
-
-        with pytest.raises(UnresolvableReference, match="this analysis has none"):
-            _build(bundle, _chart([]), flat)
-
-    def test_every_point_is_the_resolvers_reading_over_its_position(self) -> None:
-        bundle = _two_days()
-        surface = _surface(bundle)
-        payload = _build(bundle, _chart([]))
-
-        assert payload["positions"] == ["2026-03-14", "2026-03-15"]
-        assert payload["gaps"] == []
-        cells = [cell_ref(c.variant_key, c.apparatus_class_id) for c in surface.cells]
-        for cell, line in zip(cells, payload["series"], strict=True):
-            for position, point in zip(surface.time_axis.positions, line["points"], strict=True):
-                at = DecisionSurface(cells=position.cells, measures=surface.measures, dimensions=surface.dimensions)
-                reading = resolve_reading(at, cell, "total_ms")
-                # A point's n is its cases, never its observations: the bundle runs each case k times, so the two
-                # differ here and a point counting observations would fail.
-                assert reading.n_cases is not None and reading.n_cases < reading.n, "the bundle repeats each case"
-                assert point["position"] == position.key
-                assert (point["ci"]["mean"], point["ci"]["low"], point["ci"]["high"], point["n"]) == (
-                    reading.mean,
-                    reading.ci_low,
-                    reading.ci_high,
-                    reading.n_cases,
-                )
-        assert parse_payload("timeseries", payload) is not None
-
-    def test_builds_whose_runs_interleave_are_named_and_disclosed(self) -> None:
-        """v1 ran, then v2, then v1 again: v1's cells pool runs from both sides of the step to v2."""
-        bundle = _timed(
-            [(DAY_ONE, "v1"), ("2026-03-14T12:00:00+00:00", "v2"), (DAY_TWO, "v1")], profile=_release_profile()
-        )
-        assert [position.key for position in bundle.time_axis.positions] == ["v1", "v2"]
-
-        payload = _build(bundle, _chart([]))
-
-        assert payload["interleaved"] == ["v1"]
-        intent = chart_intent("timeseries", payload)
-        assert any(line.startswith("Interleaved builds (v1 into v2)") for line in intent.disclosures)
-
-    def test_builds_run_one_after_another_interleave_with_nothing(self) -> None:
-        bundle = _timed([(DAY_ONE, "v1"), (DAY_TWO, "v2")], profile=_release_profile())
-
-        payload = _build(bundle, _chart([]))
-
-        assert payload["interleaved"] == []
-        assert not any(line.startswith("Interleaved") for line in chart_intent("timeseries", payload).disclosures)
-
-    def test_one_cell_is_one_line(self) -> None:
-        bundle = _two_days()
-        first = _surface(bundle).cells[0]
-        payload = _build(bundle, _chart([cell_ref(first.variant_key, first.apparatus_class_id)]))
-
-        assert len(payload["series"]) == 1
-        assert isinstance(reference_from_chart(_chart(["x"])), TimeseriesRef)
-
-    def test_a_cell_absent_at_a_position_is_a_stated_gap(self) -> None:
-        bundle = _two_days()
-        surface = _surface(bundle)
-        gone = surface.cells[0]
-        second = surface.time_axis.positions[1]
-        thinned = surface.time_axis.model_copy(
-            update={
-                "positions": [
-                    surface.time_axis.positions[0],
-                    second.model_copy(
-                        update={
-                            "cells": [
-                                c
-                                for c in second.cells
-                                if (c.variant_key, c.apparatus_class_id) != (gone.variant_key, gone.apparatus_class_id)
-                            ]
-                        }
-                    ),
-                ]
-            }
-        )
-        payload = _build(bundle, _chart([]), surface.model_copy(update={"time_axis": thinned}))
-
-        assert len(payload["series"][0]["points"]) == 1
-        assert payload["gaps"] == [
-            {
-                "series": payload["series"][0]["label"],
-                "position": "2026-03-15",
-                "reason": "the cell was not measured there",
-            }
-        ]
-
-    def test_a_position_below_the_band_floor_is_a_stated_gap(self) -> None:
-        """A point is drawn as an interval band, so a position over fewer than 5 cases has none (#677)."""
-        bundle = _two_days()
-        surface = _surface(bundle)
-        second = surface.time_axis.positions[1]
-        first_cell = second.cells[0]
-        thin = first_cell.model_copy(
-            update={
-                "measures": first_cell.measures.model_copy(
-                    update={
-                        "measures": [
-                            m.model_copy(update={"n_independent": 3}) if m.name == "total_ms" else m
-                            for m in first_cell.measures.measures
-                        ]
-                    }
-                )
-            }
-        )
-        thinned = surface.time_axis.model_copy(
-            update={
-                "positions": [
-                    surface.time_axis.positions[0],
-                    second.model_copy(update={"cells": [thin, *second.cells[1:]]}),
-                ]
-            }
-        )
-        payload = _build(bundle, _chart([]), surface.model_copy(update={"time_axis": thinned}))
-
-        assert {"position": "2026-03-15", "reason": "3 cases there, fewer than the 5 an interval is drawn from"} in [
-            {key: gap[key] for key in ("position", "reason")} for gap in payload["gaps"]
-        ]
-
-    def test_no_cell_with_two_points_is_refused(self) -> None:
-        bundle = _two_days()
-        surface = _surface(bundle)
-        first = surface.time_axis.positions[0]
-        alone = surface.time_axis.model_copy(
-            update={
-                "positions": [
-                    first,
-                    surface.time_axis.positions[1].model_copy(update={"cells": [surface.cells[0]]}),
-                ]
-            }
-        )
-        cell = surface.cells[1]
-
-        with pytest.raises(UnresolvableReference, match="none of .* has one at two"):
-            _build(
-                bundle,
-                _chart([cell_ref(cell.variant_key, cell.apparatus_class_id)]),
-                surface.model_copy(update={"time_axis": alone}),
-            )
-
-    def test_a_reading_no_cell_measured_is_refused_in_the_resolvers_words(self) -> None:
-        with pytest.raises(UnresolvableReference, match="which measured no such measure"):
-            _build(_two_days(), _chart([], "no_such_measure"))
-
-    def test_a_categorical_reading_is_refused_in_the_resolvers_words(self) -> None:
-        bundle = _two_days()
-        surface = _surface(bundle)
-        cell = surface.cells[0]
-        stops = MeasureSummary(
-            population="scored", name="stop_reason", attribution_scope="end_to_end", n=4, categories={"end": 4}
-        )
-        with_stops = cell.model_copy(
-            update={"measures": cell.measures.model_copy(update={"measures": [*cell.measures.measures, stops]})}
-        )
-        surface = surface.model_copy(
-            update={
-                "cells": [with_stops, *surface.cells[1:]],
-                "measures": surface.measures | {"stop_reason": MeasureFacts()},
-            }
-        )
-
-        with pytest.raises(UnresolvableReference, match="categorical"):
-            _build(bundle, _chart([cell_ref(cell.variant_key, cell.apparatus_class_id)], "stop_reason"), surface)
-
-    def test_two_measures_are_not_one_reading(self) -> None:
-        chart = _chart([]).model_copy(update={"measures": [MeasureRef(measure_id="a", reading="measure")] * 2})
-        with pytest.raises(UnresolvableReference, match="exactly one measure"):
-            reference_from_chart(chart)
-
-
-# =============================================================================
-# The payload and the arm
-# =============================================================================
-
-
-def _with_points(series: int, points: list[dict[str, Any]]) -> dict[str, Any]:
-    payload = _payload()
-    payload["series"] = copy.deepcopy(payload["series"])
-    payload["series"][series]["points"] = points
-    return payload
-
-
-def _renamed(position: str, to: str) -> dict[str, Any]:
-    """The conforming payload with one position renamed everywhere it appears."""
-    renamed: dict[str, Any] = json.loads(json.dumps(_payload()).replace(f'"{position}"', f'"{to}"'))
-    return renamed
-
-
-class TestThePayloadRefusesWhatCannotBeDrawn:
-    @pytest.mark.parametrize(
-        ("payload", "match"),
-        [
-            (_payload(positions=["2026-03-14"], series=[], gaps=[]), "at least 2 positions"),
-            (_payload(positions=["2026-03-14", "2026-03-14", "2026-03-16"]), "duplicated: 2026-03-14"),
-            (_payload(positions=["2026-03-14", " ", "2026-03-16"]), "every position needs a name"),
-            (_payload(series=[], gaps=[]), "at least 1 series"),
-            (_payload(series=[_payload()["series"][0], _payload()["series"][0]]), "duplicated: narrow"),
-            (
-                _with_points(
-                    0, [{"position": "2026-03-20", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(1.0)}]
-                ),
-                "2026-03-20, which the axis",
-            ),
-            (
-                _with_points(
-                    0, [{"position": "2026-03-14", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(2.0)}]
-                ),
-                "more than one point at 2026-03-14",
-            ),
-            (
-                _with_points(
-                    0, [{"position": "2026-03-16", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(2.0)}]
-                ),
-                "out of the axis's order",
-            ),
-            (
-                _payload(series=[{"label": "narrow", "points": [{"position": "2026-03-14", "ci": _ci(1.0)}]}], gaps=[]),
-                "no series has points at two positions",
-            ),
-            (
-                _payload(gaps=[{"series": "wide", "position": "2026-03-20", "reason": "x"}]),
-                "gap names position '2026-03-20'",
-            ),
-            (_payload(gaps=[]), "series 'wide' has no point at 2026-03-15 and no gap saying why"),
-            (
-                _payload(gaps=[*_payload()["gaps"], {"series": "absent", "position": "2026-03-15", "reason": "x"}]),
-                "gap names series 'absent'",
-            ),
-            (_renamed("2026-03-16", "zzz"), "'zzz' is not one"),
-            (_payload(interleaved=["2026-03-14"]), "only builds interleave"),
-            (
-                _payload(basis="release", release_label="app_version", interleaved=["2026-03-20"]),
-                "interleaved names 2026-03-20",
-            ),
-            (
-                _payload(basis="release", release_label="app_version", interleaved=["2026-03-16"]),
-                "the last build has no next build",
-            ),
-            (_renamed("2026-03-16", "2026-3-16"), "'2026-3-16' is not one"),
-            (
-                _payload(
-                    positions=["2026-03-15", "2026-03-14", "2026-03-16"],
-                    series=[
-                        {
-                            "label": "narrow",
-                            "points": [
-                                {"position": "2026-03-15", "ci": _ci(1.0)},
-                                {"position": "2026-03-14", "ci": _ci(1.0)},
-                                {"position": "2026-03-16", "ci": _ci(1.0)},
-                            ],
-                        }
-                    ],
-                    gaps=[],
-                ),
-                "calendar order, earliest first",
-            ),
-            (
-                _payload(gaps=[{"series": "wide", "position": "2026-03-14", "reason": "x"}]),
-                "both a point and a gap at '2026-03-14'",
-            ),
-            (_payload(basis="release"), "names its release_label"),
-            (_payload(release_label="app_version"), "names its release_label"),
-            (_with_points(1, [{"position": "2026-03-14"}, {"position": "2026-03-16", "ci": _ci(1.0)}]), "ci"),
-            (_payload(colour="red"), "not permitted"),
-        ],
-    )
-    def test_each_forbidden_shape_is_refused(self, payload: dict[str, Any], match: str) -> None:
-        with pytest.raises(PayloadError, match=match):
-            parse_payload("timeseries", payload)
-
-    def test_the_conforming_shape_parses(self) -> None:
-        assert parse_payload("timeseries", _payload()) is not None
-        assert parse_payload("timeseries", _payload(basis="release", release_label="app_version")) is not None
-        renamed = json.loads(
-            json.dumps(_payload())
-            .replace("2026-03-14", "0.9")
-            .replace("2026-03-15", "0.10")
-            .replace("2026-03-16", "0.11")
-        )
-        assert renamed["positions"] == ["0.9", "0.10", "0.11"]
-        assert (
-            parse_payload("timeseries", renamed | {"basis": "release", "release_label": "app_version"}) is not None
-        ), "a release axis is ordered by when each build first ran, never by its name"
-
-
-class TestTheIntent:
-    def test_the_values_as_drawn_table_is_the_data(self) -> None:
-        """Every drawn point, in drawn order, restated in the chart's unit — and nothing else."""
-        chart = chart_intent("timeseries", _payload())
-        expected = [
-            {
-                "series": line["label"],
-                "position": p["position"],
-                "mean": p["ci"]["mean"] / 1000,
-                "low": p["ci"]["low"] / 1000,
-                "high": p["ci"]["high"] / 1000,
-                "n": p["n"],
-            }
-            for line in _payload()["series"]
-            for p in line["points"]
-        ]
-        assert chart.unit == "s"
-        assert [row.keys() for row in chart.rows] == [row.keys() for row in expected]
-        for row, wanted in zip(chart.rows, expected, strict=True):
-            assert row == {
-                key: pytest.approx(value) if isinstance(value, float) else value for key, value in wanted.items()
-            }
-        assert [column.header for column in chart.columns] == [
-            "Series",
-            "Day (UTC)",
-            "Mean (s)",
-            "Low (s)",
-            "High (s)",
-            "Cases",
-        ]
-
-    def test_the_table_drawn_from_a_bundle_matches_the_bundles_numbers(self) -> None:
-        bundle = _two_days()
-        surface = _surface(bundle)
-        chart = chart_intent("timeseries", _build(bundle, _chart([])))
-        drawn = {(row["series"], row["position"]): row for row in chart.rows}
-        labels = {line["label"] for line in _build(bundle, _chart([]))["series"]}
-
-        assert len(drawn) == 2 * len(surface.cells) and {series for series, _ in drawn} == labels
-        for cell, line in zip(surface.cells, _build(bundle, _chart([]))["series"], strict=True):
-            ref = cell_ref(cell.variant_key, cell.apparatus_class_id)
-            for position in surface.time_axis.positions:
-                at = DecisionSurface(cells=position.cells, measures=surface.measures, dimensions=surface.dimensions)
-                reading = resolve_reading(at, ref, "total_ms")
-                row = drawn[(line["label"], position.key)]
-                assert reading.n_cases is not None and reading.n_cases < reading.n, "the bundle repeats each case"
-                assert (row["mean"], row["low"], row["high"], row["n"]) == pytest.approx(
-                    (reading.mean / 1000, reading.ci_low / 1000, reading.ci_high / 1000, reading.n_cases)
-                )
-
-    def test_the_disclosures_name_the_order_the_intervals_and_each_gap(self) -> None:
-        assert chart_intent("timeseries", _payload()).disclosures == [
-            "Days are UTC, in calendar order.",
-            "Intervals are 95% CIs.",
-            "Intervals span the cell's observations.",
-            "Not drawn (the cell was not measured there): wide at 2026-03-15.",
-        ]
-        release = chart_intent("timeseries", _payload(basis="release", release_label="app_version"))
-        assert release.disclosures[0] == "Builds of app_version are in the order each first ran."
-
-
-# =============================================================================
 # The generator
 # =============================================================================
-
-
-def _chart_types(contract: dict[str, Any]) -> set[str]:
-    found: set[str] = set()
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            enum = node.get("enum")
-            if isinstance(enum, list) and NO_CHART in enum:
-                found.update(enum)
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(contract)
-    return found
-
-
-def _timeseries_payload(bundle: Any) -> dict[str, Any]:
-    """The toy memo with a timeseries chart over every cell.
-
-    Written over the committed toy bundle: a re-run campaign pools the same two arms under the same rig,
-    so its cells, their aliases and its declared question are the committed bundle's.
-    """
-    payload = memo_payload(toyhost_bundle())
-    assert list(cell_aliases(bundle.cell_measures).values()) == list(
-        cell_aliases(toyhost_bundle().cell_measures).values()
-    )
-    aliases = list(cell_aliases(bundle.cell_measures))
-    payload["findings"][0]["chart"] = {
-        "type": "timeseries",
-        "cells": aliases,
-        "measures": [{"measure_id": "total_ms", "reading": "measure"}],
-        "axis": "",
-        "note": "",
-        "caption": "",
-    }
-    return payload
 
 
 async def _generate(bundle: Any, payload: dict[str, Any]) -> Any:
@@ -782,44 +331,24 @@ async def _generate(bundle: Any, payload: dict[str, Any]) -> Any:
     return analysis
 
 
-def _generated(bundle: Any, author: Any) -> Any:
+def _generated(bundle: Any) -> Any:
+    """A generation over ``bundle`` of the toy memo, written over the committed toy bundle.
+
+    A re-run campaign pools the same two arms under the same rig, so its cells, their aliases and its declared
+    question are the committed bundle's.
+    """
     import asyncio
 
-    return asyncio.run(_generate(bundle, author(bundle)))
+    assert list(cell_aliases(bundle.cell_measures).values()) == list(
+        cell_aliases(toyhost_bundle().cell_measures).values()
+    )
+    return asyncio.run(_generate(bundle, memo_payload(toyhost_bundle())))
 
 
-class TestTheMenuOffersTimeOnlyWhereThereIsTime:
-    def test_a_bundle_without_a_time_axis_is_not_offered_the_chart(self) -> None:
-        flat = _timed([(DAY_ONE, None), ("2026-03-14T17:00:00+00:00", None)])
-        _, _, contract = first_request(flat, PROMPT, toyhost_profile())
-
-        assert "timeseries" not in _chart_types(contract)
-        assert "distribution" in _chart_types(contract), "the walk must find the menu it inspects"
-
-    def test_a_bundle_with_one_is(self) -> None:
-        _, _, contract = first_request(_two_days(), PROMPT, toyhost_profile())
-        assert "timeseries" in _chart_types(contract)
-
-    async def test_a_bundle_without_a_time_axis_cannot_reference_the_chart(self) -> None:
-        flat = _timed([(DAY_ONE, None), ("2026-03-14T17:00:00+00:00", None)])
-
-        with pytest.raises(SoundnessRefusal, match="timeseries"):
-            await _generate(flat, _timeseries_payload(flat))
-
-    async def test_a_bundle_with_one_draws_it_and_freezes_the_axis(self) -> None:
+class TestTheGenerationFreezesTheAxis:
+    def test_a_bundle_with_one_freezes_it_on_the_decision_surface(self) -> None:
         bundle = _two_days()
-        analysis = await _generate(bundle, _timeseries_payload(bundle))
-
-        (resolution,) = analysis.resolutions
-        assert resolution.chart is not None and resolution.chart.type == "timeseries"
-        assert analysis.decision_surface.time_axis == bundle.time_axis
-        assert chart_intent("timeseries", resolution.chart.payload).rows
-
-    def test_the_prompt_version_hashes_the_menu_that_was_sent(self) -> None:
-        profile = toyhost_profile()
-        assert prompt_content_version(PROMPT, profile, time_axis=True) != prompt_content_version(
-            PROMPT, profile, time_axis=False
-        )
+        assert _generated(bundle).decision_surface.time_axis == bundle.time_axis
 
     def test_the_writer_sees_the_axis_by_alias(self) -> None:
         from threetears.evals.analysis.generator import build_user_message

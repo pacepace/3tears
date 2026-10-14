@@ -1,16 +1,17 @@
-"""A headline or summary bullet that says arms are alike needs a finding under it that established a null.
+"""A finding title that says arms are alike needs the finding under it to cite a null the bundle established.
 
 The instance, from a production memo (2026-10): "Halving the token budget from 16384 to 12288 does not change this
-research agent's latency, cost, or delivery", over a contrast that did not separate at five cases and whose own caveat said it "has not confirmed a null
-so much as failed to separate two arms". A null is established by the bundle alone — a comparison reading
-``equivalent``, or a guardrail reading ``held`` — and a ``not_separated`` contrast is unresolved.
+research agent's latency, cost, or delivery", over a contrast that did not separate at five cases and whose own caveat
+said it "has not confirmed a null so much as failed to separate two arms". A null is established by the bundle alone —
+a comparison reading ``equivalent``, or a guardrail reading ``held`` — and a ``not_separated`` contrast is unresolved.
 
-The headline and each summary bullet name the findings they rest on. The generator matches each sentence against a
-curated list of null phrasings, and refuses one when none of ITS findings cites a reading the bundle established
-alike — a null another sentence's finding established licenses nothing here. The phrase tests pin both directions for every
-pattern: the claim it catches, and the recommendation it must not. The generation tests drive
-:func:`~threetears.evals.analysis.generator.generate_analysis` over the toy campaign with its narrow width declared the
-control, its verdicts replaced the way the adoption tests replace them.
+The memo has no headline or summary any more: the report's first screen is code's. What a skimming reader takes away
+from the memo is each finding's title, so the generator matches every title against a curated list of null phrasings
+and refuses one when its OWN finding cites no reading the bundle established alike — a null another finding
+established licenses nothing here. The phrase tests pin both directions for every pattern: the claim it catches, and
+the recommendation it must not. The generation tests drive :func:`~threetears.evals.analysis.generator.generate_analysis`
+over the toy campaign with its narrow width declared the control, its verdicts replaced the way the adoption tests
+replace them.
 """
 
 from __future__ import annotations
@@ -38,12 +39,11 @@ from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.null_claims import NULL_CLAIM_PATTERNS, null_claims
-from threetears.evals.kernel.authored import summary_bullets
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
 from threetears.evals.schema.models import utc_now_iso
 
-#: The #2083 headline, verbatim.
+#: The #2083 headline, verbatim — now a finding's title.
 _HEADLINE_2083 = (
     "Halving the token budget from 16384 to 12288 does not change this research agent's latency, cost, or delivery."
 )
@@ -111,17 +111,6 @@ def test_emphasis_and_a_curly_apostrophe_do_not_hide_a_claim() -> None:
     ]
 
 
-def test_a_summary_splits_into_its_bullets_with_a_wrapped_line_kept_in_its_own() -> None:
-    summary = "- Wider chunks are slower.\n- Cost is too close\n  to call.\n\n1. Run more cases."
-    assert summary_bullets(summary) == ["Wider chunks are slower.", "Cost is too close to call.", "Run more cases."]
-
-
-def test_a_summary_with_no_bullet_is_one_bullet() -> None:
-    assert summary_bullets("Wider chunks are slower.\nNothing else was learned.") == [
-        "Wider chunks are slower. Nothing else was learned."
-    ]
-
-
 # --- through the generator ----------------------------------------------------------------------------------------
 
 
@@ -173,31 +162,21 @@ def _bundle(*, total_ms: ComparisonVerdict = "not_separated") -> AnalysisContext
 def _memo(
     bundle: AnalysisContextBundle,
     *,
-    headline: str = "Keep the narrow chunk width; the wide one is slower.",
-    headline_rests_on: list[int] | None = None,
-    summary: str = "- The wide width is slower.\n- Whether it is cheaper is too close to call.",
-    summary_rests_on: list[list[int]] | None = None,
+    latency: str = "the wider chunk is slower on every document",
+    cost: str = "whether the wider chunk costs more is too close to call",
 ) -> str:
-    """The toy memo with two findings — 0 citing latency at both widths, 1 citing cost — and its links replaced.
-
-    By default the headline rests on finding 1 (cost) and every bullet on finding 0 (latency).
-    """
+    """The toy memo with two findings — 0 citing latency at both widths, 1 citing cost — titled as given."""
     payload = memo_payload(bundle)
-    latency = payload["findings"][0]
-    cost = latency | {
-        "title": "the wider chunk costs more per document",
+    finding = payload["findings"][0]
+    cost_finding = finding | {
+        "title": cost,
         "evidence": [
             {"cell": alias_at(bundle, level), "measure_id": "production_replicating_cost", "reading": "measure"}
             for level in (TOYHOST_NARROW, TOYHOST_WIDE)
         ],
         "confidence": "medium",
     }
-    payload["findings"] = [latency, cost]
-    payload["headline"], payload["summary"] = headline, summary
-    payload["headline_rests_on"] = [1] if headline_rests_on is None else headline_rests_on
-    payload["summary_rests_on"] = (
-        [[0] for _ in summary_bullets(summary)] if summary_rests_on is None else summary_rests_on
-    )
+    payload["findings"] = [finding | {"title": latency}, cost_finding]
     return json.dumps(payload)
 
 
@@ -221,41 +200,35 @@ async def _accepted(bundle: AnalysisContextBundle, memo: str) -> EvalAnalysis:
     return analysis
 
 
-class TestANullNoFindingUnderItEstablishedIsRefused:
-    async def test_the_2083_headline_over_an_unresolved_contrast_is_refused_and_told_what_to_do(self):
+class TestANullItsFindingDidNotEstablishIsRefused:
+    async def test_the_2083_sentence_over_an_unresolved_contrast_is_refused_and_told_what_to_do(self):
         bundle = _bundle()
         with pytest.raises(SoundnessRefusal) as refused:
-            await _generate(bundle, FixturedClient(_memo(bundle, headline=_HEADLINE_2083)))
+            await _generate(bundle, FixturedClient(_memo(bundle, cost=_HEADLINE_2083)))
         message = str(refused.value)
-        assert 'the headline says "does not change" and rests on finding position(s) [1]' in message
-        assert "none of those findings cites a reading the bundle established alike" in message
+        assert 'findings[1].title says "does not change"' in message
+        assert "that finding cites no reading the bundle established alike" in message
         assert "`equivalent` in `multiple_comparisons`, or a guardrail reading `held`" in message
         assert "is unresolved, not unchanged (rule 4)" in message
         assert "a reworded null is the same claim" in message
         assert "The bundle does establish" not in message, "it establishes nothing, so nothing is offered"
 
-    async def test_a_summary_bullet_is_checked_against_its_own_findings_and_named_by_its_position(self):
+    async def test_every_null_title_is_named_in_one_refusal(self):
         bundle = _bundle()
-        summary = "- The wide width is slower.\n- Cost is too close to call.\n- Accuracy was unchanged between widths."
-        with pytest.raises(SoundnessRefusal, match=r'summary bullet 3 says "was unchanged" and rests on finding'):
-            await _generate(bundle, FixturedClient(_memo(bundle, summary=summary)))
-
-    async def test_every_null_in_the_headline_and_summary_is_named_in_one_refusal(self):
-        bundle = _bundle()
-        memo = _memo(bundle, headline=_HEADLINE_2083, summary="- Cost made no difference.\n- Run more cases.")
+        memo = _memo(bundle, latency="Accuracy was unchanged between widths.", cost=_HEADLINE_2083)
         with pytest.raises(SoundnessRefusal) as refused:
             await _generate(bundle, FixturedClient(memo))
         message = str(refused.value)
-        assert 'the headline says "does not change"' in message
-        assert 'summary bullet 1 says "no difference"' in message
+        assert 'findings[0].title says "was unchanged"' in message
+        assert 'findings[1].title says "does not change"' in message
 
-    async def test_a_null_another_sentences_finding_established_does_not_license_this_one(self):
-        """Latency is equivalent and finding 0 cites it; the headline rests on finding 1 (cost), so it is refused."""
+    async def test_a_null_another_finding_established_does_not_license_this_one(self):
+        """Latency is equivalent and finding 0 cites it; finding 1 cites cost, so its null title is refused."""
         bundle = _bundle(total_ms="equivalent")
         wide = alias_at(bundle, TOYHOST_WIDE)
         client = _MemoSequence(
-            _memo(bundle, headline=_HEADLINE_2083, headline_rests_on=[1]),
-            _memo(bundle, headline=_HEADLINE_2083, headline_rests_on=[0]),
+            _memo(bundle, cost=_HEADLINE_2083),
+            _memo(bundle, latency=_HEADLINE_2083),
         )
 
         analysis = await _generate(bundle, client)
@@ -265,30 +238,28 @@ class TestANullNoFindingUnderItEstablishedIsRefused:
         assert f"The bundle does establish total_ms at cell {wide} (equivalent to the control; cited by finding " in (
             refusal
         ), "named in the writer's own alias"
-        assert "position(s) [0])" in refusal and "rest it on a finding that cites that reading" in refusal
+        assert "position(s) [0])" in refusal and "cite that reading in the finding's evidence" in refusal
         assert len(client.calls) == 2 and refusal in client.calls[1]["user"]
-        assert analysis.document.headline_rests_on == [0]
+        assert analysis.document.findings[0].title == _HEADLINE_2083
 
     async def test_the_repair_round_states_it_as_unresolved_and_the_analysis_is_stored(self):
         bundle = _bundle()
         honest = "Too close to call: keep the current budget and run more cases."
-        client = _MemoSequence(_memo(bundle, headline=_HEADLINE_2083), _memo(bundle, headline=honest))
+        client = _MemoSequence(_memo(bundle, cost=_HEADLINE_2083), _memo(bundle, cost=honest))
 
         analysis = await _generate(bundle, client)
 
         assert len(client.calls) == 2
         assert analysis.generation.repair_attempts == 1
-        assert analysis.document.headline == honest
+        assert analysis.document.findings[1].title == honest
 
 
-class TestASoundHeadlineIsAccepted:
-    async def test_a_null_resting_on_a_finding_that_cites_an_established_equivalence_passes(self):
+class TestASoundTitleIsAccepted:
+    async def test_a_null_on_a_finding_that_cites_an_established_equivalence_passes(self):
         bundle = _bundle(total_ms="equivalent")
-        await _accepted(
-            bundle, _memo(bundle, headline="The wider chunk is just as fast; pick on cost.", headline_rests_on=[0])
-        )
+        await _accepted(bundle, _memo(bundle, latency="The wider chunk is just as fast; pick on cost."))
 
-    async def test_a_null_resting_on_a_finding_that_cites_a_held_guardrail_passes(self):
+    async def test_a_null_on_a_finding_that_cites_a_held_guardrail_passes(self):
         bundle = _bundle()
         comparison = next(
             c for family in bundle.multiple_comparisons.families for c in family.comparisons if c.name == "total_ms"
@@ -318,57 +289,12 @@ class TestASoundHeadlineIsAccepted:
             decision="held",
         )
         bundle = bundle.model_copy(update={"guardrails": GuardrailReadings(measures=["total_ms"], checks=[held])})
-        await _accepted(
-            bundle,
-            _memo(bundle, headline="The wider chunk does not hurt speed; pick on cost.", headline_rests_on=[0]),
-        )
+        await _accepted(bundle, _memo(bundle, latency="The wider chunk does not hurt speed; pick on cost."))
 
     async def test_an_unresolved_contrast_stated_as_unresolved_passes(self):
         bundle = _bundle()
-        await _accepted(
-            bundle,
-            _memo(
-                bundle,
-                headline="Halving the budget is probably cheaper, but too close to call.",
-                summary="- Whether the wide width is cheaper is too close to call.\n- Do not change the width yet.",
-            ),
-        )
+        await _accepted(bundle, _memo(bundle, cost="Halving the budget is probably cheaper, but too close to call."))
 
     async def test_a_recommendation_to_keep_a_setting_unchanged_passes(self):
         bundle = _bundle()
-        await _accepted(bundle, _memo(bundle, headline="Keep the budget unchanged until a larger run settles it."))
-
-
-class TestTheHeadlineAndEveryBulletNameTheirFindings:
-    """The links are what the standing and the null check read, so a missing or stray one is refused and repaired."""
-
-    async def test_an_empty_headline_link_over_findings_is_refused(self):
-        bundle = _bundle()
-        with pytest.raises(SoundnessRefusal, match=r"`headline_rests_on` is empty; name the finding positions"):
-            await _generate(bundle, FixturedClient(_memo(bundle, headline_rests_on=[])))
-
-    async def test_a_link_count_that_is_not_one_per_bullet_is_refused_with_the_bullets_read(self):
-        bundle = _bundle()
-        with pytest.raises(SoundnessRefusal) as refused:
-            await _generate(bundle, FixturedClient(_memo(bundle, summary_rests_on=[[0]])))
-        message = str(refused.value)
-        assert "`summary_rests_on` has 1 entries and the summary has 2 bullet(s)" in message
-        assert "0: 'The wide width is slower.'" in message
-
-    async def test_an_empty_bullet_link_over_findings_is_refused(self):
-        bundle = _bundle()
-        with pytest.raises(SoundnessRefusal, match=r"`summary_rests_on\[1\]` is empty"):
-            await _generate(bundle, FixturedClient(_memo(bundle, summary_rests_on=[[0], []])))
-
-    async def test_a_position_past_the_findings_is_refused_naming_the_sentence(self):
-        bundle = _bundle()
-        with pytest.raises(
-            SoundnessRefusal, match=r"`headline_rests_on` names finding position\(s\) \[5\], and there are 2"
-        ):
-            await _generate(bundle, FixturedClient(_memo(bundle, headline_rests_on=[5])))
-
-    async def test_the_repair_round_supplies_the_link_and_the_analysis_is_stored(self):
-        bundle = _bundle()
-        client = _MemoSequence(_memo(bundle, headline_rests_on=[]), _memo(bundle, headline_rests_on=[0, 1]))
-        analysis = await _generate(bundle, client)
-        assert len(client.calls) == 2 and analysis.document.headline_rests_on == [0, 1]
+        await _accepted(bundle, _memo(bundle, cost="Keep the budget unchanged until a larger run settles it."))

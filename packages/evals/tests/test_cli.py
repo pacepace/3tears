@@ -17,11 +17,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import jsonschema
 import pytest
 
 from threetears.evals.kernel import default_job_timeout
-from threetears.evals.analysis import NO_ANALYSIS, published_report_schema
+from threetears.evals.analysis import NO_ANALYSIS, AnalysisContextBundle
 from threetears.evals.kernel import CandidateOutput
 from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact
 from threetears.evals.ops import report_read
@@ -121,11 +120,11 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
     campaign = asyncio.run(run_courier_campaign(host))
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
-    assert out.startswith(f"# Campaign {campaign.name}: its evidence, with no analysis\n")
-    assert f"Code-only report of campaign {campaign.id}" in out.splitlines()[2]
-    assert "No analysis was generated" not in out.splitlines()[2], "the summary says it; the byline does not repeat it"
-    assert f"> {NO_ANALYSIS}" in out and out.count("No analysis was generated") == 1
-    assert "## Arms" in out and "## Decision surface" in out
+    title = out.splitlines()[0]
+    assert title.startswith(f"# {campaign.name} · ") and title.endswith(" · no analysis written")
+    assert out.splitlines()[1].startswith("EXPLORATORY") or out.splitlines()[1].startswith("Question declared")
+    assert f"> {NO_ANALYSIS}" in out and out.count(NO_ANALYSIS) == 1
+    assert "**Scoreboard: " in out and "## Cases" in out and "## Methods and disclosures" in out
 
 
 def test_report_is_the_report_read_actions_report(capsys: pytest.CaptureFixture[str]) -> None:
@@ -146,42 +145,44 @@ def _without_assembly_time(text: str) -> str:
     return re.sub(r"\d{4}-\d{2}-\d{2}T[0-9:.+]+(Z|[+-]\d{2}:\d{2})?", "<at>", text)
 
 
-def test_report_as_json_is_a_code_only_report_the_published_schema_validates(
-    capsys: pytest.CaptureFixture[str],
+def test_report_as_json_is_the_bundle_the_report_was_computed_from(capsys: pytest.CaptureFixture[str]) -> None:
+    host = courier_host()
+    campaign = asyncio.run(run_courier_campaign(host))
+    args = ["report", campaign.id, "--scope", COURIER_SCOPE, "--format", "json"]
+    assert run_cli(args, host_factory=lambda: host) == 0
+    bundle = AnalysisContextBundle.from_json(capsys.readouterr().out)
+
+    assert bundle.campaign_id == campaign.id and sorted(bundle.run_ids) == sorted(campaign.run_ids)
+    assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
+    assert bundle.fingerprint() in capsys.readouterr().out, "the page names the bundle it was computed from"
+
+
+def test_report_writes_the_page_its_markdown_and_its_bundle_to_out(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     host = courier_host()
     campaign = asyncio.run(run_courier_campaign(host))
-    assert (
-        run_cli(["report", campaign.id, "--scope", COURIER_SCOPE, "--format", "json"], host_factory=lambda: host) == 0
-    )
-    document = json.loads(capsys.readouterr().out)
-
-    jsonschema.Draft202012Validator(published_report_schema()).validate(document)
-    assert (document["basis"], document["source"]["analysis_id"], document["source"]["generator_model"]) == (
-        "code_only",
-        None,
-        None,
-    )
-
-
-def test_report_writes_html_to_out(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    host = courier_host()
-    campaign = asyncio.run(run_courier_campaign(host))
-    out = tmp_path / "report.html"
-    args = ["report", campaign.id, "--scope", COURIER_SCOPE, "--format", "html", "--out", str(out)]
+    out = tmp_path / "report"
+    args = ["report", campaign.id, "--scope", COURIER_SCOPE, "--out", str(out)]
     assert run_cli(args, host_factory=lambda: host) == 0
 
-    page = out.read_text(encoding="utf-8")
+    page = (out / "report.html").read_text(encoding="utf-8")
     assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and "<script" not in page.lower()
-    assert capsys.readouterr().out == f"wrote the code-only report of campaign {campaign.id} (html) to {out}\n"
+    assert (out / "report.md").read_text(encoding="utf-8").startswith(f"# {campaign.name} · ")
+    assert AnalysisContextBundle.from_json((out / "bundle.json").read_text(encoding="utf-8")).campaign_id == campaign.id
+    assert capsys.readouterr().out == (
+        f"wrote the code-only report of campaign {campaign.id} to {out}: report.html, bundle.json, report.md\n"
+    )
 
 
 def test_report_refuses_an_out_it_cannot_write(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     host = courier_host()
     campaign = asyncio.run(run_courier_campaign(host))
-    args = ["report", campaign.id, "--scope", COURIER_SCOPE, "--out", str(tmp_path)]
+    blocked = tmp_path / "a-file"
+    blocked.write_text("not a directory", encoding="utf-8")
+    args = ["report", campaign.id, "--scope", COURIER_SCOPE, "--out", str(blocked / "report")]
     assert run_cli(args, host_factory=lambda: host) == 2
-    assert f"--out {tmp_path}: cannot write the report there" in capsys.readouterr().err
+    assert f"--out {blocked / 'report'}: cannot write the report there" in capsys.readouterr().err
 
 
 def test_report_refuses_a_format_it_does_not_serialize() -> None:

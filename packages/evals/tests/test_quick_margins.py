@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import DisclosureBlock, TableBlock, inspect_campaign_bundle
+from threetears.evals.analysis import DisclosureBlock, inspect_campaign_bundle
 from threetears.evals.kernel import RUN_MARGIN_MEASURES, run_margin_refusal
 from threetears.evals.quick import Answer, Comparison, callable_host, compare
 from packages.evals.tests.off_loop import off_loop
@@ -161,9 +161,8 @@ class TestNoMargin:
         (line,) = _no_margin_lines(comparison)
         assert "Correct score" in line and "not separated never means the arms are alike" in line
         assert "compare(margins={'correct': ...})" in line
-        blocks = comparison.report.blocks
-        table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
-        assert blocks[table - 1].text == line, "the line sits directly above the contrasts it explains"
+        (block,) = [b for b in comparison.report.blocks if isinstance(b, DisclosureBlock) and b.text == line]
+        assert block.section == "not_tested", "said with what the campaign could not test"
 
     async def test_on_a_classifier_it_names_accuracy_and_the_one_way_to_declare_it(self) -> None:
         comparison = await compare(
@@ -176,7 +175,7 @@ class TestNoMargin:
         )
         (line,) = _no_margin_lines(comparison)
         assert "No margin is declared on Accuracy" in line
-        assert "Declare a margin on Accuracy with compare(margins={'accuracy': ...})" in line
+        assert "Declare a margin on Accuracy (compare(margins={'accuracy': ...}))" in line
         assert "scorer" not in line, "accuracy takes a margin of its own: no duplicate scorer is needed"
 
 
@@ -368,7 +367,7 @@ class TestTheNoMarginLineAdvisesEachKindOfMeasure:
             k=1,
         )
         (line,) = _no_margin_lines(comparison)
-        assert "Declare a margin on Correct score by the scorer's name with compare(margins={'correct': ...})" in line
-        assert "Declare a margin on Accuracy with compare(margins={'accuracy': ...})" in line
+        assert "Declare a margin on Correct score by the scorer's name (compare(margins={'correct': ...}))" in line
+        assert "Declare a margin on Accuracy (compare(margins={'accuracy': ...}))" in line
         assert "No comparison can declare one on Production cost" in line
-        assert "Production cost by the scorer's name" not in line and "Production cost with compare" not in line
+        assert "Production cost by the scorer's name" not in line and "Production cost (compare" not in line

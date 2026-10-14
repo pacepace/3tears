@@ -23,9 +23,11 @@ refuses it first, so a truncation can never buy the repair that would regenerate
 same cap.
 
 **The contract is sent, not described.** The model is asked for a document in the shape
-:mod:`threetears.evals.kernel.authored` defines — headline, summary, findings, decisions, question
-answers and next steps — sent as a strict schema (:func:`first_request`) and checked on return by the
-same models. The schema types the document's shape and the hooks code acts on, never what it says.
+:mod:`threetears.evals.kernel.authored` defines — findings, recommendations (``decisions``), question answers and
+next steps — sent as a strict schema (:func:`first_request`) and checked on return by the same models. The schema
+types the document's shape and the hooks code acts on, never what it says. The headline, the summary, every chart
+and every count are code's, rendered from the bundle by the report; the memo adds only what a reader of the
+evidence can.
 
 **Facts vs judgment.** The model owns only judgment: what the findings are and what they say, the
 decisions and their reasons, the answers, what to run next. The generator fills every fact from the
@@ -33,9 +35,9 @@ bundle: the campaign keys, the run index, the coverage levers' n/dispersion/stat
 estimate always carries its sample size and spread), and the provenance.
 
 **The model names a reading; code fills the number.** Every figure a reader is shown — an evidence
-value, n and dispersion, a chart's payload — comes from a reading the model named (a cell and a
+value, n and dispersion — comes from a reading the model named (a cell and a
 measure or judged dimension), resolved against the analysis's decision surface through
-:mod:`threetears.evals.analysis.references`. A reading, chart or decision cell naming nothing the surface
+:mod:`threetears.evals.analysis.references`. A reading or decision cell naming nothing the surface
 holds is an :class:`~threetears.evals.analysis.errors.UnresolvableReference` — a :class:`SoundnessRefusal`,
 so it buys the one repair round with the resolver's own account of what does exist. Findings link to
 each other by position, which the stored model checks. Confidence is a tier, never a probability.
@@ -45,10 +47,15 @@ Every refusal below reads a structured field of the generator's output — a cel
 names, a caveat kind, a question it answers, a position it links — against the bundle. The model's prose is the
 interpretive layer, and whether it is accurate, insightful and relevant is measured by evaluating the reporter as a
 candidate, not by code here. One check also reads a few words: :func:`_reject_unestablished_nulls` refuses a
-headline or summary bullet in a common null phrasing ("does not change", "no difference") when none of the findings
-that sentence rests on (``headline_rests_on``, ``summary_rests_on``) cites a null the bundle established. The join
-is structural; only "does this sentence say arms are alike" is read off the words, by a curated phrase list
-(:mod:`threetears.evals.analysis.null_claims`), so a reworded null passes it and nothing is parsed.
+finding title in a common null phrasing ("does not change", "no difference") when the finding cites no null the
+bundle established. The join is structural; only "does this title say arms are alike" is read off the words, by a
+curated phrase list (:mod:`threetears.evals.analysis.null_claims`), so a reworded null passes it and nothing is
+parsed.
+
+**A recommendation is pinned, and an exploratory campaign adopts nothing.** Every recommendation names the findings
+it rests on, a finding names only trials the bundle holds, and in a campaign that declared no question before its
+first run no recommendation is ``adopted`` — keeping the control included: with nothing asked beforehand, nothing in
+the evidence is a decision (:func:`_reject_exploratory_adoptions`).
 
 **Closed dependency set.** The generator depends only on the bundle, the
 resolved prompt string, the host's profile, and an injected model-provider client (a
@@ -70,12 +77,12 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeIs, get_args
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from threetears.evals.analysis import viz_refs
 from threetears.evals.analysis.arms import arm_names, contradicted_arms, writer_arms
+from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.bundle.schema import (
@@ -99,18 +106,12 @@ from threetears.evals.analysis.references import (
     in_writer_terms,
     resolve_reading,
 )
-from threetears.evals.analysis.viz.intent import chart_intent
-from threetears.evals.analysis.viz.payloads import PayloadError
-from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.kernel.authored import (
-    NO_CHART,
     AuthoredAnalysis,
     OffVocabulary,
     response_format,
-    summary_bullets,
     validate_authored,
 )
-from threetears.evals.kernel.authored import Chart as AuthoredChart
 from threetears.evals.kernel.authored import Finding as AuthoredFinding
 from threetears.evals.kernel.campaign import (
     ENGINE_CAVEAT_KINDS,
@@ -122,13 +123,9 @@ from threetears.evals.kernel.campaign import (
     GenerationProvenance,
     LeverCoverage,
     RunIndexEntry,
-    VariantIndexEntry,
-    Viz,
-    VizType,
 )
 from threetears.evals.kernel.evidence_tiers import JUDGED_TIER_RULE
 from threetears.evals.schema.hashing import bytes_digest
-from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.host.style import prompt_fragment
 from threetears.evals.kernel.identity import IDENTITY_VERSION
@@ -214,6 +211,9 @@ CallAdmission = Callable[[str, str, "dict[str, Any] | None"], None]
 #: Provider requests one generation can send: the generation, and the one repair round-trip a
 #: refused output buys. :func:`generate_analysis` bounds it structurally; a test pins the two.
 MAX_GENERATION_CALLS = 2
+
+#: How much of a judge's reasoning on one trial the writer reads: enough to name a failure mode, not the transcript.
+WRITER_REASON_CHARS = 300
 
 
 def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float:
@@ -437,8 +437,8 @@ async def generate_analysis(
             the post-generation validators. The causes are deliberately not re-enumerated here, because an
             enumeration drifts every time one is added and this list already had; read the
             chain in :func:`_assemble_and_validate`, where each ``_reject_*`` function
-            documents its own. Every one reads a structured field; the null-claim check on the
-            headline and summary also matches a short phrase list (:func:`_reject_unestablished_nulls`).
+            documents its own. Every one reads a structured field; the null-claim check on a
+            finding's title also matches a short phrase list (:func:`_reject_unestablished_nulls`).
     """
     tally = tally if tally is not None else GenerationTally()
     if not measuring_writers:
@@ -449,7 +449,7 @@ async def generate_analysis(
     resolved_prompt_version = (
         prompt_version
         if prompt_version is not None
-        else prompt_content_version(prompt, profile, time_axis=bundle.time_axis is not None)
+        else prompt_content_version(prompt, profile)
     )
     tally.prompt_version = resolved_prompt_version
     if admit is not None:
@@ -757,14 +757,14 @@ Emit the WHOLE analysis again with exactly that corrected. The refusal names wha
 alternative. Follow it literally.
 
 Keep everything the refusal does not name. Where your previous output was a complete \
-analysis, its other findings, decisions, takeaways and charts were not at issue: reproduce \
+analysis, its other findings, decisions and answers were not at issue: reproduce \
 them as they were rather than rewriting the report around the fix.
 
 Do NOT satisfy the refusal by REMOVING what it complains about — not the offending finding, \
 and not an evidence row or list you are unsure how to key. That answers the refusal by \
 losing the result, which is worse than the refusal. The evidence has not changed, so what \
-was refused almost always survives in a corrected form: a weaker claim, a different chart \
-type, the missing statistic supplied, or the required field copied from the bundle.
+was refused almost always survives in a corrected form: a weaker claim, a deferred \
+recommendation, the missing link supplied, or the required field copied from the bundle.
 
 THIS IS WHAT YOU SENT, AND IT IS THE ONLY COPY YOU HAVE OF IT:
 
@@ -801,20 +801,9 @@ def _repair_user_message(user_message: str, refusal: str, previous: str) -> str:
     return user_message + _REPAIR_INSTRUCTION.format(refusal=refusal, previous=previous)
 
 
-def _vocabularies(profile: HostProfile, *, time_axis: bool) -> tuple[frozenset[str], dict[str, str]]:
-    """The caveat kinds and chart types on offer — the chart types with how each reads its lists.
-
-    ``timeseries`` is on offer only where the bundle carries a time axis
-    (:attr:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.time_axis`): it draws nothing else, so a
-    menu offering it over a bundle without one would invite a chart that can only be refused — and the
-    refusal costs a paid repair. Off the menu, the contract the response is checked against refuses it too.
-    """
-    readings = {
-        name: reads
-        for name, reads in viz_refs.CHART_READINGS.items()
-        if time_axis or name not in viz_refs.TIME_VIZ_TYPES
-    }
-    return ENGINE_CAVEAT_KINDS | profile.caveat_kinds, readings
+def _caveat_kinds(profile: HostProfile) -> frozenset[str]:
+    """The caveat kinds on offer: the engine's four and any the host registered."""
+    return ENGINE_CAVEAT_KINDS | profile.caveat_kinds
 
 
 def _assemble_and_validate(
@@ -827,51 +816,29 @@ def _assemble_and_validate(
 
     The authored document is checked against the contract it was sent, and its figure references
     are rendered into its prose (:mod:`threetears.evals.analysis.prose_refs`); otherwise it is kept as
-    written. What else code fills — every number an evidence reading resolves to, every compiled
-    chart — sits beside it on ``resolutions``. Every check here reads a structured field or a
-    reference's grammar; the null-claim check on the headline and summary also matches a short phrase list
+    written. What else code fills — every number an evidence reading resolves to — sits beside it on
+    ``resolutions``, and the bundle it was written over is stored with it. Every check here reads a structured field
+    or a reference's grammar; the null-claim check on a finding's title also matches a short phrase list
     (:func:`_reject_unestablished_nulls`).
 
     Raises:
         GenerationError: The provider cut the call short (not repaired).
-        SoundnessRefusal: The output does not match the contract, a position or reading points
-            nowhere, the question answers do not match the declaration, the headline or a summary bullet
-            names no finding it rests on, a decision adopts an arm no reading separated from the control, or
-            the headline or a summary bullet states a null none of its findings established (repaired once).
+        SoundnessRefusal: The output does not match the contract, a position, reading or trial points nowhere,
+            the question answers do not match the declaration, a recommendation rests on no finding, one adopts
+            anything in an exploratory campaign or an arm no reading separated from the control, or a finding's
+            title states a null it established nowhere (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
     try:
-        document = validate_authored(payload, *_vocabularies(profile, time_axis=bundle.time_axis is not None))
+        document = validate_authored(payload, _caveat_kinds(profile))
     except (ValidationError, OffVocabulary) as refused:
         raise SoundnessRefusal(f"generator output does not match the analysis contract: {refused}") from refused
     _reject_mismatched_question_answers(document, bundle)
-    _reject_unrested_summary(document)
-    return _resolved_analysis(document, bundle, generation, bundle_decision_surface(bundle), measures=profile.measures)
-
-
-def _reject_a_rendered_figure_opening_a_bullet(authored_bullets: int, rendered: AuthoredAnalysis) -> None:
-    """Refuse a summary whose rendered figures split it into other bullets than the writer linked.
-
-    The links are checked against the summary as written; the report reads the summary as stored, with its
-    figures rendered. A figure reference opening a line renders as a number, and a number followed by ``.`` or
-    ``)`` opens a numbered bullet, so the stored summary would hold a bullet the writer never linked, and every
-    reader of it would show a sentence standing on nothing.
-
-    Args:
-        authored_bullets: How many bullets the summary held as written.
-        rendered: The document with its figures rendered.
-
-    Raises:
-        SoundnessRefusal: Rendering changed how many bullets the summary holds (repaired once).
-    """
-    rendered_bullets = len(summary_bullets(rendered.summary))
-    if rendered_bullets != authored_bullets:
-        raise SoundnessRefusal(
-            f"the summary holds {authored_bullets} bullet(s) as written and {rendered_bullets} once its figures are "
-            "rendered: a figure reference opening a line renders as a number, which reads as a numbered bullet. "
-            "Begin each line of a bullet with words, and put the figure after them"
-        )
+    _reject_unpinned_recommendations(document)
+    _reject_unknown_trials(document, bundle)
+    _reject_exploratory_adoptions(document, bundle)
+    return _resolved_analysis(document, bundle, generation, bundle_decision_surface(bundle))
 
 
 def _resolved_analysis(
@@ -879,36 +846,30 @@ def _resolved_analysis(
     bundle: AnalysisContextBundle,
     generation: GenerationProvenance,
     surface: DecisionSurface,
-    *,
-    measures: MeasureRegistry,
 ) -> tuple[EvalAnalysis, list[EvalInsight]]:
-    """Resolve a validated document's cells, figures and charts against the surface, and build the stored analysis.
+    """Resolve a validated document's cells and figures against the surface, and build the stored analysis.
 
     Args:
         document: The validated authored document.
-        bundle: The bundle it was generated from.
+        bundle: The bundle it was generated from, stored with the analysis.
         generation: The generation's provenance.
         surface: The decision surface its readings resolve against.
-        measures: The host's measure registry, which a chart's containment rule reads.
 
     Returns:
         The stored analysis and the insights it mints.
 
     Raises:
         SoundnessRefusal: A cell, reading or position points nowhere, one arm is both adopted and
-            rejected, a decision adopts an arm no reading separated from the control, or the headline or a
-            summary bullet states a null none of its findings established (repaired once).
+            rejected, a decision adopts an arm no reading separated from the control, or a finding's title
+            states a null it established nowhere (repaired once).
     """
     document = _with_cell_refs(document, surface)
     _reject_contradicted_arms(document, bundle)
     _reject_unseparated_adoptions(document, bundle)
     _reject_unestablished_nulls(document, bundle)
-    authored_bullets = len(summary_bullets(document.summary))
     document = render_prose_figures(document, surface)
-    _reject_a_rendered_figure_opening_a_bullet(authored_bullets, document)
     resolutions = [
-        _resolution_of(finding, surface, bundle.variant_index, where=f"findings[{index}]", measures=measures)
-        for index, finding in enumerate(document.findings)
+        _resolution_of(finding, surface, where=f"findings[{index}]") for index, finding in enumerate(document.findings)
     ]
     reported = _comparable_measures(bundle.run_summaries)
     all_names = {m.name for summary in bundle.run_summaries for m in summary.measures.measures}
@@ -937,6 +898,7 @@ def _resolved_analysis(
             # The surface every reading was resolved against — the same object, so the stored
             # numbers and the stored facts cannot describe two different bundles.
             decision_surface=surface,
+            bundle=bundle.to_dict(),
         )
     except ValueError as refused:
         raise SoundnessRefusal(f"generator output failed analysis validation: {refused}") from refused
@@ -948,7 +910,7 @@ def _with_cell_refs(document: AuthoredAnalysis, surface: DecisionSurface) -> Aut
 
     The writer names cells by the short aliases the bundle view showed it; a stored analysis
     carries the full identity, so nothing stored depends on an alias being minted the same way
-    again. Translated here, once, before anything is resolved, so every reading, chart and decision
+    again. Translated here, once, before anything is resolved, so every reading and decision
     below this point — and :func:`render_prose_figures`, whose references go through the same
     :func:`~threetears.evals.analysis.references.cell_of_alias` — works on full refs.
 
@@ -969,14 +931,6 @@ def _with_cell_refs(document: AuthoredAnalysis, surface: DecisionSurface) -> Aut
                     row.model_copy(update={"cell": ref(row.cell, f"findings[{index}].evidence[{at}]")})
                     for at, row in enumerate(finding.evidence)
                 ],
-                "chart": finding.chart.model_copy(
-                    update={
-                        "cells": [
-                            ref(cell, f"findings[{index}].chart.cells[{at}]")
-                            for at, cell in enumerate(finding.chart.cells)
-                        ]
-                    }
-                ),
             }
         )
         for index, finding in enumerate(document.findings)
@@ -1023,8 +977,8 @@ def _reject_mismatched_question_answers(document: AuthoredAnalysis, bundle: Anal
 def _reject_contradicted_arms(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
     """Refuse an analysis in which one decision adopts an arm and another rejects it.
 
-    The arm table reads each verdict off the cells a decision names, so a memo adopting and rejecting
-    one arm states a winner its own decisions also rule out. That is a defect in the memo's structure,
+    A memo adopting and rejecting one arm recommends an arm its own recommendations also rule out. That is a defect
+    in the memo's structure,
     not a reading of its prose: it is found from dispositions and cell variants alone
     (:func:`~threetears.evals.analysis.arms.contradicted_arms`), and refused through the repair round
     like any other. Runs after cells are translated from aliases, so the refusal names a full ref,
@@ -1051,8 +1005,8 @@ def _reject_contradicted_arms(document: AuthoredAnalysis, bundle: AnalysisContex
 def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
     """Refuse a decision that adopts an arm no reading separated from the control in its favour.
 
-    An ``adopted`` decision makes the arm it names the winner (:func:`~threetears.evals.analysis.arms.arm_table`),
-    so it is a claim that the arm beat what it replaces, and ``multiple_comparisons`` is where the bundle
+    An ``adopted`` decision recommends acting on the arm it names now, so it is a claim that the arm beat what it
+    replaces, and ``multiple_comparisons`` is where the bundle
     says whether it did. The arm a decision names is read as the arm table reads it, off each cell's
     variant (:func:`~threetears.evals.analysis.cells.variant_of_cell_ref`), and matched to the
     comparisons whose contrast is that variant, under any rig and in any family.
@@ -1063,7 +1017,7 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
     separated only by ``regressed``, which is evidence against the arm rather than for it. An arm no
     test could reach — the bundle withholds every family, no comparison names it, or each one naming
     it is ``untested`` — has no separation to adopt on either, and is refused saying so, since a
-    reader of the arm table cannot tell an adoption resting on nothing from one resting on a test.
+    reader cannot tell an adoption resting on nothing from one resting on a test.
 
     **A breached guardrail refuses the adoption whatever the arm gained** (``bundle.guardrails``): a guardrail
     is what the arm must not get worse on, and it is held, never traded. An undecided guardrail does not
@@ -1073,7 +1027,8 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
 
     Adopting the declared control (keeping what is there) needs no separation — its cells under an earlier
     identity predicate (``design.earlier_control``) included, which are the control too — and a ``rejected`` or
-    ``deferred`` decision, or one naming no cell, is not checked. Runs after cells are translated
+    ``deferred`` decision, or one naming no cell, is not checked here (an exploratory campaign adopts nothing at all:
+    :func:`_reject_exploratory_adoptions`). Runs after cells are translated
     from aliases, so it reads full refs; the refusal names them, and the repair round renders them
     back into the writer's aliases.
 
@@ -1121,44 +1076,71 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
             raise SoundnessRefusal(f"decisions[{index}] adopts {arm}, but {why}; {remedy}")
 
 
-def _reject_unrested_summary(document: AuthoredAnalysis) -> None:
-    """Refuse a headline or summary bullet that names no finding it rests on, or one that is not there.
+def _reject_unpinned_recommendations(document: AuthoredAnalysis) -> None:
+    """Refuse a recommendation that rests on no finding, or on one that is not there.
 
-    Code shows the headline and each bullet at the weakest confidence and evidence of the findings under it
-    (:mod:`threetears.evals.analysis.standing`), and checks a null claim there against those findings
-    (:func:`_reject_unestablished_nulls`), so each must name them: ``headline_rests_on``, and one
-    ``summary_rests_on`` entry per bullet as :func:`~threetears.evals.kernel.authored.summary_bullets` splits the
-    summary. Over findings, an empty link is refused, and over none, there is nothing to name. A position past the
-    findings is refused here rather than by the stored model, so the refusal can say which sentence it was.
+    A recommendation is the memo's one claim to action, and the report prints the findings it rests on beside it
+    (and the cases their trials show), so one resting on nothing is advice the evidence never reached. A position past
+    the findings is refused here rather than by the stored model, so the refusal can say which recommendation it was.
 
     Raises:
-        SoundnessRefusal: A link is missing, empty over findings, the wrong count, or names a position past them.
+        SoundnessRefusal: A recommendation's ``rests_on`` is empty or names a position past the findings.
     """
     count = len(document.findings)
-    bullets = summary_bullets(document.summary)
-    complaints: list[str] = []
-    if len(document.summary_rests_on) != len(bullets):
-        listed = "; ".join(f"{position}: {bullet[:60]!r}" for position, bullet in enumerate(bullets)) or "none"
-        complaints.append(
-            f"`summary_rests_on` has {len(document.summary_rests_on)} entries and the summary has {len(bullets)} "
-            f"bullet(s) (a bullet is a line opening with `-`, `*`, `+` or a number; the bullets read are {listed}); "
-            "give one entry per bullet, in order"
-        )
-    links = [("`headline_rests_on`", list(document.headline_rests_on))] + [
-        (f"`summary_rests_on[{index}]`", list(positions)) for index, positions in enumerate(document.summary_rests_on)
-    ]
-    for where, positions in links:
-        if count and not positions:
-            complaints.append(f"{where} is empty; name the finding positions it rests on (0-{count - 1})")
-        if stray := sorted({position for position in positions if not 0 <= position < count}):
-            complaints.append(
-                f"{where} names finding position(s) {stray}, and there are {count} findings"
-                + (f" (0-{count - 1})" if count else ", so it names none")
-            )
+    complaints = []
+    for index, decision in enumerate(document.decisions):
+        if not decision.rests_on:
+            complaints.append(f"decisions[{index}].rests_on is empty")
+        elif stray := sorted({position for position in decision.rests_on if not 0 <= position < count}):
+            complaints.append(f"decisions[{index}].rests_on names finding position(s) {stray}")
     if complaints:
         raise SoundnessRefusal(
-            "the headline and every summary bullet name the findings they rest on, which code shows them at the "
-            "weakest confidence of: " + "; ".join(complaints)
+            "every recommendation names the findings it rests on, by position"
+            + (f" (0-{count - 1})" if count else "; with no finding there is nothing to recommend, so leave it out")
+            + ": "
+            + "; ".join(complaints)
+        )
+
+
+def _reject_unknown_trials(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
+    """Refuse a finding naming a trial the bundle does not hold.
+
+    A finding's ``trials`` are what the report links it to, so an id the bundle's ``trials`` does not carry is a link
+    to nothing.
+
+    Raises:
+        SoundnessRefusal: A finding names a trial id the bundle does not hold.
+    """
+    known = {trial.trial_id for trial in bundle.trials}
+    stray = [
+        f"findings[{index}].trials names {trial!r}"
+        for index, finding in enumerate(document.findings)
+        for trial in finding.trials
+        if trial not in known
+    ]
+    if stray:
+        held = f"the bundle's trials are T1 to T{len(known)}" if known else "the bundle holds no trial"
+        raise SoundnessRefusal(f"{'; '.join(stray)}, which no entry of `trials` is ({held})")
+
+
+def _reject_exploratory_adoptions(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
+    """Refuse an ``adopted`` recommendation in a campaign that declared no question before its first run.
+
+    With no question asked before the evidence was read, every pattern in it is a lead, and acting on a lead is a
+    decision nothing was designed to make — keeping the control included, which reads as a verdict on the arms it
+    was never tested against. The structural fact is ``reading_scope.questions_declared``; nothing is read off prose.
+
+    Raises:
+        SoundnessRefusal: The campaign is exploratory and a recommendation is ``adopted``.
+    """
+    if bundle.reading_scope.questions_declared:
+        return
+    adopted = [index for index, decision in enumerate(document.decisions) if decision.disposition == "adopted"]
+    if adopted:
+        raise SoundnessRefusal(
+            f"decisions {adopted} are `adopted`, and this campaign declared no question before its first run, so it "
+            "is exploratory: nothing in it is a decision, keeping the current arm included. Mark each `deferred` and "
+            "say in `revisit_when` what campaign, declared before it runs, would settle it"
         )
 
 
@@ -1167,44 +1149,34 @@ _NAMED_NULLS = 5
 
 
 def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
-    """Refuse a headline or summary bullet saying arms are alike when no finding it rests on established a null.
+    """Refuse a finding title saying arms are alike when the finding cites no null the bundle established.
 
-    Most readers read only the headline and summary, and a null stated there decides as surely as one in a finding:
+    A title is what a skimming reader takes away, and a null stated there decides as surely as a measured one:
     "halving the budget does not change latency, cost or delivery" stops anyone measuring it again. The bundle
     establishes a null in two places only: a ``multiple_comparisons`` comparison reading ``equivalent`` (the
     equivalence test, against a declared margin), and a guardrail check reading ``held`` (shown no worse than its
     margin). A contrast reading ``not_separated`` says nothing about whether the arms differ.
 
-    **Structural, with one question read off the words.** Each sentence names the findings it rests on
-    (:func:`_reject_unrested_summary` has already held it to that), and a finding established a null when it cites
-    a reading the bundle established alike — an evidence row, or a cell and reading its chart draws, joined on the
-    contrast's cell, reading and name. The contrast's cell, never the control's: nearly every finding cites the
-    control, so a null keyed on it would credit a finding about some other arm. Whether the sentence SAYS arms are
-    alike is the only thing read off its words, by a curated phrase list
-    (:func:`~threetears.evals.analysis.null_claims.null_claims`); a reworded null passes, and the reporter eval
-    measures the rest. A sentence is checked against its own findings only, so a null established for one sentence
-    licenses no other.
+    **Structural, with one question read off the words.** A finding established a null when it cites a reading the
+    bundle established alike — an evidence row, joined on the contrast's cell, reading and name. The contrast's cell,
+    never the control's: nearly every finding cites the control, so a null keyed on it would credit a finding about
+    some other arm. Whether the title SAYS arms are alike is the only thing read off its words, by a curated phrase
+    list (:func:`~threetears.evals.analysis.null_claims.null_claims`); a reworded null passes, and the reporter eval
+    measures the rest. A title is checked against its own finding only.
 
     Runs after cells are translated from aliases, so it joins on full refs; the refusal names them, and the repair
     round renders them back into the writer's aliases.
 
     Raises:
-        SoundnessRefusal: The headline or a summary bullet makes a null claim and none of the findings it rests on
-            cites a reading the bundle established alike.
+        SoundnessRefusal: A finding's title makes a null claim and the finding cites no reading the bundle
+            established alike.
     """
     established = _established_nulls(bundle)
-    licensed = {position for position, finding in enumerate(document.findings) if _cited(finding) & established.keys()}
-    sentences = [("the headline", document.headline, list(document.headline_rests_on))] + [
-        (f"summary bullet {index + 1}", bullet, list(positions))
-        for index, (bullet, positions) in enumerate(
-            zip(summary_bullets(document.summary), document.summary_rests_on, strict=True)
-        )
-    ]
     said = [
-        f'{where} says "{claim}" and rests on finding position(s) {positions}'
-        for where, text, positions in sentences
-        if not licensed & set(positions)
-        for claim in null_claims(text)
+        f'findings[{position}].title says "{claim}"'
+        for position, finding in enumerate(document.findings)
+        if not _cited(finding) & established.keys()
+        for claim in null_claims(finding.title)
     ]
     if not said:
         return
@@ -1216,13 +1188,13 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
         named.append(f"{name} at cell {cell} ({how}; cited by finding position(s) {citing or 'none'})")
     more = f" and {len(named) - _NAMED_NULLS} more" if len(named) > _NAMED_NULLS else ""
     offered = (
-        f" The bundle does establish {', '.join(named[:_NAMED_NULLS])}{more}: if the sentence is about one of those, "
-        "rest it on a finding that cites that reading."
+        f" The bundle does establish {', '.join(named[:_NAMED_NULLS])}{more}: if the title is about one of those, "
+        "cite that reading in the finding's evidence."
         if named
         else ""
     )
     raise SoundnessRefusal(
-        f"{'; '.join(said)}, which states that arms are alike, but none of those findings cites a reading the bundle "
+        f"{'; '.join(said)}, which states that arms are alike, but that finding cites no reading the bundle "
         "established alike (a comparison reading `equivalent` in `multiple_comparisons`, or a guardrail reading "
         "`held`). A contrast that did not separate is unresolved, not unchanged (rule 4). Say what you judge most "
         "likely true (for example, too close to call on this evidence) and what would settle it; a reworded null is "
@@ -1231,12 +1203,8 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
 
 
 def _cited(finding: AuthoredFinding) -> set[tuple[str, str, str]]:
-    """Every ``(cell_ref, reading, name)`` a finding cites: its evidence rows, and each cell and reading its chart draws."""
-    return {(row.cell, row.reading, row.measure_id) for row in finding.evidence} | {
-        (cell, measure.reading, measure.measure_id)
-        for cell in finding.chart.cells
-        for measure in finding.chart.measures
-    }
+    """Every ``(cell_ref, reading, name)`` a finding cites in its evidence rows."""
+    return {(row.cell, row.reading, row.measure_id) for row in finding.evidence}
 
 
 def _established_nulls(bundle: AnalysisContextBundle) -> dict[tuple[str, str, str], str]:
@@ -1274,19 +1242,11 @@ def _no_separation(against: list[FamilyComparison], *, withheld: str | None) -> 
     return "no reading separated it from the control (every tested comparison is `not_separated`)"
 
 
-def _resolution_of(
-    finding: AuthoredFinding,
-    surface: DecisionSurface,
-    variant_index: list[VariantIndexEntry],
-    *,
-    where: str,
-    measures: MeasureRegistry,
-) -> FindingResolution:
-    """Fill one finding's numbers and compile its chart.
+def _resolution_of(finding: AuthoredFinding, surface: DecisionSurface, *, where: str) -> FindingResolution:
+    """Fill one finding's numbers.
 
     Raises:
-        UnresolvableReference: A reading names nothing the surface holds, or the chart's lists are not
-            the counts its type reads.
+        UnresolvableReference: A reading names nothing the surface holds.
     """
     evidence = []
     for index, reading in enumerate(finding.evidence):
@@ -1305,59 +1265,7 @@ def _resolution_of(
                 judged_tier=resolved.judged_tier,
             )
         )
-    chart, note = _compiled_chart(finding.chart, surface, variant_index, where=f"{where}.chart", measures=measures)
-    return FindingResolution(evidence=evidence, chart=chart, chart_note=note)
-
-
-def _compiled_chart(
-    chart: AuthoredChart,
-    surface: DecisionSurface,
-    variant_index: list[VariantIndexEntry],
-    *,
-    where: str,
-    measures: MeasureRegistry,
-) -> tuple[Viz | None, str]:
-    """Compile the finding's chart, or drop one that cannot be drawn and say so.
-
-    **A compiled chart can still be undrawable** — a breakdown whose categorical measure has one
-    category has one part — and refusing the whole paid analysis for one picture discards every
-    finding with it. The check is the chart's INTENT (:func:`~threetears.evals.analysis.viz.intent.chart_intent`:
-    its payload and the presentation rules), never a renderer's output, so a host drawing with its own
-    renderer is held to the same gate. So a chart the presentation rules refuse is dropped, the finding is kept, and
-    the reason is recorded beside it (never written into the authored document, which holds only what the model wrote, its figure references rendered)
-    and logged at WARNING so the rate is measurable. A reference that points NOWHERE is different:
-    that is the model's claim being wrong, and it is refused and repaired.
-
-    Returns:
-        The compiled chart, or ``None``; and why a proposed chart was dropped, or an empty string.
-
-    Raises:
-        UnresolvableReference: The chart names a cell or reading the surface does not hold, or its
-            lists are not the counts its type reads.
-    """
-    if chart.type == NO_CHART:
-        return None, ""
-    try:
-        reference = viz_refs.reference_from_chart(chart)
-        payload = viz_refs.build_viz_payload(reference, surface, variant_index, measures=measures)
-    except UnresolvableReference as unresolved:
-        raise UnresolvableReference(f"{where} ({chart.type}): {unresolved}") from unresolved
-    try:
-        chart_intent(chart.type, payload)
-    except (PayloadError, IntentPolicyError) as undrawable:
-        note = f"A {chart.type} chart was proposed and dropped because it could not be drawn: {undrawable}."
-        log.warning("analysis.viz_dropped at=%s type=%s reason=%s", where, chart.type, undrawable)
-        return None, note
-    viz_type = chart.type
-    if not _is_viz_type(viz_type):
-        # Unreachable past reference_from_chart, which refuses a type with no reference shape.
-        raise UnresolvableReference(f"{where}: {viz_type!r} is not a visualization a finding can carry")
-    return Viz(type=viz_type, payload=payload, ref=reference.model_dump(mode="json")), ""
-
-
-def _is_viz_type(value: str) -> TypeIs[VizType]:
-    """Whether ``value`` names a visualization a stored finding can carry."""
-    return value in get_args(VizType)
+    return FindingResolution(evidence=evidence)
 
 
 def _insights_of(analysis: EvalAnalysis, bundle: AnalysisContextBundle, surface: DecisionSurface) -> list[EvalInsight]:
@@ -1416,7 +1324,7 @@ def first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfi
     Returns:
         ``(system, user, response_format)``.
     """
-    contract = response_format(*_vocabularies(profile, time_axis=bundle.time_axis is not None))
+    contract = response_format(_caveat_kinds(profile))
     return assemble_system_prompt(prompt, profile), build_user_message(bundle), contract
 
 
@@ -1457,6 +1365,15 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
             del comparison["equivalence_p_raw"]
     for divergence in payload["scope_divergences"]:
         del divergence["p_raw"]
+    # The trials without what a reader drills into: enough to name a failure mode (its state, cause, failed checks and
+    # the judge's reason, cut), not the excerpts, which would bill the transcript on every generation.
+    del payload["package_version"]
+    for trial in payload["trials"]:
+        for heavy in ("first_input", "excerpt", "error_words"):
+            del trial[heavy]
+        for judged in trial["judge"]:
+            del judged["criterion"]
+            judged["reason"] = capped_text(judged["reason"], WRITER_REASON_CHARS)
     payload.update(writer_arms(bundle.variant_index))
     _name_cells_by_alias(payload, cell_aliases(bundle.cell_measures))
     return "CONTEXT BUNDLE (JSON):\n" + json.dumps(payload, indent=2, sort_keys=True)
@@ -1568,7 +1485,7 @@ def assemble_system_prompt(prompt: str, profile: HostProfile) -> str:
     return assembled
 
 
-def prompt_content_version(prompt: str, profile: HostProfile, *, time_axis: bool) -> str:
+def prompt_content_version(prompt: str, profile: HostProfile) -> str:
     """The version a generation records for its prompt — a short hash of what the model is told.
 
     The one derivation of it: :func:`generate_analysis` records it on every analysis it writes, and
@@ -1576,21 +1493,15 @@ def prompt_content_version(prompt: str, profile: HostProfile, *, time_axis: bool
     one version of one prompt. Over the ASSEMBLED system prompt and the CONTRACT sent with it, not
     the registry text alone: two hosts whose styles picked different registers told the model
     different things, and so do two builds whose schemas differ under one prompt.
-    That includes the chart menu, which offers ``timeseries`` only over a bundle with a time axis: the
-    model was told a different contract there, so the version says so.
 
     Args:
         prompt: The resolved ``eval_analysis_gen`` system prompt, from the registry.
         profile: The host's profile, whose register and caveat kinds the assembly adds.
-        time_axis: Whether the bundle the prompt is sent with carries a time axis — whether the chart
-            menu offered ``timeseries``.
 
     Returns:
         A stable, edit-sensitive 12-character version tag.
     """
-    contract = json.dumps(
-        response_format(*_vocabularies(profile, time_axis=time_axis)), sort_keys=True, separators=(",", ":")
-    )
+    contract = json.dumps(response_format(_caveat_kinds(profile)), sort_keys=True, separators=(",", ":"))
     told = assemble_system_prompt(prompt, profile) + "\n" + contract
     return hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
 

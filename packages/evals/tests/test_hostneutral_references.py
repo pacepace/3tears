@@ -4,9 +4,8 @@ The subject is an invoice extractor swept over two models under one rig. Every s
 index entry is built here by hand. Nothing is imported from a host adapter, and the toy corpus is
 not used, because none of these modules reads a bundle.
 
-Each class names the engine file and the property it pins. The shared suites
-(``test_references.py``, ``test_viz_refs.py``) already carry most of the contract. This file holds
-the cases a mutation left green there.
+Each class names the engine file and the property it pins. The shared suite (``test_references.py``) already
+carries most of the contract. This file holds the cases a mutation left green there.
 """
 
 from __future__ import annotations
@@ -16,13 +15,13 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import errors, viz_refs
+from threetears.evals.analysis import errors
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.kernel.host import MeasureRegistry
-from threetears.evals.analysis.viz_refs import build_viz_payload, cell_arm_labels, reference_from_chart
+from threetears.evals.analysis.references import resolve_reading
+from threetears.evals.analysis.report import words
+from threetears.evals.analysis.report.words import cell_arm_labels
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import Chart, MeasureRef
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
@@ -121,30 +120,15 @@ class TestTheRefusalIsPublishedFromTheOneImportPath:
         assert errors.UnresolvableReference is UnresolvableReference
 
 
-# --- references.py / viz_refs.py ------------------------------------------------------------------
+# --- references.py ---------------------------------------------------------------------------------
 
 
 class TestAnEmptyCellNamesTheCellsThatExist:
-    """A chart naming a cell the surface does not hold is refused listing the surface's cells, so the repair can pick one."""
-
-    @staticmethod
-    def _null_result(cells: list[str], measure_id: str = "extract_ms") -> Chart:
-        return Chart(
-            type="null_result",
-            cells=cells,
-            measures=[MeasureRef(measure_id=measure_id, reading="measure")],
-            axis="",
-            note="the parser never ran long enough to matter",
-            caption="",
-        )
-
-    def _build(self, authored: Chart) -> dict[str, Any]:
-        # A host declaring no measures of its own: the null-result chart reads no catalogue.
-        return build_viz_payload(reference_from_chart(authored), _surface(), INDEX, measures=MeasureRegistry([]))
+    """A reading naming a cell the surface does not hold is refused listing the surface's cells, so the repair can pick one."""
 
     def test_an_empty_cell_ref_is_refused_with_every_cell_on_the_surface(self) -> None:
         with pytest.raises(UnresolvableReference) as raised:
-            self._build(self._null_result(["", cell_ref(CHALLENGER, RIG)]))
+            resolve_reading(_surface(), "", "extract_ms")
 
         message = str(raised.value)
         assert "the cells are: " in message
@@ -153,17 +137,17 @@ class TestAnEmptyCellNamesTheCellsThatExist:
     def test_a_bad_measure_names_the_measures_not_the_cells(self) -> None:
         """The control: a bad measure has nothing to do with which cells exist."""
         with pytest.raises(UnresolvableReference) as raised:
-            self._build(self._null_result([cell_ref(BASELINE, RIG), cell_ref(CHALLENGER, RIG)], measure_id=""))
+            resolve_reading(_surface(), cell_ref(BASELINE, RIG), "")
 
         assert "the cells are" not in str(raised.value)
         assert "Its measures are: extract_ms, parse_ms" in str(raised.value)
 
 
 class TestEveryCellIsNamedByItsArm:
-    """The cell labeller is public, so the memo's render names an arm as the charts do."""
+    """The report's cell labeller is public, so the memo's render names an arm as every table does."""
 
     def test_the_labeller_is_part_of_the_published_contract(self) -> None:
-        assert "cell_arm_labels" in viz_refs.__all__
+        assert "cell_arm_labels" in words.__all__
 
     def test_each_cell_is_named_by_its_levels(self) -> None:
         labels = cell_arm_labels(_surface(), INDEX)
@@ -173,12 +157,12 @@ class TestEveryCellIsNamedByItsArm:
             cell_ref(CHALLENGER, RIG): f"{AXIS}=model-b",
         }
 
-    def test_an_arm_under_two_rigs_carries_its_rig_in_every_label(self) -> None:
+    def test_an_arm_under_two_test_setups_carries_its_setup_in_every_label(self) -> None:
         cells = [_cell(BASELINE), _cell(BASELINE, rig=RIG_2), _cell(CHALLENGER)]
         labels = cell_arm_labels(_surface(cells), INDEX)
 
-        assert labels[cell_ref(BASELINE, RIG)].endswith(" @ rig rrrrrrrrrrrr")
-        assert labels[cell_ref(BASELINE, RIG_2)].endswith(" @ rig ssssssssssss")
+        assert labels[cell_ref(BASELINE, RIG)].endswith(" (test setup rrrrrrrrrrrr)")
+        assert labels[cell_ref(BASELINE, RIG_2)].endswith(" (test setup ssssssssssss)")
         assert labels[cell_ref(CHALLENGER, RIG)] == f"{AXIS}=model-b"
 
 

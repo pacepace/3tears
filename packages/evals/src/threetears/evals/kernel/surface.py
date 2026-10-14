@@ -14,7 +14,7 @@ and caveat magnitudes name a cell and a measure, and code fills the figure from 
 cell — every measure, every judged dimension, its replication, the notes on its runs — and nothing
 about how to present it. Which arms group together, their order, and which measures stand in for
 cost and latency (read off each measure's frozen ``merit_axis``) are derived on every read, once,
-by :mod:`threetears.evals.analysis.surface_table`, and served to every surface — so a reader can pivot
+by the report (:mod:`threetears.evals.analysis.report`), and served to every surface — so a reader can pivot
 without a stored table deciding for them, and no two surfaces derive it differently. That is the
 same line :mod:`threetears.evals.analysis.arms` draws, for the same reason.
 

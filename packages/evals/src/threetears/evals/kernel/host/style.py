@@ -31,15 +31,6 @@ from typing import Literal
 ToneRegister = Literal["neutral", "executive", "technical"]
 
 
-#: How many categorical colour slots a chart may assign with validated separation.
-#:
-#: Part of eval's chart vocabulary: a chart intent names colour SLOTS, never colours. Slots 1-4 are the ones a
-#: chart may rely on to tell levels apart; past :data:`SERIES_SLOTS` a chart recycles from slot 1.
-VALIDATED_SLOTS = 4
-
-#: How many categorical colour slots a chart has before it recycles — the width of the vocabulary.
-SERIES_SLOTS = 8
-
 #: The engine-owned prompt fragment each register maps to. **This mapping is the reason
 #: ``tone_register`` can be safe:** the host picks a key and the engine supplies the words, so no
 #: host sentence ever reaches a model. Editing these is an engine change, reviewed as one.
@@ -78,8 +69,6 @@ def prompt_fragment(style: StyleProfile) -> str:
 
 
 __all__ = [
-    "SERIES_SLOTS",
-    "VALIDATED_SLOTS",
     "StyleProfile",
     "ToneRegister",
     "prompt_fragment",

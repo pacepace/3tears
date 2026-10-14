@@ -193,7 +193,7 @@ class TestThePopulationIsDerivedFromTypes:
     def test_the_marked_fields_are_found(self):
         """Non-empty and containing a known marked field — an empty population passes every scan."""
         names = prose_field_names()
-        assert {"caption", "mechanism", "statement"} <= names, sorted(names)
+        assert {"proposal", "revisit_when", "statement"} <= names, sorted(names)
 
     def test_a_newly_typed_field_joins_the_population_without_a_list_edit(self):
         from threetears.evals.schema.prose import ModelProse
@@ -260,12 +260,12 @@ class TestTheScannerFires:
         """End to end over the REAL population: a planted module goes red, and a waived one does not."""
         tree = tmp_path / "eval"
         tree.mkdir()
-        (tree / "planted.py").write_text("import re\nre.search(r'lab\\(', chart.caption)\n", encoding="utf-8")
+        (tree / "planted.py").write_text("import re\nre.search(r'lab\\(', rec.proposal)\n", encoding="utf-8")
         violations = _violations(prose_field_names(), root=tree)
-        assert len(violations) == 1 and "`caption`" in violations[0], violations
+        assert len(violations) == 1 and "`proposal`" in violations[0], violations
 
         (tree / "planted.py").write_text(
-            "import re\n# prose-canary: allow — a raw response, not the chart's caption\nre.search(r'x', r.caption)\n",
+            "import re\n# prose-canary: allow — a raw response, not the writer's proposal\nre.search(r'x', r.proposal)\n",
             encoding="utf-8",
         )
         assert _violations(prose_field_names(), root=tree) == []

@@ -53,5 +53,5 @@ def test_rule_13s_cut_applies_the_test_rather_than_standing_as_the_whole_of_it()
     assert "Delete any sentence" not in rule
     assert "What usually fails it:" in rule
     # Kinds the old list did not name, which the general test now catches, are named as applications.
-    for kind in ("a restated method", "a narrated chart", "a hedge in a finding's body"):
+    for kind in ("a restated method", "a narrated table", "a hedge in a finding's body"):
         assert kind in rule

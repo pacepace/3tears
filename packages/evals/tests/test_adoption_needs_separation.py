@@ -1,6 +1,6 @@
 """An adopted arm is one the statistics separated from the control in its favour.
 
-An ``adopted`` decision makes the arm it names the report's winner, so it claims that arm beat the
+An ``adopted`` recommendation says to act on the arm it names now, so it claims that arm beat the
 control. ``multiple_comparisons`` is where the bundle says whether it did, and a decision that
 adopts an arm no reading separated is refused, repairably: the model gets one round to defer it
 or keep the control. A trade-off is still a decision a reader may take — better on one reading
@@ -33,14 +33,13 @@ from packages.evals.tests.toyhost_memo import (
     cell_at,
     memo_payload,
 )
-from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.report import build_report
-from threetears.evals.analysis.report.model import TextBlock
+from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailDecision, GuardrailReadings
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.schema.models import utc_now_iso
@@ -140,10 +139,14 @@ async def _adopt(bundle: AnalysisContextBundle, level: int, *, disposition: str 
     return analysis
 
 
-def _status(analysis: EvalAnalysis, bundle: AnalysisContextBundle, level: int) -> str:
+def _stands(analysis: EvalAnalysis, bundle: AnalysisContextBundle, level: int) -> list[str]:
+    """Every disposition the stored memo gives the arm at ``level``, in recommendation order."""
     variant = variant_of_cell_ref(cell_at(bundle, level))
-    (row,) = [row for row in arm_table(analysis).rows if row.variant_key == variant]
-    return row.status
+    return [
+        decision.disposition
+        for decision in analysis.document.decisions
+        if any(variant_of_cell_ref(cell) == variant for cell in decision.cells)
+    ]
 
 
 class TestAnAdoptionTheStatisticsSupportIsAccepted:
@@ -155,14 +158,14 @@ class TestAnAdoptionTheStatisticsSupportIsAccepted:
 
         analysis = await _adopt(bundle, TOYHOST_WIDE)
 
-        assert _status(analysis, bundle, TOYHOST_WIDE) == "winner"
+        assert _stands(analysis, bundle, TOYHOST_WIDE) == ["adopted"]
 
     async def test_an_arm_separated_only_on_cost_is_adopted(self):
         """Cheaper, and not separated on quality: a trade-off a reader may take."""
         bundle = _with_verdicts(
             _toy_bundle(control=True), {"production_replicating_cost": "improved"}, otherwise="not_separated"
         )
-        assert _status(await _adopt(bundle, TOYHOST_WIDE), bundle, TOYHOST_WIDE) == "winner"
+        assert _stands(await _adopt(bundle, TOYHOST_WIDE), bundle, TOYHOST_WIDE) == ["adopted"]
 
     async def test_adopting_the_control_needs_no_separation(self):
         bundle = _with_verdicts(_toy_bundle(control=True), {}, otherwise="not_separated")
@@ -213,7 +216,7 @@ class TestAnAdoptionNoReadingSeparatedIsRefused:
         assert f"decisions[0] adopts the arm at cell {wide} " in refusal, "the writer is told in its own aliases"
         assert refusal in client.calls[1]["user"]
         assert analysis.document.decisions[0].disposition == "deferred"
-        assert _status(analysis, bundle, TOYHOST_WIDE) == "unresolved"
+        assert _stands(analysis, bundle, TOYHOST_WIDE) == ["deferred"]
 
 
 def _contradicting_memo(bundle: AnalysisContextBundle, cells: list[str], *, then_reject: bool = True) -> str:
@@ -259,7 +262,7 @@ class TestAnArmAdoptedAndRejectedIsRefused:
         with pytest.raises(SoundnessRefusal, match=r"decisions\[0\] adopts .* and decisions\[1\] rejects it"):
             await _generate(bundle, FixturedClient(_contradicting_memo(bundle, [narrow])))
 
-    async def test_the_repair_round_settles_it_and_the_arm_reads_as_the_winner(self):
+    async def test_the_repair_round_settles_it_and_the_arm_keeps_one_verdict(self):
         bundle = _toy_bundle(control=True)
         wide = alias_at(bundle, TOYHOST_WIDE)
         client = _MemoSequence(
@@ -271,7 +274,7 @@ class TestAnArmAdoptedAndRejectedIsRefused:
         assert len(client.calls) == 2
         refusal = analysis.generation.repaired_refusal
         assert refusal is not None and f"decisions[0] adopts the arm at cell {wide} " in refusal
-        assert _status(analysis, bundle, TOYHOST_WIDE) == "winner"
+        assert _stands(analysis, bundle, TOYHOST_WIDE) == ["adopted", "deferred"]
 
 
 class TestAnArmNoTestCouldReachHasNoSeparationToAdoptOn:
@@ -353,18 +356,24 @@ class TestAGuardrailOnTheAdoptedArm:
 
         assert analysis.decision_surface.guardrails == bundle.guardrails, "frozen with the analysis"
         report = build_report(analysis)
-        (decision,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "decision"]
-        facts = {fact.name: fact.value for fact in decision.facts}
-        assert "undecided on boundary.correct, so not known to be safe" in facts["Guardrails"]
-        assert [b.section for b in report.blocks].count("guardrails") >= 1
+        assert any(
+            isinstance(b, DisclosureBlock)
+            and "is undecided on the guardrail boundary.correct, so it is not known to be safe" in b.text
+            for b in report.blocks
+        )
+        assert any(isinstance(b, TableBlock) and b.name == "guardrails" for b in report.blocks)
 
     async def test_a_held_guardrail_adds_nothing_to_the_decision(self):
         bundle = _with_guardrail(_toy_bundle(control=True), "held").model_copy()
         held = bundle.guardrails.checks[0].model_copy(update={"interval": (-0.1, 0.4), "decision": "held"})
         bundle = bundle.model_copy(update={"guardrails": bundle.guardrails.model_copy(update={"checks": [held]})})
         report = build_report(await _adopt(bundle, TOYHOST_WIDE))
-        (decision,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "decision"]
-        assert "Guardrails" not in {fact.name for fact in decision.facts}
+        (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
+        assert "Guardrails" not in {fact.name for fact in recommendation.facts}
+        assert not any(
+            isinstance(b, DisclosureBlock) and "boundary.correct" in b.text and "undecided" in b.text
+            for b in report.blocks
+        )
 
 
 # --- exploratory: a finding resting on readings no declared question asked about is labelled ----------------

@@ -164,16 +164,14 @@ THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
 }
 
 #: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
-#: of these. ``kernel.host`` and ``analysis.viz`` are roots of their own inside a package: the first
-#: is the contract a host implements, the second the chart intent. ``negotiation`` is what a completion client
-#: sends and resends, and ``providers`` the optional provider adapter.
+#: of these. ``kernel.host`` is a root of its own inside a package: the contract a host implements.
+#: ``negotiation`` is what a completion client sends and resends, and ``providers`` the optional provider adapter.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "schema",
     "kernel",
     "kernel.host",
     "run",
     "analysis",
-    "analysis.viz",
     "gen",
     "storage",
     "testing",

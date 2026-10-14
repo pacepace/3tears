@@ -28,10 +28,8 @@ from threetears.evals.analysis.campaigns import (
     update_campaign,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.standing import headline_standing
-from threetears.evals.analysis.report import ReportBasis
+from threetears.evals.analysis.report import ReportBasis, analysis_verdict
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
-from threetears.evals.analysis.report.words import positions, standing_facts
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
     campaign_report,
@@ -171,13 +169,14 @@ class AnalysisLine(EvalBaseModel):
 
     id: str
     campaign_id: str
-    headline: str
-    headline_standing: str = Field(
+    verdict: str = Field(
         description=(
-            "What the headline stands on, in words: the weakest confidence and evidence of the findings it rests on, "
-            "and which those are."
+            "The report's verdict line over the evidence the analysis was written from, as code writes it — never a "
+            "headline the memo wrote."
         )
     )
+    findings: int = Field(ge=0, description="How many findings the memo holds.")
+    recommendations: int = Field(ge=0, description="How many recommendations it makes.")
     generator_model: str
     generated_at: str
     archived: bool
@@ -449,21 +448,13 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     return _campaign_line(set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
 
 
-def _headline_standing_words(analysis: EvalAnalysis) -> str:
-    """The headline's standing on one line, in the report's words (:func:`~threetears.evals.analysis.report.words.standing_facts`)."""
-    standing = headline_standing(analysis)
-    words = " · ".join(f"{fact.name}: {fact.value}" for fact in standing_facts(analysis, standing))
-    if standing.rests_on:
-        words += f" · rests on finding {positions(standing.rests_on)}"
-    return words
-
-
 def _analysis_line(analysis: EvalAnalysis) -> AnalysisLine:
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
-        headline=analysis.document.headline,
-        headline_standing=_headline_standing_words(analysis),
+        verdict=analysis_verdict(analysis),
+        findings=len(analysis.document.findings),
+        recommendations=len(analysis.document.decisions),
         generator_model=analysis.generation.generator_model,
         generated_at=analysis.generation.generated_at,
         archived=analysis.archived,
@@ -853,7 +844,8 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
         host: The host whose store holds the campaign.
         campaign_id: The campaign.
         scope_id: The scope it lives in.
-        format: ``markdown``, ``json`` or ``html``.
+        format: ``markdown``, ``html`` (one page that needs no script) or ``json`` (the evidence bundle the report
+            was computed from, as ``bundle.json`` beside a written report holds it).
 
     Returns:
         The report in that form.

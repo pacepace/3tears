@@ -41,19 +41,18 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.analysis import (
     DEFAULT_FAIL_ON,
-    AnalysisContextBundle,
-    DisclosureBlock,
     GateResult,
     Verdict,
     VerdictKind,
     gate_verdicts,
     Report,
-    ReportSection,
+    ReportFile,
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
@@ -67,18 +66,17 @@ from threetears.evals.kernel import (
     ACCURACY_MEASURE,
     ArmGuardrails,
     CassetteMode,
-    GuardrailCheck,
     GuardrailMargin,
     GuardrailReadings,
 )
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore, utc_now_iso
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, RUN_MARGIN_MEASURES, run_margin_refusal
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, run_margin_refusal
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.summary import CaseResult, EvalSummary, self_judging_text
-from threetears.evals.analysis.surface_table import REFERENCE_MARK
-from threetears.evals.analysis.viz_refs import cell_arm_labels
+from threetears.evals.analysis.summary import CaseResult, EvalSummary
+from threetears.evals.analysis.report.figures import REFERENCE_MARK
+from threetears.evals.analysis.report.words import cell_arm_labels
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.levers import refuse_unusable_lever_names
@@ -195,8 +193,21 @@ class Comparison:
         return self.arms[arm]
 
     def render(self) -> str:
-        """The report as Markdown: the arms, the contrasts against the control and their verdicts, the charts."""
+        """The report as Markdown: the verdict and scoreboard, the contrasts against the control, the cases and trials."""
         return report_markdown(self.report)
+
+    def write(self, out_dir: Path | str) -> dict[ReportFile, Path]:
+        """Write the report as one self-contained page, its Markdown, and the bundle it was computed from.
+
+        Sugar for :meth:`Report.write <threetears.evals.analysis.Report.write>` on :attr:`report`.
+
+        Args:
+            out_dir: The directory; created when missing.
+
+        Returns:
+            ``report.html``, ``bundle.json`` and ``report.md``, by role.
+        """
+        return self.report.write(out_dir)
 
     def contrasts(self, reading: str | None = None) -> list[dict[str, Any]]:
         """The rows of the report's "Contrasts against the control" table, each arm tested against the control.
@@ -217,12 +228,19 @@ class Comparison:
             typed verdict: ``improved``, ``regressed``, ``equivalent``, ``not_separated`` or ``untested``, which
             code branches on); empty when the report tested nothing.
         """
-        rows = [
+        shown = [
             row
             for block in self.report.blocks
             if isinstance(block, TableBlock) and block.name == "comparisons"
             for row in block.values()
         ]
+        statistics = [
+            row
+            for block in self.report.blocks
+            if isinstance(block, TableBlock) and block.name == "comparison_statistics"
+            for row in block.values()
+        ]
+        rows = [{**figures, **row} for row, figures in zip(shown, statistics, strict=True)]
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
         keys = self.contrast_measures if len(self.contrast_measures) == len(rows) else (None,) * len(rows)
@@ -560,9 +578,7 @@ def _declare(
         host.storage, campaign.id, scope_id, arms[control].run_id, set_by=created_by, profile=host.profile
     )
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
-    report = build_code_only_report(
-        bundle, measures=host.profile.measures, assembled_at=utc_now_iso(), campaign_name=campaign.name
-    )
+    report = build_code_only_report(bundle, assembled_at=utc_now_iso(), campaign_name=campaign.name)
     arm_variants = {
         arm: variant
         for arm, summary in arms.items()
@@ -570,14 +586,11 @@ def _declare(
     }
     arm_of_variant = {variant: arm for arm, variant in arm_variants.items()}
     surface = bundle_decision_surface(bundle)
-    labels = cell_arm_labels(surface, list(bundle.variant_index))
+    labels = cell_arm_labels(surface, bundle.variant_index)
     labelled_arms = {
         labels[cell_ref(cell.variant_key, cell.apparatus_class_id)]: arm_of_variant.get(cell.variant_key)
         for cell in surface.cells
     }
-    report = _with_self_judging_disclosed(report, arms, factors)
-    report = _with_no_margin_disclosed(report, bundle)
-    report = _with_guardrail_standing_disclosed(report, bundle, arm_variants, factors)
     return Comparison(
         campaign_id=campaign.id,
         scope_id=scope_id,
@@ -600,153 +613,6 @@ def _declare(
         arm_variants=arm_variants,
         labelled_arms=labelled_arms,
     )
-
-
-def _guardrail_heading(check: GuardrailCheck, bundle: AnalysisContextBundle) -> str:
-    """A guardrail as a reader reads it: a measure by its reader name, a judged dimension by its own."""
-    descriptor = bundle.measure_catalog.get(check.name) if check.reading == "measure" else None
-    return (descriptor.reader_name if descriptor is not None else None) or check.name
-
-
-def _with_guardrail_standing_disclosed(
-    report: Report, bundle: AnalysisContextBundle, arm_variants: Mapping[ArmKey, str], factors: tuple[str, ...]
-) -> Report:
-    """The report with a line, above its contrasts, for each arm a guardrail leaves not shown safe.
-
-    The contrasts table reads capability, and an arm can improve there while it breaches a guardrail, which the
-    table never shows: a reader taking the arm that improved most is told here, where they would pick it, that a
-    breached arm is not adopted whatever it gained, and that an undecided guardrail is not known to be safe. A
-    report with no contrast (every scorer a guardrail) carries the lines under its guardrails table instead.
-    """
-    blocks = list(report.blocks)
-    contrasts = next(
-        (
-            i
-            for i, block in enumerate(blocks)
-            if isinstance(block, TableBlock) and block.name == "comparisons" and block.rows
-        ),
-        None,
-    )
-    disclosures = []
-    for arm, variant in arm_variants.items():
-        said: dict[str, list[str]] = {"breached": [], "undecided": []}
-        for check in bundle.guardrails.checks:
-            if check.contrast.variant_key == variant and check.decision in said:
-                heading = _guardrail_heading(check, bundle)
-                if heading not in said[check.decision]:
-                    said[check.decision].append(heading)
-        said["undecided"] = [name for name in said["undecided"] if name not in said["breached"]]
-        breached, undecided = said["breached"], said["undecided"]
-        if breached:
-            disclosures.append(
-                f"Arm {_label(arm, factors)} breached the guardrail{'s' if len(breached) > 1 else ''} "
-                f"{', '.join(breached)}: it is shown worse than the control by more than the margin, so it is not "
-                + ("adopted, whatever the contrasts below show it gained." if contrasts is not None else "adopted.")
-            )
-        if undecided:
-            disclosures.append(
-                f"Arm {_label(arm, factors)} is undecided on the guardrail{'s' if len(undecided) > 1 else ''} "
-                f"{', '.join(undecided)}, so it is not known to be safe; the guardrails table says why."
-            )
-    if not disclosures:
-        return report
-    section: ReportSection
-    if contrasts is not None:
-        at, section = contrasts, "surface"
-    else:
-        at = 1 + max((i for i, block in enumerate(blocks) if block.section == "guardrails"), default=len(blocks) - 1)
-        section = "guardrails"
-    lines = [DisclosureBlock(section=section, source="guardrails", text=text) for text in disclosures]
-    return report.model_copy(update={"blocks": [*blocks[:at], *lines, *blocks[at:]]})
-
-
-def _with_no_margin_disclosed(report: Report, bundle: AnalysisContextBundle) -> Report:
-    """The report with one line, above its contrasts, naming the measures tested with no margin to be equivalent on.
-
-    ``equivalent`` is the only verdict that says two arms are alike, and it needs a margin declared on the measure;
-    with none, ``not separated`` is the most a contrast can say, and a reader looking for "good enough" should be
-    told why it never appears rather than left to infer it.
-    """
-    catalog = bundle.measure_catalog
-    names = dict.fromkeys(
-        tested.name
-        for family in bundle.multiple_comparisons.families
-        for tested in family.comparisons
-        if tested.name in catalog and tested.reading == "measure" and tested.margin_source is None
-    )
-    if not names:
-        return report
-    # Each kind of measure takes its margin a different way, or none at all, so each group gets its own advice.
-    scorers = [name for name in names if name not in METRIC_DESCRIPTORS]
-    rates = [name for name in names if name in RUN_MARGIN_MEASURES]
-    fixed = [name for name in names if name in METRIC_DESCRIPTORS and name not in RUN_MARGIN_MEASURES]
-
-    def heading(group: list[str]) -> str:
-        return ", ".join(catalog[name].reader_name or name for name in group)
-
-    advice = []
-    if scorers:
-        advice.append(
-            f"Declare a margin on {heading(scorers)} by the scorer's name with compare(margins={{{scorers[0]!r}: ...}})"
-            + (
-                "; a scorer that returns a number, not a bool, takes its range beside it, with ranges=."
-                if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in scorers)
-                else "."
-            )
-        )
-    if rates:
-        advice.append(
-            f"Declare a margin on {heading(rates)} with compare(margins={{{rates[0]!r}: ...}}), which records it on "
-            "every arm's run."
-        )
-    if fixed:
-        advice.append(
-            f"No comparison can declare one on {heading(fixed)}: the engine owns "
-            f"{'its' if len(fixed) == 1 else 'their'} description, and only accuracy takes a margin of the runs'."
-        )
-    disclosure = DisclosureBlock(
-        section="surface",
-        source="comparisons",
-        text=f"No margin is declared on {heading(list(names))}, so no contrast on "
-        f"{'it' if len(names) == 1 else 'them'} can read equivalent, and not separated never means the arms are "
-        "alike. " + " ".join(advice),
-    )
-    blocks = list(report.blocks)
-    at = next(
-        (i for i, block in enumerate(blocks) if isinstance(block, TableBlock) and block.name == "comparisons"),
-        len(blocks),
-    )
-    return report.model_copy(update={"blocks": [*blocks[:at], disclosure, *blocks[at:]]})
-
-
-def _with_self_judging_disclosed(
-    report: Report, arms: Mapping[ArmKey, EvalSummary], factors: tuple[str, ...]
-) -> Report:
-    """The report with a disclosure, above its contrasts, for each arm whose answers the judge's own model produced.
-
-    The engine's judge-alternate rule catches a judge that is one of the launch's candidate models by its
-    label; a quick arm is labelled by its name, and its real model is the one its candidate's
-    :class:`~threetears.evals.quick.answer.Answer` names, which only the summary reads. A model tends to rate its
-    own output higher, so a contrast on a judged dimension may favour that arm for a reason that is not quality.
-    """
-    disclosures = [
-        DisclosureBlock(
-            section="surface",
-            source="apparatus",
-            text=self_judging_text(summary.judge_shares_candidate_model, f"arm {_label(arm, factors)}")
-            + "; a contrast on a judged dimension may favour that arm for that reason alone.",
-        )
-        for arm, summary in arms.items()
-        if summary.judge_shares_candidate_model
-    ]
-    if not disclosures:
-        return report
-    blocks = list(report.blocks)
-    at = next(
-        (i for i, block in enumerate(blocks) if isinstance(block, TableBlock) and block.name == "comparisons"),
-        len(blocks),
-    )
-    return report.model_copy(update={"blocks": [*blocks[:at], *disclosures, *blocks[at:]]})
 
 
 def _split_margins(

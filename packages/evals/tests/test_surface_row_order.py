@@ -2,10 +2,9 @@
 
 A reader short on time takes a table's top row for the recommendation. So the decision surface leads with
 the control, marked as the reference every other arm is read against, follows with the other arms in
-alphabetical order of their names, and says on the table that row order is not a ranking. The table-level
-rule is pinned in ``test_surface_table.py``; this file pins that every other place the surface is laid out
-follows it: the code-only report, the strata table, and the writer's ``cell_measures`` (which the stored
-surface is a copy of, and whose order mints the writer's cell aliases).
+alphabetical order of their names, and says on the table that row order is not a ranking. This file pins
+that every place the arms are laid out follows it: the report's scoreboard and cases table, and the writer's
+``cell_measures`` (which the stored surface is a copy of, and whose order mints the writer's cell aliases).
 
 Driven over the toy host's campaign. Its arms are named by chunk width (``chunk_tokens=256tok`` and
 ``chunk_tokens=1024tok``), so alphabetically the wide width comes first; declaring the narrow width the control is what makes control
@@ -28,7 +27,7 @@ from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.report import build_code_only_report, report_markdown
 from threetears.evals.analysis.report.model import TableBlock
-from threetears.evals.analysis.surface_table import REFERENCE_MARK, SURFACE_ORDER, SURFACE_ORDER_NO_CONTROL
+from threetears.evals.analysis.arms import arm_label
 
 
 def _bundle(*, control: int | None) -> AnalysisContextBundle:
@@ -44,12 +43,10 @@ def _bundle(*, control: int | None) -> AnalysisContextBundle:
     )
 
 
-def _surface_table(bundle: AnalysisContextBundle) -> TableBlock:
-    report = build_code_only_report(
-        bundle, measures=toyhost_profile().measures, assembled_at="2026-10-09T00:00:00+00:00"
-    )
-    (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "surface"]
-    assert f"**Decision surface** ({table.order})" in report_markdown(report)
+def _table(bundle: AnalysisContextBundle, name: str) -> TableBlock:
+    report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
+    (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == name]
+    assert f"({table.order})" in report_markdown(report)
     return table
 
 
@@ -81,15 +78,27 @@ class TestTheWritersCellsFollowTheRule:
 
 
 class TestTheCodeOnlyReportFollowsTheRule:
-    def test_the_reference_row_leads_marked_and_the_rule_is_printed(self) -> None:
+    def test_the_control_leads_the_scoreboard_marked_and_the_rule_is_printed(self) -> None:
         bundle = _bundle(control=TOYHOST_NARROW)
         names = arm_names(bundle.variant_index)
         narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
-        table = _surface_table(bundle)
-        assert table.order == SURFACE_ORDER
-        assert [row["arm"] for row in table.values()] == [f"{names[narrow]} {REFERENCE_MARK}", names[wide]]
+        table = _table(bundle, "scoreboard")
+        assert table.order == "the control first, then the other arms by name; a count, not a ranking"
+        assert [row["arm"] for row in table.values()] == [
+            f"{arm_label(narrow, names)} (control)",
+            arm_label(wide, names),
+        ]
 
-    def test_with_no_control_no_row_is_marked_and_the_rule_says_so(self) -> None:
-        table = _surface_table(_bundle(control=None))
-        assert table.order == SURFACE_ORDER_NO_CONTROL
-        assert not any(REFERENCE_MARK in str(row["arm"]) for row in table.values())
+    def test_with_no_control_no_row_is_marked_and_the_arms_are_in_name_order(self) -> None:
+        bundle = _bundle(control=None)
+        names = arm_names(bundle.variant_index)
+        narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
+        table = _table(bundle, "scoreboard")
+        assert [row["arm"] for row in table.values()] == [arm_label(wide, names), arm_label(narrow, names)]
+
+    def test_the_cases_table_lays_its_arms_out_in_the_scoreboard_s_order(self) -> None:
+        bundle = _bundle(control=TOYHOST_NARROW)
+        names = arm_names(bundle.variant_index)
+        narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
+        headers = [column.header for column in _table(bundle, "cases").columns]
+        assert headers.index(f"{arm_label(narrow, names)} (control)") < headers.index(arm_label(wide, names))

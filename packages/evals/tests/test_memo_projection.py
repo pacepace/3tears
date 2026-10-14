@@ -20,12 +20,12 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.kernel.authored import AuthoredAnalysis, Chart, Finding, QuestionAnswer
+from threetears.evals.kernel.authored import AuthoredAnalysis, Finding, QuestionAnswer
 from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance
 from threetears.evals.kernel.declaration import Question
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.surface import DecisionSurface
-from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE
+from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, empty_bundle
 
 
 def _finding() -> Finding:
@@ -36,7 +36,7 @@ def _finding() -> Finding:
         confidence="high",
         axes=["candidate_model"],
         evidence=[],
-        chart=Chart(type="none", cells=[], measures=[], axis="", note="", caption=""),
+        trials=[],
         caveats=[],
         invalidates=[],
         durable="",
@@ -49,8 +49,6 @@ def _answer(question_id: str = "q-1", resolution: str = "answered") -> QuestionA
 
 def _document(questions: list[QuestionAnswer] | None = None) -> AuthoredAnalysis:
     return AuthoredAnalysis(
-        headline="Move to the newer build.",
-        summary="",
         findings=[_finding()],
         decisions=[],
         questions=questions or [],
@@ -86,6 +84,7 @@ def _analysis(document: AuthoredAnalysis | None = None) -> EvalAnalysis:
         generation=_generation(),
         document=document or _document(),
         decision_surface=DecisionSurface(),
+        bundle=empty_bundle().to_dict(),
     )
 
 
@@ -183,6 +182,7 @@ class TestTheDocumentIsTheOnlyCarrier:
                 behavior="conversation",
                 generation=_generation(),
                 decision_surface=DecisionSurface(),
+                bundle=empty_bundle().to_dict(),
             )
 
     @pytest.mark.parametrize("field", ["memo", "findings", "methodology", "methods_appendix", "bluf", "decisions"])
@@ -197,6 +197,6 @@ class TestTheDocumentIsTheOnlyCarrier:
         state the document exists to make unreachable — because a stored read refuses an unknown key.
         """
         raw = _analysis().to_dict()
-        raw["memo"] = {"bluf": {"headline": "Something else entirely."}}
+        raw["memo"] = {"bluf": {"title": "Something else entirely."}}
         with pytest.raises(ValidationError, match="memo"):
             EvalAnalysis.from_dict(raw)

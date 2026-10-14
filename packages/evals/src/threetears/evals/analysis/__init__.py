@@ -21,12 +21,10 @@ not here. The pipeline:
   prompt and the closed, one-shot
   :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
   a schema-valid ``EvalAnalysis`` + extracted insights.
-- ``viz`` — the typed chart payloads the generator's authored charts compile to, and the chart intent
-  decided from each.
 - ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
   caught by ``service`` and ``reporter_kind``.
-- ``report`` — the :class:`~threetears.evals.analysis.report.Report` an analysis is read through, with
-  its published JSON Schema and its Markdown and script-free HTML serializers.
+- ``report`` — the :class:`~threetears.evals.analysis.report.Report` a campaign is read through: one page,
+  verdict first, written by code from the evidence bundle beside it, as Markdown and as script-free HTML.
 - ``service`` — the operations a client drives the lens with: generating and reading analyses,
   inspecting bundles, reading an analysis as its report, the insight ledger, and the reporter cases.
 - ``reads`` — the read lenses over runs that already exist: comparison sets, pivot, frontier,
@@ -88,7 +86,7 @@ from threetears.evals.analysis.judge_profiles import (
     judged_criteria,
     tiers_with_judge_profiles,
 )
-from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
+from threetears.evals.analysis.arms import ArmLevel, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.divergence import component_carrier, measure_movement
@@ -184,14 +182,20 @@ from threetears.evals.analysis.gate import (
     verdict_token,
 )
 from threetears.evals.analysis.report import (
-    REPORT_VERSION,
+    MIN_CASES,
     SECTION_TITLES,
+    CellValue,
     ChartBlock,
+    ChartKind,
     DisclosureBlock,
     DisclosureSource,
     Fact,
+    IntervalRow,
+    OutcomeBar,
+    OutcomeSegment,
     Report,
     ReportBlock,
+    ReportFile,
     ReportSection,
     ReportSource,
     TableBlock,
@@ -199,6 +203,7 @@ from threetears.evals.analysis.report import (
     TableColumn,
     TextBlock,
     TextRole,
+    TrialBlock,
     BarOutcome,
     ContrastOutcome,
     GuardrailOutcome,
@@ -207,11 +212,11 @@ from threetears.evals.analysis.report import (
     VerdictReason,
     NO_ANALYSIS,
     ReportBasis,
+    analysis_bundle,
+    analysis_verdict,
     build_code_only_report,
     build_report,
-    published_report_schema,
     report_html,
-    report_json_schema,
     report_markdown,
 )
 from threetears.evals.analysis.service import (
@@ -223,7 +228,6 @@ from threetears.evals.analysis.service import (
     campaign_verdicts,
     describe_insight_id_filters,
     estimate_analysis_generation,
-    finding_chart_intent,
     freeze_reporter_case,
     get_analysis,
     inspect_analysis_bundle,
@@ -238,12 +242,19 @@ from threetears.evals.analysis.service import (
     running_analysis_attempt,
 )
 from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
-from threetears.evals.analysis.surface_table import SurfaceTable
-from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
+    ArmExclusions,
     ArmMechanismReading,
+    ArmScoreboard,
+    DifferentialExclusion,
+    FailCause,
+    LossCause,
+    TrialCheck,
+    TrialJudgement,
+    TrialRow,
+    TrialState,
     ArmServedModel,
     CellCoordinate,
     ComparedCell,
@@ -342,15 +353,6 @@ from threetears.evals.analysis.lenses.frontier import (
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
-from threetears.evals.analysis.surface_table import (
-    SurfaceColumn,
-    SurfaceRow,
-    SurfaceRunNote,
-    SurfaceState,
-    SurfaceUnadjudicatedBar,
-    SurfaceValue,
-    SurfaceVerdict,
-)
 
 
 from threetears.evals.analysis.lens_text import frontier_text
@@ -402,9 +404,18 @@ __all__ = [
     "UNPRICED",
     "dollars_text",
     "summarize_run",
-    "REPORT_VERSION",
+    "MIN_CASES",
     "SECTION_TITLES",
+    "CellValue",
     "ChartBlock",
+    "ChartKind",
+    "IntervalRow",
+    "OutcomeBar",
+    "OutcomeSegment",
+    "ReportFile",
+    "TrialBlock",
+    "analysis_bundle",
+    "analysis_verdict",
     "DisclosureBlock",
     "DisclosureSource",
     "Fact",
@@ -434,9 +445,7 @@ __all__ = [
     "TextBlock",
     "TextRole",
     "build_report",
-    "published_report_schema",
     "report_html",
-    "report_json_schema",
     "report_markdown",
     "ABSENT",
     "AS_RECORDED_MODEL",
@@ -464,16 +473,21 @@ __all__ = [
     "SERVED_MODEL_UNRECORDED",
     "WEIGHTING_EQUAL_PER_SCENARIO",
     "AliasedFactors",
+    "ArmExclusions",
+    "ArmScoreboard",
+    "DifferentialExclusion",
+    "FailCause",
+    "LossCause",
+    "TrialCheck",
+    "TrialJudgement",
+    "TrialRow",
+    "TrialState",
     "AmbiguousPair",
     "AnalysisContextBundle",
     "AnalysisStore",
     "ArmLevel",
-    "ArmMeasurement",
     "ArmMechanismReading",
-    "ArmRow",
     "ArmServedModel",
-    "ArmStatus",
-    "ArmTable",
     "AsRecordedReporterKind",
     "BaselineBarProposals",
     "BundleInspection",
@@ -600,14 +614,6 @@ __all__ = [
     "SoundnessRefusal",
     "SubjectFrontier",
     "SubjectKeyInstability",
-    "SurfaceColumn",
-    "SurfaceRow",
-    "SurfaceRunNote",
-    "SurfaceState",
-    "SurfaceTable",
-    "SurfaceUnadjudicatedBar",
-    "SurfaceValue",
-    "SurfaceVerdict",
     "TelemetryRollup",
     "TokenRollup",
     "FrontierBoundaryCheck",
@@ -636,7 +642,6 @@ __all__ = [
     "describe_insight_id_filters",
     "difference_was_declared_at_launch",
     "export_results",
-    "finding_chart_intent",
     "first_request",
     "format_number",
     "format_signed",

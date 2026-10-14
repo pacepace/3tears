@@ -179,9 +179,7 @@ class TestTwoRunsOfOneAliasAnsweredByDifferentModels:
         assert "floating alias" in self._bundle().confound_catalog[_CONFOUND]
 
     def test_a_code_only_report_says_the_arm_mixes_two_models(self) -> None:
-        report = build_code_only_report(
-            self._bundle(), measures=toyhost_profile().measures, assembled_at="2026-10-09T00:00:00+00:00"
-        )
+        report = build_code_only_report(self._bundle(), assembled_at="2026-10-09T00:00:00+00:00")
         said = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         assert [text for text in said if _MARCH in text and _JUNE in text and "mix" in text]
 

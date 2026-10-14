@@ -73,11 +73,13 @@ from threetears.evals.analysis.reporting import (
     model_identity_disclosure,
     request_settings_disclosure,
     request_settings_readings,
+    self_judging_models,
+    self_judging_text,
     unconfirmed_model_identities,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
-from threetears.evals.analysis.viz.quantities import display_scale, with_unit
+from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
+from threetears.evals.analysis.quantities import display_scale, with_unit
 from threetears.evals.kernel import (
     NotFoundError,
     CONFUSION_CELL_MEASURE,
@@ -1103,44 +1105,6 @@ class EvalSummary(BaseModel):
         return "\n".join(lines)
 
 
-def self_judging_text(models: list[str], whose: str) -> str:
-    """The disclosure that a judge graded answers its own model produced, as every quick surface words it.
-
-    Public because two surfaces say it — a run's summary and a judged comparison's report — and one wording
-    for both keeps the warning from reading two ways.
-
-    Args:
-        models: The models that both judged and answered.
-        whose: Whose answers they produced (``"the candidate"``, ``"arm 'candidate'"``).
-
-    Returns:
-        One sentence.
-    """
-    return (
-        f"self-judging: the judge's model {', '.join(models)} also produced {whose}'s answers, and a model tends "
-        "to rate its own output higher, so its judged scores may favour them; judge with another model to rule "
-        "that out"
-    )
-
-
-def _self_judging(run: EvalRun, results: list[EvalResult]) -> list[str]:
-    """The models that both judged a run's answers and produced them (:attr:`EvalSummary.judge_shares_candidate_model`)."""
-    judges = {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
-    judges |= {score.served_model for result in results for score in result.rubric_scores if score.served_model}
-    if not judges:
-        return []
-    candidates = {run.candidate_model}
-    candidates |= {
-        model
-        for result in results
-        for row in result.usage
-        if row.role == "candidate"
-        for model in (row.model, row.served_model)
-        if model
-    }
-    return sorted(judges & candidates)
-
-
 def _spend_cap_line(summary: EvalSummary) -> str | None:
     """The spend ceiling the run was held to, or that it had none; nothing for a run that recorded neither.
 
@@ -1314,7 +1278,7 @@ def summarize_run(
         stopped_because=run.cancellation_reason or run.budget_stop_reason,
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,
-        judge_shares_candidate_model=_self_judging(run, results),
+        judge_shares_candidate_model=self_judging_models(run, results),
         unconfirmed_models=unconfirmed_model_identities([run], results),
         request_settings=request_settings_readings([run], results),
     )

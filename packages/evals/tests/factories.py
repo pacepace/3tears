@@ -21,7 +21,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TelemetryRollup
+from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
+from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
@@ -73,6 +75,7 @@ __all__ = [
     "as_listed",
     "fixture_variant_key",
     "load_listed",
+    "empty_bundle",
     "make_analysis",
     "make_analysis_attempt",
     "make_campaign",
@@ -454,8 +457,31 @@ def make_campaign(**overrides: Any) -> EvalCampaign:
     return EvalCampaign(**fields)
 
 
+def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
+    """An evidence bundle over no runs: the frozen bundle an analysis of nothing carries."""
+    fields: dict[str, Any] = dict(
+        campaign_id="campaign-1",
+        subject_id="subject-1",
+        behavior="conversation",
+        scope_id="uni-1",
+        comparison=ComparisonSetsResult(),
+        frontier=FrontierResult(),
+        telemetry=TelemetryRollup(
+            n_runs=0,
+            n_results=0,
+            n_errors=0,
+            total_cost_usd=0.0,
+            incomplete_cost_usd=0.0,
+            unattributed_cost_usd=0.0,
+        ),
+        host_declarations_digest="sha256:declarations",
+    )
+    fields.update(overrides)
+    return AnalysisContextBundle(**fields)
+
+
 def make_analysis(**overrides: Any) -> EvalAnalysis:
-    """Create an ``EvalAnalysis`` in the default scope with an empty authored document."""
+    """Create an ``EvalAnalysis`` in the default scope with an empty authored document over an empty bundle."""
     fields: dict[str, Any] = dict(
         scope_id="uni-1",
         campaign_id="campaign-1",
@@ -477,8 +503,9 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
             bundle_schema_version=CURRENT_BUNDLE_SHAPE,
             host_declarations_digest="sha256:declarations",
         ),
-        document=AuthoredAnalysis(headline="h", summary="", findings=[], decisions=[], questions=[], next=[]),
+        document=AuthoredAnalysis(findings=[], decisions=[], questions=[], next=[]),
         decision_surface=DecisionSurface(),
+        bundle=empty_bundle(campaign_id=overrides.get("campaign_id", "campaign-1")).to_dict(),
     )
     fields.update(overrides)
     return EvalAnalysis(**fields)

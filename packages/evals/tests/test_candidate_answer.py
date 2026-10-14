@@ -25,6 +25,14 @@ CASES = [
     {"text": "an oak", "label": "plant"},
 ]
 
+#: Enough cases for a contrast to be tested, each a different length so the priced candidate's spend varies.
+COMPARED_CASES = [
+    *CASES,
+    {"text": "a heron", "label": "animal"},
+    {"text": "a sycamore", "label": "plant"},
+    {"text": "a salamander", "label": "animal"},
+]
+
 #: Dollars per input token, for the priced candidate below.
 RATE = 1e-6
 
@@ -114,17 +122,22 @@ async def test_compare_tests_the_arms_reported_cost_against_the_control() -> Non
         return Answer(cheaper.value, model="m-2", input_tokens=cheaper.input_tokens, cost_usd=cheaper.cost_usd * 10)
 
     comparison = await compare(
-        CASES, {"dearer": dearer, "cheaper": priced}, expected=_expected, control="dearer", scope_id=SCOPE, k=2
+        COMPARED_CASES,
+        {"dearer": dearer, "cheaper": priced},
+        expected=_expected,
+        control="dearer",
+        scope_id=SCOPE,
+        k=2,
     )
     assert comparison.arms["cheaper"].role_spend("candidate").cost_usd == pytest.approx(
         comparison.arms["dearer"].role_spend("candidate").cost_usd / 10  # type: ignore[operator]
     )
-    (table,) = [
-        block for block in comparison.report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"
-    ]
-    by_reading = {row["reading"]: row for row in table.values()}
+    tables = {block.name: block for block in comparison.report.blocks if isinstance(block, TableBlock)}
+    by_reading = {row["reading"]: row for row in tables["comparisons"].values()}
     # The candidate's spend, not cost_usd, which sums a judge's spend too: what it cost to measure the arm.
     assert "Measuring spend, all roles" not in by_reading
     cost = by_reading["Production cost"]
-    assert cost["contrast"] == "candidate=cheaper" and cost["delta"] < 0
+    assert cost["contrast"] == "candidate=cheaper"
     assert cost["verdict"] == "improved on the control"
+    (statistics,) = [row for row in tables["comparison_statistics"].values() if row["reading"] == "Production cost"]
+    assert isinstance(statistics["delta"], float) and statistics["delta"] < 0

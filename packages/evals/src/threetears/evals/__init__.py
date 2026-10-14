@@ -3,8 +3,7 @@
 The engine is five packages: :mod:`~threetears.evals.schema` (the stored shapes and the ports a host
 implements), :mod:`~threetears.evals.kernel` (the behaviour every other package runs on, and the host
 contract under :mod:`~threetears.evals.kernel.host`), :mod:`~threetears.evals.run` (launching, executing, judging
-and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and reports, with
-charts under :mod:`~threetears.evals.analysis.viz`) and :mod:`~threetears.evals.gen` (generating
+and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and reports) and :mod:`~threetears.evals.gen` (generating
 cases), plus three that sit beside the engine rather than inside it: :mod:`~threetears.evals.storage`
 (the in-memory reference store), :mod:`~threetears.evals.testing` (the store conformance kit) and
 :mod:`~threetears.evals.quick` (``run_eval`` and the command line). Above the engine sit the surfaces an
@@ -67,9 +66,8 @@ def __getattr__(name: str) -> str:
 
 
 #: The public roots, as absolute module names. A consumer imports from these and from no module
-#: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
-#: ``analysis.viz`` are roots of their own inside a package: the contract a host implements, and
-#: the chart intent with the seam a renderer sits behind. Two roots fail to import without an extra
+#: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` is a root of its own inside a
+#: package: the contract a host implements. Two roots fail to import without an extra
 #: (:data:`ROOT_EXTRAS`): ``transports.fastmcp``, which needs ``[fastmcp]``, and ``providers``, the shipped provider
 #: adapter over 3tears-models, which needs ``[models]``.
 PUBLIC_ROOTS: tuple[str, ...] = (
@@ -78,7 +76,6 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.kernel.host",
     "threetears.evals.run",
     "threetears.evals.analysis",
-    "threetears.evals.analysis.viz",
     "threetears.evals.gen",
     "threetears.evals.storage",
     "threetears.evals.testing",

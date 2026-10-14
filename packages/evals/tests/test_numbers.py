@@ -1,8 +1,6 @@
 """The one number rule — what it writes at both ends of a value's range, and that it is the only one.
 
-The shared cases live in `fixtures/number-format-cases.json` beside this suite and are asserted by
-`test_vega_compiler.py` (a browser renderer that restates the rule pins the same table where it ships). What is here is the
-rule's two ENDS stated as properties rather than cases, the signed form, and the canary that keeps a
+What is here is the rule's two ENDS stated as properties rather than cases, the signed form, and the canary that keeps a
 second implementation from growing back: two formatters in one engine is how one analysis came to
 print a latency as ``1.235e+04`` beside an interval that spelled the same magnitude ``12,346``.
 """
@@ -17,9 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis import latency_partition, numbers, references, significance, surface_table
+from threetears.evals.analysis import latency_partition, numbers, references, significance
 from threetears.evals.analysis.numbers import ABSENT, WHOLE_FROM, WRITTEN_FROM, format_number, format_signed
-from threetears.evals.analysis.viz import quantities
+from threetears.evals.analysis.report import build as report_build
+from threetears.evals.analysis import quantities
 from threetears.evals.schema.models import LatencyMetrics
 
 
@@ -131,12 +130,23 @@ class TestTheSignedFormWithAUnit:
     def test_a_change_in_a_unit_reads_as_format_signed_joined_to_it(self, value, unit, text):
         assert quantities.signed_with_unit(value, unit) == text
 
-    def test_no_table_spelling_signs_a_bound(self):
+    def test_no_signed_spelling_signs_a_bound(self):
         """``+< 0.000001 ms`` is no spelling: a bound already says which side of zero it is on."""
         for value in (3.6e-7, -3.6e-7):
             for unit in ("ms", "%", ""):
-                spellings = quantities.table_spellings(value, unit)
-                assert not any(re.search(r"[+-][<>]", text) for text in spellings), spellings
+                text = quantities.signed_with_unit(value, unit)
+                assert not re.search(r"[+-][<>]", text), text
+
+
+class TestOneRulerPerQuantity:
+    """A quantity is stated in the unit a reader thinks in, chosen once over every value it is stated with."""
+
+    @pytest.mark.parametrize(
+        ("values", "unit", "scaled"),
+        [([900.0, 1200.0], "ms", (0.001, "s")), ([450.0], "ms", (1.0, "ms")), ([5.0], None, (1.0, ""))],
+    )
+    def test_display_scale_picks_one_unit_for_every_value(self, values, unit, scaled):
+        assert quantities.display_scale(values, unit) == scaled
 
 
 class TestThePrefixedForm:
@@ -174,12 +184,8 @@ class TestThePrefixedForm:
 
 class TestThereIsOneImplementation:
     def test_every_surface_that_spells_numbers_holds_the_same_function(self):
-        """The chart quantities spell their values with it, as every chart arm does; nothing holds a copy.
-
-        The arm table is not on the list: it prints no number since its per-measure renderer was
-        retired, so it holds no formatter to compare.
-        """
-        for module in (quantities, references, surface_table):
+        """The quantities, the references and the report's builder spell their values with it; nothing holds a copy."""
+        for module in (quantities, references, report_build):
             assert module.format_number is numbers.format_number, module.__name__
 
     def test_no_other_module_defines_a_number_formatter(self):
@@ -206,12 +212,13 @@ class TestThereIsOneImplementation:
 _SPELLING_TREES = ("threetears/evals/analysis",)
 
 #: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked:
-#: ``numbers.py`` is the rule itself, and ``viz/`` spells numbers only in payload validation messages.
+#: ``numbers.py`` is the rule itself, and ``report/svg.py`` spells only a chart's drawing coordinates (to a tenth
+#: of a unit), every value it shows a reader going through the rule.
 #: ``out_of_run_spend.py`` is the spend ledger, which spells only dollars, at the four decimals a
 #: per-call price needs.
 _NOT_READ_AS_REPORTS = (
     "threetears/evals/analysis/numbers.py",
-    "threetears/evals/analysis/viz",
+    "threetears/evals/analysis/report/svg.py",
     "threetears/evals/analysis/out_of_run_spend.py",
 )
 
@@ -356,8 +363,8 @@ class TestNoSurfaceSpellsANumberItsOwnWay:
     Derived from the source rather than from a function name: a second ``def format_number`` is one
     way to grow a second rule, and an inline ``f"{value:.4g}"`` is the commoner one — the shape
     that printed a latency ``1.235e+04`` in a results pivot beside an interval spelling the same
-    magnitude ``12346``. Scoped to :data:`_SPELLING_TREES`; the engine's validation messages and the
-    viz payload checks outside them are not read as reports and are not walked.
+    magnitude ``12346``. Scoped to :data:`_SPELLING_TREES`; the engine's validation messages outside them are not
+    read as reports and are not walked.
     """
 
     def test_a_module_named_by_itself_is_walked(self):
@@ -375,7 +382,7 @@ class TestNoSurfaceSpellsANumberItsOwnWay:
         assert not {
             m
             for m in walked
-            if m == "threetears/evals/analysis/numbers.py" or m.startswith("threetears/evals/analysis/viz/")
+            if m in ("threetears/evals/analysis/numbers.py", "threetears/evals/analysis/report/svg.py")
         }
 
     def test_every_spelling_goes_through_the_one_rule_or_is_named_as_fixed(self):

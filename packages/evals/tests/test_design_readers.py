@@ -159,7 +159,6 @@ class TestTheDeclaredPriorityReachesTheReport:
     def test_a_declared_priority_is_disclosed_with_each_tiers_bars(self) -> None:
         report = build_code_only_report(
             _bundle(merit_priority=["quality", "latency"]),
-            measures=toyhost_profile().measures,
             assembled_at="2026-10-05T00:00:00+00:00",
         )
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
@@ -169,9 +168,7 @@ class TestTheDeclaredPriorityReachesTheReport:
         assert "which the order does not place: cost_usd." in sentence
 
     def test_no_stated_priority_states_none(self) -> None:
-        report = build_code_only_report(
-            _bundle(merit_priority=[]), measures=toyhost_profile().measures, assembled_at="2026-10-05T00:00:00+00:00"
-        )
+        report = build_code_only_report(_bundle(merit_priority=[]), assembled_at="2026-10-05T00:00:00+00:00")
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         assert not [text for text in texts if text.startswith("The campaign ranks its merit axes")]
 

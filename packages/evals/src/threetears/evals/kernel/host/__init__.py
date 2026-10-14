@@ -71,8 +71,6 @@ from threetears.evals.kernel.host.profile import (
     VariantLeverReader,
 )
 from threetears.evals.kernel.host.style import (
-    SERIES_SLOTS,
-    VALIDATED_SLOTS,
     StyleProfile,
     ToneRegister,
 )
@@ -123,10 +121,8 @@ from threetears.evals.kernel.host.world_seed import SeedRefused, SeedWrite, chec
 __all__ = [
     "CANDIDATE_KIND_LEVER",
     "CANDIDATE_MODEL_LEVER",
-    "SERIES_SLOTS",
     "SHARED_CORE",
     "UNSEATED_LEVEL",
-    "VALIDATED_SLOTS",
     "ActionParameterReader",
     "ActsOn",
     "ApparatusError",

@@ -195,7 +195,6 @@ def test_the_engine_models_are_on_the_engine_base():
     reverted would fail here rather than only shrinking a register.
     """
     from threetears.evals.analysis.reporting import ScoreRecord
-    from threetears.evals.analysis.viz.intent import ChartIntent
     from threetears.evals.analysis.report import Report
     from threetears.evals.kernel.identity import DerivedContextIdentity
     from threetears.evals.kernel.metrics import MetricDescriptor
@@ -210,7 +209,6 @@ def test_the_engine_models_are_on_the_engine_base():
         ScoreRecord,
         ResultCondition,
         ResolvedUsage,
-        ChartIntent,
         Report,
     ):
         assert issubclass(cls, EvalBaseModel), f"{cls.__name__} is not on the eval base"

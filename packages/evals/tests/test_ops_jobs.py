@@ -49,7 +49,7 @@ from threetears.evals.ops import (
     run_job_id,
     run_launch,
 )
-from threetears.evals.analysis import judge_agreement
+from threetears.evals.analysis import AnalysisContextBundle, judge_agreement
 from threetears.evals.run import LAUNCH_CANCEL_REASON
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
@@ -200,11 +200,12 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert line.id == status.analysis_id
     markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
-    assert markdown.body.startswith(f"# {fixture.campaign.name}: {line.headline}")
+    assert markdown.body.startswith(f"# {fixture.campaign.name}")
+    assert f"**{line.verdict}**" in markdown.body and line.findings >= 1
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
-    assert "<script" not in html.body.lower() and line.headline in html.body
+    assert "<script" not in html.body.lower()
     canonical = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
-    assert f'"analysis_id":"{line.id}"' in canonical.body.replace(" ", "")
+    assert AnalysisContextBundle.from_json(canonical.body).campaign_id == fixture.campaign.id
 
 
 async def test_a_held_generation_is_running_refuses_a_second_and_cancels_to_cancelled() -> None:

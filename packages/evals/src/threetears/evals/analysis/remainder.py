@@ -2,8 +2,8 @@
 
 A whole-vs-part remainder is either STATED (a number: ``unattributed_delta``) or WITHHELD (a sentence
 saying why it cannot be one: ``unattributed_withheld``), and exactly one of the two is set. Two types
-carry the pair: :class:`~threetears.evals.analysis.viz.payloads.AttributionPayload`, the chart's payload,
-and :class:`~threetears.evals.analysis.bundle.schema.ScopeDivergence`, the bundle's divergence. Both
+carry the pair through it: :class:`~threetears.evals.analysis.bundle.schema.ScopeDivergence`, the bundle's
+divergence, and whatever reads one back. They
 enforce the invariant with :func:`remainder_state` and expose the result as a ``remainder`` property,
 and every consumer reads that property rather than testing either field itself.
 

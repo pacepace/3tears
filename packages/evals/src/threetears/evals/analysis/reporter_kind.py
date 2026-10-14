@@ -38,7 +38,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evidence_digest
 from threetears.evals.analysis.errors import GenerationError
 from threetears.evals.analysis.generator import (
     build_user_message,
@@ -49,22 +49,15 @@ from threetears.evals.analysis.generator import (
     user_message_digest,
 )
 from threetears.evals.analysis.report.serialize_md import markdown_table
-from threetears.evals.analysis.viz.intent import chart_intent
-from threetears.evals.analysis.viz.payloads import PayloadError
-from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
     EVIDENCE_COLUMNS,
     arm_namer,
     evidence_rows,
     positions,
-    standing_facts,
     stands_on_words,
 )
-from threetears.evals.analysis.report.model import Fact
-from threetears.evals.analysis.standing import headline_standing, summary_standings
-from threetears.evals.kernel.authored import NO_CHART
-from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, FindingResolution, Viz
+from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, FindingResolution
 from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
     CandidatePreparationFailed,
@@ -76,7 +69,6 @@ from threetears.evals.kernel.candidate_kind import (
 )
 from threetears.evals.kernel.capped_completion import CappedCompletion, call_ceiling
 from threetears.evals.kernel.cassettes import CellCassettes
-from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.models import DimName, EvalTestCase, JudgedArtifact, JudgeEvidence, RubricDim
 from threetears.evals.schema.completion import CompletionGenerator, CompletionResult, RequestCeiling
@@ -476,7 +468,7 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
         ValueError: The frozen bundle does not validate, no longer digests to the recorded
             fingerprint, or loses or changes a frozen value in the round-trip.
     """
-    frozen_digest = canonical_digest(case.bundle)
+    frozen_digest = evidence_digest(case.bundle)
     if frozen_digest != case.bundle_fingerprint:
         raise ValueError(
             f"the case's frozen bundle digests to {frozen_digest} and the case recorded "
@@ -962,58 +954,18 @@ class ReporterKind:
 REPLAY_NOTES_HEADING = "# NOTES ON THIS EVIDENCE — not seen by the memo's author"
 
 
-#: The label over the lines code prints with a chart, in the memo the judge reads.
-_CHART_NOTES_LABEL = "Printed with the chart:"
-
-
-def _chart_notes(viz: Viz) -> list[str]:
-    """What the report prints under a chart, as memo lines: code's footnote and disclosures, or why it cannot be drawn.
-
-    The report prints the footnote, then the disclosures, under every drawn chart (``serialize_md``,
-    ``serialize_html``), so they reach every reader as surely as the model's caption does; the memo the judge reads
-    carries them for the same reason. A chart this build cannot draw prints no compiler lines, and the report prints
-    why it was not drawn instead — so the memo prints that too, rather than leaving the chart's caption reading as a
-    chart that was drawn.
-
-    Args:
-        viz: A finding's compiled chart.
-
-    Returns:
-        The lines to append after the chart's caption, each section opened by a blank line; empty when code wrote
-        none.
-    """
-    try:
-        intent = chart_intent(viz.type, viz.payload)
-    except (PayloadError, IntentPolicyError) as undrawable:
-        return ["", f"A {viz.type} chart is stored for this finding and cannot be drawn: {undrawable}"]
-    printed = [line for line in (intent.footnote, *intent.disclosures) if line.strip()]
-    if not printed:
-        return []
-    return ["", _CHART_NOTES_LABEL, *(f"- {_one_line(line)}" for line in printed)]
-
-
-def _facts_line(facts: list[Fact]) -> str:
-    """Facts code states beside an author's words, on one line, as the report's Markdown prints them."""
-    return " · ".join(f"{fact.name}: {fact.value}" for fact in facts)
-
-
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
     """The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
 
-    Markdown, in the order a reader acts on it: the headline, the summary, where each declared
-    question stands, the decisions, the findings in the order the model wrote them, and what to run
-    next — each section omitted when the model wrote nothing for it. Findings are numbered from one,
-    and every link the model made by position is printed that way. The headline and each summary bullet carry the
-    confidence and evidence code derives from the findings they rest on, as the report prints them
-    (:mod:`threetears.evals.analysis.standing`). Arms are named by
+    Markdown, in the order a reader acts on it: where each declared question stands, the recommendations, the
+    findings in the order the model wrote them, and what to run next — each section omitted when the model wrote
+    nothing for it. Findings are numbered ``F1`` onward, and every link the model made by position is printed that
+    way, a finding's trials by their ids. The memo has no headline, summary or chart: the report's first screen is
+    code's, so the judge scores what the writer wrote. Arms are named by
     :func:`~threetears.evals.analysis.arms.arm_label`, numbers by :func:`~threetears.evals.analysis.numbers.format_number`.
 
-    The numbers code resolved from the model's own readings are printed beside them, because they are
-    what the model's claims are about; a chart is its type and its caption, never the figures it
-    draws; a chart dropped as undrawable says so. Beneath a drawn chart's caption go the lines code
-    prints with it in the report — its footnote and disclosures — because every
-    reader of the report reads them, so the judge's voice and readability criteria score them as they
-    score the model's words (#683). Deterministic: one analysis renders to one string.
+    The numbers code resolved from the model's own readings are printed beside them, because they are what the
+    model's claims are about. Deterministic: one analysis renders to one string.
 
     Args:
         analysis: The analysis to render.
@@ -1026,27 +978,12 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
-    sections: list[list[str]] = [[f"# {_one_line(document.headline) or '(blank headline)'}"]]
-    if document.headline.strip():
-        headline = headline_standing(analysis)
-        rests = f" Rests on finding {positions(headline.rests_on)}." if headline.rests_on else ""
-        sections[0] += ["", f"The headline: {_facts_line(standing_facts(analysis, headline))}.{rests}"]
-    bullets = summary_standings(analysis)
-    if bullets:
-        sections.append(
-            [
-                f"- {_one_line(bullet)} — {_facts_line(standing_facts(analysis, standing))}."
-                + (f" Rests on finding {positions(standing.rests_on)}." if standing.rests_on else "")
-                for bullet, standing in bullets
-            ]
-        )
-    elif document.summary.strip():
-        sections.append([document.summary.strip()])
+    sections: list[list[str]] = []
 
     if document.questions:
         questions = ["## Declared questions", ""]
         for answer in document.questions:
-            rests = f" (rests on finding {positions(answer.rests_on)})" if answer.rests_on else ""
+            rests = f" (rests on {positions(answer.rests_on)})" if answer.rests_on else ""
             asked = (
                 analysis.design_snapshot.question_words(answer.question_id)
                 if analysis.design_snapshot is not None
@@ -1056,9 +993,9 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
         sections.append(questions)
 
     if document.decisions:
-        decisions = ["## Decisions", ""]
+        decisions = ["## Recommendations", ""]
         for decision in document.decisions:
-            rests = f" Rests on finding {positions(decision.rests_on)}." if decision.rests_on else ""
+            rests = f" Rests on {positions(decision.rests_on)}." if decision.rests_on else ""
             decisions.append(
                 f"- **{_one_line(decision.proposal)}** — {decision.disposition}; "
                 f"confidence {_confidence(decision.confidence)}.{rests}"
@@ -1070,14 +1007,16 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     if document.findings:
         findings = ["## Findings"]
         for position, (finding, resolution) in enumerate(zip(document.findings, resolutions, strict=True)):
-            findings += ["", f"### {position + 1}. {_one_line(finding.title)}", ""]
+            findings += ["", f"### F{position + 1}. {_one_line(finding.title)}", ""]
             facts = [f"Confidence: {_confidence(finding.confidence)}."]
             if resolution is not None:
                 facts.append(f"Stands on: {stands_on_words(analysis, resolution.evidence_tier)}.")
             if finding.axes:
                 facts.append(f"About: {', '.join(finding.axes)}.")
+            if finding.trials:
+                facts.append(f"Trials: {', '.join(finding.trials)}.")
             if finding.invalidates:
-                facts.append(f"Invalidates finding {positions(finding.invalidates)}.")
+                facts.append(f"Invalidates {positions(finding.invalidates)}.")
             findings.append(" ".join(facts))
             if finding.body.strip():
                 findings += ["", finding.body.strip()]
@@ -1088,15 +1027,6 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
                     [[row[key].text for key, _ in EVIDENCE_COLUMNS] for row in rows],
                 )
                 findings += ["", "Evidence:", "", *table]
-            if finding.chart.type != NO_CHART:
-                if resolution is not None and resolution.chart_note:
-                    findings += ["", resolution.chart_note]
-                else:
-                    caption = f": {_one_line(finding.chart.caption)}" if finding.chart.caption.strip() else ""
-                    note = f" — {_one_line(finding.chart.note)}" if finding.chart.note.strip() else ""
-                    findings += ["", f"Chart ({finding.chart.type}){caption}{note}"]
-                    if resolution is not None and resolution.chart:
-                        findings += _chart_notes(resolution.chart)
             if finding.caveats:
                 findings += ["", "Caveats:", *(f"- {caveat.kind}: {caveat.text}" for caveat in finding.caveats)]
             if finding.durable.strip():
@@ -1112,6 +1042,8 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
                 steps.append(f"   - Why: {step.why.strip()}")
         sections.append(steps)
 
+    if not sections:
+        return "(the memo is empty: no finding, recommendation, answer or next step)\n"
     return "\n\n".join("\n".join(section) for section in sections) + "\n"
 
 

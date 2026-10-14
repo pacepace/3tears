@@ -19,10 +19,10 @@ Pinned here, through a real store, the bundle, both reports, the frontier and a 
   the frontier and the comparisons alike — while the failures still count in the arm's pass rate.
 - **A turn the budget ended stays in cost and latency**, so a contestant whose budget-ended half took a
   minute never reads "improved" on either against the control.
-- **An arm where no result took a turn** carries no cost or latency reading, counts its failures, reads
-  ``no successful results`` under the surface's cost, latency and latency-bar columns and in the strata
-  table, is named in a disclosure on both reports and in the bundle, dominates nothing on the frontier,
-  and is compared on latency as "every result failed", not "too few cases".
+- **An arm where no result took a turn** carries no cost or latency reading, counts its failures as failed on
+  both reports' scoreboards with no per-reply cost, reads ``no successful results`` in the strata table, is
+  named in the bundle, reads ``no data`` on a latency bar, dominates nothing on the frontier, and is compared on
+  latency as "every result failed", not "too few cases".
 - **A classifier's refusal is a miss**: an all-refusing arm reads accuracy 0 and is tested against the
   control, and a half-refusing arm does not read more accurate than the control for refusing.
 - **Unmeasured cost is read over the turns taken**, so a billed refusal does not make a cell whose turns
@@ -35,35 +35,31 @@ Mutations that turn this file red: reading ``scored`` or ``all_observed`` for an
 measure in ``summary_population``; widening ``delivered_a_turn`` to every candidate failure; the frontier's
 latency or cost not asking ``delivered_a_turn``; ``_accuracy_leaves`` reading a failure's ``match`` as a hit;
 dropping ``_failures_as_misses``; dropping ``n_no_turn`` from ``_cell_measures``; leaving the blank under an
-all-failed cell's merit or bar column; not emitting the table's all-failed disclosure in ``_surface_blocks``.
+all-failed stratum's cost or latency in the strata table.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 from collections.abc import Mapping
 from typing import Any
 
-import jsonschema
 import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
-    DisclosureBlock,
     Report,
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
     build_report,
     inspect_campaign_bundle,
-    published_report_schema,
 )
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import CellCoordinate
-from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS, surface_table_of
+from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
 from threetears.evals.kernel import CampaignDesign, CellFacts, EvalStorage, StratumFacts, delivered_a_turn
 from threetears.evals.schema import EvalResult, EvalTestCase, GoalStateOutcome, LatencyMetrics, RoleUsage
 from threetears.evals.kernel.analysis_measures import MeasureSummary
@@ -250,7 +246,7 @@ def _frontier_point(bundle: AnalysisContextBundle, model: str) -> Any:
 
 
 def _code_only(bundle: AnalysisContextBundle) -> Report:
-    return build_code_only_report(bundle, measures=_PROFILE.measures, assembled_at="2026-10-09T00:00:00+00:00")
+    return build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
 
 
 def _table(report: Report, name: str) -> TableBlock:
@@ -271,19 +267,6 @@ def _row(table: TableBlock, model: str, **match: str) -> dict[str, Any]:
 def _column(table: TableBlock, measure: str) -> str:
     """The key of the column a measure is shown under — its header leads with what a reader calls the measure."""
     return next(column.key for column in table.columns if column.header.startswith(measure))
-
-
-def _all_failed_disclosures(report: Report) -> list[str]:
-    return [
-        block.text
-        for block in report.blocks
-        if isinstance(block, DisclosureBlock) and block.text.startswith("Every result failed")
-    ]
-
-
-def _label(row: dict[str, Any]) -> str:
-    """A surface row's arm label, without the control marker the report adds."""
-    return str(row["arm"]).removesuffix(" (control)")
 
 
 # =============================================================================
@@ -541,66 +524,50 @@ class TestAnArmWhereNoResultTookATurn:
         # Its cost is absent because every call failed, not because nobody reported spend.
         assert bundle.cost_unmeasured_cells == [] and bundle.cost_unmeasured is None
 
-    def test_the_code_only_report_says_so_in_its_surface_and_beside_it(self) -> None:
+    def test_the_code_only_report_counts_it_as_failed_and_states_no_cost_for_it(self) -> None:
         bundle = _bundle()
-        report = _code_only(bundle)
-        table = _table(report, "surface")
-        refusing, steady = _row(table, _REFUSING), _row(table, _STEADY)
+        table = _table(_code_only(bundle), "scoreboard")
+        refusing, flaky, steady = _row(table, _REFUSING), _row(table, _FLAKY), _row(table, _STEADY)
 
-        for measure in ("Turn time", "Turn cost"):
-            assert refusing[_column(table, measure)] == NO_SUCCESSFUL_RESULTS
-            assert steady[_column(table, measure)] not in (None, NO_SUCCESSFUL_RESULTS)
-        assert "4 failed by the candidate (4 with no turn taken" in str(refusing["replication"])
-        assert "2 failed by the candidate (2 with no turn taken" in str(_row(table, _FLAKY)["replication"])
-        assert "failed" not in str(steady["replication"])
+        assert (refusing["passed"], refusing["failed"]) == ("0 of 4 usable passed", "4 (model failed 4)")
+        assert refusing["reply"] is None, "no turn was taken, so there is no reply to cost"
+        assert flaky["failed"].startswith("2 (model failed 2")
+        assert steady["failed"] == "0" and steady["reply"] is not None
 
-        (said,) = _all_failed_disclosures(report)
-        assert said.startswith(bundle.all_failed or "")
-        assert said.endswith(f"Every result failed in: {_label(refusing)}.")
-        jsonschema.Draft202012Validator(published_report_schema()).validate(json.loads(report.to_canonical_json()))
-
-    def test_a_stored_analysis_says_so_from_its_frozen_surface_alone(self) -> None:
+    def test_a_stored_analysis_counts_it_from_its_frozen_bundle_alone(self) -> None:
         bundle = _bundle()
-        analysis = make_analysis(decision_surface=bundle_decision_surface(bundle), variant_index=bundle.variant_index)
+        analysis = make_analysis(
+            decision_surface=bundle_decision_surface(bundle),
+            variant_index=bundle.variant_index,
+            bundle=bundle.to_dict(),
+        )
         storage = EvalStorage(InMemoryDocumentStore())
         storage.save_analysis(analysis)
         loaded = storage.load_analysis(analysis.id, analysis.scope_id)
         assert loaded is not None
 
-        report = build_report(loaded)
-        table = _table(report, "surface")
-        assert _row(table, _REFUSING)[_column(table, "Turn time")] == NO_SUCCESSFUL_RESULTS
-        assert len(_all_failed_disclosures(report)) == 1
-        jsonschema.Draft202012Validator(published_report_schema()).validate(json.loads(report.to_canonical_json()))
+        table = _table(build_report(loaded), "scoreboard")
+        assert _row(table, _REFUSING)["failed"] == "4 (model failed 4)"
+        assert _row(table, _REFUSING)["reply"] is None
 
-    def test_no_disclosure_when_every_arm_took_a_turn(self) -> None:
+    def test_no_sentence_when_every_arm_took_a_turn(self) -> None:
         arms = _three_arms()
         del arms[_REFUSING]
         bundle = _bundle(arms)
         assert bundle.all_failed_cells == [] and bundle.all_failed is None
-        assert _all_failed_disclosures(_code_only(bundle)) == []
 
-    def test_a_table_where_every_cell_failed_names_no_arm(self) -> None:
+    def test_a_campaign_where_every_arm_failed_names_no_arm(self) -> None:
         arms = {model: [_refused(model, case) for case in _CASES] for model in (_REFUSING, "also-refusing")}
         bundle = _bundle(arms)
-        table = surface_table_of(bundle_decision_surface(bundle), bundle.variant_index)
-        assert all(row.all_failed for row in table.rows)
-        assert table.all_failed_disclosure == bundle.all_failed
-        assert (table.all_failed_disclosure or "").startswith("Every result failed: ")
-        assert "Every result failed in:" not in (table.all_failed_disclosure or "")
+        assert all(cell.all_failed for cell in bundle.cell_measures)
+        assert (bundle.all_failed or "").startswith("Every result failed: ")
+        assert "Every result failed in:" not in (bundle.all_failed or "")
 
-    def test_a_latency_bar_reads_no_successful_results_not_a_blank(self) -> None:
+    def test_a_latency_bar_reads_no_data_not_a_blank(self) -> None:
         bundle = _bundle(design=_controlled(_STEADY, total_ms=(1000.0, "lower_is_better")))
         (bar,) = [bar for bar in bundle.bar_adjudications if bar.measure_id == "total_ms"]
         verdict = next(v for v in bar.verdicts if v.variant_key == fixture_variant_key(_REFUSING))
-        assert (verdict.value, verdict.n, verdict.cleared) == (None, 0, None)
-
-        table = surface_table_of(bundle_decision_surface(bundle), bundle.variant_index)
-        bar_index = next(i for i, column in enumerate(table.columns) if column.kind == "bar")
-        refusing = next(row for row in table.rows if row.variant_key == fixture_variant_key(_REFUSING))
-        value = refusing.values[bar_index]
-        assert value is not None
-        assert (value.text, value.verdict_word) == (NO_SUCCESSFUL_RESULTS, "no data")
+        assert (verdict.value, verdict.n, verdict.cleared, verdict.decision) == (None, 0, None, "no_data")
 
     def test_a_latency_bar_no_cell_could_read_says_every_call_failed(self) -> None:
         arms = {model: [_refused(model, case) for case in _CASES] for model in (_REFUSING, "also-refusing")}
@@ -770,9 +737,12 @@ class TestAQuickClassifierLandsItsRefusalAsAMiss:
 
     async def test_its_accuracy_contrast_is_tested_not_untested(self) -> None:
         comparison = await self._comparison()
+        (verdict,) = comparison.verdicts("Accuracy", kind="contrast")
+        assert verdict.p_adjusted is not None and verdict.delta == -0.5
+        assert verdict.outcome != "untested"
+        # Four cases is under the floor a rate is read on, so the page states no difference for it.
         (row,) = [row for row in comparison.contrasts() if row["reading"] == "Accuracy"]
-        assert row["p_adjusted"] is not None and row["delta"] == -0.5
-        assert not str(row["verdict"]).startswith("untested")
+        assert row["verdict"] == "not tested (n=4)" and row["delta"] is None
 
 
 # =============================================================================

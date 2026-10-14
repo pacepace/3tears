@@ -32,7 +32,7 @@ from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalDocumentModel, VerbatimJsonObject
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
     CancelRequestedAtField,
@@ -428,62 +428,6 @@ class CoverageLens(EvalDocumentModel):
     levers: list[LeverCoverage] = Field(default_factory=list, description="Per-lever coverage summaries.")
 
 
-#: Every visualization a stored finding can carry.
-VizType = Literal[
-    "delta_table",
-    "frontier",
-    "timeseries",
-    "distribution",
-    "null_result",
-    "breakdown",
-    "attribution",
-    "sweep_ranking",
-]
-
-
-class Viz(EvalDocumentModel):
-    """A visualization spec attached to a finding.
-
-    **The model chooses; code reads and compiles.** The generator authors a chart's type, cells
-    and measures; code reads them into the type's reference (``ref``) and builds ``payload`` from
-    it, so every number a chart draws was computed. ``payload`` is the stored, rendered shape — a
-    reader never needs the reference to draw a chart.
-
-    ``payload`` is deliberately an OPEN dict on the model: a new viz type — or an
-    extra payload field — must never break the persisted schema or fail a stored
-    read, so the model is not the enforcement point. The per-``type`` payload SHAPE
-    is a reader-side contract. CODE produces every stored payload —
-    :func:`threetears.evals.analysis.viz_refs.build_viz_payload` compiles it from ``ref``. The
-    lockstep set is therefore the ``viz_refs`` chart builders,
-    :data:`threetears.evals.analysis.viz.PAYLOAD_MODELS` and any frontend
-    client's mirror of the discriminated union. Change one and change the others.
-
-    Types listed in :data:`threetears.evals.analysis.viz.PAYLOAD_MODELS` additionally have a
-    typed payload model enforced at GENERATION time, which is where a malformed
-    payload can still be fixed by retrying rather than by paying for another
-    analysis. Openness here and strictness there are not in tension: this model
-    guarantees a stored analysis always loads, and that one guarantees a new one
-    is never stored malformed.
-    """
-
-    type: VizType = Field(description="Which visualization renders this finding.")
-    payload: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Viz-specific data — open dict; the per-type shape is a reader contract (see the class docstring), "
-            "not enforced here. COMPILED BY CODE from `ref`."
-        ),
-    )
-    ref: dict[str, Any] = Field(
-        description=(
-            "The chart type's reference, as code read it off the authored chart: the cells and readings the "
-            "chart draws, plus the model's prose (caption, a null result's mechanism) — never a number. Code "
-            "compiles `payload` from it against the decision surface. Open here for the reason `payload` is; "
-            "the per-type reference shape is built by code at generation."
-        ),
-    )
-
-
 # The caveat kinds the ENGINE owns, available to every host.
 #
 # Deliberately not a closed enum on the field. R8 gives the lever vocabulary to the host for the
@@ -722,16 +666,10 @@ class VariantIndexEntry(EvalDocumentModel):
 
 
 class FindingResolution(EvalDocumentModel):
-    """What code filled for one authored finding: the numbers its readings resolved to, and its chart."""
+    """What code filled for one authored finding: the numbers its readings resolved to."""
 
     evidence: list[EvidenceRow] = Field(
         default_factory=list, description="One resolved row per authored evidence reading, in the same order."
-    )
-    chart: Viz | None = Field(
-        default=None, description="The chart compiled from the finding's authored chart; None when it drew none."
-    )
-    chart_note: str = Field(
-        default="", description="Why a proposed chart was dropped as undrawable; empty when none was dropped."
     )
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
@@ -756,13 +694,14 @@ class EvalAnalysis(EvalDocumentModel):
     requires it be non-empty — that the campaign actually EXISTS is a service
     concern checked at generate time, not a model validator.
 
-    **What the generator authored is kept as written in** ``document`` — the headline, the summary,
-    the findings, decisions, question answers and next steps, in the shape it was asked for
+    **What the generator authored is kept as written in** ``document`` — the findings, recommendations
+    (``decisions``), question answers and next steps, in the shape it was asked for
     (:mod:`threetears.evals.kernel.authored`) — except that each figure reference in its prose is
     replaced by the value code read (:mod:`threetears.evals.analysis.prose_refs`). **Everything else
-    code filled sits beside it**: ``resolutions`` holds, per finding by position, the numbers its readings resolved to and the
-    chart it compiled to. Links inside the document are positions, and :meth:`check_positions`
-    refuses one that points nowhere or makes the ``invalidates`` relation cycle.
+    code filled sits beside it**: ``resolutions`` holds, per finding by position, the numbers its readings resolved
+    to, and ``bundle`` the whole evidence bundle it was written over, frozen, which the report renders every count,
+    verdict and chart from. Links inside the document are positions, and :meth:`check_positions` refuses one that
+    points nowhere or makes the ``invalidates`` relation cycle.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -813,7 +752,7 @@ class EvalAnalysis(EvalDocumentModel):
     )
     resolutions: list[FindingResolution] = Field(
         default_factory=list,
-        description="What code filled for each finding, by position in `document.findings`: its numbers and its chart.",
+        description="What code filled for each finding, by position in `document.findings`: its numbers.",
     )
     coverage: CoverageLens = Field(
         default_factory=CoverageLens, description="The coverage lens: per-lever measurement summaries."
@@ -839,8 +778,16 @@ class EvalAnalysis(EvalDocumentModel):
             "The campaign's per-cell numbers, as code computed them — each cell's measures, judged scores, "
             "replication and run notes, and every bar adjudicated against every cell. Copied from the "
             "bundle at generation and never authored by the model; every other number on the analysis — its "
-            "evidence values and charts — was filled from it."
+            "evidence values — was filled from it."
         ),
+    )
+    bundle: VerbatimJsonObject = Field(
+        description=(
+            "The evidence bundle the analysis was written over, frozen at generation as its canonical dump "
+            "(`AnalysisContextBundle.to_dict()`, which `generation.bundle_fingerprint` digests): the report renders "
+            "every count, verdict, chart and disclosure from it, so an analysis reads as it was written whatever is "
+            "archived or re-run afterwards. Read back with `AnalysisContextBundle.from_dict`."
+        )
     )
     archived: bool = Field(default=False)
     archived_reason: str | None = Field(
@@ -900,9 +847,6 @@ class EvalAnalysis(EvalDocumentModel):
                     f"{where} names finding position(s) {bad}, and there are {count} findings (0-{count - 1})"
                 )
 
-        in_range("headline_rests_on", self.document.headline_rests_on)
-        for index, bullet in enumerate(self.document.summary_rests_on):
-            in_range(f"summary_rests_on[{index}]", bullet)
         for index, decision in enumerate(self.document.decisions):
             in_range(f"decisions[{index}].rests_on", decision.rests_on)
         for index, answer in enumerate(self.document.questions):
@@ -1266,8 +1210,6 @@ __all__ = [
     "SweepArmRecord",
     "SweepOutcome",
     "VariantIndexEntry",
-    "Viz",
-    "VizType",
     "derive_window",
     "evidence_tier_of",
 ]

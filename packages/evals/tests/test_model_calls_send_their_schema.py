@@ -221,7 +221,7 @@ def _every_directive() -> dict[str, dict[str, Any] | None]:
         "judge (pass_fail)": _judge_request("pass_fail").response_format,
         "simulated user": SIMULATED_USER_RESPONSE_FORMAT,
         "next speaker": next_speaker_response_format(["alice", "bob"]),
-        "analysis": authored_response_format(["scope"], ["delta_table"]),
+        "analysis": authored_response_format(["scope"]),
     }
 
 
