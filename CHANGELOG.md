@@ -12,7 +12,7 @@ packages (bumped in lock-step).
 
 A pod deletes each export once its load has proven it. A pod killed mid-load left its exports in the
 bucket with nothing to find them by: the pod held the only list in memory. The hub already records
-every export it ran (`platform.datasource_export_objects`); this is the ask that reads that record
+every export it ran (its `datasource_export_objects` table); this is the ask that reads that record
 back for the pod it belongs to.
 
 - **Added, `DatasourceQueryClient.list_own_exports(datasource_name, *, correlation_id=None)`:**

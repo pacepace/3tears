@@ -93,7 +93,7 @@ Reading an export needs `pip install '3tears-datasources[export]'` (pyarrow).
 
 A pod deletes each export once its load has proven it. A pod killed in the
 middle of a load never gets to, and the only other record of what it wrote is
-the hub's (`platform.datasource_export_objects`, one row per export the hub
+the hub's (its `datasource_export_objects` table, one row per export the hub
 ran and has not deleted). `DatasourceQueryClient.list_own_exports` reads that
 record back for the calling pod, so the next run can delete what the last one
 left:
