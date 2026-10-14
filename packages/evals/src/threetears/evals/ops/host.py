@@ -20,17 +20,25 @@ from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
 from threetears.evals.run.launch import LaunchHost, LaunchSettings
 from threetears.evals.schema import EvalRun, WorldPlacement
 
-#: The settings of a host that launches nothing (:meth:`OpsHost.reading`): one run at a time, uncapped, no metered
-#: tools. Read only by the launch and the out-of-run cap, and a reading host has no kind to launch.
-_READING_SETTINGS = LaunchSettings(
-    max_launch_arms=1,
-    max_admitted_runs=1,
-    judge_concurrency=1,
-    enforcement_enabled=False,
-    max_cost_usd=1.0,
-    max_metered_calls=None,
-    max_out_of_run_cost_usd=1.0,
-)
+
+def _reading_settings() -> LaunchSettings:
+    """The settings of a host that launches nothing (:meth:`OpsHost.reading`), built fresh on every read.
+
+    One run at a time, uncapped, no metered tools. Read only by the launch and the out-of-run cap, and a reading
+    host has no kind to launch. Built per call rather than held at module level, so no two hosts share an instance.
+
+    Returns:
+        The settings.
+    """
+    return LaunchSettings(
+        max_launch_arms=1,
+        max_admitted_runs=1,
+        judge_concurrency=1,
+        enforcement_enabled=False,
+        max_cost_usd=1.0,
+        max_metered_calls=None,
+        max_out_of_run_cost_usd=1.0,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -116,7 +124,7 @@ class OpsHost:
         launch = LaunchHost(
             eval_host=eval_host,
             kinds={},
-            settings=lambda: _READING_SETTINGS,
+            settings=_reading_settings,
             job_timeout_factory=default_job_timeout,
             # A world's placement is stamped on a launched run, and nothing launches here.
             world_placements=None if eval_host.profile.world is None else _placed_nowhere,
