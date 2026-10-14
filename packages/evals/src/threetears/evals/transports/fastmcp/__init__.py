@@ -853,13 +853,16 @@ def mount_fastmcp(
         return built
     if (caller is None) == (scope is None):
         raise ValueError("mount_fastmcp takes a caller resolver (caller=) or the one scope every call acts in (scope=)")
-    if scope is not None:
-        acting = Caller(scope_id=scope, identity=identity)
+    resolve: CallerResolver
+    if caller is not None:
+        resolve = caller
+    else:
+        acting = Caller(scope_id=str(scope), identity=identity)
 
         def in_scope() -> Caller:
             return acting
 
-        caller = in_scope
+        resolve = in_scope
     reading = isinstance(host, EvalHost)
     if isinstance(host, EvalHost):
         host = OpsHost.reading(host)
@@ -871,7 +874,7 @@ def mount_fastmcp(
             tool,
             host=host,
             host_resolver=host_resolver,
-            caller=caller,
+            caller=resolve,
             around=around,
             annotate=annotate,
             call_timeout_s=call_timeout_s,
