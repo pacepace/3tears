@@ -52,10 +52,11 @@ def _run(tmp_path: Path, script: Path, *args: str, **env: str) -> subprocess.Com
 
 
 def _stage(tmp_path: Path, dirname: str) -> Path:
-    """a copy of the dispatcher inside a worktree-shaped directory."""
+    """a copy of the dispatcher and its runner inside a worktree-shaped directory."""
     root = tmp_path / dirname
     (root / "scripts").mkdir(parents=True)
-    shutil.copy2(_REPO_ROOT / "scripts" / "test-remote.sh", root / "scripts" / "test-remote.sh")
+    for script in ("test-remote.sh", "remote-test.sh"):
+        shutil.copy2(_REPO_ROOT / "scripts" / script, root / "scripts" / script)
     return root
 
 
@@ -99,11 +100,64 @@ def test_the_rsync_carries_no_links_and_skips_the_local_state(tmp_path: Path) ->
     assert {".git", ".venv", ".worktrees", "**/__pycache__", ".pytest_cache", "*.egg-info"} <= excluded
 
 
+def _rsync_ends(rsync: list[str]) -> tuple[str, str]:
+    """(local source, remote destination) of a dry-run rsync."""
+    return rsync[-2], rsync[-1]
+
+
+def test_the_tree_rsync_leaves_the_runner_to_the_dispatcher(tmp_path: Path) -> None:
+    root = _stage(tmp_path, "wt")
+    commands = _dry(tmp_path, root)
+    name = _remote_name(commands)
+    tree, runner = commands[1], commands[2]
+    assert "/scripts/remote-test.sh" in {tree[i + 1] for i, word in enumerate(tree) if word == "--exclude"}
+    # The second rsync sends exactly the dispatcher's runner, into the tree root
+    # the shim already admits, and deletes nothing.
+    assert runner[0] == "rsync"
+    assert not any(word.startswith("--delete") for word in runner)
+    filters = [(word, runner[i + 1]) for i, word in enumerate(runner) if word in ("--include", "--exclude")]
+    assert filters == [("--include", "/scripts/"), ("--include", "/scripts/remote-test.sh"), ("--exclude", "*")]
+    assert _rsync_ends(runner) == (f"{root}/", f"lane.internal:testruns-3tears/{name}/")
+    assert commands.index(runner) < next(i for i, c in enumerate(commands) if "docker exec" in c[-1])
+
+
+def test_tree_syncs_another_checkout_with_this_dispatchers_runner(tmp_path: Path) -> None:
+    dispatcher = _stage(tmp_path, "lane")
+    old_branch = tmp_path / "old-branch"
+    (old_branch / "scripts").mkdir(parents=True)
+    result = _run(
+        tmp_path,
+        dispatcher / "scripts" / "test-remote.sh",
+        "--tree",
+        str(old_branch),
+        "gpu-x",
+        "core",
+        THREETEARS_TEST_REMOTE_DRY_RUN="1",
+    )
+    assert result.returncode == 0, result.stderr
+    commands = [shlex.split(line[2:]) for line in result.stdout.splitlines() if line.startswith("+ ")]
+    name = _remote_name(commands)
+    assert name.startswith("old-branch-")
+    assert _rsync_ends(commands[1]) == (f"{old_branch}/", f"lane.internal:testruns-3tears/{name}/")
+    assert _rsync_ends(commands[2]) == (f"{dispatcher}/", f"lane.internal:testruns-3tears/{name}/")
+
+
+def test_a_dispatcher_without_its_runner_refuses_before_connecting(tmp_path: Path) -> None:
+    root = _stage(tmp_path, "wt")
+    (root / "scripts" / "remote-test.sh").unlink()
+    result = _run(tmp_path, root / "scripts" / "test-remote.sh", "gpu-x", THREETEARS_TEST_REMOTE_DRY_RUN="1")
+    assert result.returncode == 66
+    assert "no runner beside the dispatcher" in result.stderr
+    assert "+ " not in result.stdout
+
+
 def test_every_remote_command_the_dispatcher_sends_passes_the_shim(tmp_path: Path) -> None:
     commands = _dry(tmp_path, _stage(tmp_path, "wt"), "core", "-k", "not slow and remote", "-x")
     name = _remote_name(commands)
     remote = [command[-1] for command in commands if command[0] == "ssh"]
     remote.append(f"rsync --server -tprze.iLsfxCIvu --delete . testruns-3tears/{name}/")
+    # the runner rsync: same destination, no --delete
+    remote.append(f"rsync --server -tprze.iLsfxCIvu . testruns-3tears/{name}/")
     remote.append(f"rsync --server -tprze.iLsfxCIvu . testruns-3tears/{name}/.git/")
     assert remote[1] == (
         f"docker exec -i threetears-test bash /testruns/{name}/scripts/remote-test.sh 'core' '-k' 'not slow and remote' '-x'"
@@ -147,6 +201,17 @@ def test_test_sh_dispatches_when_the_probe_answers(tmp_path: Path) -> None:
     assert remote[-1].endswith("/scripts/remote-test.sh 'core' '-k' 'a or b'")
     assert result.stdout.splitlines()[-1] == "tests ran on gpu-x (remote)"
     assert "STUB:uv" not in result.stdout
+
+
+@pytest.mark.parametrize(("remote", "where"), [("gpu-x", "on gpu-x (remote)"), (None, "locally")])
+def test_test_sh_tells_check_all_where_the_tests_ran(tmp_path: Path, remote: str | None, where: str) -> None:
+    where_file = tmp_path / "where"
+    env = {"THREETEARS_TEST_WHERE_FILE": str(where_file), "THREETEARS_TEST_REMOTE_DRY_RUN": "1"}
+    if remote is not None:
+        env["THREETEARS_TEST_REMOTE"] = remote
+    result = _run(tmp_path, _REPO_ROOT / "scripts" / "test.sh", "core", **env)
+    assert result.returncode == 0, result.stderr
+    assert where_file.read_text() == f"{where}\n"
 
 
 def test_test_sh_falls_back_loudly_and_keeps_its_arguments(tmp_path: Path) -> None:

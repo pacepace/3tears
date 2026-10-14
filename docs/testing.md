@@ -115,6 +115,18 @@ hand with no fallback; `THREETEARS_TEST_REMOTE_DRY_RUN=1` prints its ssh/rsync c
 `THREETEARS_TEST_REMOTE_KEY` overrides the key path (a `.pub` alone works when an agent holds the
 private half).
 
+**The runner travels with the dispatcher.** The shim only executes
+`/testruns/<name>/scripts/remote-test.sh` from the synced tree, so a tree that predates the lane
+would have no runner. The tree rsync therefore excludes `/scripts/remote-test.sh`, and a second
+rsync ships the dispatcher's own copy into its place, through the same shim rule as the tree
+(destination `testruns-3tears/<name>/`, no `--delete`, a sender-side filter admitting that one
+file). The synced tree is a copy, never a git checkout, so overwriting that file there is safe. To
+test a branch cut before the lane, run this checkout's dispatcher against it:
+`scripts/test-remote.sh --tree ../old-branch gpu-bozeman core`. The runner prints how long
+`uv sync --frozen` took; warm, it is a no-op of about a second, because `.venv` survives the tree
+rsync and the uv cache lives at `/testruns/.uv-cache`. `check-all.sh`'s last line names where the
+tests ran.
+
 **What stays local.** Lint and typecheck (fast), `test-sidecar.sh` (its own AGPL venv) and
 `test-integration.sh` (testcontainers needs a Docker daemon; the lane container has none). The
 remote run is the unit + enforcement suite only.

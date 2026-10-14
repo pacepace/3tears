@@ -3,6 +3,7 @@
 #
 #   scripts/test-remote.sh HOST [test.sh args...]          sync this tree, run the suite there
 #   scripts/test-remote.sh --probe HOST [test.sh args...]  exit 0 iff the lane can take this run
+#   scripts/test-remote.sh --tree DIR HOST [args...]       sync and test the checkout at DIR instead
 #
 # scripts/test.sh calls both when THREETEARS_TEST_REMOTE is set; running this by
 # hand is the same thing without the local fallback. With
@@ -13,17 +14,41 @@
 # hostname, user and port, and the connection itself runs with `-F none`, so no
 # IdentityFile or ControlMaster socket from ~/.ssh/config (another lane's key, an
 # admin master) can ride along.
+#
+# The runner travels with the dispatcher. The shim only ever executes
+# /testruns/<name>/scripts/remote-test.sh from the SYNCED tree, so a tree that
+# predates the lane (any branch cut before it, tested with --tree) would have no
+# runner, or a stale one. So the tree rsync excludes /scripts/remote-test.sh and
+# a second rsync ships THIS checkout's runner into its place. It goes through
+# the shim's existing tree rule (destination testruns-3tears/<name>/, no
+# --delete, a sender-side filter admitting that one file), so no wider shim rule
+# is needed and an already-provisioned host takes it. Overwriting that one file
+# on the far side is safe: the synced tree is a copy, never a git checkout, and
+# the runner's contract (shim argv in, test.sh args out) belongs to the lane, not
+# to the branch under test.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DISPATCHER_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$DISPATCHER_ROOT"
 CONTAINER=threetears-test
+USAGE="usage: scripts/test-remote.sh [--probe] [--tree DIR] HOST [test.sh args...]"
 
 PROBE=0
-if [ "${1:-}" = --probe ]; then
-    PROBE=1
-    shift
-fi
-HOST="${1:?usage: scripts/test-remote.sh [--probe] HOST [test.sh args...]}"
+while :; do
+    case "${1:-}" in
+        --probe)
+            PROBE=1
+            shift
+            ;;
+        --tree)
+            [ -n "${2:-}" ] && [ -d "$2" ] || { echo "remote lane: --tree needs an existing directory" >&2; exit 64; }
+            REPO_ROOT="$(cd "$2" && pwd)"
+            shift 2
+            ;;
+        *) break ;;
+    esac
+done
+HOST="${1:?$USAGE}"
 shift
 DRY="${THREETEARS_TEST_REMOTE_DRY_RUN:-}"
 
@@ -81,12 +106,23 @@ if [ "$PROBE" = 1 ]; then
     exit
 fi
 
+if [ ! -f "$DISPATCHER_ROOT/scripts/remote-test.sh" ]; then
+    echo "remote lane: no runner beside the dispatcher at $DISPATCHER_ROOT/scripts/remote-test.sh" >&2
+    exit 66
+fi
+
 run ssh $SSH_OPTS "$hostname" "mkdir -p 'testruns-3tears/$NAME'"
 # No -l/-o/-g/-D: the shim refuses links, ownership and devices on the receiver.
+# The excludes also shield the far side's copies from --delete: .venv survives
+# (so the next uv sync is a no-op) and so does the runner shipped below.
 run rsync -rtpz --delete \
     --exclude .git --exclude .venv --exclude .worktrees --exclude '**/__pycache__' \
     --exclude .pytest_cache --exclude .mypy_cache --exclude .ruff_cache --exclude '*.egg-info' \
+    --exclude /scripts/remote-test.sh \
     -e "ssh $SSH_OPTS" "$REPO_ROOT/" "$hostname:testruns-3tears/$NAME/"
+# The dispatcher's own runner, whatever the tree carries (see the header).
+run rsync -rtpz --include /scripts/ --include /scripts/remote-test.sh --exclude '*' \
+    -e "ssh $SSH_OPTS" "$DISPATCHER_ROOT/" "$hostname:testruns-3tears/$NAME/"
 # The release gates (tests/enforcement/test_api_growth_requires_a_minor_bump.py)
 # read tags and old trees from git, so the objects and tags travel too, into a
 # bare-bones .git the tree rsync above leaves alone. Incremental after the first.
