@@ -58,6 +58,7 @@ from threetears.evals.analysis import (
     variant_key_of_run,
 )
 from threetears.evals.kernel import (
+    CALIBRATION_MIN_RESULTS,
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
     ArmGuardrails,
@@ -109,6 +110,12 @@ LABEL_COLUMNS: tuple[str, ...] = (
     "result_id",
     "output_fingerprint",
     "criterion_fingerprint",
+)
+
+#: What an uncalibrated judge's line ends with: the step that calibrates it, at the calibrated tier's floor of labels.
+_NEXT_STEP = (
+    f"; next step: rate about {CALIBRATION_MIN_RESULTS} outputs in the {TO_LABEL} the report writes, without "
+    "looking at the judge's verdict"
 )
 
 #: What a label is read as, on a pass/fail dimension.
@@ -339,12 +346,12 @@ class Result:
         if judge is None:
             return []
         if judge.labels is None:
-            return ["judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels)"]
+            return [f"judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels){_NEXT_STEP}"]
         if not judge.labels.is_file():
-            return [f"judge: 0 labels: judge uncalibrated ({judge.labels} is not there yet)"]
+            return [f"judge: 0 labels: judge uncalibrated ({judge.labels} is not there yet){_NEXT_STEP}"]
         read = self.calibrations
         if not read:
-            return [f"judge: 0 labels paired from {judge.labels}: judge uncalibrated"]
+            return [f"judge: 0 labels paired from {judge.labels}: judge uncalibrated{_NEXT_STEP}"]
         return [f"judge against {judge.labels}: {entry.line()}" for entry in read]
 
     # --- the report --------------------------------------------------------------------------------------------------

@@ -10,6 +10,7 @@ idea to the one before. The single-file examples after it come from before the l
 |---|---|---|
 | 0 | [`1-triage/triage.toml`](1-triage/triage.toml), after [Building an inventory](../docs/building-an-inventory.md) | Write down what your app must never get wrong, then run it with one TOML file. |
 | 1 | [`1-triage/triage.py`](1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
+| 2 | [`2-replies/replies.py`](2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
 | 3 | `3-invoices/` (being written) | |
 | 4 | `4-booking/` (being written) | |
 
@@ -21,6 +22,7 @@ from. In a checkout, from the repo root, after `uv sync`:
 cd packages/evals/examples/1-triage
 uv run python -m threetears.evals triage.toml   # rung 0
 uv run python -m threetears.evals triage.py     # rung 1
+cd ../2-replies && uv run python -m threetears.evals replies.py   # rung 2
 ```
 
 A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
@@ -49,6 +51,41 @@ passes 0.99. Read the misses each run prints before its means.
 
 Recorded on `deepseek/deepseek-v4-flash`: 90 calls for each file, about $0.002 each; `triage.py`'s docstring gives
 both figures as the recordings' cost fields sum them.
+
+### Rung 2: replies a judge grades, `2-replies/`
+
+[`replies.py`](2-replies/replies.py) drafts a reply to each of 20 customer emails
+([`emails.jsonl`](2-replies/emails.jsonl)) from a support policy ([`policy.md`](2-replies/policy.md)), twice each.
+No code can say whether a reply is right, so the grader is a `Judge`: `google/gemini-2.5-flash-lite` grades every
+reply on three pass/fail dimensions, `grounded`, `answers` and `safe`, one call per dimension, reading the policy and
+the email beside the reply (`case_material`). The judge is another family than the runner
+(`deepseek/deepseek-v4-flash`) on purpose: a model tends to rate its own output higher, and judging with the runner's
+own model prints the self-judging warning under the scores, a warning no quiet print drops. Its four `Example`s are
+hard negatives in pairs, one that must fail and one that looks like it and must pass; a run stores them for a judge
+campaign to measure the judge on, and calls no model to do it.
+
+**A judge is a model too, so check it against a person.** The recorded judge passes all 40 replies on all three
+dimensions. That is what an unchecked judge looks like, not proof the replies are right: read a few, and you will find
+claims the policy never makes. The run says so in the line it never quiets:
+
+```
+judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs in the to_label.csv the report writes, without looking at the judge's verdict
+```
+
+Calibrating it is yours to do; no person's labels ship with the rung.
+1. Run it. The report directory (`.evals/reports/replies/`) holds `to_label.csv`: every judged reply on every
+   dimension, with the case it answered and the judge's verdict withheld. [`to_label.csv`](2-replies/to_label.csv)
+   beside the example is that file, as the recorded run wrote it.
+2. Fill in `label` (`pass` or `fail`), and `rater` with your name, for about 20 rows of each dimension, without
+   opening the report's scores. Save it beside `replies.py` as `labels.csv`.
+3. Run it again. `Judge(labels="labels.csv")` reads your labels back, pairs each with the judge's score of the same
+   reply (by its fingerprint, so a replayed run pairs with the rows the recorded one wrote), and prints, per
+   dimension, how many labels paired, κ with its lower bound, and the evidence tier it earns. Below 20 labels the
+   tier says the judge is not yet calibrated; reword a rubric dimension and its labels no longer pair.
+
+Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 120 judge calls on
+`google/gemini-2.5-flash-lite` ($0.0151), the runner's and the judge's in recordings of their own
+(`recordings/replies.jsonl`, `recordings/judge.jsonl`).
 
 ## Running them
 

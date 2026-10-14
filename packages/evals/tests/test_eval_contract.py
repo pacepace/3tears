@@ -446,7 +446,10 @@ async def test_a_judge_is_a_grader_its_answers_written_to_label_and_read_back_as
     ev = Eval(TICKETS, keywords, ["label", judge], k=1)
 
     first = await ev.run(store=tmp_path / "evals.sqlite")
-    assert first.calibration_lines() == [f"judge: 0 labels: judge uncalibrated ({labels} is not there yet)"]
+    assert first.calibration_lines() == [
+        f"judge: 0 labels: judge uncalibrated ({labels} is not there yet); next step: rate about 20 outputs in the "
+        "to_label.csv the report writes, without looking at the judge's verdict"
+    ]
     written = first.write(tmp_path / "report")
     assert written["to_label"].name == TO_LABEL
     with written["to_label"].open(encoding="utf-8", newline="") as read:

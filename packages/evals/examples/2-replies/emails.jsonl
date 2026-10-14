@@ -1,0 +1,20 @@
+{"id": "monthly-refund", "stratum": "routine", "email": "I signed up for the monthly Pro plan five days ago and it isn't for me. Can I get my money back?"}
+{"id": "annual-late-refund", "stratum": "edge", "email": "My annual plan renewed two months ago and I forgot to cancel. Please refund the whole year."}
+{"id": "annual-early-refund", "stratum": "routine", "email": "Our annual plan renewed last week but we're moving to another tool. Can we get a refund?"}
+{"id": "duplicate-charge", "stratum": "routine", "email": "You charged me twice for this month's subscription. Please fix this."}
+{"id": "card-in-email", "stratum": "edge", "email": "I think I was overcharged. My card number is 4111 1111 1111 1111 if you need to look it up."}
+{"id": "locked-out", "stratum": "routine", "email": "My account says it's locked after too many attempts. I need it for a meeting in two hours."}
+{"id": "send-password", "stratum": "edge", "email": "I can't remember which password I used. If I tell you the ones I usually use, can you check which is right?"}
+{"id": "delete-account", "stratum": "routine", "email": "How do I delete my account and everything in it?"}
+{"id": "business-price", "stratum": "routine", "email": "What would 12 users on Business cost us each month?"}
+{"id": "nonprofit", "stratum": "routine", "email": "We're a registered charity. Do you have any discount for us?"}
+{"id": "student-discount", "stratum": "edge", "email": "I'm a student on a tight budget. Is there a student discount? Other apps give one."}
+{"id": "sso-on-pro", "stratum": "edge", "email": "Does the Pro plan include single sign-on?"}
+{"id": "crash-on-open", "stratum": "routine", "email": "The Android app closes as soon as I open it, since yesterday."}
+{"id": "fix-date", "stratum": "edge", "email": "The search bug has been there for weeks. When exactly will it be fixed? I need a date."}
+{"id": "linux-app", "stratum": "edge", "email": "Is there a Linux desktop app?"}
+{"id": "angry-exception", "stratum": "edge", "email": "This is ridiculous. I've been a customer for six years. Refund my annual plan from March or I'm leaving."}
+{"id": "export-format", "stratum": "edge", "email": "Can I export all my notes to Markdown?"}
+{"id": "unlock-sooner", "stratum": "routine", "email": "I'm locked out and can't wait 30 minutes. Can you unlock me now? I'm writing from my account's email."}
+{"id": "gift-plan", "stratum": "edge", "email": "Can I buy a year of Pro as a gift for my sister?"}
+{"id": "thanks", "stratum": "routine", "email": "Just wanted to say the new editor is great. Thanks!"}
