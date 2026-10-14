@@ -704,7 +704,10 @@ seeded = await run_blocking(
 `authored=` also rides beside `run_ids` or `from_labels`, so one case set can list both kinds. A verdict the
 dimension's scale cannot hold (`"fail"` on an ordinal dimension, `7`, `3` on pass/fail) is refused when the case is
 written, naming both. Through an agent, the `judge_case_author` action writes one case, naming the dimension by its
-template (`criterion_template_id`, `criterion`) and recording the caller as its author. On the quick path, hand the
+template (`criterion_template_id`, `criterion`) and recording the caller as its author. A host that ships its hard
+negatives seeds them at boot instead: its definition seed corpus has a `judge_cases` slot (`SeedJudgeCase`, the
+templates named by name), which `seed_eval_definitions` builds through the same door as `judge_case_author` and
+writes only where the same case is not stored yet (the host guide, "What the judge reads, and conversations"). On the quick path, hand the
 `Judge` its examples, and every judged eval stores them as authored cases of the judge template
 `<template id>-judge`, listed by the case set of that name, calling no model:
 

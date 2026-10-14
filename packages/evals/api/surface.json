@@ -4093,7 +4093,7 @@
     },
     "threetears.evals.run.SeedCorpus": {
       "kind": "dataclass",
-      "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = ())",
+      "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = ())",
       "tier": "closure"
     },
     "threetears.evals.run.SeedOutcome": {

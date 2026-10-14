@@ -1319,6 +1319,19 @@ its dimensions, and a configured dimension whose config was archived since is re
 engine's prompt. A quick-path `Judge` declares its own dimensions, so an `Eval` that grades with one states
 nothing.
 
+**Your boot seed corpus carries authored judge cases too.** Beside `templates/`, `rubric_dims/` and `judge_configs/`,
+`load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (`threetears.evals.run.definition_seed`;
+in memory, `SeedCorpus(judge_cases=...)`): `judge_case_author`'s arguments with its two templates named by `name`
+(`judge_template`, `criterion_template`, since a corpus cannot know a seeded template's id), the `criterion`, the
+`output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`. `seed_eval_definitions`
+builds each through the door `judge_case_author` uses (`author_judge_case`: the criterion read from the template
+that words it, the verdict held to its scale) before anything is written, refusing the whole seed by name for any
+case authoring would refuse, then freezes it into its judge template after the templates are written, as the same
+`AuthoredJudgeCase` under the same content-derived id. A case already stored is reported `already present` under
+`judge_case`, and one whose words or verdict changed is a new case beside it, never an update. A launch naming no
+case set runs every live case of the judge template, so a host boots with its hard negatives in place and no
+authoring tool of its own over `judge_case_author`.
+
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
 conversation, the transcript as your kind writes it). The engine places those strings and reads none
