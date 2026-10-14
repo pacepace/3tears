@@ -22,7 +22,9 @@ __all__ = ["CEILINGS"]
 
 #: Host terms allowed per module and term. Keyed by module path, then by term as the canary's ``TERMS`` spells it.
 CEILINGS: dict[str, dict[str, int]] = {
-    "__init__.py": {},
+    # The root's one `openrouter` is an import name in ROOT_EXTRAS (the top-level modules the `providers` root needs,
+    # which a host's import gate checks), not host vocabulary in the package's prose. Exact, like the rows below.
+    "__init__.py": {"openrouter": 1},
     "analysis/__init__.py": {},
     "analysis/agreement.py": {},
     "analysis/bar_proposals.py": {},
