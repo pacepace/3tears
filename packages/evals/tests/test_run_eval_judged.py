@@ -439,3 +439,50 @@ async def test_the_judges_client_factory_lends_only_the_judge_role_on_its_own_mo
         clients("simulator", None)
     with pytest.raises(ValueError, match="this judge's client calls 'scripted/judge'"):
         clients("judge", "another/model")
+
+
+async def test_a_judge_s_examples_are_seeded_as_authored_cases_its_calibration_starts_from() -> None:
+    from threetears.evals.kernel import judge_case_of
+    from threetears.evals.quick import JudgeExample
+
+    client = _FakeJudgeClient()
+    host = callable_host([short])
+    examples = [
+        JudgeExample(
+            "helpful", "Probably 4, but check.", 2, "a hedge on arithmetic does not resolve it", case=CASES[0]
+        ),
+        JudgeExample("honest", "I am not sure.", 5, "saying so is the honest answer it looks like a failure of"),
+    ]
+
+    summary = await run_eval(CASES, answer, judge=_judge(client, examples=examples), scope_id=SCOPE, host=host, k=1)
+
+    assert len(client.calls) == 4, "seeding the examples asks the judge nothing"
+    seeded = f"{summary.template_id}-judge"
+    (case_set,) = off_loop(host.storage.query_case_sets, SCOPE, name=seeded)
+    assert case_set.template_id == seeded and len(case_set.test_case_ids) == 2
+    stored = off_loop(host.storage.load_test_cases_by_ids, case_set.test_case_ids, SCOPE)
+    cases = [judge_case_of(test_case) for test_case in stored]
+    by_dim = {case.dim: case for case in cases if case is not None}
+    assert set(by_dim) == {"answer.helpful", "answer.honest"}
+    helpful = by_dim["answer.helpful"]
+    template = off_loop(get_template, host, summary.template_id or "", SCOPE)
+    assert helpful.intent == template.intent and helpful.criterion == template.rubric[0]
+    assert helpful.evidence.artifact == "Probably 4, but check." and "two plus two" in helpful.evidence.case_material
+    assert [(label.score, label.rating_id) for label in helpful.labels] == [(2, None)]
+    # Seeding the same examples again names the stored cases, and the set's version stands.
+    await run_eval(CASES, answer, judge=_judge(client, examples=examples), scope_id=SCOPE, host=host, k=1)
+    assert [entry.version for entry in off_loop(host.storage.query_case_sets, SCOPE, name=seeded)] == [1]
+
+
+def test_an_example_its_dimension_cannot_hold_or_that_names_none_is_refused_when_the_judge_is_built() -> None:
+    from threetears.evals.quick import JudgeExample
+
+    with pytest.raises(
+        ValueError,
+        match=r"judge example 0: criterion 'answer.helpful' is answered on the ordinal scale .* cannot hold the verdict 'fail'",
+    ):
+        _judge(_FakeJudgeClient(), examples=[JudgeExample("helpful", "4", "fail", "must fail")])
+    with pytest.raises(ValueError, match="judge example 0 is graded on 'tone', which is no dimension of the rubric"):
+        _judge(_FakeJudgeClient(), examples=[JudgeExample("tone", "4", 1, "no such dimension")])
+    pass_fail = [RubricDim(name="answer.correct", description="The answer is right.", scale="pass_fail")]
+    assert _judge(_FakeJudgeClient(), rubric=pass_fail, examples=[JudgeExample("correct", "5", "fail", "it is 4")])

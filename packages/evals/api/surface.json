@@ -6453,12 +6453,17 @@
     },
     "threetears.evals.quick.Judge": {
       "kind": "dataclass",
-      "signature": "Judge(client: CompletionClient, model: str, rubric: Mapping[str, str] | Sequence[RubricDim], scale: RubricScale = 'ordinal', context: str = 'answer', case_material: CaseMaterial | None = None, _dims: tuple[RubricDim, ...] (derived))",
+      "signature": "Judge(client: CompletionClient, model: str, rubric: Mapping[str, str] | Sequence[RubricDim], scale: RubricScale = 'ordinal', context: str = 'answer', case_material: CaseMaterial | None = None, examples: Sequence[JudgeExample] = (), _dims: tuple[RubricDim, ...] (derived))",
       "tier": "host-contract"
     },
     "threetears.evals.quick.JUDGED_CALLABLE_KIND": {
       "kind": "constant (str)",
       "signature": "",
+      "tier": "closure"
+    },
+    "threetears.evals.quick.JudgeExample": {
+      "kind": "dataclass",
+      "signature": "JudgeExample(dimension: str, answer: Any, expected: AuthoredVerdict, note: str, case: Mapping[str, Any] = dict(), author: str = 'run_eval example')",
       "tier": "closure"
     },
     "threetears.evals.quick.Measure": {
