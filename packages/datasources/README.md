@@ -93,8 +93,8 @@ Reading an export needs `pip install '3tears-datasources[export]'` (pyarrow).
 
 A pod deletes each export once its load has proven it. A pod killed in the
 middle of a load never gets to, and the only other record of what it wrote is
-the hub's (its `datasource_export_objects` table, one row per export the hub
-ran and has not deleted). `DatasourceQueryClient.list_own_exports` reads that
+the hub's `datasource_export_objects` table, one row per export the hub ran
+and has not deleted. `DatasourceQueryClient.list_own_exports` reads that
 record back for the calling pod, so the next run can delete what the last one
 left:
 
@@ -102,13 +102,24 @@ left:
 try:
     left = await client.list_own_exports("reports-warehouse")
 except DatasourceExportListUnsupportedError:
-    left = []  # a hub that predates the ask: nothing can be cleared through it; log and carry on
+    # the hub cannot place the ask (it predates it, or has its models and no handler):
+    # nothing was listed; log it and clear nothing
+    left = []
+except DatasourceQueryError as exc:
+    if exc.error_code != "ACCESS_DENIED":
+        raise
+    # only a hub with the models and no handler refuses the list on the read grant, and only
+    # for a pod that has lost datasource.read: this pod cannot load either. Log it (the
+    # message says which) and clear nothing; the grant, or the hub's handler, is the fix
+    left = []
 for export in left:
     await client.delete_export("reports-warehouse", destination=export.destination)
 ```
 
 It returns every `DatasourceExportRecord` (`destination`, `object_prefix`,
-`date_created`), read to the last page. Nothing ends an export but its
+`date_created`), read to the last page; a hub that keeps handing back a next
+page past `max_pages` (`EXPORT_LIST_MAX_PAGES`, 1000) or repeats a cursor is
+refused `MALFORMED_RESPONSE`, never cut short. Nothing ends an export but its
 deletion: there is no timer, and listing changes nothing.
 
 #### The hub's contract for the ask
@@ -148,12 +159,19 @@ What the hub does, in order:
    tool pod is `EXPORT_NOT_GRANTED`. Neither `datasource.read` nor the export
    grant is asked, for the reason the delete asks neither: a pod whose grant
    was withdrawn must still be able to find, and so delete, what it was let
-   write. The datasource needs no export configured to answer.
+   write. In the responder that means routing the ask beside the delete,
+   ahead of the `datasource.read` authorization every other ask passes
+   through. The datasource needs no export configured to answer.
 4. **Answer for the verified caller only.** The rows returned are those of
    `datasource_export_objects` whose `datasource_name` is the subject's
    datasource and whose `tool_pod_id` is the principal the verified token
    names. The request has no field naming a pod and forbids unknown fields,
    so there is no way to ask about another pod; the hub must not add one.
+   **Beware `DatasourceExportObjectCollection.outstanding()`:** both its
+   filters are optional, and given no `tool_pod_id` it returns every pod's
+   rows. The handler always passes the verified principal, never a value
+   that can be `None`; it also reads every row at once, so a paged read is
+   its own statement with both filters bound.
 5. **Page by destination.** Rows are ordered by `destination`, ascending
    (unique within a datasource). The cursor is opaque to the caller; build it
    with `threetears.core.pagination.Keyset(columns=("destination",),
@@ -163,35 +181,45 @@ What the hub does, in order:
    `{"exports": [], "next_cursor": null}` with `success: true`. A page
    carries at most 200 exports, so the largest reply fits a 1 MiB message. A
    cursor that does not decode is `EXPORT_REFUSED`.
-6. **Never answer `MALFORMED_REQUEST` to a request it parsed.** That code is
-   how the client recognises a hub that does not know the ask (below), so a
-   hub that does know it answers every refusal with another code.
+6. **Never answer this ask `MALFORMED_REQUEST`.** The responder answers that
+   code to a body that does not parse, to some parsed asks it refuses as
+   malformed (a fingerprint naming something that is not a plain identifier,
+   or filtered by `where_in` without `group_by`), and to a parsed request
+   carrying no ask it runs. The client reads `MALFORMED_REQUEST` in answer to
+   `export_list` as "this hub cannot place the ask", so a hub that serves it
+   refuses it only with the other codes above.
 
 The hub reads these models from this package, so the hub change that moves
 its 3tears pin to the release carrying them ships the handler with it.
 
-#### Against a hub that predates the ask
+#### What each hub answers
 
-Pods and hubs upgrade at different times. A hub on an earlier release reads
-the request with a model that forbids unknown fields, so `export_list` fails
-to parse and it answers, before verifying anything:
+Pods and hubs upgrade at different times. The answer to an `export_list`
+request depends on which hub it meets (`aibots.hub.datasources.broker`,
+`process_request` and `_answer_for_principal`):
 
-```json
-{"success": false, "error_code": "MALFORMED_REQUEST",
- "error_message": "malformed datasource query request", "correlation_id": null}
-```
+| Hub | Answer | Client raises |
+|---|---|---|
+| On a release before the ask's models | Its request model forbids the unknown field, so the parse fails before anything is verified: `{"success": false, "error_code": "MALFORMED_REQUEST", "error_message": "malformed datasource query request", "correlation_id": null}` | `DatasourceExportListUnsupportedError` |
+| On the ask's models, no handler, pod holds `datasource.read` | Verifies, resolves, authorizes the read, then finds no query, fingerprint, export or delete: `MALFORMED_REQUEST`, "a datasource request carries exactly one of query or fingerprint", with the correlation id | `DatasourceExportListUnsupportedError` |
+| On the ask's models, no handler, pod without `datasource.read` | Verifies, resolves, and refuses the read before reaching the fallthrough: `ACCESS_DENIED`, with the correlation id | `DatasourceQueryError` `ACCESS_DENIED`, logged at WARNING, its message saying the hub has no handler and the pod no read grant |
+| With the handler | The contract above; never `MALFORMED_REQUEST`, never `ACCESS_DENIED` | the list, or the hub's refusal code |
 
-A hub that has the models but no handler reads the request, finds no ask it
-serves and answers `MALFORMED_REQUEST` as well, with the correlation id. The
-client turns `MALFORMED_REQUEST` in answer to this ask into
+Either earlier state also answers `IDENTITY_REFUSED` or
+`DATASOURCE_NOT_FOUND` first when those fail. The hub pins
+`3tears>=0.66.0,<1.0.0`, so a plain relock reaches the middle two rows: the
+handler ships with the relock, as above.
+
 `DatasourceExportListUnsupportedError` (a `DatasourceQueryError` whose
-`error_code` is `EXPORT_LIST_UNSUPPORTED`) and logs it at WARNING. It is
-raised rather than returned as an empty list because the hub named no
-export: "none recorded" and "could not ask" must not look alike. A caller
-that lists in order to clear catches it and clears nothing; the leftover
-exports stay on the operator's surface, as before the ask existed. The same
-holds part-way through a hub's roll: a later page answered by an older
-replica raises it, and no part of the list is returned.
+`error_code` is `EXPORT_LIST_UNSUPPORTED`) is raised rather than returned as
+an empty list because the hub named no export: "none recorded" and "could not
+ask" must not look alike. A caller that lists in order to clear catches it and
+clears nothing; the leftover exports stay on the operator's surface, as before
+the ask existed. `ACCESS_DENIED` is not folded into it: a pod that has lost its
+read grant is a fault an operator fixes, and the client says so rather than
+hiding it as an old hub. Part-way through a hub's roll, a later page answered
+by an older replica raises the same as a first page would, and no part of the
+list is returned.
 
 Every other ask a newer client sends is unchanged on the wire (`export_list`
 is left off a request that does not make it), so pod and hub upgrade in
