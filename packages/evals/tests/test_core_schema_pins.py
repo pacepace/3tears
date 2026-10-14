@@ -60,6 +60,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.schema_pin_support import keeps, minor_entries, minors_missing_the_sentence
 from packages.evals.tests.stored_models import doc_type_of, stored_models
 from threetears.evals.schema import versioning
 from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
@@ -314,32 +315,13 @@ def test_every_core_version_has_a_ledger_entry_and_an_upgrader() -> None:
     assert all(step.doc_types <= CORE_DOC_TYPES and step.reason for step in CORE_UPGRADERS)
 
 
-#: A minor's ledger entry, as the comment block above ``CORE_SCHEMA_MINOR`` writes one: ``#: - **v14.1** — …``,
-#: through the end of its (possibly wrapped) comment lines.
-_MINOR_ENTRY = re.compile(r"^#: - \*\*v(\d+)\.(\d+)\*\*(.*(?:\n#:   .*)*)", re.MULTILINE)
-
-
-def _minor_entries(ledger: str) -> dict[tuple[int, int], str]:
-    """Each minor's ledger entry in ``ledger``, keyed by its major and minor, its wrapped lines joined."""
-    return {
-        (int(major), int(minor)): " ".join(line.removeprefix("#:").strip() for line in text.splitlines())
-        for major, minor, text in _MINOR_ENTRY.findall(ledger)
-    }
-
-
-def _minors_missing_the_sentence(ledger: str, major: int, newest: int) -> list[int]:
-    """The minors after a major's first, up to ``newest``, whose ledger entry is absent or lacks the sentence."""
-    entries = _minor_entries(ledger)
-    return [minor for minor in range(1, newest + 1) if MINOR_ADDITIVITY_SENTENCE not in entries.get((major, minor), "")]
-
-
 def test_every_core_minor_has_a_ledger_entry_carrying_the_additivity_sentence() -> None:
     """Every minor of this major is explained, and each one asserts in words that an older build reads it right."""
     source = inspect.getsource(versioning)
     ledger = source[source.index("CORE_SCHEMA_VERSION: int =") : source.index("CORE_SCHEMA_MINOR: int =")]
 
-    assert (CORE_SCHEMA_VERSION, 0) in _minor_entries(ledger)
-    assert not _minors_missing_the_sentence(ledger, CORE_SCHEMA_VERSION, CORE_SCHEMA_MINOR)
+    assert (CORE_SCHEMA_VERSION, 0) in minor_entries(ledger)
+    assert not minors_missing_the_sentence(ledger, CORE_SCHEMA_VERSION, CORE_SCHEMA_MINOR)
 
 
 def test_a_minor_entry_without_the_additivity_sentence_is_named() -> None:
@@ -352,8 +334,8 @@ def test_a_minor_entry_without_the_additivity_sentence_is_named() -> None:
         "#: - **v14.2** — a result's optional tag.\n"
     )
 
-    assert _minors_missing_the_sentence(ledger, 14, 2) == [2]
-    assert _minors_missing_the_sentence(ledger, 14, 3) == [2, 3]
+    assert minors_missing_the_sentence(ledger, 14, 2) == [2]
+    assert minors_missing_the_sentence(ledger, 14, 3) == [2, 3]
 
 
 # --- the frozen corpus -----------------------------------------------------------------------------
@@ -398,20 +380,9 @@ def test_every_frozen_core_document_reads_under_this_build(path: Path) -> None:
     # An older minor of this major: the write stamps this build's minor and adds each later minor's fields at their
     # defaults, and keeps every value the document stored, at every depth.
     assert written["schema_minor"] == CORE_SCHEMA_MINOR
-    assert _keeps({k: v for k, v in document.items() if k != "schema_minor"}, written), (
+    assert keeps({k: v for k, v in document.items() if k != "schema_minor"}, written), (
         "a document at an older minor of the current major reads back with every stored value"
     )
-
-
-def _keeps(stored: Any, written: Any) -> bool:
-    """Whether ``written`` holds every value ``stored`` holds, at every depth; it may hold more keys beside them."""
-    if isinstance(stored, dict):
-        return isinstance(written, dict) and all(
-            key in written and _keeps(value, written[key]) for key, value in stored.items()
-        )
-    if isinstance(stored, list):
-        return isinstance(written, list) and len(stored) == len(written) and all(map(_keeps, stored, written))
-    return bool(stored == written)
 
 
 @pytest.mark.parametrize("path", _fixture_files(), ids=lambda path: path.relative_to(FIXTURES).as_posix())

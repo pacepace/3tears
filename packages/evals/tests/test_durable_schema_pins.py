@@ -29,9 +29,8 @@ from pathlib import Path
 
 import pytest
 
+from packages.evals.tests.schema_pin_support import keeps, minors_missing_the_sentence
 from packages.evals.tests.stored_models import doc_type_of, stored_models
-from packages.evals.tests.test_core_schema_pins import _keeps as keeps
-from packages.evals.tests.test_core_schema_pins import _minors_missing_the_sentence as minors_missing_the_sentence
 from packages.evals.tests.test_core_schema_pins import core_shape_digest
 from threetears.evals.schema import versioning
 from threetears.evals.schema.base import CoreDocumentModel
