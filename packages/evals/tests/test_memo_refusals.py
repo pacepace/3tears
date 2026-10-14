@@ -34,7 +34,9 @@ def _bundle() -> AnalysisContextBundle:
     assert campaign.declared_design is not None
     control = variant_of_cell_ref(cell_at(bundle, TOYHOST_NARROW))
     # Validated, not copied: a control is stamped with the identity version it was addressed under.
-    design = type(campaign.declared_design).model_validate({**campaign.declared_design.model_dump(), "control": control})
+    design = type(campaign.declared_design).model_validate(
+        {**campaign.declared_design.model_dump(), "control": control}
+    )
     campaign = campaign.model_copy(update={"declared_design": design})
     return assemble_context_bundle(campaign, storage=storage, profile=profile)
 
@@ -61,7 +63,11 @@ async def _generate(bundle: AnalysisContextBundle, payload: dict[str, Any]) -> E
 def _keep_the_control(bundle: AnalysisContextBundle, disposition: str) -> dict[str, Any]:
     payload = memo_payload(bundle)
     payload["decisions"][0].update(
-        {"proposal": "Keep the current chunk width.", "disposition": disposition, "cells": [alias_at(bundle, TOYHOST_NARROW)]}
+        {
+            "proposal": "Keep the current chunk width.",
+            "disposition": disposition,
+            "cells": [alias_at(bundle, TOYHOST_NARROW)],
+        }
     )
     if disposition == "adopted":
         payload["decisions"][0]["revisit_when"] = ""

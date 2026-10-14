@@ -238,9 +238,7 @@ def interval_rows_svg(
             f"<title>{_escape(f'{row.label}: {said}')}</title></circle>"
         )
         marks.append(_text(_PLOT_END + 10, middle + 4, said))
-    marks.append(
-        f'<line class="viz-rule" x1="{start}" y1="{plot_bottom}" x2="{_PLOT_END}" y2="{plot_bottom}"></line>'
-    )
+    marks.append(f'<line class="viz-rule" x1="{start}" y1="{plot_bottom}" x2="{_PLOT_END}" y2="{plot_bottom}"></line>')
     marks.append(_text(start, plot_bottom + 14, render_cell(low), muted=True))
     marks.append(_text(_PLOT_END, plot_bottom + 14, render_cell(high), muted=True, anchor="end"))
     desc = "; ".join(f"{row.label}: {row_words(row, unit)}" for row in rows)

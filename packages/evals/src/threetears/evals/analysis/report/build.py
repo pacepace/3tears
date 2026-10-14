@@ -145,8 +145,7 @@ NO_ANALYSIS = (
 
 #: The ``Scope`` fact on a finding resting wholly on readings no question declared before the run asked about.
 EXPLORATORY_FINDING = (
-    "exploratory: it rests on no reading a question declared before the run asked about, so it is a lead, not an "
-    "answer"
+    "exploratory: it rests on no reading a question declared before the run asked about, so it is a lead, not an answer"
 )
 
 #: How a guardrail is decided, said once beside the guardrails table.
@@ -359,7 +358,11 @@ def _scoreboard_blocks(
             {
                 "arm": arm(board.variant_key)
                 + (" (control)" if board.variant_key == control else "")
-                + (f" ({earlier_control_mark(earlier)})" if earlier and board.variant_key == earlier.variant_key else ""),
+                + (
+                    f" ({earlier_control_mark(earlier)})"
+                    if earlier and board.variant_key == earlier.variant_key
+                    else ""
+                ),
                 "ran": board.ran,
                 "lost": f"{lost} ({_causes(board.lost, cause_short)})" if lost else "0",
                 "usable": f"{counted(board.usable, board.ran, 'trials usable')} ({lost} lost to the test setup)",
@@ -399,13 +402,13 @@ def _scoreboard_blocks(
     if (sentence := charts.sentence()) is not None:
         blocks.append(DisclosureBlock(section="scoreboard", source="charts", text=sentence))
     if bundle.all_failed_cells:
-        failed = list(dict.fromkeys(arm(cell.variant_key) for cell in bundle.all_failed_cells))
+        every_failed = list(dict.fromkeys(arm(cell.variant_key) for cell in bundle.all_failed_cells))
         blocks.append(
             DisclosureBlock(
                 section="scoreboard",
                 source="runs",
                 text=(
-                    f"Every trial of {', '.join(failed)} failed: the model refused or errored on every call and took no "
+                    f"Every trial of {', '.join(every_failed)} failed: the model refused or errored on every call and took no "
                     "turn, so there is no cost or latency to read — not a fast, free arm — and every failure counts "
                     "against the arm."
                 ),
@@ -1963,14 +1966,15 @@ def _not_tested_blocks(
         said.append(bundle.held_fixed_reading.disclosure)
     if bundle.cost_unmeasured:
         said.append(bundle.cost_unmeasured + _some_arms(bundle, bundle.cost_unmeasured_cells, "Unmeasured", arm))
-    calibration = [
+    calibration: list[ReportBlock] = [
         DisclosureBlock(section="not_tested", source="calibration", text=text)
         for text in dict.fromkeys(_calibration_sentence(tier) for tier in bundle.judge_evidence_tiers)
         if text is not None
     ]
     if not said and not calibration:
         return [DisclosureBlock(section="not_tested", source="not_tested", text="Nothing declared went untested.")]
-    return [DisclosureBlock(section="not_tested", source="not_tested", text=text) for text in said] + calibration
+    blocks: list[ReportBlock] = [DisclosureBlock(section="not_tested", source="not_tested", text=text) for text in said]
+    return blocks + calibration
 
 
 def _calibration_sentence(tier: JudgeEvidenceTier) -> str | None:
@@ -2101,7 +2105,8 @@ def _method_blocks(
         say(
             "measurement",
             f"Differential loss: {format_number(100 * flagged.share)}% of {arm(flagged.variant_key)}'s trials were "
-            f"lost to {cause_short(flagged.cause)}" + (f", against {others}" if others else "")
+            f"lost to {cause_short(flagged.cause)}"
+            + (f", against {others}" if others else "")
             + f"; above {format_number(100 * flagged.threshold)}%, the arms are not compared on the same trials.",
         )
     say("measurement", bundle.model_identity_disclosure)

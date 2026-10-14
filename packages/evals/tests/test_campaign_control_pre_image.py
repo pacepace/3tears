@@ -433,7 +433,6 @@ async def test_the_adoption_check_and_the_report_name_the_arm_the_realized_desig
 
 def test_a_typed_control_no_cell_carries_under_an_earlier_predicate_is_disclosed_with_its_remedy() -> None:
     fixture = ops_fixture()
-    eval_host = fixture.host.eval_host
     campaign = _declared_under_an_earlier_predicate(fixture, fixture.campaign.run_ids[0], with_levers=False)
 
     bundle = _assemble(fixture, campaign)

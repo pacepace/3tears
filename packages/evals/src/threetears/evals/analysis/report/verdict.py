@@ -295,8 +295,7 @@ def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str
             remedies.append(said.remedy)
     gap_words = "" if over else " The arms lost different shares of their trials, so they were not measured alike."
     return (
-        f"NO VERDICT. The test setup failed, not the models: {'; '.join(parts)}.{gap_words} "
-        f"Fix: {'; '.join(remedies)}."
+        f"NO VERDICT. The test setup failed, not the models: {'; '.join(parts)}.{gap_words} Fix: {'; '.join(remedies)}."
     )
 
 

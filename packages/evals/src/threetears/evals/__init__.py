@@ -88,6 +88,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.providers",
 )
 
+
 @dataclass(frozen=True)
 class RootExtra:
     """What one optional public root needs installed before it imports: the extra, and the modules it brings.

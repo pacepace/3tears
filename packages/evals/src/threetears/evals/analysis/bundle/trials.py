@@ -82,9 +82,7 @@ class TrialReading:
     no_criterion: bool = False
 
 
-def read_trial(
-    result: EvalResult, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
-) -> TrialReading:
+def read_trial(result: EvalResult, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]) -> TrialReading:
     """Decide how one trial ended: lost, failed or passed, and why.
 
     Args:
@@ -185,9 +183,7 @@ def trials_and_census(
         the bundle's ``exclusions`` and ``differential_exclusions``, which the assembler counts off the same
         :func:`~threetears.evals.kernel.result_condition.trial_exclusion`, never counted again here.
     """
-    readings = {
-        result.id: read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog) for result in results
-    }
+    readings = {result.id: read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog) for result in results}
     position = {variant: index for index, variant in enumerate(arm_order)}
     arms = sorted({result.variant_key for result in results}, key=lambda key: (position.get(key, len(position)), key))
     by_arm = {arm: [result for result in results if result.variant_key == arm] for arm in arms}

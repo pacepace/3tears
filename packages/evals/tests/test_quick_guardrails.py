@@ -151,7 +151,9 @@ class TestAScorerGuardrail:
             "Arm candidate=leaky breached the guardrail No leak score: it is shown worse than the control by more "
             "than the margin, so it is not adopted, whatever the contrasts below show it gained."
         )
-        assert undecided.startswith("Arm candidate=slip is undecided on the guardrail No leak score, so it is not known")
+        assert undecided.startswith(
+            "Arm candidate=slip is undecided on the guardrail No leak score, so it is not known"
+        )
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"

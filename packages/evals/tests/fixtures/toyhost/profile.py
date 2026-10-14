@@ -194,11 +194,9 @@ __all__ = [
     "FIELD_COUNT_ERROR",
     "TOYHOST_BARS",
     "TOYHOST_EXTRACTION_FAMILY",
-    "TOYHOST_FONT",
     "TOYHOST_CAVEAT_KINDS",
     "TOYHOST_ID",
     "TOYHOST_MEASURES",
-    "TOYHOST_PALETTE",
     "TOYHOST_STYLE",
     "toyhost_profile",
 ]

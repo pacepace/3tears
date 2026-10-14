@@ -448,11 +448,7 @@ async def generate_analysis(
     refuse_an_undescribable_arm_table(bundle)
     system_prompt, user_message, contract = first_request(bundle, prompt, profile)
     sent_digest = user_message_digest(user_message)
-    resolved_prompt_version = (
-        prompt_version
-        if prompt_version is not None
-        else prompt_content_version(prompt, profile)
-    )
+    resolved_prompt_version = prompt_version if prompt_version is not None else prompt_content_version(prompt, profile)
     tally.prompt_version = resolved_prompt_version
     if admit is not None:
         admit(system_prompt, user_message, contract)

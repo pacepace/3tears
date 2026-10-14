@@ -15,7 +15,7 @@ from pydantic import Field
 
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.kernel.authored import Decision
-from threetears.evals.kernel.campaign import EvalAnalysis, VariantIndexEntry
+from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.base import EvalDocumentModel

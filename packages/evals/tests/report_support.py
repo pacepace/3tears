@@ -60,5 +60,3 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
     built[0].completion.content = json.dumps(memo_payload(prepared.bundle))
     analysis, _ = await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
     return host, analysis, off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
-
-

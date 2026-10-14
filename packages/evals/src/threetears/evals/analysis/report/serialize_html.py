@@ -116,7 +116,9 @@ def report_html(report: Report) -> str:
     sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN]
     present = [section for section in sections if any(block.section == section for block in report.blocks)]
     parts.append(
-        "<nav>" + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in present) + "</nav>"
+        "<nav>"
+        + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in present)
+        + "</nav>"
     )
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
