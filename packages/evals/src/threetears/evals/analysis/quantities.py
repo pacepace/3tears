@@ -9,6 +9,7 @@ measure's one ruler with :func:`display_scale`).
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -84,10 +85,17 @@ def signed_with_unit(value: float | None, unit: str) -> str:
     return _joined(format_signed(value), value, unit)
 
 
+#: The unit money is measured in, written as one currency sign before the number (``$0.0031``), as the scoreboard
+#: writes its cost: one money format on every surface of a page.
+_DOLLARS = re.compile(r"^(?P<sign>[<>]?\s?[+\-−]?)(?P<number>.*)$")
+
+
 def _joined(text: str, value: float | None, unit: str) -> str:
     """A number's spelled ``text`` joined to its unit; an absent or non-finite value (a dash) states none."""
     if not unit or value is None or not math.isfinite(value):
         return text
+    if unit.casefold() == "usd" and (money := _DOLLARS.match(text)) is not None:
+        return f"{money['sign']}${money['number']}"
     return f"{text}{unit}" if unit in UNSPACED_UNITS else f"{text} {unit}"
 
 
