@@ -25,7 +25,6 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.kernel.host`](#api-kernel-host)
 - [`threetears.evals.run`](#api-run)
 - [`threetears.evals.analysis`](#api-analysis)
-- [`threetears.evals.analysis.viz`](#api-analysis-viz)
 - [`threetears.evals.gen`](#api-gen)
 - [`threetears.evals.storage`](#api-storage)
 - [`threetears.evals.testing`](#api-testing)
@@ -33,7 +32,6 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.ops`](#api-ops)
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (fails to import without the `[fastmcp]` extra)
-- [`threetears.evals.vega`](#api-vega)
 - [`threetears.evals.negotiation`](#api-negotiation)
 - [`threetears.evals.providers`](#api-providers) (fails to import without the `[models]` extra)
 
@@ -376,7 +374,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`REASONING_EFFORTS`** · *host contract* · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
 - **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
-  <br>`= 10`
+  <br>`= 11`
 - **`RESERVED_DIM_IDS`** · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
 - **`ROLE_MODEL_ORIGINS`** · *host contract* · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
 - **`ROUND_DONE`** · constant (str) · The scheduler's answer that the current speaker round is over and the candidate answers next.
@@ -567,13 +565,12 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CellSink`** · *host contract* · protocol · One cell's record of where it stands, as the kind driving that cell reports into it.
 - **`CellSpanWindow`** · *host contract* · protocol · One cell's two tracing windows, as the kind driving that cell sees them.
 - **`CellSummary`** · dataclass · What a run retains per cell after the full result is durably persisted.
-- **`Chart`** · model · A chart code draws from the named cells and measures; each type reads its lists by position.
 - **`CompositeBasis`** · model · What a pooled composite was meaned over: the union of its members' bases, and whether they agreed.
 - **`ConflictError`** · *host contract* · exception · State conflict (status 409).
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
 - **`CostCapReached`** · exception · The run's cost cap has no room for the cell's next paid call, so the cell stops making them.
 - **`CoverageLens`** · model · The coverage lens: per-lever measurement summaries.
-- **`Decision`** · model · A proposal and the verdict on it.
+- **`Decision`** · model · A recommendation: a proposal and the verdict on it, pinned to the findings it rests on.
 - **`DecisionSurface`** · model · The campaign's measured cells and the bars they were held to — frozen at generation.
 - **`DefinitionStore`** · protocol · What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.
 - **`DeliveryRecorder`** · protocol · Captures one asynchronous tool's background work for one cell.
@@ -599,7 +596,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvidenceRow`** · model · One reading at one cell, and the number code resolved it to, with its basis.
 - **`ExternalRateTable`** · dataclass · Operator-declared money per provider unit, resolved once for a whole run.
 - **`Finding`** · model · One claim the evidence supports, in the author's words.
-- **`FindingResolution`** · model · What code filled for one authored finding: the numbers its readings resolved to, and its chart.
+- **`FindingResolution`** · model · What code filled for one authored finding: the numbers its readings resolved to.
 - **`GenerationProvenance`** · model · How an `EvalAnalysis` was generated — enables reproducible prompt A/B.
 - **`GuardrailCell`** · model · One side of a guardrail check: a cell, and the per-case values the check read.
 - **`GuardrailCheck`** · model · One guardrail, one arm against the control under one rig: held, breached or undecided.
@@ -632,7 +629,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`MeasureCollection`** · model · Every measure a set of results carries, with the scopes that carry none named.
 - **`MeasureFacts`** · model · What one measure IS, frozen beside its values — the catalogue entry a reader needs to read them.
 - **`MeasureFamily`** · model · One family of measures and who produces its numbers — the engine's six, or one a host declares.
-- **`MeasureRef`** · model · A measure or judged dimension, named in its namespace — which one is stated, never inferred.
 - **`MeasureSummary`** · model · One measure's distribution across a set of results.
 - **`MetricDescriptor`** · *host contract* · model · What a single measure is, independent of any particular value of it.
 - **`NextStep`** · model · An experiment worth running next.
@@ -690,7 +686,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ValidationFailedError`** · *host contract* · exception · Validation failed (status 422).
 - **`VariantConfig`** · *host contract* · model · The A/B'd stack one cell runs, as every kind alike receives it.
 - **`VariantIndexEntry`** · model · One observed variant, and the resolved lever map its key was digested from.
-- **`Viz`** · model · A visualization spec attached to a finding.
 - **`WorldSession`** · *host contract* · class · One cell's handle on the host's world, and the record of what happened to it.
 - **`WorldSessionError`** · exception · A kind asked its cell's world session for something the host's world, or the moment, cannot give.
 
@@ -774,8 +769,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`Callable[[Mapping[str, ToolLike]], dict[str, ToolLike]]`
 - **`TransferabilityClass`** · literal · How far a measure's meaning carries, loosest to strictest: `mechanical` is measured the same way everywhere, `judge_mediated` is comparable only under the same judge configuration, `scenario_bound` means nothing outside its scenario.
   <br>`'mechanical'` | `'judge_mediated'` | `'scenario_bound'`
-- **`VizType`** · literal · Every visualization a stored finding can carry.
-  <br>`'delta_table'` | `'frontier'` | `'timeseries'` | `'distribution'` | `'null_result'` | `'breakdown'` | `'attribution'` | `'sweep_ranking'`
 
 **Constants**
 
@@ -816,8 +809,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= "campaigns_list names this scope's campaigns"`
 - **`FIND_CASE_SET`** · constant (str) · How a caller finds a case set's name and version.
   <br>`= "case_sets_list names this scope's case sets and their versions"`
-- **`FIND_FINDING`** · constant (str) · How a caller finds a finding of an analysis.
-  <br>`= "report_read states the campaign's analysis with its findings numbered from 0"`
 - **`FIND_INSIGHT`** · constant (str) · How a caller finds an insight's id.
   <br>`= "insights_list names this scope's insights"`
 - **`FIND_JOB`** · constant (str) · How a caller finds a job's id.
@@ -928,8 +919,6 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`obligations(declared: WorldDimension) -> tuple[CheckName, ...]`
 - **`pass_threshold_label`** · function · How every surface names pass^k: its depth and what an attempt had to pass, e.g. `pass^k (k=3, criterion >= 4 of 5)`.
   <br>`pass_threshold_label(k: int | None, threshold: int, *, criteria: Collection[PassCriterion]) -> str`
-- **`require_resolved_colour`** · function · The palette's one colour check: `value` is resolved sRGB hex (`#rrggbb`), or a refusal.
-  <br>`require_resolved_colour(where: str, value: object) -> str`
 - **`resolve_preconditions`** · function · Refuse a template's presumption naming a dimension this host's world does not declare.
   <br>`resolve_preconditions(template: EvalTemplate, world: WorldRegistry | None) -> list[Precondition]`
 - **`schema_violations`** · function · Every way `value` fails `schema`, each naming the path it fails at.
@@ -946,8 +935,6 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`BarRegistrationError`** · exception · A bar declaration contradicts what this registry promises.
 - **`BarRegistry`** · *host contract* · class · One host's registered bars, keyed by `(behavior, measure)` and validated at construction.
 - **`CellTimeoutFactory`** · protocol · Builds the context manager one cell runs inside, from that cell's budget.
-- **`ChartFont`** · dataclass · A typeface a renderer draws chart text in, with the advance widths its layout is computed from.
-- **`ChartPalette`** · dataclass · A host's chart colours, by role — what a renderer themes every chart it draws with.
 - **`CompletionClients`** · *host contract* · protocol · The host's completion-client factory: one client per role, model and temperature.
 - **`ConformanceResult`** · dataclass · One check's verdict on one dimension, or on the registry when the check is registry-wide.
 - **`Coverage`** · dataclass · Whether eval reaches one precondition on one axis, and why when it does not.
@@ -969,7 +956,6 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`RolePins`** · dataclass · One pinned ROLE — who filled a seat in the rig, and the inputs that identify them.
 - **`SeedRefused`** · *host contract* · exception · A seed asked for a write the registry or the subject cannot make.
 - **`SeedWrite`** · class · One write a checked seed makes: through `handle`, of `value`, into dimension `name`.
-- **`StyleError`** · exception · A style profile contradicts the bounded contract this module promises.
 - **`StyleProfile`** · dataclass · One host's bounded presentation contract.
 - **`Sweepable`** · *host contract* · dataclass · One score-determining input: what it is called, who owns it, how to read it.
 - **`SweepableRegistry`** · *host contract* · class · The declared inputs for one host, validated at construction.
@@ -1034,16 +1020,11 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`= 'candidate_kind'`
 - **`CANDIDATE_MODEL_LEVER`** · constant (str) · The one name the candidate model answers to, everywhere — a DECLARED COORDINATE of every observation (`ScoreRecord.model`) as well as the core lever below, which is why it is the only lever a reporting lens resolves off the observation rather than off the run.
   <br>`= 'model'`
-- **`CHART_FONT_CHARACTERS`** · constant (str) · The characters a `ChartFont`'s metrics must cover: printable ASCII, space to tilde.
 - **`DEFAULT_PASS_THRESHOLD`** · constant (int) · The 1–5 level a criterion must reach for pass^k where the behavior declares no threshold of its own.
   <br>`= 3`
-- **`SERIES_SLOTS`** · constant (int) · How many categorical colour slots a palette supplies before it recycles — the width of the vocabulary, and so exactly how many `ChartPalette.series` colours a palette declares.
-  <br>`= 8`
 - **`SHARED_CORE`** · *host contract* · constant (SweepableRegistry) · The registry a host extends. Nothing here names a product.
 - **`UNSEATED_LEVEL`** · constant (str) · The level an apparatus dimension reads at for a run whose rig has no such seat (`HostProfile.apparatus_level`), where the dimension is kept because another run in the same comparison does have it.
   <br>`= "(none — this run's rig has no such seat)"`
-- **`VALIDATED_SLOTS`** · constant (int) · How many categorical colour slots a chart may assign with validated separation.
-  <br>`= 4`
 
 <a id="api-run"></a>
 ### `threetears.evals.run`
@@ -1402,16 +1383,20 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`add_runs_to_campaign`** · function · Attach runs to a campaign (de-duplicated, order-preserving) and persist.
   <br>`add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign`
+- **`analysis_bundle`** · function · The evidence bundle a stored analysis was written over, read back from the analysis.
+  <br>`analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle`
 - **`analysis_gen_request_settings_for`** · *host contract* · function · The generator role's request settings as ONE value, from the host's answer budget, effort and headroom.
   <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings`
-- **`analysis_report`** · function · Read one stored analysis as its report — the one document every surface renders.
+- **`analysis_report`** · function · Read one stored analysis as its report — the one page every door renders.
   <br>`analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Report`
+- **`analysis_verdict`** · function · The verdict line a stored analysis's report opens with, written by code over its frozen bundle.
+  <br>`analysis_verdict(analysis: EvalAnalysis) -> str`
 - **`assemble_context_bundle`** · function · Assemble the closed context bundle for a campaign's runs.
   <br>`assemble_context_bundle(campaign: EvalCampaign, *, storage: CampaignReadStore, insights_as_of: str | None = None, profile: HostProfile) -> AnalysisContextBundle`
-- **`build_code_only_report`** · function · Lay a campaign's assembled evidence out as a report, when no analysis exists to report through.
-  <br>`build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRegistry, assembled_at: str, campaign_name: str | None = None) -> Report`
-- **`build_report`** · function · Lay one stored analysis out as a report.
-  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None, request_settings: str | None = None) -> Report`
+- **`build_code_only_report`** · function · Lay a campaign's evidence out as its page, when no analysis exists to report through.
+  <br>`build_code_only_report(bundle: AnalysisContextBundle, *, assembled_at: str, campaign_name: str | None = None) -> Report`
+- **`build_report`** · function · Lay one stored analysis out as the campaign's page, over the bundle frozen with it at generation.
+  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report`
 - **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
 - **`campaign_verdicts`** · function · Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
@@ -1440,8 +1425,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`estimate_analysis_generation(host: EvalHost, campaign_id: str, scope_id: str, *, model: str | None, resolve_prompt: Callable[[], Awaitable[str]], out_of_run_cap_usd: float | None) -> AnalysisGenerationEstimate`
 - **`export_results`** · function · Serialize the projection's flat rows for a scope as CSV or JSON.
   <br>`export_results(storage: LensStore, scope_id: str, *, list_runs: RunLister, fmt: str | None = None, status: str | None = 'completed', run_ids: list[str] | None = None, profile: HostProfile) -> ScoreExport`
-- **`finding_chart_intent`** · function · Decide one finding's chart, for a surface that draws a single chart at a time with its own renderer.
-  <br>`finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> ChartIntent`
 - **`first_request`** · function · The exact first request a generation sends: system prompt, user message and the contract.
   <br>`first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]`
 - **`format_number`** · *host contract* · function · Spell a number for a reader, the same way on every analysis surface.
@@ -1529,11 +1512,9 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`program_budget`** · function · Report program-lens spend over a scope, excluding no run.
   <br>`program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -> dict[str, Any]`
 - **`prompt_content_version`** · function · The version a generation records for its prompt — a short hash of what the model is told.
-  <br>`prompt_content_version(prompt: str, profile: HostProfile, *, time_axis: bool) -> str`
+  <br>`prompt_content_version(prompt: str, profile: HostProfile) -> str`
 - **`propose_bars`** · function · Propose a bar on every measure the baseline campaign's incumbent was measured on.
   <br>`propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) -> BaselineBarProposals`
-- **`published_report_schema`** · function · The schema as published in `schema.json`.
-  <br>`published_report_schema() -> dict[str, Any]`
 - **`read_judge_temperatures`** · function · Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
 - **`refuse_undeliverable_reporter_template`** · function · Refuse a reporter template that asks for apparatus a memo writer cannot honour, or gives its judge nothing to score.
@@ -1542,10 +1523,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`remove_runs_from_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign`
 - **`render_memo_as_written`** · function · The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
   <br>`render_memo_as_written(analysis: EvalAnalysis) -> str`
-- **`report_html`** · *host contract* · function · Render a report as a standalone HTML page that needs no script.
+- **`report_html`** · *host contract* · function · Render a report as one standalone HTML page that needs no script.
   <br>`report_html(report: Report) -> str`
-- **`report_json_schema`** · function · The report's JSON Schema, as generated from the model — what `schema.json` must equal.
-  <br>`report_json_schema() -> dict[str, Any]`
 - **`report_markdown`** · *host contract* · function · Render a report as Markdown.
   <br>`report_markdown(report: Report) -> str`
 - **`reporter_calibration`** · function · Read a reporter run against its cases' labels — the rubric's calibration.
@@ -1598,24 +1577,22 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`AnalysisStore`** · protocol · The storage calls the analysis service makes — its own, plus the bundle assembly's it hands the store to.
 - **`ArmExclusions`** · model · How many of one arm's trials were left out of its measures, and why: the per-arm count by cause.
 - **`ArmLevel`** · model · One coordinate of an arm — which lever, and the level it carried.
-- **`ArmMeasurement`** · model · One measurement that placed at this arm, and the finding it was read from.
 - **`ArmMechanismReading`** · model · One arm's mean of one observed-mechanism covariate, or the statement that it was not measured.
-- **`ArmRow`** · model · One contestant, where it stands, and the evidence that placed there.
+- **`ArmScoreboard`** · model · One arm's census: how many trials it ran, lost, could use, passed and failed, and what it cost.
 - **`ArmServedModel`** · model · Which model answered one arm's candidate calls, as the provider's responses named it.
-- **`ArmTable`** · model · The derived comparison — every arm the campaign observed, and where it stands.
 - **`AsRecordedReporterKind`** · class · The memo each case's campaign actually got, replayed — the calibration candidate.
 - **`BaselineBarProposals`** · dataclass · What a baseline campaign proposes as its behavior's bars, and what it could not propose a bar on.
 - **`BudgetedGenerator`** · class · A generation's calls, each priced and admitted against its out-of-run budget before it is sent, and ledgered.
 - **`BundleInspection`** · model · A bundle handed to a reader instead of to a model — the read surface's payload.
 - **`CalibrationCase`** · model · One frozen case of the run, with everything its results say against its labels.
 - **`CalibrationCell`** · model · One result of one case: a single (model, repeat) pass, read against the case's labels.
-- **`CampaignReadStore`** · protocol · The eight reads assembling a campaign's context bundle needs.
+- **`CampaignReadStore`** · protocol · The nine reads assembling a campaign's context bundle needs.
 - **`CampaignStore`** · protocol · Everything the campaign family reads and writes — and nothing else.
 - **`CaseResult`** · model · One case's answer on one repeat, every grade it got, and why it failed or was excluded.
 - **`CaseSetIdentity`** · model · One distinct case set inside a group, and which runs executed it.
 - **`Cell`** · model · Every observation sharing one variant and one apparatus class.
 - **`CellCoordinate`** · model · A cell named by its two coordinates and nothing else — an entry in a list of cells a fact holds for.
-- **`ChartBlock`** · *host contract* · model · A chart: a finding's (its intent, or why the stored chart cannot be drawn), or one code chose.
+- **`ChartBlock`** · *host contract* · model · One of the two charts a report draws, with every value it draws, so it prints as a table too.
 - **`ComparedCell`** · model · One side of a family comparison: a cell, and the per-case values its test read.
 - **`ComparisonFamily`** · model · Every comparison one declared question could draw a verdict from, corrected as one family.
 - **`ComparisonSet`** · model · A group of runs that may be compared with each other, and on what basis.
@@ -1657,6 +1634,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`InsightStanding`** · class · Where each listed insight's minting analysis stands — the two states a reader must be told.
 - **`InterJudgeAgreement`** · model · Every second-judge score read, paired with the run's judge's where it can be, and agreement per dimension.
 - **`InterJudgeDimension`** · model · How a second judge's scores on one dimension agreed with the run's judge's scores of the same evidence.
+- **`IntervalRow`** · model · One row of an interval chart: a value, its interval and the cases it rests on.
 - **`JudgeAgreement`** · model · Every rating read, paired with the judge where it can be, and agreement per dimension and judge.
 - **`JudgeChange`** · model · Whether the member runs were judged by more than one judge, which, and the drift readings that span the change.
 - **`JudgedArm`** · model · One judged dimension's scores in one cell — the arm, measured under one rig.
@@ -1688,6 +1666,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`MultipleComparisons`** · model · The campaign's comparisons, one corrected family per live declared question — or one for the whole campaign.
 - **`NextExperiment`** · model · What recording one dimension would buy, in pooled observations.
 - **`OpenAxisFamily`** · model · An open family of axes: a container whose members are declarable, though not enumerable.
+- **`OutcomeBar`** · model · One arm's census as a stacked bar: every trial it ran, by how it ended.
+- **`OutcomeSegment`** · model · One segment of an arm's outcome bar: passed, failed, or lost to one cause, with its count.
 - **`OutOfRunSpendReport`** · model · The calls the engine made outside any run in a scope — case generations, rubric proposals and analysis generations — and their totals.
 - **`OutOfRunSpendTotals`** · model · What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
 - **`PairingCorrelation`** · model · How far the control's and the contrast's per-case results moved together, over the cases a paired test read.
@@ -1704,7 +1684,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`RealizedDesign`** · model · What kind of experiment this campaign turned out to be — INFERRED from the runs, never declared.
 - **`RefusedMerge`** · model · Two cells that share a variant and did not pool, and which rule stopped them.
 - **`RegressionFlag`** · model · A descriptive verdict on the change from the previous point in the series.
-- **`Report`** · *host contract* · model · One analysis, as a document every surface renders. See the module docstring for the contract.
+- **`Report`** · *host contract* · model · A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states.
 - **`ReporterCalibration`** · model · A reporter run read against its cases' labels — the rubric's calibration, as data.
 - **`ReporterCase`** · model · What one reporter case pins: a frozen bundle, optionally the memo it got, and its labels.
 - **`ReporterCaseBank`** · dataclass · One template's stored reporter cases, with which of them is live — derived once, read by every consumer.
@@ -1730,12 +1710,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`StratumSummary`** · model · One stratum of a run: its cases' results, each measure read over them alone.
 - **`SubjectFrontier`** · model · One subject's frontier: its points, and the verdict over them.
 - **`SubjectKeyInstability`** · model · A subject key and its label disagreeing about how many things there are.
-- **`SurfaceColumn`** · model · One numeric column of the table — an adjudicated bar, or a cost or latency measure.
-- **`SurfaceRow`** · model · One measured cell — one arm under one rig — laid out against the table's columns.
-- **`SurfaceRunNote`** · model · One member run of a cell that ran short of its design, or did not complete.
-- **`SurfaceTable`** · model · The decision surface laid out — derived on every read, never stored.
-- **`SurfaceUnadjudicatedBar`** · model · A bar no cell could be read against — listed below the table, never drawn as a column of misses.
-- **`SurfaceValue`** · model · One cell's number in one column, already in the column's unit.
 - **`TableBlock`** · model · A table code laid out — its columns, its rows in their stated order, and how much of it is shown.
 - **`TableCell`** · model · One cell of a report table: its value, and the text a reader is shown for it.
 - **`TableColumn`** · model · One column of a report table.
@@ -1746,6 +1720,10 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`TemperatureSide`** · model · One dimension at one setting: how much its cases' scores moved across repeats, and the judge's self-agreement.
 - **`TextBlock`** · model · What the analysis's author wrote, exactly as written, with the facts code states beside it.
 - **`TokenRollup`** · model · Summed token usage across results — visible cost of generation (§Visible Costs).
+- **`TrialBlock`** · model · One trial to drill into: what the case asked, what the judge saw and said, and why it ended as it did.
+- **`TrialCheck`** · model · A check a trial failed: its reader name, and the expression it evaluates.
+- **`TrialJudgement`** · model · What the judge said of one dimension on one trial.
+- **`TrialRow`** · model · One trial — one case run once on one arm — and how it ended, with what a reader needs to see why.
 - **`UnconfirmedModelIdentity`** · model · One role whose calls the record cannot tie to the model that answered them (#2025).
 - **`UnpairedRating`** · model · A rating with no judge score to set it against, and why.
 - **`UnpairedSecondScore`** · model · A second judge's score with no pair to read, and why.
@@ -1757,16 +1735,18 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 **Types**
 
-- **`ArmStatus`** · literal · Where an arm stands, according to this analysis.
-  <br>`'winner'` | `'contradicted'` | `'ruled_out'` | `'replaced_incumbent'` | `'unresolved'`
 - **`BarOutcome`** · literal · What a bar's reading on one cell came to (`BarVerdict.decision`).
   <br>`'cleared'` | `'missed'` | `'undecided'` | `'no_interval'` | `'no_data'`
 - **`CallAdmission`** · type alias · Asked before each generator call is counted or sent, with `(system, user, response_format)`; raises to refuse that call.
   <br>`Callable[[str, str, 'dict[str, Any] | None'], None]`
 - **`CaseOutcome`** · literal · How one result came out, as `classify_result` classifies it: graded normally, failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing).
   <br>`'scored'` | `'failed'` | `'excluded'`
+- **`CellValue`** · type alias · A table cell's value: a number, words, a boolean, or None where there is none.
+  <br>`str | int | float | bool | None`
 - **`ChangeLabel`** · literal · What a change between two paired samples reads as — see `ChangeVerdict`.
   <br>`'improved'` | `'regressed'` | `'equivalent'` | `'below_threshold'` | `'not_separated'` | `'untested'`
+- **`ChartKind`** · literal · The two charts a report draws.
+  <br>`'outcome_bar'` | `'interval_rows'`
 - **`ComparisonVerdict`** · literal · What one comparison in a family came to, read off its ADJUSTED p's.
   <br>`'improved'` | `'regressed'` | `'equivalent'` | `'not_separated'` | `'untested'`
 - **`ContrastOutcome`** · literal · What a contrast's test came to (`FamilyComparison.verdict`).
@@ -1774,11 +1754,13 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CriterionDrift`** · literal · How a label's criterion compares with the template's today — see `LabelReading.criterion_drift`.
   <br>`'unchanged'` | `'changed'` | `'no_live_criterion'`
 - **`DisclosureSource`** · literal · Who a disclosure speaks for.
-  <br>`'chart'` | `'arms'` | `'surface'` | `'time_axis'` | `'generation'` | `'runs'` | `'measurement'` | `'apparatus'` | `'comparisons'` | `'strata'` | `'guardrails'` | `'scope'`
+  <br>`'basis'` | `'verdict'` | `'design'` | `'charts'` | `'cost'` | `'memo'` | `'runs'` | `'measurement'` | `'apparatus'` | `'comparisons'` | `'strata'` | `'guardrails'` | `'scope'` | `'not_tested'` | `'calibration'` | `'generation'`
 - **`DriftVerdict`** · literal · How one dimension's movement reads — see the module docstring.
   <br>`'separated'` | `'not_separated'` | `'untested'`
 - **`ExportFormat`** · literal · The two on-demand serializations.
   <br>`'csv'` | `'json'`
+- **`FailCause`** · literal · Why a trial failed: the candidate's own failure (`CandidateFailureCause`: `model_failed`, `turn_budget`, `output_cap`), a check it failed (`check`: a goal check, or a pass/fail scorer), or a judged dimension scored under the bar (`judged`).
+  <br>`'model_failed'` | `'turn_budget'` | `'output_cap'` | `'check'` | `'judged'`
 - **`FrontierCostDecision`** · literal · How a frontier verdict's pick stands on cost against the other contestants that cleared the bar with a cost — see `FrontierVerdict.cost_decision`.
   <br>`'shown_cheapest'` | `'not_separated'` | `'untested'` | `'only_cleared'`
 - **`FrontierDominance`** · literal · Whether the frontier lens shows a contestant dominated: `dominated` — another is shown better on every axis it measured; `not_separated` — tested against at least one other and no domination shown, which says nothing about whether one exists; `untested` — nothing could be tested against it.
@@ -1793,6 +1775,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'candidate'` | `'judge'`
 - **`LabelDirection`** · literal · Where a person reading a memo places it on a rubric dimension, low to high.
   <br>`'low'` | `'low_mid'` | `'mid'` | `'mid_high'` | `'high'`
+- **`LossCause`** · type alias · Why a trial was lost to the test setup, as `trial_exclusion` names it: `infra` (the harness faulted it), `judge_cannot_tell` (the judge said it could not score a dimension the trial needs), `truncated` (the judge's reply was cut off at its output cap).
+  <br>`str`
 - **`MeasureState`** · literal · How one measure came out over a run, as the summary states it: `measured` (a mean), `not_a_number` (it is carried, as words, and never averaged), `in_confusion_matrix` (a classifier's cells, counted in the matrix), `no_successful_results` (every result carrying it took no turn), `all_excluded` (every result carrying it was excluded as a fault of the rig) or `not_carried` (no result carries it).
   <br>`'measured'` | `'not_a_number'` | `'in_confusion_matrix'` | `'no_successful_results'` | `'all_excluded'` | `'not_carried'`
 - **`MechanismUncheckedReason`** · literal · Why a swept lever's mechanism could not be checked: `not_declared` = the lever names no measure it acts on; `not_swept` = it was observed at one level, so there is nothing to compare; `levels_unobserved` = some level observed none of the measure, so no pair of levels separated and whether it held still at every level cannot be shown; `too_few_observations` = every level observed it, but some pair of levels has too few cases on a side for the separation test to run; `uniform_move_needs_range` = no pair separated, and some pair shifted every case alike on a measure that declares no range, where no test of the mean can call the shift (declare `value_range` on the measure).
@@ -1802,11 +1786,13 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ReportBasis`** · literal · What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
   <br>`'analysis'` | `'code_only'`
 - **`ReportBlock`** · type alias · A report block, discriminated by `kind`.
-  <br>`Annotated[TextBlock | TableBlock | ChartBlock | DisclosureBlock, Field(discriminator='kind')]`
-- **`ReportFormat`** · literal · The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what the published schema validates) and HTML that reads without any script.
+  <br>`Annotated[TextBlock | TableBlock | ChartBlock | TrialBlock | DisclosureBlock, Field(discriminator='kind')]`
+- **`ReportFile`** · literal · The files `Report.write` writes, by role.
+  <br>`'html'` | `'bundle'` | `'markdown'`
+- **`ReportFormat`** · literal · The forms a report is read in: Markdown, HTML that reads without any script, and the bundle behind it as JSON.
   <br>`'markdown'` | `'json'` | `'html'`
 - **`ReportSection`** · literal · Where a block sits, in reading order.
-  <br>`'summary'` | `'questions'` | `'decisions'` | `'guardrails'` | `'findings'` | `'arms'` | `'surface'` | `'next'` | `'methods'`
+  <br>`'header'` | `'scoreboard'` | `'memo'` | `'contrasts'` | `'cases'` | `'trials'` | `'not_tested'` | `'methods'`
 - **`RequestSettingsRole`** · literal · The roles whose request settings the record discloses: the judge and the simulated user, the two the apparatus pools on.
   <br>`'judge'` | `'simulator'`
 - **`RowColumns`** · type alias · The host's own columns for each `(model, run_id)` group of a run's results, laid over a `run_summary` row after the engine's aggregates.
@@ -1817,12 +1803,10 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'as_asked'` | `'sent_otherwise'` | `'mixed'` | `'unverified'`
 - **`ServedModelState`** · literal · How many models answered a pooled set of candidate calls, as the provider's responses named them.
   <br>`'one'` | `'pooled'` | `'unrecorded'`
-- **`SurfaceState`** · literal · Where a table stands. Two states rather than an optional table, because "the surface froze no cell" is a fact with its own sentence, and is not an empty table.
-  <br>`'no_cells'` | `'measured'`
-- **`SurfaceVerdict`** · literal · A bar's verdict on one cell, as a word — never a colour alone, and one per `decision`.
-  <br>`'clears'` | `'misses'` | `'undecided'` | `'no_interval'` | `'no_data'`
 - **`TextRole`** · literal · What a text block's author wrote it as.
-  <br>`'headline'` | `'summary'` | `'answer'` | `'decision'` | `'revisit_when'` | `'finding_title'` | `'finding_body'` | `'caveat'` | `'carried_forward'` | `'next_step'` | `'next_step_why'`
+  <br>`'answer'` | `'recommendation'` | `'revisit_when'` | `'finding_title'` | `'finding_body'` | `'caveat'` | `'carried_forward'` | `'next_step'` | `'next_step_why'`
+- **`TrialState`** · literal · How a trial ended: passed, failed (the candidate's failure, counted against it) or lost (the test setup failed, and it counts for nothing).
+  <br>`'passed'` | `'failed'` | `'lost'`
 - **`UnpairedReason`** · literal · Why a rating has no judge score to be read against.
   <br>`'result_unresolved'` | `'dimension_unscored'` | `'scale_changed'` | `'rated_by_an_agent'`
 - **`UnpairedSecondReason`** · literal · Why a second judge's score has no pair to be read in: its call failed — an infrastructure fault, which says nothing about either judge.
@@ -1832,7 +1816,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`VerdictKind`** · literal · Which reading a `Verdict` is: a contrast tested against the control, a bar read on one cell, or a guardrail checked for one arm against the control.
   <br>`'contrast'` | `'bar'` | `'guardrail'`
 - **`VerdictReason`** · literal · Why a verdict came out as it did, as a code a program branches on (`reason_detail` says it in words where there is more to say).
-  <br>`'separated'` | `'inside_margin'` | `'no_margin'` | `'margin_untested'` | `'not_inside_margin'` | `'untestable'` | `'interval_clears'` | `'interval_misses'` | `'interval_straddles'` | `'too_few_observations'` | `'no_observations'` | `'within_margin'` | `'beyond_margin'` | `'no_interval'`
+  <br>`'separated'` | `'inside_margin'` | `'no_margin'` | `'margin_untested'` | `'not_inside_margin'` | `'untestable'` | `'too_few_cases'` | `'interval_clears'` | `'interval_misses'` | `'interval_straddles'` | `'too_few_observations'` | `'no_observations'` | `'within_margin'` | `'beyond_margin'` | `'no_interval'`
 - **`WriterMessageCheck`** · literal · Whether a case's frozen writer message is the one its recorded memo's generator was sent — see `writer_message_check`.
   <br>`'verified'` | `'differs'`
 
@@ -1872,70 +1856,24 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= 'score'`
 - **`METRIC_TRANSCRIPT`** · constant (str) · The observation-level measure holding the dual-score transcript axis.
   <br>`= '__transcript__'`
-- **`NO_ANALYSIS`** · constant (str) · What the code-only report says in place of an analysis: that none was generated, and whose the numbers are.
+- **`MIN_CASES`** · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
+  <br>`= 5`
+- **`NO_ANALYSIS`** · constant (str) · What the memo section says on a report no analysis was written for.
 - **`PAIRED_TEST_NAME`** · constant (str) · The paired test the change classifier discloses, so a regression flag names the statistics it rests on rather than presenting a bare verdict.
 - **`PROJECTED_METRICS`** · constant (frozenset) · Every measure `project_score_records` can emit.
 - **`READ_TIER_ROW_BUDGET`** · constant (int) · How many projected score records one read-tier call may carry before its observer line is logged at WARNING instead of INFO (#652).
   <br>`= 50000`
-- **`REPORT_VERSION`** · *host contract* · constant (int) · The report shape's version.
-  <br>`= 10`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 - **`REPORTER_KIND_CONTRACT`** · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
 - **`SCOPED_METRICS_HELP`** · constant (str) · How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
-- **`SECTION_TITLES`** · constant (dict) · Each section's heading, in reading order — the order every serializer lays the sections out in, and the heading every block carries as its `section_title`.
+- **`SECTION_TITLES`** · constant (dict) · Each section's heading, in reading order — the order every serializer lays the sections out in.
 - **`SERVED_MODEL_UNRECORDED`** · constant (str) · The token a served-model coordinate (`ScoreRecord.served_model`) carries for candidate calls whose response named no model. Never the requested id.
   <br>`= 'unrecorded'`
 - **`UNPRICED`** · constant (str) · What an amount no client could price reads as. Never `$0`: an unpriced call may have been billed.
   <br>`= 'unpriced'`
 - **`WEIGHTING_EQUAL_PER_SCENARIO`** · constant (str) · Weighting mode: every scenario (case) gets an equal vote in a cell's number, however many observations it has.
   <br>`= 'equal_per_scenario'`
-
-<a id="api-analysis-viz"></a>
-### `threetears.evals.analysis.viz`
-
-Finding charts — eval's own chart intent, and the seam a renderer sits behind.
-
-**Functions**
-
-- **`assert_renderer_conforms`** · function · Raise unless `renderer` draws every one of `intents` in agreement with its values.
-  <br>`assert_renderer_conforms(renderer: ChartRenderer[DrawingT], intents: Sequence[ChartIntent]) -> None`
-- **`chart_intent`** · function · Decide a finding's chart: validate its payload, build its intent, and hold it to the policy rules.
-  <br>`chart_intent(viz_type: str, payload: dict[str, Any]) -> ChartIntent`
-- **`check_intent`** · function · Check a chart intent against the presentation rules.
-  <br>`check_intent(intent: ChartIntent) -> list[str]`
-- **`renderer_disagreements`** · function · Where `renderer`'s drawing of `intent` disagrees with the intent's values — empty when it agrees.
-  <br>`renderer_disagreements(renderer: ChartRenderer[DrawingT], intent: ChartIntent) -> list[str]`
-- **`table_disagreements`** · function · Where the values table states a value no mark of the same identity carries — empty when it agrees.
-  <br>`table_disagreements(intent: ChartIntent) -> list[str]`
-
-**Classes**
-
-- **`ChartAxis`** · model · One ruler a chart measures against.
-- **`ChartColours`** · model · One colour scheme a chart uses: which field it carries, and the slot each value takes.
-- **`ChartColumn`** · model · One column of the values-as-drawn table.
-- **`ChartEncoding`** · model · What one field of `data` encodes, and against which axis.
-- **`ChartIdentity`** · model · What a chart's rows are named by, and the order they are drawn in.
-- **`ChartIntent`** · model · One chart's intent: what it draws and what it must say, for any renderer to draw.
-- **`ChartReference`** · model · A standard drawn across one axis — the bar the marks are read against, not one of them.
-- **`ChartRefused`** · exception · A renderer's refusal to draw one intent: this chart cannot be drawn as decided, and its neighbours still can.
-- **`ChartRenderer`** · protocol · A chart renderer: a host's palette, bound at construction, applied to any intent.
-- **`IntentPolicyError`** · exception · A chart intent breaks a presentation rule — a data problem, never a rendering one.
-- **`PayloadError`** · exception · A viz payload does not match the contract declared for its type.
-
-**Types**
-
-- **`ChartType`** · literal · The chart types — eval's own, and the only ones an intent can carry.
-  <br>`'delta_table'` | `'frontier'` | `'timeseries'` | `'distribution'` | `'null_result'` | `'breakdown'` | `'attribution'` | `'sweep_ranking'`
-- **`ChartValue`** · type alias · One value in a chart's data or its values table: a JSON scalar.
-  <br>`str | int | float | bool | None`
-- **`EncodingRole`** · literal · What a field encodes.
-  <br>`'identity'` | `'length'` | `'position'` | `'interval_low'` | `'interval_high'` | `'level'` | `'class'` | `'ordinal'` | `'count'` | `'label'`
-
-**Constants**
-
-- **`INTENT_VERSION`** · constant (int) · The chart-intent shape's version.
-  <br>`= 1`
 
 <a id="api-gen"></a>
 ### `threetears.evals.gen`
@@ -2250,8 +2188,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`plan_reporter_arm(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> ArmPlan`
 - **`price_largest_reporter_call`** · async function · A reporter arm's largest generator call, priced before launch, for its `LaunchableKind.price_largest_call`.
   <br>`price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> CallCeiling | None`
-- **`report_charts`** · function · Draw every chart block of `report` with `renderer`, refusing each chart that cannot be drawn on its own.
-  <br>`report_charts(report: Report, renderer: ChartRenderer[DrawingT]) -> ReportCharts[DrawingT]`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
   <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument`
 - **`reporter_case_archive`** · function · Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
@@ -2330,10 +2266,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CaseSetLine`** · model · One version of a named case set.
 - **`CaseSetListing`** · model · A scope's case sets, every version, newest version first within a name.
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
-- **`ChartRefusal`** · model · One chart of a report that was not drawn, and why — stated where the chart would have been.
 - **`DetectableEffect`** · model · The smallest difference one reading's comparison would find, or why none can be stated.
 - **`DetectableEffects`** · model · What a launch could detect: per reading, the smallest difference its paired comparison would find.
-- **`DrawnChart`** · dataclass · One chart of a report, drawn.
 - **`InsightDeleted`** · model · What deleting an insight removed: the one insight, never the analysis that minted it.
 - **`InsightDetail`** · model · One insight in full — as stored — and where it stands.
 - **`InsightLine`** · model · One insight in the ledger, as a listing shows it.
@@ -2356,7 +2290,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`RegressionAlert`** · model · One regression the watch found on the step into a completed run: who, which measure, which step, and why.
 - **`RegressionSink`** · protocol · The host's delivery of a regression: a page, a message, a ticket. The engine ships none.
 - **`RegressionWatch`** · dataclass · Checks a completed run's measures against its contestant's history, and delivers each regression.
-- **`ReportCharts`** · dataclass · Every chart of a report: the ones drawn and the ones refused, each in report order.
 - **`ReportDocument`** · model · A campaign's report, serialized in one form.
 - **`ReporterAdmitted`** · dataclass · What `admit_reporter_launch` resolved of a reporter arm it can honour.
 - **`ReporterCaseEntry`** · model · One readable case of a reporter template, with whether a launch runs it.
@@ -2388,8 +2321,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Types**
 
-- **`ChartRefusalCause`** · literal · Why a chart was not drawn: `undrawable` — the report could not decide the stored chart into an intent, and its block says why; `refused_by_renderer` — the intent was decided and the renderer refused to draw it.
-  <br>`'undrawable'` | `'refused_by_renderer'`
 - **`InsightStandingName`** · literal · Where an insight stands, read from the analysis that minted it at every read and never stamped on the insight (`insight_standing`): `live` — fed to later generations as prior context; `retracted` — its analysis is archived, so no generation reads it; `orphaned` — its analysis was deleted, so it is still read but its provenance cannot be followed.
   <br>`'live'` | `'retracted'` | `'orphaned'`
 - **`JobKind`** · literal · What a job's work is: a launch (its arms prepared and its runs run), one launched run, an analysis generation, a sweep launching its arms in order, a second judge's pass, a judge temperature comparison, or a host action's work.
@@ -2524,55 +2455,6 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 - **`HOOK_TAIL_TIMEOUT_S`** · constant (float) · How long an `around` hook may take, in seconds, past the outcome it was handed — or closing, once a call is stopped — and, separately, how long the `annotate` hook may take over that outcome.
   <br>`= 10.0`
 
-<a id="api-vega"></a>
-### `threetears.evals.vega`
-
-The Vega-Lite chart renderer — an optional adapter over eval's chart intent, which imports on the base install.
-
-**Functions**
-
-- **`check_font_files`** · function · Refuse `font` when the files declaring its face in `font_dirs` are not, byte for byte, the ones it was measured from.
-  <br>`check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None`
-- **`check_spec`** · function · Check a Vega-Lite spec against the presentation rules.
-  <br>`check_spec(spec: dict[str, Any]) -> list[str]`
-- **`compile_chart`** · function · Compile a finding's viz into a Vega-Lite spec, through the chart's intent.
-  <br>`compile_chart(viz_type: str, payload: dict[str, Any], *, font: ChartFont | None = None) -> CompiledChart`
-- **`draw_intent`** · function · Draw a decided chart intent as a Vega-Lite spec — this renderer's one entry point.
-  <br>`draw_intent(intent: ChartIntent, *, font: ChartFont | None = None) -> CompiledChart`
-- **`load_chart_font`** · function · Read a metrics artifact a host measured for its own face, as the font to declare.
-  <br>`load_chart_font(path: Path) -> ChartFont`
-- **`load_palette`** · function · Read a palette artifact a host built for its own colours, as the palette to declare.
-  <br>`load_palette(path: Path, theme: Theme) -> ChartPalette`
-- **`packaged_font`** · function · The face this renderer draws in when its host declares none, with the table measured for it.
-  <br>`packaged_font() -> ChartFont`
-- **`packaged_palette`** · function · The palette packaged with this renderer, in one of its two variants.
-  <br>`packaged_palette(theme: Theme) -> ChartPalette`
-- **`register_fonts`** · function · Make a directory of font files available to the rasteriser.
-  <br>`register_fonts(font_dir: Path) -> None`
-- **`render_png`** · function · Rasterise a compiled spec to PNG.
-  <br>`render_png(spec: dict[str, Any], *, palette: ChartPalette, scale: int = 2, font_dir: Path | None = None, font: ChartFont | None = None) -> bytes`
-- **`render_svg`** · function · Render a compiled spec to SVG.
-  <br>`render_svg(spec: dict[str, Any], *, palette: ChartPalette, font_dir: Path | None = None, font: ChartFont | None = None) -> str`
-- **`vega_config`** · function · Build the Vega-Lite config that themes a compiled spec in `palette`, set in `font`.
-  <br>`vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[str, Any]`
-- **`write_font_metrics`** · function · Commit a fresh measurement as a table `text_width` reads.
-  <br>`write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path`
-
-**Classes**
-
-- **`CompiledChart`** · dataclass · One finding's chart: its intent, and the Vega-Lite spec drawn from it.
-- **`CompiledColumn`** · typed dict · One column of the values-as-drawn table, as the compilation hands it on.
-- **`PaletteError`** · exception · The chart palette artifact is missing or cannot be drawn with.
-- **`RasterRefused`** · exception · vl-convert refused to convert a chart's spec: its runtime would not draw it.
-- **`SpecPolicyError`** · exception · A chart's spec breaks one or more of the report's presentation rules: the renderer refuses that chart.
-- **`TextMetricsError`** · exception · The font metrics artifact is missing or unusable.
-- **`VegaRenderer`** · *host contract* · dataclass · Draw chart intents as Vega-Lite, in one palette and one typeface.
-
-**Types**
-
-- **`Theme`** · literal · The colour theme a chart is drawn for.
-  <br>`'light'` | `'dark'`
-
 <a id="api-negotiation"></a>
 ### `threetears.evals.negotiation`
 
@@ -2705,17 +2587,17 @@ Everything the engine knows about one consuming product.
 <a id="report"></a>
 ### `Report`
 
-One analysis, as a document every surface renders. See the module docstring for the contract.
+A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `report_version` | `Literal[10]` | `10` | This shape's version. |
-| `basis` | `ReportBasis` | required | `analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it — no headline, no findings, no author's words. |
-| `headline` | `ModelProse` | required | The author's headline, as written; empty when the author wrote none, and on a code-only report. |
-| `finding_count` | `int` | required | How many findings the document holds — the range every position is in. |
+| `basis` | `ReportBasis` | required | `analysis` over a generated memo, `code_only` over the evidence alone. |
+| `title` | `str` | required | The title line: the campaign, its arms, the date and the basis. |
+| `finding_count` | `int` | required | How many findings the memo holds. |
 | `source` | `ReportSource` | required | What this is a report of. |
 | `blocks` | `list[ReportBlock]` | required | The report, in reading order. |
-| `verdicts` | `list[Verdict]` | `[]` | Every verdict the report states, typed — the source each printed verdict is rendered from: the guardrails (for each arm against the control), then each bar on each cell, then the contrasts against the control, each group in its table's row order. |
+| `verdicts` | `list[Verdict]` | `[]` | Every verdict code reaches, typed — the guardrails, then each bar on each cell, then the contrasts against the control — the source each printed verdict is rendered from. |
+| `bundle` | `AnalysisContextBundle` | required | The evidence every number here was computed from, written beside the page. |
 
 Its `source`, and each kind of block in `blocks`:
 
@@ -2726,15 +2608,13 @@ What the report is a report of, and how that analysis was generated — or that 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `analysis_id` | `str \| None` | `None` | The analysis the report renders; None on a code-only report. |
-| `campaign_id` | `str` | required | The campaign the analysis is of. |
-| `campaign_name` | `str \| None` | `None` | The campaign's name, which the report's title names it by; None where the report was built without it, and a code-only report's title then names the campaign by its id. |
-| `scope_id` | `str` | required | The scope both live in. |
-| `subject_id` | `str` | required | The analysed subject. |
-| `subject_kind` | `str` | required | The subject's kind; empty when the campaign declared none. |
+| `campaign_id` | `str` | required | The campaign. |
+| `campaign_name` | `str \| None` | `None` | The campaign's name, where known. |
+| `scope_id` | `str` | required | The scope the campaign lives in. |
 | `behavior` | `str` | required | The behaviour under analysis. |
-| `generated_at` | `str` | required | When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled for it. |
-| `generator_model` | `str \| None` | `None` | The model that wrote the analysis, as the provider reported it; None on a code-only report. |
-| `bundle_fingerprint` | `str` | required | The fingerprint of the evidence bundle the analysis was written over; on a code-only report, of the bundle the report was computed from. |
+| `generated_at` | `str` | required | When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled. |
+| `generator_model` | `str \| None` | `None` | The model that wrote the analysis; None on a code-only report. |
+| `bundle_fingerprint` | `str` | required | The fingerprint of the bundle the report renders. |
 
 #### `TextBlock`
 
@@ -2743,8 +2623,9 @@ What the analysis's author wrote, exactly as written, with the facts code states
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `section` | `ReportSection` | required | The section the block sits in. |
-| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none. |
+| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
+| `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `kind` | `Literal['text']` | `'text'` | Which kind of block this is. |
 | `role` | `TextRole` | required | What the author wrote it as. |
 | `body` | `ModelProse` | required | The author's words, Markdown allowed; empty where the author left a required field blank. |
@@ -2757,29 +2638,36 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `section` | `ReportSection` | required | The section the block sits in. |
-| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none. |
+| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
+| `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `kind` | `Literal['table']` | `'table'` | Which kind of block this is. |
-| `name` | `str` | required | Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report), `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata), `labels` (a classifier's per-label precision, recall and F1, a row per label and arm, on a code-only report) or `coverage` (each lever of an analysis's coverage map, the findings naming it and the next steps that would measure it). |
+| `name` | `str` | required | Which table this is, e.g. `scoreboard`, `comparisons`, `cases`. |
 | `title` | `str` | required | The table's heading. |
 | `columns` | `list[TableColumn]` | required | The columns, in display order. |
-| `rows` | `list[dict[str, TableCell]]` | required | The rows shown, in the stated order, each keyed by every column's key: each cell its value and its text, an absent value a cell whose value is null. |
+| `rows` | `list[dict[str, TableCell]]` | required | The rows shown, in the stated order, keyed by every column. |
 | `order` | `str` | required | The order the rows are in, in words. |
 | `total_rows` | `int` | required | How many rows the table has; more than are shown when it is truncated. |
+| `details` | `bool` | `False` | Whether the table is drill-down: HTML folds it in a `<details>`, closed. |
 
 #### `ChartBlock`
 
-A chart: a finding's (its intent, or why the stored chart cannot be drawn), or one code chose.
+One of the two charts a report draws, with every value it draws, so it prints as a table too.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `section` | `ReportSection` | required | The section the block sits in. |
-| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none. |
+| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
+| `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `kind` | `Literal['chart']` | `'chart'` | Which kind of block this is. |
-| `viz_type` | `ChartType` | required | The chart type the finding carries. |
-| `intent` | `ChartIntent \| None` | `None` | What the chart draws and must say; None when it cannot be drawn. |
-| `error` | `str` | `''` | Why the stored chart cannot be drawn, naming the offending field; empty when it can. |
+| `chart` | `ChartKind` | required | `outcome_bar` or `interval_rows`. |
+| `title` | `str` | required | What the chart shows. |
+| `bars` | `list[OutcomeBar]` | `[]` | An outcome bar's arms, one bar each. |
+| `rows` | `list[IntervalRow]` | `[]` | An interval chart's rows, in drawn order. |
+| `unit` | `str` | `''` | The unit an interval chart's values are stated in; empty for none. |
+| `zero_line` | `bool` | `False` | Whether the chart draws a line at zero (a difference's). |
+| `margin` | `float \| None` | `None` | A margin band either side of zero, on the chart's ruler; None when none declared. |
 
 #### `DisclosureBlock`
 
@@ -2788,8 +2676,9 @@ Something code must tell the reader that no author wrote — one idea.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `section` | `ReportSection` | required | The section the block sits in. |
-| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none. |
+| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
+| `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `kind` | `Literal['disclosure']` | `'disclosure'` | Which kind of block this is. |
 | `source` | `DisclosureSource` | required | What the disclosure speaks for. |
 | `text` | `str` | required | The disclosure, one sentence or a few. |
@@ -2851,6 +2740,12 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `run_margins` | `dict[str, float]` | `{}` | Margins on core rate measures (`accuracy`) that every member run declared alike at launch (`EvalRun.declared_margins`), by measure. |
 | `launch_declarations` | `list[str]` | `[]` | One sentence per host measure that is read here otherwise than the reading host now declares it. |
 | `run_margins_withheld` | `str \| None` | `None` | Why a margin some member runs declared on a core rate measure is read on none of its comparisons: the runs do not all declare it, or declare different ones, and a contrast between two arms read against a margin only one of them chose would be read against a margin nobody chose for the pair. |
+| `scoreboard` | `list[ArmScoreboard]` | `[]` | Each arm's census, in the order of `variant_index`: trials ran, lost to the test setup by cause, usable, passed and failed by cause, the cases run and the cases with a usable trial, and what the arm cost. |
+| `trials` | `list[TrialRow]` | `[]` | One row per trial — one case run once on one arm — with how it ended and why: its failed checks, the judge's scores and reasons, what the case asked, the tail of what the judge was handed and the recorded error, each capped. |
+| `trials_omitted` | `int` | `0` | Trials beyond the cap, left out of `trials`; the scoreboard counts every one. |
+| `case_sets` | `list[CaseSetRef]` | `[]` | The named, versioned case sets the member runs were launched against, distinct and sorted. |
+| `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused and a question asked confirms nothing (`reading_scope.post_hoc_questions`). |
+| `package_version` | `str \| None` | `None` | The 3tears-evals version that assembled the bundle; None when the build carries no distribution metadata (a source tree on the path). |
 | `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, post_hoc_questions=[], exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
 | `exclusions` | `list[ArmExclusions]` | `[]` | Per arm (cell), in coordinate order: how many of its trials were left out of its measures, by cause — `infra` (the harness faulted it), `truncated` (a judge reply cut off at the cap it was sent, named in `truncated_sent_caps`), `judge_cannot_tell` — so a shrunken n says why, arm by arm. |
 | `differential_exclusions` | `list[DifferentialExclusion]` | `[]` | Every (arm, cause) where one cause took more than DIFFERENTIAL_EXCLUSION_SHARE (10%) of the arm's trials, with every other arm's share of the same cause beside it. |
@@ -3366,7 +3261,7 @@ options:
 
 ```text
 usage: python -m threetears.evals report [-h] --host MODULE:FACTORY --scope SCOPE
-                                         [--format {markdown,json,html}] [--out PATH]
+                                         [--format {markdown,json,html}] [--out DIR]
                                          campaign
 
 Print a campaign's report — its analysis, else its evidence alone — without calling a model.
@@ -3380,9 +3275,10 @@ options:
                         the host to work in
   --scope SCOPE         the scope to read and write in
   --format {markdown,json,html}
-                        markdown (default), html (needs no script) or json (the published schema's
-                        form)
-  --out PATH            write the report to PATH instead of stdout
+                        markdown (default), html (one page, needs no script) or json (the bundle
+                        the report was computed from)
+  --out DIR             write report.html, report.md and bundle.json into DIR instead of printing
+                        one form
 ```
 
 ### `bundle`

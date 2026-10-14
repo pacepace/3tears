@@ -4,7 +4,7 @@
   the next steps whose ``lever`` names it; a gap no step names says so; a step naming a lever with no coverage
   row still renders, unattached.
 - **A lever no finding names is shown, and counted** (#631). The coverage table states each lever's findings
-  or "no finding", and the methods section counts the levers no finding names. Nothing refuses or acts on it.
+  or "no finding", and a line beside it counts the levers no finding names. Nothing refuses or acts on it.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.analysis.report import DisclosureBlock, Report, TableBlock, TextBlock, build_report
-from threetears.evals.kernel.authored import NO_CHART, AuthoredAnalysis, Finding, NextStep
+from threetears.evals.kernel.authored import AuthoredAnalysis, Finding, NextStep
 from threetears.evals.kernel.campaign import CoverageLens, LeverCoverage
 from packages.evals.tests.factories import make_analysis
 
@@ -29,7 +29,7 @@ def _finding(title: str, axes: list[str]) -> Finding:
             "confidence": "medium",
             "axes": axes,
             "evidence": [],
-            "chart": {"type": NO_CHART, "cells": [], "measures": [], "axis": "", "note": "", "caption": ""},
+            "trials": [],
             "caveats": [],
             "invalidates": [],
             "durable": "",
@@ -53,8 +53,6 @@ def _report() -> Report:
             ]
         ),
         document=AuthoredAnalysis(
-            headline="h",
-            summary="",
             findings=[_finding("wider chunks extract more", ["chunk_tokens"])],
             decisions=[],
             questions=[],
@@ -95,15 +93,13 @@ def test_a_step_whose_lever_has_no_coverage_row_still_renders_unattached() -> No
     ]
 
 
-def test_a_lever_no_finding_names_reads_no_finding_and_is_counted_in_the_methods() -> None:
+def test_a_lever_no_finding_names_reads_no_finding_and_is_counted_beside_the_table() -> None:
     report = _report()
 
     rows = _coverage(report)
-    methods = [
-        block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.section == "methods"
-    ]
+    memo = [block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.section == "memo"]
 
-    assert rows["chunk_tokens"]["findings"] == "1"
+    assert rows["chunk_tokens"]["findings"] == "F1"
     assert {lever for lever, row in rows.items() if row["findings"] == "no finding"} == {
         "retriever_top_k",
         "extraction_schema",
@@ -112,4 +108,4 @@ def test_a_lever_no_finding_names_reads_no_finding_and_is_counted_in_the_methods
     assert (
         "3 of the 4 lever(s) in the coverage map are named by no finding: retriever_top_k, extraction_schema, "
         "ocr_engine_version."
-    ) in methods
+    ) in memo

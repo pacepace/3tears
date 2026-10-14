@@ -152,7 +152,7 @@ def alias_at(bundle: Any, level: int) -> str:
 def memo_payload(bundle: Any) -> dict[str, Any]:
     """A well-formed memo in the toy host's vocabulary and nobody else's.
 
-    One finding carrying the evidence, an answer to the declared question and a decision, each
+    One finding carrying the evidence, an answer to the declared question and a recommendation, each
     resting on that finding by position. Every reading names a cell and a measure and carries no
     number -- code fills it.
 
@@ -164,10 +164,6 @@ def memo_payload(bundle: Any) -> dict[str, Any]:
     """
     narrow, wide = alias_at(bundle, TOYHOST_NARROW), alias_at(bundle, TOYHOST_WIDE)
     return {
-        "headline": "the wider chunk costs half again as much wall-clock per document.",
-        "headline_rests_on": [0],
-        "summary": "The wide setting is the slower one on every document measured, and nothing was escalated to a reviewer.",
-        "summary_rests_on": [[0]],
         "findings": [
             {
                 "title": "widening the chunk slows every document down",
@@ -178,7 +174,7 @@ def memo_payload(bundle: Any) -> dict[str, Any]:
                     {"cell": narrow, "measure_id": "total_ms", "reading": "measure"},
                     {"cell": wide, "measure_id": "total_ms", "reading": "measure"},
                 ],
-                "chart": {"type": "none", "cells": [], "measures": [], "axis": "", "note": "", "caption": ""},
+                "trials": [],
                 "caveats": [
                     {
                         "kind": "sampling",

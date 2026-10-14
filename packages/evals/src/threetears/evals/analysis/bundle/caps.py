@@ -32,6 +32,22 @@ _MAX_FACTOR_PAIR_PIVOTS = 8
 _MAX_DECLARED_CELLS = 64
 _CELL_STATES = ("ran", "not_run", "skipped_by_design", "undetermined")
 
+#: How many trials the bundle's `trials` may carry. Each carries a capped excerpt, so this bounds the bundle near a
+#: megabyte; the lost and failed trials are kept first, and every trial is still counted by the scoreboard.
+MAX_TRIALS = 500
+#: How much of what the judge was handed a trial keeps: its tail, where a conversation ends and a cut-off shows.
+MAX_EXCERPT_CHARS = 2000
+#: How much of what a case asked a trial keeps.
+MAX_INPUT_CHARS = 500
+#: How much of what a case asked its label carries.
+MAX_LABEL_INPUT_CHARS = 80
+#: How much of a judge's reasoning a trial keeps.
+MAX_REASON_CHARS = 1000
+#: How much of a recorded error a trial keeps.
+MAX_ERROR_CHARS = 500
+#: The marker a capped text ends with.
+ELLIPSIS = "…"
+
 
 def _capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None) -> tuple[list[T], int]:
     """Keep at most ``cap`` of ``items`` and count the rest, so a capped list is never read as a complete one.
@@ -57,4 +73,47 @@ def _capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None)
     return [items[index] for index in kept], len(items) - cap
 
 
-__all__: list[str] = []
+def capped_text(text: str, cap: int) -> str:
+    """``text`` cut to at most ``cap`` characters, ending in :data:`ELLIPSIS` when it was cut.
+
+    Args:
+        text: The text.
+        cap: The most characters it may keep, the marker included.
+
+    Returns:
+        The text, whole when it fits.
+    """
+    if len(text) <= cap:
+        return text
+    return text[: cap - len(ELLIPSIS)].rstrip() + ELLIPSIS
+
+
+def tail_text(text: str, cap: int) -> str:
+    """The last ``cap`` characters of ``text``, led by how many were dropped when any were.
+
+    The tail rather than the head because what a judge was handed ends where the conversation did, and a cut-off reply
+    shows there.
+
+    Args:
+        text: The text.
+        cap: The most characters of it to keep.
+
+    Returns:
+        The text whole when it fits; else ``[… N characters earlier]`` and its last ``cap`` characters.
+    """
+    if len(text) <= cap:
+        return text
+    return f"[{ELLIPSIS} {len(text) - cap} characters earlier]\n{text[-cap:]}"
+
+
+__all__ = [
+    "ELLIPSIS",
+    "MAX_ERROR_CHARS",
+    "MAX_EXCERPT_CHARS",
+    "MAX_INPUT_CHARS",
+    "MAX_LABEL_INPUT_CHARS",
+    "MAX_REASON_CHARS",
+    "MAX_TRIALS",
+    "capped_text",
+    "tail_text",
+]

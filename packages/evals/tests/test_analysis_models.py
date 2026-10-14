@@ -21,11 +21,9 @@ from pydantic import ValidationError
 from threetears.evals.kernel.authored import (
     AuthoredAnalysis,
     Caveat,
-    Chart,
     Decision,
     EvidenceRef,
     Finding,
-    MeasureRef,
     NextStep,
     QuestionAnswer,
 )
@@ -38,14 +36,11 @@ from threetears.evals.kernel.campaign import (
     GenerationProvenance,
     LeverCoverage,
     RunIndexEntry,
-    Viz,
 )
 from threetears.evals.kernel.surface import DecisionSurface
 
 # Reuse the campaign tests' in-memory evals-repo stand-in + storage wiring.
-from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, memory_storage
-
-_NO_CHART = Chart(type="none", cells=[], measures=[], axis="", note="", caption="")
+from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, empty_bundle, memory_storage
 
 
 def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overrides: Any) -> Finding:
@@ -56,7 +51,7 @@ def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overri
         confidence="medium",
         axes=[],
         evidence=[],
-        chart=_NO_CHART,
+        trials=[],
         caveats=[],
         invalidates=invalidates or [],
         durable="",
@@ -77,11 +72,11 @@ def _decision(**overrides: Any) -> Decision:
 def _make_analysis(**overrides: Any) -> EvalAnalysis:
     """Build an ``EvalAnalysis`` with EVERY nested object populated.
 
-    Two findings (the second invalidating the first, with evidence, a chart, a caveat and a
+    Two findings (the second invalidating the first, with evidence, the trials it is drawn from, a caveat and a
     durable claim), a decision and a question answer resting on real positions, a next step, one
-    resolution per finding carrying a resolved evidence row and a compiled chart, a coverage lever
-    (with the required n + dispersion), a generation-provenance block, and a run-index row — so a
-    round-trip has something in every branch.
+    resolution per finding carrying a resolved evidence row, a coverage lever (with the required n + dispersion), a
+    generation-provenance block, a run-index row and the frozen bundle — so a round-trip has something in every
+    branch.
 
     ``findings``, ``decisions``, ``questions`` and ``next`` fold into the document; ``resolutions``
     defaults to the populated pair when the findings are the default ones, and to one empty
@@ -94,14 +89,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             confidence="high",
             axes=["planner.model"],
             evidence=[EvidenceRef(cell="vk-alpha:ac-1", measure_id="elapsed_ms", reading="measure")],
-            chart=Chart(
-                type="delta_table",
-                cells=["vk-alpha:ac-1", "vk-beta:ac-1"],
-                measures=[MeasureRef(measure_id="elapsed_ms", reading="measure")],
-                axis="",
-                note="",
-                caption="Alpha against Beta on the tail.",
-            ),
+            trials=["T1", "T4"],
             caveats=[Caveat(kind="sampling", text="k=1 on this template is noise-dominated.")],
             durable="Alpha-2 is the planner model of record for Maple.",
         ),
@@ -110,8 +98,6 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
     authored_findings = overrides.pop("findings", None)
     findings = list(authored_findings or default_findings)
     document = AuthoredAnalysis(
-        headline=overrides.pop("headline", "Alpha-2 is the planner model of record."),
-        summary=overrides.pop("summary", "Cheapest, and zero timeouts."),
         findings=findings,
         decisions=overrides.pop(
             "decisions",
@@ -143,21 +129,8 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
                         dispersion="±900",
                     )
                 ],
-                chart=Viz(
-                    type="delta_table",
-                    payload={
-                        "a_label": "alpha-2",
-                        "b_label": "beta-1",
-                        "rows": [{"metric": "mean_composite", "a": 0.8, "b": 0.6, "delta": -0.2, "significant": True}],
-                    },
-                    ref={
-                        "a_cell": "vk-alpha:ac-1",
-                        "b_cell": "vk-beta:ac-1",
-                        "measures": [{"measure_id": "mean_composite"}],
-                    },
-                ),
             ),
-            FindingResolution(chart_note="the chart named a cell the surface does not have"),
+            FindingResolution(),
         ]
     else:
         resolutions = [FindingResolution() for _ in findings]
@@ -200,6 +173,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
         ),
         run_index=[RunIndexEntry(run_id="run-a", config={"model": "alpha-2"}, key_metrics={"latency_s": 42.0})],
         decision_surface=DecisionSurface(),
+        bundle=empty_bundle(campaign_id="camp-1").to_dict(),
     )
     defaults.update(overrides)
     return EvalAnalysis(**defaults)
@@ -237,18 +211,9 @@ def test_analysis_model_round_trip_preserves_every_field():
     assert reloaded == analysis
     # The nested objects most easily dropped by a shape change survive intact.
     assert len(reloaded.document.findings) == 2
-    assert reloaded.resolutions[0].chart == Viz(
-        type="delta_table",
-        payload={
-            "a_label": "alpha-2",
-            "b_label": "beta-1",
-            "rows": [{"metric": "mean_composite", "a": 0.8, "b": 0.6, "delta": -0.2, "significant": True}],
-        },
-        ref={"a_cell": "vk-alpha:ac-1", "b_cell": "vk-beta:ac-1", "measures": [{"measure_id": "mean_composite"}]},
-    )
     assert reloaded.resolutions[0].evidence[0].value == 41000.0
-    assert reloaded.resolutions[1].chart_note == "the chart named a cell the surface does not have"
-    assert reloaded.document.findings[0].chart.measures == [MeasureRef(measure_id="elapsed_ms", reading="measure")]
+    assert reloaded.document.findings[0].trials == ["T1", "T4"]
+    assert reloaded.bundle == analysis.bundle and reloaded.bundle["campaign_id"] == "camp-1"
     assert reloaded.document.findings[0].caveats == [
         Caveat(kind="sampling", text="k=1 on this template is noise-dominated.")
     ]
@@ -271,7 +236,8 @@ def test_analysis_storage_round_trip_preserves_every_field():
 
     assert loaded is not None
     assert loaded == analysis
-    assert loaded.resolutions[0].chart == analysis.resolutions[0].chart
+    assert loaded.resolutions == analysis.resolutions
+    assert loaded.bundle == analysis.bundle
     assert loaded.document == analysis.document
     assert loaded.generation == analysis.generation
 
@@ -481,9 +447,7 @@ class TestPositionsMustResolve:
 
     def test_no_resolutions_at_all_is_accepted(self):
         """Empty is the unresolved state, not a mismatch — the count is checked only once there are any."""
-        document = AuthoredAnalysis(
-            headline="h", summary="", findings=[_finding("a")], decisions=[], questions=[], next=[]
-        )
+        document = AuthoredAnalysis(findings=[_finding("a")], decisions=[], questions=[], next=[])
         analysis = EvalAnalysis(
             scope_id="uni-1",
             document=document,
@@ -493,6 +457,7 @@ class TestPositionsMustResolve:
             behavior="b",
             generation=_make_analysis().generation,
             decision_surface=DecisionSurface(),
+            bundle=empty_bundle().to_dict(),
         )
         assert analysis.resolutions == []
 
@@ -517,7 +482,6 @@ class TestPositionsMustResolve:
 @pytest.mark.parametrize(
     "build",
     [
-        pytest.param(lambda: Viz(type="pie_chart", ref={}), id="Viz.type"),
         pytest.param(lambda: _decision(disposition="maybe"), id="Decision.disposition"),
         pytest.param(lambda: NextStep(title="e", why="", leverage="huge", lever=""), id="NextStep.leverage"),
         pytest.param(

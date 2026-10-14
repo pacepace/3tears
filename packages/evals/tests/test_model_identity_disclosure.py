@@ -21,6 +21,7 @@ from threetears.evals.analysis import (
     EvalSummary,
     Report,
     UnconfirmedModelIdentity,
+    analysis_bundle,
     assemble_context_bundle,
     build_code_only_report,
     build_report,
@@ -254,9 +255,7 @@ class TestTheBundleAndItsCodeOnlyReport:
 
         assert bundle.model_identity_disclosure is not None
         assert bundle.model_identity_disclosure.startswith(f"{_HEADLINE} the candidate (asked for ")
-        report = build_code_only_report(
-            bundle, measures=toyhost_profile().measures, assembled_at="2026-10-12T00:00:00+00:00"
-        )
+        report = build_code_only_report(bundle, assembled_at="2026-10-12T00:00:00+00:00")
         assert _said(report) == [bundle.model_identity_disclosure]
         assert report_markdown(report).count(_HEADLINE) == 1
 
@@ -264,23 +263,24 @@ class TestTheBundleAndItsCodeOnlyReport:
         bundle = _campaign_bundle(served=_SERVED)
 
         assert bundle.model_identity_disclosure is None
-        report = build_code_only_report(
-            bundle, measures=toyhost_profile().measures, assembled_at="2026-10-12T00:00:00+00:00"
-        )
+        report = build_code_only_report(bundle, assembled_at="2026-10-12T00:00:00+00:00")
         assert _said(report) == []
 
 
 class TestTheAnalysisReport:
-    async def test_build_report_says_the_disclosure_once_among_the_methods(self) -> None:
+    async def test_build_report_says_the_frozen_bundle_s_disclosure_once_among_the_methods(self) -> None:
         sentence = f"{_HEADLINE} the candidate (asked for {_ALIAS}) made calls whose response named no model."
         _, analysis, _ = await toy_report()
+        frozen = analysis_bundle(analysis)
+        said = frozen.model_copy(update={"model_identity_disclosure": sentence})
 
-        report = build_report(analysis, model_identity=sentence)
+        report = build_report(analysis.model_copy(update={"bundle": said.to_dict()}))
 
         (block,) = [block for block in report.blocks if isinstance(block, DisclosureBlock) and block.text == sentence]
         assert (block.section, block.source) == ("methods", "measurement")
         assert report_markdown(report).count(_HEADLINE) == 1
-        assert _said(build_report(analysis)) == []
+        unsaid = frozen.model_copy(update={"model_identity_disclosure": None})
+        assert _said(build_report(analysis.model_copy(update={"bundle": unsaid.to_dict()}))) == []
 
     async def test_reading_an_analysis_reads_the_disclosure_off_its_runs_results(self) -> None:
         host, analysis, report = await toy_report()

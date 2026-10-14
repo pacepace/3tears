@@ -8,8 +8,9 @@ engine states a difference:
   levels of a lever carries ``materiality`` — the input a generator's caveats are written from — and so
   does every comparison a declared question's family tests (``FamilyComparison.materiality``, pinned in
   ``test_multiple_comparisons.py``);
-* **the decision surface**, which freezes each measure's threshold beside its facts, so a delta table
-  drawn from it labels a row ``immaterial`` in its values table and names it in a disclosure.
+* **the decision surface**, which freezes each measure's threshold beside its facts, so a stored analysis keeps
+  what was declared worth acting on; the report's contrasts word an immaterial delta as such from the comparison's
+  own ``materiality``.
 
 Silence is conservative: a measure that declared no threshold has every difference material.
 """
@@ -23,7 +24,6 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import MeasureMovement, assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import cell_measure_facts
-from threetears.evals.analysis.viz import chart_intent
 from threetears.evals.kernel import MetricDescriptor, materiality
 from threetears.evals.schema.models import LatencyMetrics
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
@@ -32,7 +32,6 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyho
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
-from packages.evals.tests.test_viz_refs import build, chart, measure_facts, ref, surface
 
 
 def _latency(threshold: float | None) -> MetricDescriptor:
@@ -145,7 +144,7 @@ def test_a_movement_at_or_beyond_the_threshold_is_material() -> None:
     assert _divergent_movements(delta / 2)[_P95].materiality == "material"
 
 
-# --- the decision surface carries the threshold, and a delta drawn from it is labelled ------------------
+# --- the decision surface carries the threshold ----------------------------------------------------------------
 
 
 def test_the_decision_surface_freezes_each_measures_threshold() -> None:
@@ -163,32 +162,3 @@ def test_the_decision_surface_freezes_each_measures_threshold() -> None:
 
     assert facts[FIELD_ACCURACY].materiality_threshold == 0.02
     assert facts[FIELD_ACCURACY].population == "scored"
-
-
-def _delta_table(facts: dict[str, MeasureFacts]):
-    payload = build(chart("delta_table", [ref("A"), ref("B")], ["pass_rate", "total_ms"]), surface(facts=facts))
-    return payload, chart_intent("delta_table", payload)
-
-
-def test_a_delta_below_its_threshold_is_labelled_immaterial_on_the_surface() -> None:
-    """``total_ms`` moves 200ms between A and B, under a 250ms threshold; ``pass_rate`` moves 0.2, over 0.05."""
-    facts = measure_facts()
-    facts["total_ms"] = facts["total_ms"].model_copy(update={"materiality_threshold": 250.0})
-    facts["pass_rate"] = facts["pass_rate"].model_copy(update={"materiality_threshold": 0.05})
-
-    payload, compiled = _delta_table(facts)
-
-    rows = {row["metric"]: row for row in payload["rows"]}
-    assert (rows["Turn time"]["materiality"], rows["pass_rate"]["materiality"]) == ("immaterial", "material")
-    table = {row["metric"]: row for row in compiled.rows}
-    assert table["Turn time"]["delta"].endswith("(immaterial)")
-    assert not table["pass_rate"]["delta"].endswith("(immaterial)")
-    (disclosure,) = [d for d in compiled.disclosures if "materiality threshold" in d]
-    assert "1 of 2 changes" in disclosure and "Turn time" in disclosure
-
-
-def test_a_surface_with_no_thresholds_labels_nothing_immaterial() -> None:
-    payload, compiled = _delta_table(measure_facts())
-
-    assert {row["materiality"] for row in payload["rows"]} == {"material"}
-    assert not any("materiality threshold" in d for d in compiled.disclosures)

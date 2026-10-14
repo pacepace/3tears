@@ -257,16 +257,14 @@ class TestAMeasureDeclaredAGuardrail:
 class TestTheCodeOnlyReportShowsTheGuardrails:
     def test_the_guardrails_table_and_how_it_was_decided(self):
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST))
-        report = build_code_only_report(
-            bundle, measures=toyhost_profile().measures, assembled_at="2026-10-09T00:00:00+00:00"
-        )
+        report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "guardrails"]
-        assert table.section == "guardrails"
+        assert table.section == "contrasts"
         (row,) = table.values()
         assert row["guardrail"] == f"{BOUNDARY} (judged)"
         assert str(row["decision"]).startswith("breached")
         assert any(
-            b.section == "guardrails" and b.source == "guardrails"
+            b.section == "contrasts" and b.source == "guardrails"
             for b in report.blocks
             if isinstance(b, DisclosureBlock)
         )
@@ -293,18 +291,20 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         assert not scope.questions_declared
         assert scope.exploratory_measures == [] and scope.exploratory_dimensions == []
         assert scope.disclosure is not None and "every finding it supports is exploratory" in scope.disclosure
-        report = build_code_only_report(
-            bundle, measures=toyhost_profile().measures, assembled_at="2026-10-09T00:00:00+00:00"
-        )
-        said = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
-        assert [b.text for b in said] == [scope.disclosure]
+        report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
+        # Said once, as the report's basis line; no reading's line repeats it.
+        said = [
+            b
+            for b in report.blocks
+            if isinstance(b, DisclosureBlock) and ("EXPLORATORY" in b.text or b.source == "scope")
+        ]
+        assert [(b.section, b.source) for b in said] == [("header", "basis")]
+        assert said[0].text.startswith("EXPLORATORY — no question was declared before the run")
 
     def test_the_code_only_report_names_the_exploratory_readings_where_questions_are_declared(self):
         cost = Question(id="q-cheaper", text="is it cheaper?", merit_axes=["cost"])
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), questions=[cost])
-        report = build_code_only_report(
-            bundle, measures=toyhost_profile().measures, assembled_at="2026-10-09T00:00:00+00:00"
-        )
+        report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
-        assert said.section == "questions" and f"{CAPABILITY} (judged)" in said.text
+        assert said.section == "memo" and f"{CAPABILITY} (judged)" in said.text
         assert BOUNDARY not in said.text

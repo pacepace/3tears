@@ -6,26 +6,27 @@ host's real report and on a report whose author wrote markup into every field a 
 the property exists for, since a page that is script-free only while its prose is polite is not.
 
 What "runs" means here: a ``script`` element; any element that embeds or loads another document or
-resource (``iframe``, ``object``, ``embed``, ``link``, ``base``, ``img``, ``meta`` with ``http-equiv``);
-an event-handler attribute (``on*``); and any attribute value that is a ``javascript:`` URL. The page
-carries no URL at all, so the last is checked on every attribute rather than on a list of URL attributes —
-except ``data-*``, which a browser never navigates to or runs, and which carries a chart's intent as JSON
-(an author's caption may say ``javascript:`` there and remain words).
+resource (``iframe``, ``object``, ``embed``, ``link``, ``base``, ``img``, ``meta`` with ``http-equiv``, and inside
+the inline SVG ``image``, ``use`` and ``foreignObject``); an event-handler attribute (``on*``); and any attribute
+value that is a ``javascript:`` URL. The page links only to places on itself (``#F1``, ``#T3``), so the last is
+checked on every attribute rather than on a list of URL attributes — except ``data-*``, which a browser never
+navigates to or runs. The charts are inline SVG the package draws, and are held to the same rules.
 """
 
 from __future__ import annotations
 
-import json
 from html.parser import HTMLParser
+from typing import Any
 
 from threetears.evals.analysis import report_html
 from threetears.evals.analysis.report import Report
-from packages.evals.tests.report_support import minimal_report, toy_report
-from packages.evals.tests.chart_examples import EVERY_TYPE
-from threetears.evals.analysis.viz import chart_intent
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
+from packages.evals.tests.report_support import toy_report
 
 #: Elements that execute, embed or load something — none belongs on a document that reads without a script.
-_ACTIVE_ELEMENTS = frozenset({"script", "iframe", "object", "embed", "link", "base", "img", "frame", "frameset", "svg"})
+_ACTIVE_ELEMENTS = frozenset(
+    {"script", "iframe", "object", "embed", "link", "base", "img", "frame", "frameset", "image", "use", "foreignobject"}
+)
 
 #: What an author might write into a field a model fills, to try to make the page run something.
 _HOSTILE = (
@@ -76,17 +77,33 @@ def _what_runs(page: str) -> list[str]:
 
 
 def _hostile_report() -> Report:
-    """A report whose every author-written field, and a chart caption, carries markup."""
-    intent = chart_intent("breakdown", {**EVERY_TYPE["breakdown"], "caption": _HOSTILE})
-    return minimal_report(
-        headline=_HOSTILE,
-        blocks=[
-            {"kind": "text", "section": "summary", "role": "summary", "body": f"- {_HOSTILE}\n- **bold** `code`"},
-            {"kind": "text", "section": "findings", "role": "finding_title", "finding": 0, "body": _HOSTILE},
-            {"kind": "text", "section": "findings", "role": "finding_body", "finding": 0, "body": _HOSTILE},
+    """A report whose every author-written field, every label a chart draws and every trial's text carries markup."""
+    fields: dict[str, Any] = {
+        "basis": "analysis",
+        "title": _HOSTILE,
+        "finding_count": 1,
+        "source": {
+            "analysis_id": "a",
+            "campaign_id": "c",
+            "scope_id": "s",
+            "behavior": "b",
+            "generated_at": "2026-10-05T00:00:00+00:00",
+            "generator_model": "m",
+            "bundle_fingerprint": "f",
+        },
+        "blocks": [
+            {"kind": "disclosure", "section": "header", "source": "verdict", "text": _HOSTILE},
+            {"kind": "text", "section": "memo", "role": "finding_title", "finding": 0, "body": _HOSTILE},
             {
                 "kind": "text",
-                "section": "findings",
+                "section": "memo",
+                "role": "finding_body",
+                "finding": 0,
+                "body": f"- {_HOSTILE}\n- **bold** `code`",
+            },
+            {
+                "kind": "text",
+                "section": "memo",
                 "role": "caveat",
                 "finding": 0,
                 "body": _HOSTILE,
@@ -94,15 +111,61 @@ def _hostile_report() -> Report:
             },
             {
                 "kind": "chart",
-                "section": "findings",
-                "finding": 0,
-                "viz_type": "breakdown",
-                "intent": intent.model_dump(),
+                "section": "scoreboard",
+                "chart": "outcome_bar",
+                "title": _HOSTILE,
+                "bars": [{"arm": _HOSTILE, "segments": [{"state": "lost", "label": _HOSTILE, "count": 2}]}],
             },
-            {"kind": "chart", "section": "findings", "finding": 0, "viz_type": "frontier", "error": _HOSTILE},
+            {
+                "kind": "chart",
+                "section": "memo",
+                "finding": 0,
+                "chart": "interval_rows",
+                "title": _HOSTILE,
+                "rows": [{"label": _HOSTILE, "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6, "verdict": _HOSTILE}],
+                "unit": _HOSTILE,
+            },
+            {
+                "kind": "table",
+                "section": "cases",
+                "name": "cases",
+                "title": _HOSTILE,
+                "columns": [
+                    {"key": "case", "header": "Case"},
+                    {"key": "label", "header": _HOSTILE},
+                    {"key": "trials", "header": "Trials"},
+                ],
+                "rows": [
+                    {"case": {"value": "case 1"}, "label": {"value": _HOSTILE}, "trials": {"value": f"T1 {_HOSTILE}"}}
+                ],
+                "order": _HOSTILE,
+                "total_rows": 1,
+            },
+            {
+                "kind": "trial",
+                "section": "trials",
+                "anchor": "T1",
+                "trial_id": "T1",
+                "case_label": _HOSTILE,
+                "arm": _HOSTILE,
+                "repeat": 1,
+                "state": "lost",
+                "cause_words": _HOSTILE,
+                "first_input": _HOSTILE,
+                "excerpt": _HOSTILE,
+                "failed_checks": [{"name": _HOSTILE, "expression": _HOSTILE}],
+                "judge": [
+                    {"dim": _HOSTILE, "criterion": _HOSTILE, "score": None, "scale": "ordinal", "reason": _HOSTILE}
+                ],
+                "error_words": _HOSTILE,
+                "result_id": _HOSTILE,
+                "open": True,
+            },
             {"kind": "disclosure", "section": "methods", "source": "generation", "text": _HOSTILE},
         ],
-    )
+        "bundle": toyhost_bundle(),
+    }
+    return Report.model_validate(fields)
 
 
 async def test_the_toy_reports_html_contains_no_script_element() -> None:
@@ -149,13 +212,11 @@ def test_the_markdown_a_memo_uses_still_renders() -> None:
     assert {"ul", "li", "strong", "code"} <= set(tags)
 
 
-def test_the_embedded_intent_is_the_charts_intent_even_when_its_caption_is_markup() -> None:
-    report = _hostile_report()
-    (figure,) = [attrs for tag, attrs in _parsed(report_html(report)).tags if tag == "figure"]
-    embedded = dict(figure)["data-chart-intent"]
-
-    assert embedded is not None
-    assert json.loads(embedded)["caption"] == _HOSTILE
+def test_a_chart_draws_the_labels_it_is_given_as_text() -> None:
+    page = report_html(_hostile_report())
+    assert page.count("<svg") == 2
+    svg_text = [text for text in _parsed(page).text if "<script>alert(1)</script>" in text]
+    assert len(svg_text) > 4, "every label, title and description survives as words"
 
 
 def test_the_check_sees_a_script_where_one_is() -> None:
@@ -164,3 +225,4 @@ def test_the_check_sees_a_script_where_one_is() -> None:
     assert _what_runs('<p onclick="x">y</p>') == ["p[onclick]"]
     assert _what_runs('<a href=" JavaScript:x">y</a>') == ["a[href=javascript:]"]
     assert _what_runs("<img src=x>") == ["<img>"]
+    assert _what_runs('<svg><use href="#x"></use></svg>') == ["<use>"]

@@ -84,9 +84,8 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         )
         assert not is_error and document is not None and document["format"] == "markdown"
         assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        assert report.startswith(
-            "# chunk width sweep: the wider chunk costs half again as much wall-clock per document."
-        )
+        title = report.splitlines()[0]
+        assert title.startswith("# chunk width sweep · ") and "analysis by" in title
 
 
 async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:

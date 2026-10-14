@@ -2,8 +2,8 @@
 
 The generating model names WHERE a number lives — a cell and a measure (or a judged dimension) —
 and this module reads the figure off the analysis's :class:`~threetears.evals.kernel.surface.DecisionSurface`.
-Every code-filled number on an analysis goes through :func:`resolve_reading`: evidence rows and
-the chart compilers in :mod:`threetears.evals.analysis.viz_refs`. One
+Every code-filled number on an analysis goes through :func:`resolve_reading`: its evidence rows, and the
+interval rows the report draws under a finding. One
 resolver rather than one per consumer, because two lookups of "the value of this measure at this
 cell" are two answers to one question, and the input that separates them is the one nobody wrote a
 fixture for.
@@ -13,7 +13,7 @@ generator's repair round feeds back — the message names what the cell DOES hol
 pick a real reading instead of guessing again.
 
 **The writer names a cell by a short alias** (``c1``, ``c2``, …) that :func:`cell_aliases` mints and
-:func:`cell_of_alias` reads back — one mapping for evidence rows, charts, decisions and prose alike.
+:func:`cell_of_alias` reads back — one mapping for evidence rows, decisions and prose alike.
 The generator translates every alias to the cell's full ``cell_ref`` before resolving or storing
 anything, so everything below this seam, and every stored analysis, carries the full identity.
 
@@ -28,14 +28,13 @@ Observations of a single case carry no between-case spread, so such a reading ha
 :attr:`ResolvedReading.dispersion` says why.
 
 **One reading is a** :class:`ReadingRef` — a name and the namespace it is in, stated rather than
-inferred — wherever code reads one off an authored evidence row or chart
-(``viz_refs.reference_from_chart``). The authored models have already been validated strictly, so a
+inferred — wherever code reads one off an authored evidence row. The authored models have already been validated strictly, so a
 reading carries no policy of its own: what it names either resolves here or is refused here.
 
 **Every interval here is computed and labelled at one level.** A measure's arrives already computed
 on its summary, a judged dimension's is computed here from its cluster-robust sem, and both widths come from
 :func:`threetears.evals.analysis.stats.mean_interval` at :data:`threetears.evals.analysis.stats.INTERVAL_LEVEL` — the same
-constant the dispersion text and every chart caption state. The level is not a second decision this
+constant the dispersion text and every interval the report draws state. The level is not a second decision this
 module makes; it reads the one the width was computed at.
 """
 

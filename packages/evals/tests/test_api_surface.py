@@ -75,7 +75,7 @@ def test_no_signature_names_a_module_below_a_root() -> None:
 
 
 def test_a_name_belongs_to_the_root_holding_its_defining_module_not_the_first_that_exports_it() -> None:
-    assert surface.home_root("threetears.evals.kernel.host", "VALIDATED_SLOTS") == "threetears.evals.kernel.host"
+    assert surface.home_root("threetears.evals.kernel.host", "StyleProfile") == "threetears.evals.kernel.host"
     assert surface.home_root("threetears.evals.ops", "EvalSummary") == "threetears.evals.analysis"
 
 

@@ -10,9 +10,9 @@ imports none of them.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, computed_field, model_validator
 
@@ -67,6 +67,7 @@ from threetears.evals.kernel.metrics import (
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import (
     ApparatusProvenance,
+    CaseSetRef,
     ClientRequestSettings,
     GoalCheckProof,
     RubricAxis,
@@ -1199,6 +1200,13 @@ class RunSummary(EvalDocumentModel):
     measures: MeasureCollection = Field(
         default_factory=MeasureCollection, description="Scope-tagged measures over the run's results."
     )
+    judge_shares_candidate_model: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Each model that both judged the run's answers and produced them, sorted: a model tends to rate its own "
+            "output higher, so a judged reading of this run's arm may favour it for that reason alone. Empty when none."
+        ),
+    )
 
 
 class DeclaredLevelCoverage(EvalDocumentModel):
@@ -2006,6 +2014,122 @@ class DifferentialExclusion(EvalDocumentModel):
     )
 
 
+#: Why a trial was lost to the test setup, as :func:`~threetears.evals.kernel.result_condition.trial_exclusion` names
+#: it: ``infra`` (the harness faulted it), ``judge_cannot_tell`` (the judge said it could not score a dimension the
+#: trial needs), ``truncated`` (the judge's reply was cut off at its output cap). A string rather than the kernel's
+#: ``Literal`` so a cause a newer build names reads as itself rather than failing the bundle.
+LossCause = str
+
+#: Why a trial failed: the candidate's own failure (:data:`~threetears.evals.kernel.CandidateFailureCause`:
+#: ``model_failed``, ``turn_budget``, ``output_cap``), a check it failed (``check``: a goal check, or a pass/fail
+#: scorer), or a judged dimension scored under the bar (``judged``).
+FailCause = Literal["model_failed", "turn_budget", "output_cap", "check", "judged"]
+
+#: How a trial ended: passed, failed (the candidate's failure, counted against it) or lost (the test setup failed,
+#: and it counts for nothing).
+TrialState = Literal["passed", "failed", "lost"]
+
+
+class TrialCheck(EvalDocumentModel):
+    """A check a trial failed: its reader name, and the expression it evaluates."""
+
+    name: str = Field(min_length=1, description="The check as a reader names it.")
+    expression: str = Field(min_length=1, description="What it evaluates, as written.")
+
+
+class TrialJudgement(EvalDocumentModel):
+    """What the judge said of one dimension on one trial."""
+
+    dim: str = Field(min_length=1, description="The judged dimension, by its reader name.")
+    criterion: str | None = Field(
+        default=None, description="The rubric criterion the judge was asked; None when the template is not to hand."
+    )
+    score: int | None = Field(default=None, description="The score, on the dimension's scale; None for can't tell.")
+    scale: str = Field(min_length=1, description="`ordinal` (1 to 5) or `pass_fail` (1 pass, 0 fail).")
+    reason: str = Field(description="The judge's reasoning, or why it could not tell; capped.")
+
+
+class TrialRow(EvalDocumentModel):
+    """One trial — one case run once on one arm — and how it ended, with what a reader needs to see why."""
+
+    trial_id: str = Field(min_length=1, description="The trial, as the report numbers it (`T1`, `T2`, ...).")
+    case_id: str = Field(min_length=1, description="The test case.")
+    case_label: str = Field(
+        min_length=1,
+        description=(
+            "The case as a reader names it: its stratum, then the first 80 characters of the first input its first "
+            "trial's transcript recorded, else its id."
+        ),
+    )
+    stratum: str | None = Field(default=None, description="The case's stratum; None when it declares none.")
+    arm: str = Field(min_length=1, description="The arm's variant key.")
+    repeat: int = Field(ge=1, description="Which repeat of the case this is.")
+    state: TrialState = Field(description="passed, failed or lost.")
+    cause: str | None = Field(
+        default=None,
+        description="Why it failed (`FailCause`) or was lost (`LossCause`); None for a passed trial.",
+    )
+    failed_checks: list[TrialCheck] = Field(default_factory=list, description="Each check it failed.")
+    judged: dict[str, int] = Field(default_factory=dict, description="Each judged dimension's score, by reader name.")
+    judge: list[TrialJudgement] = Field(
+        default_factory=list, description="What the judge said, dimension by dimension."
+    )
+    first_input: str = Field(default="", description="What the case asked, as the judge was shown it; capped.")
+    excerpt: str = Field(
+        default="",
+        description=(
+            "The tail of what the judge was handed, at most the cap, led by `[… N characters earlier]` when cut; "
+            "empty when nothing was rendered for a judge."
+        ),
+    )
+    error_words: str | None = Field(
+        default=None, description="The recorded error, as the run wrote it, for a lost or failed trial; capped."
+    )
+    result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
+
+
+class ArmScoreboard(EvalDocumentModel):
+    """One arm's census: how many trials it ran, lost, could use, passed and failed, and what it cost."""
+
+    variant_key: str = Field(min_length=1, description="The arm.")
+    ran: int = Field(ge=0, description="Trials run.")
+    lost: dict[str, int] = Field(default_factory=dict, description="Trials lost to the test setup, by cause.")
+    usable: int = Field(ge=0, description="Trials not lost: `ran` less every lost one.")
+    passed: int = Field(ge=0, description="Usable trials that passed.")
+    failed: dict[str, int] = Field(default_factory=dict, description="Usable trials that failed, by cause.")
+    cases: int = Field(ge=0, description="Distinct cases run.")
+    usable_cases: int = Field(ge=0, description="Distinct cases with at least one usable trial.")
+    no_criterion: int = Field(
+        default=0,
+        ge=0,
+        description="Passed trials that carried no pass criterion (no check, scorer or judge): nothing could fail them.",
+    )
+    test_cost_usd: float | None = Field(
+        default=None, description="What this arm's trials cost, every role; None when no result was priced."
+    )
+    n_cost_unpriced: int = Field(default=0, ge=0, description="Trials whose spend went unpriced, so not in the cost.")
+    reply_cost_usd: float | None = Field(
+        default=None,
+        description="The candidate's spend per trial that took a turn — what the model costs per reply; None unmeasured.",
+    )
+
+    @model_validator(mode="after")
+    def _the_census_adds_up(self) -> ArmScoreboard:
+        """Refuse a census whose parts do not sum to its whole.
+
+        Raises:
+            ValueError: lost and usable do not make ran, or passed and failed do not make usable.
+        """
+        lost = sum(self.lost.values())
+        if lost + self.usable != self.ran:
+            raise ValueError(f"arm {self.variant_key}: {lost} lost + {self.usable} usable != {self.ran} ran")
+        if self.passed + sum(self.failed.values()) != self.usable:
+            raise ValueError(
+                f"arm {self.variant_key}: {self.passed} passed + {sum(self.failed.values())} failed != {self.usable} usable"
+            )
+        return self
+
+
 class AnalysisContextBundle(EvalDocumentModel):
     """The closed context bundle a generation prompt runs over.
 
@@ -2051,7 +2175,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # `request_settings_disclosure` is fingerprinted. 54: `exclusions` (each arm's excluded trials by cause, a cut-off
     # judge reply counted as `truncated` with the cap it was sent) and `differential_exclusions`; a question declared
     # after the campaign's first run no longer makes it confirmatory (`reading_scope.post_hoc_questions`,
-    # `question_declared`), which moves the families, the reading scope and the verdict order over unchanged runs.
+    # `question_declared`), which moves the families, the reading scope and the verdict order over unchanged runs; and
+    # the trials and their census — `scoreboard` (each arm's ran, lost, usable, passed and failed), `trials` (one row
+    # per trial, capped) and `trials_omitted`, `case_sets`, `design_frozen_at` and each run summary's
+    # `judge_shares_candidate_model` — added; `package_version` is carried and left out of the fingerprint.
     schema_version: int = Field(
         default=54, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
@@ -2415,6 +2542,45 @@ class AnalysisContextBundle(EvalDocumentModel):
             "runs do not all declare it, or declare different ones, and a contrast between two arms read against a "
             "margin only one of them chose would be read against a margin nobody chose for the pair. None when no "
             "run margin was withheld."
+        ),
+    )
+    scoreboard: list[ArmScoreboard] = Field(
+        default_factory=list,
+        description=(
+            "Each arm's census, in the order of `variant_index`: trials ran, lost to the test setup by cause, usable, "
+            "passed and failed by cause, the cases run and the cases with a usable trial, and what the arm cost. A "
+            "count, never a score: `usable` is how many trials could be read, not how good they were."
+        ),
+    )
+    trials: list[TrialRow] = Field(
+        default_factory=list,
+        description=(
+            "One row per trial — one case run once on one arm — with how it ended and why: its failed checks, the "
+            "judge's scores and reasons, what the case asked, the tail of what the judge was handed and the recorded "
+            "error, each capped. Ordered by case, then arm, then repeat; capped, lost and failed trials kept first, "
+            "and `trials_omitted` counts the rest."
+        ),
+    )
+    trials_omitted: int = Field(
+        default=0, ge=0, description="Trials beyond the cap, left out of `trials`; the scoreboard counts every one."
+    )
+    case_sets: list[CaseSetRef] = Field(
+        default_factory=list,
+        description="The named, versioned case sets the member runs were launched against, distinct and sorted.",
+    )
+    design_frozen_at: str | None = Field(
+        default=None,
+        description=(
+            "When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs "
+            "included, after which a design edit is refused and a question asked confirms nothing "
+            "(`reading_scope.post_hoc_questions`). None when the campaign holds no run yet."
+        ),
+    )
+    package_version: str | None = Field(
+        default=None,
+        description=(
+            "The 3tears-evals version that assembled the bundle; None when the build carries no distribution metadata "
+            "(a source tree on the path). Left out of `fingerprint()`: a build is not evidence."
         ),
     )
     reading_scope: ReadingScope = Field(
@@ -2812,7 +2978,26 @@ class AnalysisContextBundle(EvalDocumentModel):
         Returns:
             A 64-character lowercase hex digest.
         """
-        return canonical_digest(self.to_dict())
+        return evidence_digest(self.to_dict())
+
+
+#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, not what it read.
+_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version"})
+
+
+def evidence_digest(document: Mapping[str, Any]) -> str:
+    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``).
+
+    The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
+    rather than the model — a frozen reporter case checks the bundle it holds against the fingerprint it recorded.
+
+    Args:
+        document: A bundle as its stored dict.
+
+    Returns:
+        A 64-character lowercase hex digest.
+    """
+    return canonical_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE})
 
 
 class BundleInspection(EvalDocumentModel):
@@ -3100,4 +3285,5 @@ __all__ = [
     "UNVERIFIED_FOLD_PREFIX",
     "VerdictOrder",
     "WholeSwing",
+    "evidence_digest",
 ]

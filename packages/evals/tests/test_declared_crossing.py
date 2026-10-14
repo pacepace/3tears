@@ -109,13 +109,13 @@ def test_the_same_runs_under_a_full_crossing_read_the_off_star_cells_as_gaps() -
 
 def test_a_star_cell_that_never_ran_is_a_gap_and_the_report_names_both_apart() -> None:
     bundle = _bundle(_design(crossing="star"), cells=[cell for cell in STAR if cell != (256, 8)])
-    report = build_code_only_report(bundle, measures=toyhost_profile().measures, assembled_at="2026-10-10T00:00:00Z")
+    report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00Z")
     texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
 
     assert _states(bundle)[(256, 8)] == "not_run"
-    (gaps,) = [text for text in texts if text.startswith("Declared cells never run:")]
-    (skipped,) = [text for text in texts if text.startswith("Cells skipped by design:")]
-    assert gaps == "Declared cells never run: 256tok × 8chunks."
+    (gaps,) = [text for text in texts if text.startswith("Declared arms never run:")]
+    (skipped,) = [text for text in texts if text.startswith("Arms skipped by design:")]
+    assert gaps == "Declared arms never run: 256tok × 8chunks."
     assert skipped.count("×") == len(OFF_STAR)
 
 

@@ -674,7 +674,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.REGENERABLE_SCHEMA_VERSION",
         "threetears.evals.schema.CASSETTE_SCHEMA_VERSION",
         "threetears.evals.kernel.IDENTITY_VERSION",
-        "threetears.evals.analysis.REPORT_VERSION",
         "threetears.evals.analysis.CELL_MODEL_VERSION",
         # The closed vocabularies a host writes and passes: each open stored vocabulary's values this build knows.
         "threetears.evals.schema.KnownUsageRole",
@@ -739,7 +738,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.format_signed",
         "threetears.evals.analysis.ChartBlock",
         "threetears.evals.kernel.EvalAnalysis",
-        "threetears.evals.vega.VegaRenderer",
         # The negotiation every completion client shares, the adapter's and a host's own: what a client of its own
         # calls to never fail a request for a setting a model lacks (the host guide's own-client section), the
         # values it reads and passes, the readers it hands a failure to, and the check its suite runs over it.

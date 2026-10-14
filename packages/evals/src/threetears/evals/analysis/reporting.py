@@ -1856,6 +1856,56 @@ def pooled_cost_compositions(results: Sequence[EvalResult] | Sequence[ScoreRecor
     return sorted(list(c) for c in {tuple(result.cost_roles) for result in results if result.cost_roles is not None})
 
 
+def self_judging_models(run: EvalRun, results: Iterable[EvalResult]) -> list[str]:
+    """The models that both judged a run's answers and produced them, sorted; empty when none did.
+
+    The judges are the run's pins and every model a score names as having served it; the candidates are the run's
+    model and every model its candidate rows name. A model tends to rate its own output higher, so a judged reading
+    of an arm whose answers its judge's model produced may favour that arm for that reason alone.
+
+    Args:
+        run: The run.
+        results: Its results.
+
+    Returns:
+        The shared models.
+    """
+    results = list(results)
+    judges = {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
+    judges |= {score.served_model for result in results for score in result.rubric_scores if score.served_model}
+    if not judges:
+        return []
+    candidates = {run.candidate_model}
+    candidates |= {
+        model
+        for result in results
+        for row in result.usage
+        if row.role == "candidate"
+        for model in (row.model, row.served_model)
+        if model
+    }
+    return sorted(judges & candidates)
+
+
+def self_judging_text(models: list[str], whose: str) -> str:
+    """The disclosure that a judge graded answers its own model produced, as every surface words it.
+
+    One wording for a run's summary and a campaign's report, so the warning never reads two ways.
+
+    Args:
+        models: The models that both judged and answered.
+        whose: Whose answers they produced (``"the candidate"``, ``"arm candidate=baseline"``).
+
+    Returns:
+        One sentence.
+    """
+    return (
+        f"self-judging: the judge's model {', '.join(models)} also produced {whose}'s answers, and a model tends "
+        "to rate its own output higher, so its judged scores may favour them; judge with another model to rule "
+        "that out"
+    )
+
+
 __all__ = [
     "dim_judge_model",
     "FrontierDominance",
@@ -1888,6 +1938,8 @@ __all__ = [
     "SCOPED_METRICS_HELP",
     "ScoreProjection",
     "ScoreRecord",
+    "self_judging_models",
+    "self_judging_text",
     "unconfirmed_model_identities",
     "UnconfirmedModelIdentity",
 ]

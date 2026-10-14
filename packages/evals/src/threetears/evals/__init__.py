@@ -3,17 +3,14 @@
 The engine is five packages: :mod:`~threetears.evals.schema` (the stored shapes and the ports a host
 implements), :mod:`~threetears.evals.kernel` (the behaviour every other package runs on, and the host
 contract under :mod:`~threetears.evals.kernel.host`), :mod:`~threetears.evals.run` (launching, executing, judging
-and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and reports, with
-charts under :mod:`~threetears.evals.analysis.viz`) and :mod:`~threetears.evals.gen` (generating
+and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and reports) and :mod:`~threetears.evals.gen` (generating
 cases), plus three that sit beside the engine rather than inside it: :mod:`~threetears.evals.storage`
 (the in-memory reference store), :mod:`~threetears.evals.testing` (the store conformance kit) and
 :mod:`~threetears.evals.quick` (``run_eval`` and the command line). Above the engine sit the surfaces an
 agent drives it through: :mod:`~threetears.evals.ops` (typed operations, and one job contract for long
 work), :mod:`~threetears.evals.actions` (the action catalogue every transport mounts) and
-:mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). One more is an
-optional adapter: :mod:`~threetears.evals.vega`, the Vega-Lite chart renderer (install
-``3tears-evals[vega]``), which reads the core's chart intent and which nothing in the core imports. And two
-are for a completion client: :mod:`~threetears.evals.negotiation` (sending the closest request settings a model
+:mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). Two more are for a
+completion client: :mod:`~threetears.evals.negotiation` (sending the closest request settings a model
 takes, and answering a provider's refusal of one, on the base install) and :mod:`~threetears.evals.providers` (the
 shipped adapter over 3tears-models, ``3tears-evals[models]``, which uses it); nothing in the engine imports
 either. Runs are launched on demand; there is no scheduled-run surface.
@@ -70,19 +67,16 @@ def __getattr__(name: str) -> str:
 
 
 #: The public roots, as absolute module names. A consumer imports from these and from no module
-#: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
-#: ``analysis.viz`` are roots of their own inside a package: the contract a host implements, and
-#: the chart intent with the seam a renderer sits behind. Two roots fail to import without an extra
+#: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` is a root of its own inside a
+#: package: the contract a host implements. Two roots fail to import without an extra
 #: (:data:`ROOT_EXTRAS`): ``transports.fastmcp``, which needs ``[fastmcp]``, and ``providers``, the shipped provider
-#: adapter over 3tears-models, which needs ``[models]``. ``vega``, the optional Vega-Lite renderer, imports on the base
-#: install: only its rasterising calls need ``[vega]``.
+#: adapter over 3tears-models, which needs ``[models]``.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.schema",
     "threetears.evals.kernel",
     "threetears.evals.kernel.host",
     "threetears.evals.run",
     "threetears.evals.analysis",
-    "threetears.evals.analysis.viz",
     "threetears.evals.gen",
     "threetears.evals.storage",
     "threetears.evals.testing",
@@ -90,7 +84,6 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.ops",
     "threetears.evals.actions",
     "threetears.evals.transports.fastmcp",
-    "threetears.evals.vega",
     "threetears.evals.negotiation",
     "threetears.evals.providers",
 )
@@ -115,9 +108,7 @@ class RootExtra:
 #: Each public root that fails to import without an extra installed, mapped to what it needs (:class:`RootExtra`): the
 #: extra's name, and the modules that extra provides which the root imports. What a consumer's import gate reads to
 #: import every root its install can, and to say which module is missing, rather than keep its own list. Every root not
-#: here imports on the base install, whose only dependency is pydantic, though some of what one does may still need an
-#: extra: ``vega`` imports without ``[vega]``, and only its rasterising calls (``VegaRenderer.png``, ``.svg``) need it,
-#: raising ``ModuleNotFoundError`` for ``vl_convert`` without it.
+#: here imports on the base install, whose only dependency is pydantic.
 #: ``tests/test_extraction_import_boundary.py`` proves the map: in fresh interpreters, with every extra's dependencies
 #: unimportable exactly these roots fail, with one extra's missing exactly the roots listed under it fail, and with any
 #: one listed module missing its root fails; and by an import walk, the modules listed for a root are exactly the

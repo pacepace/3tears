@@ -457,7 +457,7 @@ def test_a_uniform_shift_on_a_measure_with_no_range_is_not_separated_and_says_wh
     (on_range,) = [c for c in ranged.comparisons if c.name == "field_accuracy"]
     assert on_range.basis == "bounded" and on_range.not_separated_reason is None
 
-    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
+    report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
     assert row["verdict"].startswith("not separated") and "declare value_range" in row["verdict"]
@@ -482,7 +482,7 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
 
     profile = _accuracy_threshold(0.05)
     bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
-    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
+    report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
@@ -506,7 +506,7 @@ def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> No
     (comparison,) = [c for c in _family(bundle).comparisons if c.name == "field_accuracy"]
     assert (comparison.verdict, comparison.materiality) == ("equivalent", "immaterial")
 
-    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
+    report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
@@ -613,14 +613,16 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     profile = _accuracy_threshold(None)
     accuracy = ([0.5] * 9 + [0.9] * 3, [0.6, 0.62, 0.61, 0.6, 0.63, 0.6, 0.61, 0.62, 0.6] + [0.0] * 3)
     bundle = _bundle([], accuracy=accuracy, contrast_cases=range(9), profile=profile)
-    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
+    report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (folded,) = [block for block in report.blocks if getattr(block, "name", None) == "comparison_statistics"]
+    (stats,) = [row for row in folded.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
-    assert row["control_mean"] == pytest.approx(0.5)
     assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"
-    assert isinstance(row["interval"], str) and row["interval"].endswith("at 95%")
-    assert row["hedges_g"] is not None and row["hedges_g"] > 0
+    assert stats["control_mean"] == pytest.approx(0.5)
+    assert isinstance(stats["interval"], str) and stats["interval"].endswith("at 95%")
+    assert stats["hedges_g"] is not None and stats["hedges_g"] > 0
 
 
 # --- what pairing bought (#595) ----------------------------------------------------------------------
@@ -692,8 +694,8 @@ class TestWhatPairingBought:
         profile = _accuracy_threshold(None)
         accuracy = _correlated_accuracy(0.8, n_cases=12, seed=598)
         bundle = _bundle([], accuracy=accuracy, profile=profile)
-        report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-11T00:00:00Z")
-        (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+        report = build_code_only_report(bundle, assembled_at="2026-10-11T00:00:00Z")
+        (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparison_statistics"]
         (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
         assert "Pairing r" in [column.header for column in table.columns]  # type: ignore[attr-defined]

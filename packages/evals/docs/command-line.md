@@ -16,7 +16,7 @@ python -m threetears.evals run    --host myapp.evals:build_host --scope dev --te
                                   [--n-variations N] [--variation-model MODEL] [--apparatus-settings JSON]
                                   [--measure-latency]
 python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
-python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out PATH]
+python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out DIR]
 python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
 python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--purpose P] [--launch-group ID] [--template ID]
 python -m threetears.evals frontier --host myapp.evals:build_host --scope dev [--bar B] [--subject S] [--json]

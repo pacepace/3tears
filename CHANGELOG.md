@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: one report path, verdict first
+
+- **A report is one page, written by code.** Every door (`compare(...).report`, `campaign_report`, the command
+  line's `report`, the `report_read` action) renders the same page: a title and a basis line (a question declared
+  before the run, or `EXPLORATORY`), a verdict line code writes (the test setup failed and how to fix it, too few
+  cases, the declared questions, or leads only), a scoreboard counting each arm's trials as passed, failed or lost to
+  the test setup by cause, the memo's findings and recommendations, the contrasts against the control, every case,
+  one drill-down per trial, what was not tested, and the methods. No arm is called a winner, and below 5 usable cases
+  a rate is a count.
+- **`Report.write(dir)` / `Comparison.write(dir)`** write one scriptless HTML page, its Markdown and `bundle.json`;
+  the bundle is the machine form, and `report_read(format="json")` returns it. Two charts, an outcome bar and
+  interval rows, are drawn as inline SVG with every value written as text.
+- **Removed:** the `threetears.evals.vega` adapter and the `[vega]` extra, the chart renderer seam and
+  `report_charts`, `ChartPalette` and `ChartFont`, the published Report JSON schema, the chart intent root
+  `threetears.evals.analysis.viz`, the arm table and the decision surface table. The memo writer no longer writes
+  a headline, a summary or a chart; it refuses an adoption in an exploratory campaign. Analyses regenerate
+  (`REGENERABLE_SCHEMA_VERSION` 11), and the bundle's shape is 54. `packages/evals/MIGRATIONS.toml` has the detail.
+
 ### 3tears-evals joins the family: measuring what a change to an LLM-backed feature does
 
 A new package (`pip install 3tears-evals`, import root `threetears.evals`). Run each version of a feature, from a
@@ -17,17 +35,15 @@ working beside the new one for a minor release, and any other (`closure`) name m
 every name that leaves a public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py
 v<version>` prints a release's notes).
 
-- **Dependencies.** Python 3.14+ and `pydantic` only. The engine depends on no other 3tears package. Three extras:
-  `[vega]` (`vl-convert-python`, for rendering charts to SVG and PNG), `[fastmcp]` (the FastMCP transport) and
-  `[models]` (`3tears-models`, for the shipped provider adapter). The examples that call a model need `[models]`.
+- **Dependencies.** Python 3.14+ and `pydantic` only. The engine depends on no other 3tears package. Two extras:
+  `[fastmcp]` (the FastMCP transport) and `[models]` (`3tears-models`, for the shipped provider adapter). The examples that call a model need `[models]`.
 - **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
-  `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`,
-  `negotiation`, `providers`. A consumer
+  `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `negotiation`, `providers`. A consumer
   imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
   itself exports the roots, which of them fail to import without an extra and what each needs (`ROOT_EXTRAS`, each
   root's `RootExtra`: the extra and the modules the root imports past the base install, so `transports.fastmcp` needs
   `[fastmcp]` for `fastmcp`, and `providers` `[models]` for `threetears.models`, `anthropic`, `openai`, `openrouter`,
-  `langchain_core` and `httpx`; `vega` imports on the base install and needs `[vega]` only to rasterise), all
+  `langchain_core` and `httpx`), all
   host-contract so a host's import gate reads them rather than keep its own list, and `__version__`, the
   installed version, which a host records beside what it stores since no stored document or analysis bundle carries
   it.
@@ -177,17 +193,17 @@ v<version>` prints a release's notes).
   own `judge_config_ids` holds bare config ids, so a wording change never re-keys a run's context.
 - **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
   given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
-  context bundle (shape 53, computed under cell model `CELL_MODEL_VERSION` 13, exported from `analysis`) holds the decision surface, comparisons with Holm correction for multiple comparisons
+  context bundle (shape 54, computed under cell model `CELL_MODEL_VERSION` 13, exported from `analysis`) holds the decision surface, comparisons with Holm correction for multiple comparisons
   per declared question, materiality, bars and proposed bars, mechanism checks on swept levers (a setting that
   never took effect does not read as one that changed nothing), strata, a time axis by build or by day, judge
   agreement, and every confound and disclosure. `generate_analysis` has a model write the analysis over the frozen
-  bundle. Its headline and each summary bullet name the findings they rest on, and code shows each at the weakest
-  of those findings.
-- **Reports and charts.** A campaign's report is one `Report` document (version 10, with a published JSON Schema).
-  It is serialized to Markdown, JSON, or script-free standalone HTML (`report_markdown`, `report_html`). With no
-  analysis, a code-only report lays out the evidence alone. Charts are stated as renderer-neutral `ChartIntent`s
-  held to a chart policy, behind a `ChartRenderer` seam with a conformance check. The `vega` root is the Vega-Lite
-  renderer, drawing in the host's `ChartPalette`.
+  bundle: findings, each naming the trials it is drawn from, and recommendations, each naming the findings it rests
+  on.
+- **Reports and charts.** A campaign's report is one page every door renders, verdict first, built by code from the
+  evidence bundle (see "one report path, verdict first" above): script-free standalone HTML or Markdown
+  (`report_html`, `report_markdown`, `Report.write`), with `bundle.json` as its machine form. With no analysis, a
+  code-only report lays out the evidence alone. Its two charts, an outcome bar and interval rows, are drawn by the
+  package as inline SVG.
 - **Driving it from code or an agent.** `ops` is one typed function per operation: launch, list, read, archive,
   delete, campaign, analysis, report, estimate, pivot, history, export, rate, judge and more. `actions` binds each
   operation to a `noun_verb` action with a permission class (read, spend, write, destructive), a flat parameter

@@ -102,12 +102,12 @@ def test_on_a_declared_range_the_same_arms_are_tested_and_read_equivalent() -> N
 def test_the_code_only_report_names_the_measure_once_with_the_remedy() -> None:
     bundle = _bundle(value_range=None)
 
-    report = build_code_only_report(bundle, measures=_profile(value_range=None).measures, assembled_at="2026-10-10")
+    report = build_code_only_report(bundle, assembled_at="2026-10-10")
 
     said = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and EQUIVALENCE_NEEDS_RANGE in b.text]
     assert said == [f"Equivalence untested on Extraction score: {EQUIVALENCE_NEEDS_RANGE}."]
     ranged = _bundle(value_range=(0.0, 1.0))
-    report = build_code_only_report(ranged, measures=_profile(value_range=(0.0, 1.0)).measures, assembled_at="x")
+    report = build_code_only_report(ranged, assembled_at="x")
     assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and EQUIVALENCE_NEEDS_RANGE in b.text]
 
 

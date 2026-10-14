@@ -360,12 +360,10 @@ class TestAPooledCostCarriesEachRunsFooting:
             assert all(f is not None and "chunk_tokens" in f.unchecked for f in pooled.runs.values())
         disclosures = [
             block.text
-            for block in build_code_only_report(
-                bundle, measures=profile.measures, assembled_at="2026-10-10T00:00:00+00:00"
-            ).blocks
+            for block in build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00+00:00").blocks
             if isinstance(block, DisclosureBlock)
         ]
-        assert any("production-replicating cost" in text and "chunk_tokens" in text for text in disclosures)
+        assert any("what production would spend" in text and "chunk_tokens" in text for text in disclosures)
 
 
 class TestALeverAddedToTheToyHostReachesThePooledCost:

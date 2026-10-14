@@ -30,14 +30,11 @@ from packages.evals.tests.toyhost_memo import (
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.kernel.authored import AuthoredAnalysis, Caveat, Chart, Finding, OffVocabulary, validate_authored
+from threetears.evals.kernel.authored import AuthoredAnalysis, Caveat, Finding, OffVocabulary, validate_authored
 from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS, EvalAnalysis, EvidenceRow, GenerationProvenance
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.surface import DecisionSurface
-from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE
-
-
-_NO_CHART = Chart(type="none", cells=[], measures=[], axis="", note="", caption="")
+from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, empty_bundle
 
 
 def _finding(*, invalidates: list[int] | None = None, **overrides) -> Finding:
@@ -48,7 +45,7 @@ def _finding(*, invalidates: list[int] | None = None, **overrides) -> Finding:
         "confidence": "high",
         "axes": ["candidate_model"],
         "evidence": [],
-        "chart": _NO_CHART,
+        "trials": [],
         "caveats": [],
         "invalidates": invalidates or [],
         "durable": "",
@@ -79,8 +76,9 @@ def _analysis(findings: list[Finding]) -> EvalAnalysis:
             bundle_schema_version=CURRENT_BUNDLE_SHAPE,
             host_declarations_digest="sha256:declarations",
         ),
-        document=AuthoredAnalysis(headline="h", summary="", findings=findings, decisions=[], questions=[], next=[]),
+        document=AuthoredAnalysis(findings=findings, decisions=[], questions=[], next=[]),
         decision_surface=DecisionSurface(),
+        bundle=empty_bundle().to_dict(),
     )
 
 
@@ -206,8 +204,6 @@ class TestACaveatSaysWhichClassOfQualificationItIs:
     def _payload(kind: str) -> dict:
         finding = _finding(caveats=[Caveat(kind=kind, text="Two raters only.")])
         return {
-            "headline": "h",
-            "summary": "",
             "findings": [finding.model_dump()],
             "decisions": [],
             "questions": [],
@@ -217,12 +213,12 @@ class TestACaveatSaysWhichClassOfQualificationItIs:
     def test_a_caveats_kind_is_open_to_a_host_beyond_the_engines_four(self):
         """A host registers its own kinds; one it offered is accepted like the engine's."""
         offered = {*ENGINE_CAVEAT_KINDS, "rater_pool"}
-        document = validate_authored(self._payload("rater_pool"), offered, [])
+        document = validate_authored(self._payload("rater_pool"), offered)
         assert document.findings[0].caveats[0].kind == "rater_pool"
 
     def test_a_kind_nobody_offered_is_refused_and_named(self):
         with pytest.raises(OffVocabulary, match=r"findings\[0\]\.caveats\[0\]\.kind 'rater_pool'"):
-            validate_authored(self._payload("rater_pool"), ENGINE_CAVEAT_KINDS, [])
+            validate_authored(self._payload("rater_pool"), ENGINE_CAVEAT_KINDS)
 
 
 class TestEvidenceRowsCarryTheirBasis:
@@ -279,7 +275,7 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
         return cell
 
     async def _generate(self, bundle: Any, *rows: dict[str, str]) -> EvalAnalysis:
-        """Generate over a memo whose SECOND finding carries ``rows`` as its evidence and no chart."""
+        """Generate over a memo whose SECOND finding carries ``rows`` as its evidence."""
         payload = memo_payload(bundle)
         (finding,) = payload["findings"]
         payload["findings"] = [finding, {**copy.deepcopy(finding), "evidence": list(rows)}]
@@ -349,7 +345,6 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
         with pytest.raises(UnresolvableReference):
             await self._resolve("invented_metric")
 
-    async def test_a_finding_with_no_chart_resolves_to_none_and_no_note(self):
+    async def test_a_finding_citing_no_reading_resolves_to_no_row(self):
         analysis = await self._generate(self._bundle())
-        resolution = analysis.resolutions[1]
-        assert (resolution.evidence, resolution.chart, resolution.chart_note) == ([], None, "")
+        assert analysis.resolutions[1].evidence == []

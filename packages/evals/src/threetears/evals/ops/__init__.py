@@ -28,9 +28,6 @@ A run's results are read by :func:`results_list` — one light row per result, p
 the cell that came out wrong — and :func:`result_get`, which reads one result back as stored with one part of its
 trace: by default the output its kind stored and the roles' spend, and the judge's evidence or the spans by name.
 
-A report's pictures are drawn by :func:`report_charts`, with the host's renderer: every chart that draws, and
-one :class:`ChartRefusal` per chart that does not, so one undrawable chart costs that chart alone.
-
 The reporter case bank's operations — :func:`reporter_case_freeze`, :func:`reporter_cases_list` and
 :func:`reporter_case_archive` — are how a surface makes the cases a reporter run measures: each is one
 campaign's analysis bundle, frozen, and a reporter template launches nothing until one is. A host launching
@@ -82,7 +79,6 @@ from threetears.evals.ops.analysis import (
     insights_list,
     report_read,
 )
-from threetears.evals.ops.charts import ChartRefusal, ChartRefusalCause, DrawnChart, ReportCharts, report_charts
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
@@ -300,10 +296,6 @@ __all__ = [
     "OutOfRunSpendReport",
     "PivotTable",
     "ProposedBar",
-    "ChartRefusal",
-    "ChartRefusalCause",
-    "DrawnChart",
-    "ReportCharts",
     "ReportDocument",
     "RegressionAlert",
     "RegressionSink",
@@ -385,7 +377,6 @@ __all__ = [
     "out_of_run_spend_text",
     "parse_job_id",
     "pivot_text",
-    "report_charts",
     "report_read",
     "reporter_case_archive",
     "reporter_case_freeze",

@@ -416,6 +416,11 @@ like any host's renderer, to one conformance check: what it draws agrees with th
 intent's values. The adapter's palette is still a packaged artifact rather than a
 host-supplied value, so the first rule above is not yet true of it.
 
+**Status 2026-10-14 (revises the paragraph above).** The Vega-Lite adapter, the renderer seam and the host's
+chart palette and font are gone. A report is one scriptless HTML page the package draws itself, with two chart
+shapes (an outcome bar and interval rows) as dependency-free inline SVG; a host that wants its own pictures reads
+the report's `bundle.json`, which is versioned data, rather than implementing a renderer.
+
 Donated content: metallm's sycophancy-judge prompt; hallucinote's
 brief/rubric/verdict scenario schema. Two footnotes: 3tears' only in-house eval
 machinery -- scrape's runtime recipe-judge loop -- becomes an internal consumer of

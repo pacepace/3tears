@@ -901,15 +901,11 @@ class TestTheBundleDerivesTheTierWhereItShowsIt:
 
 class TestTheReportStatesEachTier:
     def test_the_code_only_report_states_the_tier_and_its_measurements(self) -> None:
-        report = build_code_only_report(
-            _bundle(rated=CALIBRATING_RESULTS),
-            measures=toyhost_profile().measures,
-            assembled_at="2026-10-06T00:00:00+00:00",
-        )
+        report = build_code_only_report(_bundle(rated=CALIBRATING_RESULTS), assembled_at="2026-10-06T00:00:00+00:00")
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
-        sentences = [text for text in texts if text.startswith("Judged evidence tier:")]
+        sentences = [text for text in texts if text.startswith("Judge: ")]
         assert sentences == [
-            f"Judged evidence tier: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge, temperature not recorded, request "
+            f"Judge: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge, temperature not recorded, request "
             "settings unconfirmed): calibrated "
             "— agreement with people 1 "
             "(bounds 0.6904 to 1) over 20 pairs from 20 results, meets (bar 0.6 over at least 20 results); with its "
@@ -917,13 +913,9 @@ class TestTheReportStatesEachTier:
         ]
 
     def test_a_criterion_short_of_its_floor_says_how_many_more_results_it_needs(self) -> None:
-        report = build_code_only_report(
-            _bundle(repeats=20),
-            measures=toyhost_profile().measures,
-            assembled_at="2026-10-06T00:00:00+00:00",
-        )
+        report = build_code_only_report(_bundle(repeats=20), assembled_at="2026-10-06T00:00:00+00:00")
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
-        (sentence,) = [text for text in texts if text.startswith("Judged evidence tier:")]
+        (sentence,) = [text for text in texts if text.startswith("Judge: ")]
         assert "undetermined — " in sentence
         assert (
             "with its own repeats 1 (bounds 0.6904 to 1) over 20 pairs from 20 results, too few results for (bar 0.8 "
@@ -957,7 +949,7 @@ class TestTheStoredShapeMovedTheSchemaVersion:
         # Judged rows and readings carry a required tier, and a repeated score records its first config.
         from threetears.evals.schema import versioning
 
-        assert versioning.REGENERABLE_SCHEMA_VERSION == 10
+        assert versioning.REGENERABLE_SCHEMA_VERSION == 11
         assert "**v9**" in _schema_version_doc(), "the ledger names the baseline"
         assert "**v10**" in _schema_version_doc(), "the ledger names the bump that put sent settings in a judge's key"
         assert RepeatedScore.model_fields["first_judge_config_id"].is_required()

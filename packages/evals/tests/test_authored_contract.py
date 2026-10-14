@@ -8,17 +8,15 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
-from threetears.evals.analysis.viz_refs import REFERENCEABLE_VIZ_TYPES
 from threetears.evals.kernel import authored
 from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS
 
 
 KINDS = ENGINE_CAVEAT_KINDS
-TYPES = REFERENCEABLE_VIZ_TYPES
 
 
 def _schema(kinds=KINDS) -> dict[str, Any]:
-    return authored.authored_schema(kinds, TYPES)
+    return authored.authored_schema(kinds)
 
 
 def _payload(**overrides: Any) -> dict[str, Any]:
@@ -28,21 +26,12 @@ def _payload(**overrides: Any) -> dict[str, Any]:
         "confidence": "high",
         "axes": ["lookup.max_rounds"],
         "evidence": [{"cell": "k1:a1", "measure_id": "total_ms", "reading": "measure"}],
-        "chart": {
-            "type": "none",
-            "cells": [],
-            "measures": [],
-            "axis": "",
-            "note": "",
-            "caption": "",
-        },
+        "trials": ["T3"],
         "caveats": [{"kind": "sampling", "text": "Five cases."}],
         "invalidates": [],
         "durable": "",
     }
     base = {
-        "headline": "Two rounds buys latency and costs honesty.",
-        "summary": "",
         "findings": [finding],
         "decisions": [
             {
@@ -161,45 +150,54 @@ class TestTheStrictProjection:
 
 class TestTheCheckOnReturn:
     def test_a_well_formed_payload_passes(self):
-        authored.validate_authored(_payload(), KINDS, TYPES)
+        authored.validate_authored(_payload(), KINDS)
 
     def test_an_extra_key_is_refused(self):
         with pytest.raises(ValidationError):
-            authored.validate_authored(_payload(bluf="the old shape"), KINDS, TYPES)
+            authored.validate_authored(_payload(bluf="the old shape"), KINDS)
 
     def test_a_missing_key_is_refused(self):
         payload = _payload()
         del payload["next"]
         with pytest.raises(ValidationError):
-            authored.validate_authored(payload, KINDS, TYPES)
+            authored.validate_authored(payload, KINDS)
 
     def test_null_is_refused_where_the_contract_says_empty(self):
         with pytest.raises(ValidationError):
-            authored.validate_authored(_payload(summary=None), KINDS, TYPES)
+            authored.validate_authored(_payload(next=None), KINDS)
+
+    @pytest.mark.parametrize("field", ["headline", "summary", "headline_rests_on", "summary_rests_on"])
+    def test_the_memo_authors_no_headline_or_summary(self, field: str):
+        """The report's first screen is code's: a payload carrying a headline or a summary is refused."""
+        with pytest.raises(ValidationError, match=field):
+            authored.validate_authored(_payload(**{field: "the old shape"}), KINDS)
 
     def test_an_unregistered_caveat_kind_is_refused_and_a_registered_one_accepted(self):
         payload = _payload()
         payload["findings"][0]["caveats"] = [{"kind": "host_kind", "text": "x"}]
         with pytest.raises(authored.OffVocabulary):
-            authored.validate_authored(payload, KINDS, TYPES)
-        authored.validate_authored(payload, KINDS | {"host_kind"}, TYPES)
+            authored.validate_authored(payload, KINDS)
+        authored.validate_authored(payload, KINDS | {"host_kind"})
 
-    def test_a_chart_type_off_the_menu_is_refused(self):
+    def test_a_finding_authors_no_chart(self):
         payload = _payload()
-        payload["findings"][0]["chart"]["type"] = "scatter"
-        with pytest.raises(authored.OffVocabulary):
-            authored.validate_authored(payload, KINDS, TYPES)
+        payload["findings"][0]["chart"] = {"type": "none"}
+        with pytest.raises(ValidationError, match="chart"):
+            authored.validate_authored(payload, KINDS)
+
+    def test_a_finding_names_the_trials_it_is_drawn_from(self):
+        assert authored.validate_authored(_payload(), KINDS).findings[0].trials == ["T3"]
 
     def test_the_directive_sends_the_projected_schema_strictly(self):
-        directive = authored.response_format(KINDS, TYPES)
+        directive = authored.response_format(KINDS)
         assert directive["type"] == "json_schema"
         assert directive["json_schema"]["strict"] is True
         assert directive["json_schema"]["schema"] == _schema()
 
-    def test_the_host_vocabularies_are_sent_as_enums(self):
+    def test_the_host_vocabulary_is_sent_as_an_enum(self):
         defs = _schema(KINDS | {"host_kind"})["$defs"]
         assert set(defs["Caveat"]["properties"]["kind"]["enum"]) == KINDS | {"host_kind"}
-        assert set(defs["Chart"]["properties"]["type"]["enum"]) == TYPES | {authored.NO_CHART}
+        assert "Chart" not in defs, "the writer is offered no chart"
 
 
 class TestOneVocabulary:
@@ -219,21 +217,6 @@ class TestOneVocabulary:
 
         assert set(typing.get_args(authored.Reading)) == set(typing.get_args(ReadingKind))
 
-    def test_every_chart_type_on_offer_has_a_reading_contract(self):
-        from threetears.evals.analysis.viz_refs import CHART_READINGS
-
-        # The menu the schema offers, the positional contract the model is told, and the chart table
-        # the compiler reads are one set — a type in one and not another is offered and then refused.
-        assert set(CHART_READINGS) == set(TYPES)
-
-
-def test_the_model_is_told_how_each_chart_type_reads_its_lists():
-    from threetears.evals.analysis.viz_refs import CHART_READINGS
-
-    description = authored.authored_schema(KINDS, CHART_READINGS)["$defs"]["Chart"]["properties"]["type"]["description"]
-    for chart_type, reads in CHART_READINGS.items():
-        assert f"{chart_type}: {reads}" in description
-
 
 class TestTheWriterCannotChooseATier:
     """What a verdict stands on is read off its evidence by code, so the writer is never offered a tier."""
@@ -251,4 +234,4 @@ class TestTheWriterCannotChooseATier:
         payload = _payload()
         payload["findings"][0]["evidence_tier"] = "calibrated"
         with pytest.raises(ValidationError, match="evidence_tier"):
-            authored.validate_authored(payload, KINDS, TYPES)
+            authored.validate_authored(payload, KINDS)

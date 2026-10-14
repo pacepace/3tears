@@ -14,24 +14,18 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import (
-    ChartBlock,
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
-    campaign_report,
     render_memo_as_written,
 )
-from threetears.evals.analysis.arms import arm_names, arm_table_of, writer_arms
-from threetears.evals.analysis.references import ReadingRef
-from threetears.evals.analysis.surface_table import build_surface_table
-from threetears.evals.analysis.viz_refs import FrontierRef, build_viz_payload
+from threetears.evals.analysis.arms import arm_names, writer_arms
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.declaration import SweptAxis
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.schema.values import IntervalScale, SweepableValue
-from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, goal_check_of
-from threetears.evals.vega.compiler import compile_chart, draw_intent
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_AXIS,
     TOYHOST_NARROW,
@@ -41,7 +35,6 @@ from packages.evals.tests.fixtures.toyhost.campaign import (
 )
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.report_support import toy_report
-from packages.evals.tests.off_loop import off_loop
 
 
 @pytest.fixture
@@ -50,76 +43,6 @@ async def toy() -> tuple[EvalHost, EvalAnalysis, Any]:
 
 
 # --- #627: a measure has a reader-facing name, and every surface heads it by that -------------------------------
-
-
-def _spec_titles(node: Any) -> list[str]:
-    """Every title a compiled Vega-Lite spec carries, at any depth."""
-    if isinstance(node, dict):
-        found = [str(value) for key, value in node.items() if key == "title" and isinstance(value, str)]
-        return found + [title for value in node.values() for title in _spec_titles(value)]
-    if isinstance(node, list):
-        return [title for value in node for title in _spec_titles(value)]
-    return []
-
-
-def _chart_texts(intent: Any) -> list[str]:
-    """What a chart heads anything by: its title, its axes, its value table's identities, and the compiled spec."""
-    compiled = draw_intent(intent)
-    identities = [str(row.get("metric")) for row in intent.data if "metric" in row]
-    return [intent.title, *(axis.quantity for axis in intent.axes), *identities, *_spec_titles(compiled.spec)]
-
-
-def _raw_keys(analysis: EvalAnalysis) -> set[str]:
-    """The measure keys that read as keys — the ones with a separator in them; ``n`` and ``k`` are also words."""
-    return {name for name in analysis.decision_surface.measures if any(sep in name for sep in "_:.")}
-
-
-def _without_checks(text: str, keys: set[str]) -> str:
-    """The text, less any goal check's own expression — the check's words, which may spell a host key inside them."""
-    for key in keys:
-        if (expression := goal_check_of(key)) is not None:
-            text = text.replace(expression, "")
-    return text
-
-
-async def test_no_surface_table_or_compiled_chart_of_a_toy_campaign_heads_anything_by_a_raw_measure_key(toy) -> None:
-    host, analysis, report = toy
-    keys = _raw_keys(analysis)
-    assert {"total_ms", "field_accuracy", "cost_usd"} <= keys
-
-    texts: list[str] = []
-    surface = build_surface_table(analysis)
-    texts += [column.header for column in surface.columns]
-    # The key a reader cites stays on the column; the header is what they read.
-    assert {"total_ms", "field_accuracy"} & {column.measure_id for column in surface.columns}
-
-    code_only = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-    charts = 0
-    for each in (report, code_only):
-        for block in each.blocks:
-            if isinstance(block, TableBlock):
-                texts += [column.header for column in block.columns]
-                texts += [
-                    str(row[key]) for row in block.values() for key in ("measure", "reading", "guardrail") if key in row
-                ]
-            if isinstance(block, ChartBlock) and block.intent is not None:
-                charts += 1
-                texts += _chart_texts(block.intent)
-    frontier = compile_chart(
-        "frontier",
-        build_viz_payload(
-            FrontierRef(quality=ReadingRef(measure_id="field_accuracy", reading="measure")),
-            analysis.decision_surface,
-            analysis.variant_index,
-            measures=host.profile.measures,
-        ),
-    )
-    texts += _chart_texts(frontier.intent)
-    assert charts >= 2, "the toy report draws its delta table and the code-only report its distributions"
-
-    offending = {text for text in texts for key in keys if key in _without_checks(text, keys)}
-    assert offending == set()
-    assert "Turn time" in " ".join(texts) and "Field accuracy (" not in frontier.intent.title
 
 
 def test_a_host_measure_with_no_reader_name_is_refused_at_registration() -> None:
@@ -209,15 +132,9 @@ def test_a_declared_level_name_labels_the_arm_on_every_surface_and_moves_no_key(
     ]
     listed = writer_arms(bundle.variant_index)["arms"]
     assert sorted(arm["levels"][TOYHOST_AXIS] for arm in listed) == ["current width", "proposed width"]  # type: ignore[index]
-    table = arm_table_of(bundle.variant_index, control=None, decisions=[], resolutions=[], source="test")
-    assert sorted(row.label for row in table.rows) == [
-        f"{TOYHOST_AXIS}=current width",
-        f"{TOYHOST_AXIS}=proposed width",
-    ]
-
-    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-10T00:00:00Z")
-    surface = next(b for b in report.blocks if isinstance(b, TableBlock) and b.name == "surface")
-    assert {str(row["arm"]).removesuffix(" (control)").strip() for row in surface.values()} >= {
+    report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00Z")
+    scoreboard = next(b for b in report.blocks if isinstance(b, TableBlock) and b.name == "scoreboard")
+    assert {str(row["arm"]).removesuffix(" (control)").strip() for row in scoreboard.values()} == {
         f"{TOYHOST_AXIS}=current width",
         f"{TOYHOST_AXIS}=proposed width",
     }

@@ -362,7 +362,7 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     1 and at a rate of 0 is 0, but ``centre ± half`` reaches them through cancelling floating-point
     terms and lands a hair to either side — 4 of 4 gave an upper bound of ``0.9999999999999999``. An
     interval that misses its own estimate by one ulp is refused by every surface that draws it
-    (:class:`~threetears.evals.analysis.viz.payloads.ConfidenceInterval`), so the bounds are pinned
+    (the report's :class:`~threetears.evals.analysis.report.model.IntervalRow` among them), so the bounds are pinned
     to contain the rate rather than every consumer tolerating the noise.
 
     Returns:

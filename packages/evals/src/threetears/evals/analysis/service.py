@@ -35,12 +35,6 @@ from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
-from threetears.evals.analysis.reporting import (
-    model_identity_disclosure,
-    request_settings_disclosure,
-    request_settings_readings,
-    unconfirmed_model_identities,
-)
 from threetears.evals.analysis.bundle.insights import superseding_insights
 from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
@@ -58,9 +52,6 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_payload,
 )
 from threetears.evals.analysis.report import Report, Verdict, build_code_only_report, build_report
-from threetears.evals.analysis.viz.intent import chart_intent
-from threetears.evals.analysis.viz.payloads import PayloadError
-from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt
 from threetears.evals.kernel.errors import (
@@ -85,7 +76,6 @@ from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import (
     FIND_ANALYSIS,
     FIND_CAMPAIGN,
-    FIND_FINDING,
     FIND_RUN,
     FIND_TEMPLATE,
     WRITER_REMEDY,
@@ -95,7 +85,6 @@ if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
-    from threetears.evals.analysis.viz.intent import ChartIntent
     from threetears.evals.kernel.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
     from threetears.evals.schema.models import EvalRun, EvalTemplate
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -1285,17 +1274,16 @@ def inspect_analysis_bundle(
 
 
 # ---------------------------------------------------------------------------
-# The report and its charts — derived on every read, so a stored analysis stays pivotable
+# The report — derived on every read, so a stored analysis stays pivotable
 # ---------------------------------------------------------------------------
 
 
 def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Report:
-    """Read one stored analysis as its report — the one document every surface renders.
+    """Read one stored analysis as its report — the one page every door renders.
 
-    In place of the four reads a surface used to assemble for itself (the analysis, its arm table, its
-    decision-surface table, its compiled charts): one document holds all of it, so a browser and an
-    agent cannot disagree about which arm won, and a chart that cannot be drawn is served as such rather
-    than omitted. Derived on every read and never written back, so a stored analysis stays pivotable.
+    Laid out over the bundle frozen with the analysis at generation, so it reads as it was written whatever has been
+    archived or re-run since, and every disclosure on it is the frozen bundle's own. Derived on every read and never
+    written back, so a stored analysis stays pivotable.
 
     Args:
         storage: Where the analysis is read.
@@ -1303,51 +1291,17 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
         scope_id: The scope it lives in.
 
     Returns:
-        The report; serialize it with :func:`~threetears.evals.analysis.report.report_markdown`,
-        :func:`~threetears.evals.analysis.report.report_html` or its own JSON dump.
+        The report; :meth:`~threetears.evals.analysis.report.Report.write` puts it in a directory, and
+        :func:`~threetears.evals.analysis.report.report_markdown` and
+        :func:`~threetears.evals.analysis.report.report_html` serialize it.
 
     Raises:
         NotFoundError: No analysis with that id in the scope.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
-    # The campaign titles the report by name; an analysis outliving its campaign is still reported, by its headline.
+    # The campaign titles the report by name; an analysis outliving its campaign is still reported, by its id.
     campaign = storage.load_campaign(analysis.campaign_id, scope_id)
-    model_identity, request_settings = _record_disclosures(storage, analysis)
-    return build_report(
-        analysis,
-        campaign_name=campaign.name if campaign is not None else None,
-        model_identity=model_identity,
-        request_settings=request_settings,
-    )
-
-
-def _record_disclosures(storage: CampaignReadStore, analysis: EvalAnalysis) -> tuple[str | None, str | None]:
-    """Whether the analysed runs' record can say which model answered (#2025), and how the judge and the simulated
-    user were sent, read off their results now.
-
-    A stored analysis keeps the ids its runs asked for (``model_versions``) and nothing on what answered or what
-    each call was sent with, so both disclosures are read where the report is: off the member runs' results, as the
-    bundle reads them. A member run deleted since contributes no result, so the counts are over what the store still
-    holds.
-
-    Args:
-        storage: Where the runs and their results are read.
-        analysis: The analysis; its ``observation_refs`` are its member runs.
-
-    Returns:
-        ``(model identity, request settings)``: each sentence, or ``None`` when it has nothing to say.
-    """
-    # Whole runs: only their recorded judge attribution is read, and nothing here has a host to say what to elide.
-    runs = storage.load_eval_runs(analysis.observation_refs, analysis.scope_id, elide_payload=frozenset())
-    results = [
-        result
-        for run_id in analysis.observation_refs
-        for result in storage.query_eval_results_by_run(run_id, analysis.scope_id)
-    ]
-    return (
-        model_identity_disclosure(unconfirmed_model_identities(runs, results)),
-        request_settings_disclosure(request_settings_readings(runs, results)),
-    )
+    return build_report(analysis, campaign_name=campaign.name if campaign is not None else None)
 
 
 def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
@@ -1378,15 +1332,10 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
     if live:
-        model_identity, request_settings = _record_disclosures(host.storage, live[0])
-        return build_report(
-            live[0], campaign_name=campaign.name, model_identity=model_identity, request_settings=request_settings
-        )
+        return build_report(live[0], campaign_name=campaign.name)
     assembled_at = utc_now_iso()
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
-    return build_code_only_report(
-        bundle, measures=host.profile.measures, assembled_at=assembled_at, campaign_name=campaign.name
-    )
+    return build_code_only_report(bundle, assembled_at=assembled_at, campaign_name=campaign.name)
 
 
 def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]:
@@ -1410,43 +1359,7 @@ def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[V
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
-    return build_code_only_report(
-        bundle, measures=host.profile.measures, assembled_at=utc_now_iso(), campaign_name=campaign.name
-    ).verdicts
-
-
-def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> ChartIntent:
-    """Decide one finding's chart, for a surface that draws a single chart at a time with its own renderer.
-
-    Args:
-        storage: Where the analysis is read.
-        analysis_id: Analysis holding the finding.
-        scope_id: The scope it lives in.
-        finding_id: The finding's position in the authored document, as a string (``"0"`` is the first).
-
-    Returns:
-        The chart's intent — what it draws and what it must say — for a
-        :class:`~threetears.evals.analysis.viz.ChartRenderer` to draw.
-
-    Raises:
-        NotFoundError: No such analysis, or no such finding, or the finding
-            carries no chart this build can decide.
-    """
-    analysis = get_analysis(storage, analysis_id, scope_id)
-    # A finding is identified by its position in the authored document, as a string.
-    position = int(finding_id) if finding_id.isdigit() else -1
-    if not 0 <= position < len(analysis.resolutions):
-        raise NotFoundError("finding", finding_id, remedy=FIND_FINDING)
-    viz = analysis.resolutions[position].chart
-    if viz is None:
-        raise NotFoundError("chart for finding", finding_id, remedy=FIND_FINDING)
-    try:
-        return chart_intent(viz.type, viz.payload)
-    except (PayloadError, IntentPolicyError) as exc:
-        # Surfaced rather than swallowed: this caller asked for THIS chart by id,
-        # so an empty answer would read as "no chart here" when the truth is that
-        # the stored payload cannot be drawn.
-        raise NotFoundError("drawable chart for finding", f"{finding_id} ({exc})", remedy=FIND_FINDING) from exc
+    return build_code_only_report(bundle, assembled_at=utc_now_iso(), campaign_name=campaign.name).verdicts
 
 
 # ---------------------------------------------------------------------------
@@ -2014,7 +1927,6 @@ __all__ = [
     "BudgetedGenerator",
     "PreparedGeneration",
     "analysis_report",
-    "finding_chart_intent",
     "describe_insight_id_filters",
     "estimate_analysis_generation",
     "freeze_reporter_case",

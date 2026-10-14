@@ -52,8 +52,8 @@ from typing import Literal, get_args
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import ABSENT, format_number
 from threetears.evals.analysis.references import cell_aliases, cell_of_alias, require_cell, resolve_reading
-from threetears.evals.analysis.surface_table import UNITLESS, MeasureRuler, measure_rulers
-from threetears.evals.analysis.viz.quantities import UNSPACED_UNITS
+from threetears.evals.analysis.report.figures import UNITLESS, MeasureRuler, measure_rulers
+from threetears.evals.analysis.quantities import UNSPACED_UNITS
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel.campaign import ReadingKind
@@ -114,12 +114,12 @@ def state_in_prose(value: float, ruler: MeasureRuler) -> str:
     """State one value in a sentence, on its measure's one ruler for the report.
 
     The ruler is the one every table and chart states the measure on
-    (:func:`~threetears.evals.analysis.surface_table.measure_rulers`): a figure in a sentence choosing its unit over
+    (:func:`~threetears.evals.analysis.report.figures.measure_rulers`): a figure in a sentence choosing its unit over
     itself alone read ``950 ms`` beside a table stating the same latency in s.
 
     Args:
         value: The value, in the unit it was measured in.
-        ruler: Its measure's ruler; :data:`~threetears.evals.analysis.surface_table.UNITLESS` for a judged score.
+        ruler: Its measure's ruler; :data:`~threetears.evals.analysis.report.figures.UNITLESS` for a judged score.
 
     Returns:
         The value's text: money as ``$0.012``, anything else joined to its unit where one is known.

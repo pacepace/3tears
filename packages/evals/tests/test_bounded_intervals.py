@@ -19,9 +19,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import campaign_report, report_markdown
+from threetears.evals.analysis import IntervalRow, campaign_report, report_markdown
 from threetears.evals.analysis.stats import mean_interval, observed_mean_interval, wilson_interval
-from threetears.evals.analysis.viz.payloads import ConfidenceInterval
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from threetears.evals.ops import CampaignDefinition, campaign_create
 from threetears.evals.quick import Answer, callable_host, compare, run_eval
@@ -64,7 +63,8 @@ def test_four_of_four_is_drawable_as_a_chart_interval() -> None:
     """The exact case the report dropped: 4/4, whose upper bound was ``0.9999999999999999``."""
     interval = wilson_interval(4, 4)
     assert interval is not None
-    ConfidenceInterval(low=interval[0], high=interval[1], mean=4 / 4, level=0.95, variability="across 4 cases")
+    row = IntervalRow(label="arm", value=4 / 4, low=interval[0], high=interval[1], n_cases=4)
+    assert row.low <= row.value <= row.high == 1.0
 
 
 # =============================================================================
@@ -209,28 +209,26 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
         SCOPE,
         created_by="test",
     )
-    markdown = report_markdown(off_loop(campaign_report, host, campaign.id, SCOPE))
+    report = off_loop(campaign_report, host, campaign.id, SCOPE)
 
-    assert "cannot be drawn" not in markdown
-    # Every label's precision and recall is in the per-label table with its interval, each inside [0, 1] and
-    # around its own rate — a perfect label's included. An interval is over the cases: the loose arm gave
-    # `negative` only on the two repeats of one case, which have no between-case spread, so that precision
-    # has none, where a Wilson interval over the two repeats would have counted one case as two.
-    per_label = markdown.split("**Per-label precision, recall and F1**", 1)[1].split("\n\n>", 1)[0]
-    negative = {
-        row.split("|")[2].strip(): row.split("|") for row in per_label.splitlines() if row.startswith("| negative |")
-    }
-    assert sorted(negative) == ["model=_loose", "model=_strict"]
-    assert "[" in negative["model=_strict"][3] and "[" in negative["model=_strict"][4]
-    assert negative["model=_loose"][3].strip() == "1 (n=2 over 1 case)" and "[" in negative["model=_loose"][4]
-    assert "A rate counted over the repeats of a single case has no interval" in markdown
-    figures = re.findall(r"([\d.]+) \[([\d.]+), ([\d.]+)\]", per_label)
-    assert figures and all(0.0 <= float(low) <= float(rate) <= float(high) <= 1.0 for rate, low, high in figures)
-    # The chart leads the surface table (#643), so its values table ends at the next bold heading.
-    accuracy_chart = markdown.split("**Chart: Accuracy**", 1)[1].split("\n**", 1)[0]
-    highs = [float(row.split("|")[4]) for row in accuracy_chart.splitlines() if row.startswith("| model=")]
-    assert len(highs) == 2
-    assert all(high <= 1.0 for high in highs)
+    # Every label's precision and recall carries an interval inside [0, 1] around its own rate — a perfect label's
+    # included. An interval is over the cases: the loose arm gave `negative` only on the two repeats of one case,
+    # which have no between-case spread, so that precision has none, where a Wilson interval over the two repeats
+    # would have counted one case as two.
+    rates = [
+        summary
+        for cell in report.bundle.cell_measures
+        for summary in cell.measures.measures
+        if summary.name.startswith("classifier:") and summary.rate is not None
+    ]
+    bounded = [summary for summary in rates if summary.ci_low is not None and summary.ci_high is not None]
+    assert bounded and all(0.0 <= s.ci_low <= s.rate <= s.ci_high <= 1.0 for s in bounded)  # type: ignore[operator]
+    single = [summary for summary in rates if summary.n_independent == 1]
+    assert single and all(summary.ci_low is None and summary.ci_high is None for summary in single)
+    # On the page, a rate on fewer cases than one is read on is a count, never an interval.
+    per_label = report_markdown(report).split("**Per-label precision, recall and F1**", 1)[1].split("\n\n>", 1)[0]
+    assert "| negative | model=_loose | 2 of 2 (n=2 over 1 case) |" in per_label
+    assert not re.search(r"\[[\d.]+, [\d.]+\]", per_label)
 
 
 # =============================================================================
@@ -258,10 +256,13 @@ async def test_a_spend_interval_stops_at_zero_and_a_delta_interval_on_it_does_no
         scope_id=SCOPE,
         k=2,
     )
-    markdown = comparison.render()
-    chart = markdown.split("**Chart: Production cost (usd)**", 1)[1].split("\n\n- ", 1)[0]
-    lows = [float(row.split("|")[3]) for row in chart.splitlines() if row.startswith("| candidate=")]
-    assert lows and min(lows) == 0.0
+    lows = [
+        summary.ci_low
+        for cell in comparison.report.bundle.cell_measures
+        for summary in cell.measures.measures
+        if summary.name == "production_replicating_cost"
+    ]
+    assert lows and min(low for low in lows if low is not None) == 0.0
     # A delta on the same measure is a difference, and may run below zero: the light arm spends less.
     (cost,) = comparison.contrasts("production_replicating_cost")
     assert cost["delta"] < 0.0

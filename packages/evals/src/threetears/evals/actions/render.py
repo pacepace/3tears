@@ -586,8 +586,8 @@ def render_analysis_line(analysis: AnalysisLine) -> str:
     """One stored analysis on one line."""
     archived = ", archived" if analysis.archived else ""
     return (
-        f"- {analysis.id}: {analysis.headline} [{analysis.headline_standing}] "
-        f"({analysis.generator_model}, {analysis.generated_at}{archived})"
+        f"- {analysis.id}: {analysis.verdict} [{analysis.findings} finding(s), {analysis.recommendations} "
+        f"recommendation(s)] ({analysis.generator_model}, {analysis.generated_at}{archived})"
     )
 
 

@@ -4,7 +4,7 @@ Two classifiers over one case list: ``careful`` reads every case right and ``has
 cases that carry a second label's words. Compared with ``hasty`` as the control, the campaign
 declares one axis at the two arm names, its control resolves to the variant key ``hasty``'s run
 carries, and the code-only report tests ``careful`` against it and finds it improved — under the
-campaign's name, with its id in the byline.
+campaign's name, or by its id when it has none.
 
 ``examples/compare_two_prompts.py`` is run here with no API key, so it replays its recording.
 """
@@ -18,7 +18,13 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import DisclosureBlock, TableBlock, report_markdown, variant_key_of_run
+from threetears.evals.analysis import (
+    DisclosureBlock,
+    TableBlock,
+    build_code_only_report,
+    report_markdown,
+    variant_key_of_run,
+)
 from threetears.evals.quick import ARM_LEVER, Comparison, callable_host, compare
 from threetears.evals.quick.one_call import SHARED_ARM_MODEL
 from threetears.evals.testing import RecordedPrompt
@@ -73,10 +79,8 @@ async def _compare(**overrides: Any) -> Comparison:
     return await compare(CASES, candidates, **arguments)
 
 
-def _comparisons(comparison: Comparison) -> TableBlock:
-    (table,) = [
-        block for block in comparison.report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"
-    ]
+def _comparisons(comparison: Comparison, name: str = "comparisons") -> TableBlock:
+    (table,) = [block for block in comparison.report.blocks if isinstance(block, TableBlock) and block.name == name]
     return table
 
 
@@ -122,7 +126,8 @@ async def test_every_other_arm_is_tested_against_the_control_and_the_better_one_
     accuracy = by_reading["Accuracy"]
     assert (accuracy["contrast"], accuracy["control"]) == ("candidate=careful", "candidate=hasty")
     assert accuracy["verdict"] == "improved on the control"
-    assert accuracy["delta"] == pytest.approx(0.5)
+    statistics = {row["reading"]: row for row in _comparisons(comparison, "comparison_statistics").values()}
+    assert statistics["Accuracy"]["delta"] == pytest.approx(0.5)
     assert {row["control"] for row in rows} == {"candidate=hasty"}
     markdown = comparison.render()
     assert markdown == report_markdown(comparison.report)
@@ -135,20 +140,17 @@ async def test_the_report_is_titled_by_the_campaign_s_name_and_names_its_id_belo
     assert comparison.name == "hasty vs careful"
     assert comparison.report.source.campaign_name == "hasty vs careful"
     lines = comparison.render().splitlines()
-    assert lines[0] == "# Campaign hasty vs careful: its evidence, with no analysis"
-    assert f"Code-only report of campaign {comparison.campaign_id}" in lines[2]
+    assert lines[0].startswith("# hasty vs careful · ") and lines[0].endswith(" · no analysis written")
 
     named = await _compare(name="triage rules", scope_id="compare-named")
-    assert named.render().startswith("# Campaign triage rules: its evidence, with no analysis\n")
+    assert named.render().startswith("# triage rules · ")
 
 
 async def test_a_report_without_the_campaign_s_name_is_titled_by_its_id() -> None:
     comparison = await _compare()
     report = comparison.report
-    nameless = report.model_copy(update={"source": report.source.model_copy(update={"campaign_name": None})})
-    assert report_markdown(nameless).startswith(
-        f"# Campaign {comparison.campaign_id}: its evidence, with no analysis\n"
-    )
+    nameless = build_code_only_report(report.bundle, assembled_at=report.source.generated_at)
+    assert report_markdown(nameless).startswith(f"# Campaign {comparison.campaign_id} · ")
 
 
 async def test_the_arms_share_a_host_the_caller_hands_over() -> None:

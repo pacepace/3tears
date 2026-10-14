@@ -203,7 +203,6 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
         )
     finally:
         await llm.aclose()
-    print(f"\n# {analysis.document.headline}")
     for finding in analysis.document.findings:
         print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code
     for decision in analysis.document.decisions:  # checked: adopting an arm needs a reading that separated

@@ -1,13 +1,13 @@
 """What a stored analysis records about where its numbers came from, over an analysis with no host vocabulary.
 
 The subject is an invoice extractor swept over two models. The analysis, its surface and its one
-finding are built here by hand. Nothing is imported from a host adapter, and the toy corpus is not
-used, because these are the stored models' own rules and none of them reads a bundle.
+finding are built here by hand, over an empty frozen bundle. Nothing is imported from a host adapter, and the toy
+corpus is not used, because these are the stored models' own rules.
 
 Pinned here, from ``kernel/campaign.py`` and ``kernel/authored.py``:
 
 - confidence is a tier, on the authored finding and decision alike; an evidence row names the
-  reading it resolved; a chart keeps the reference it was compiled from.
+  reading it resolved; the analysis keeps the evidence bundle it was written over.
 - a decision whose proposal opens with a negation is stored as written — polarity lives in
   ``disposition``.
 """
@@ -21,20 +21,19 @@ from pydantic import ValidationError
 
 from threetears.evals.kernel import authored
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import AuthoredAnalysis, Chart, Decision, Finding
+from threetears.evals.kernel.authored import AuthoredAnalysis, Decision, Finding
 from threetears.evals.kernel.campaign import (
     CONFIDENCE_TIERS,
     EvalAnalysis,
     EvidenceRow,
     FindingResolution,
     GenerationProvenance,
-    Viz,
 )
 from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
-from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE
+from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, empty_bundle
 
 
 AXIS = "extractor_model"
@@ -100,14 +99,12 @@ def _analysis(*, confidence: Any = "high", decision: Decision | None = None, **f
         confidence=confidence,
         axes=[AXIS],
         evidence=[],
-        chart=Chart(type="none", cells=[], measures=[], axis="", note="", caption=""),
+        trials=[],
         caveats=[],
         invalidates=[],
         durable="",
     )
     document = AuthoredAnalysis(
-        headline="Adopt model-b.",
-        summary="",
         findings=[finding],
         decisions=[decision or _decision()],
         questions=[],
@@ -136,6 +133,7 @@ def _analysis(*, confidence: Any = "high", decision: Decision | None = None, **f
         ),
         document=document,
         resolutions=[FindingResolution()],
+        bundle=empty_bundle(campaign_id="camp-invoices", behavior="extraction").to_dict(),
         design_snapshot=CampaignDesign(
             axes=[SweptAxis(axis_id=AXIS, values=[_level("model-a"), _level("model-b")])],
             control=BASELINE,
@@ -188,18 +186,14 @@ class TestTheReferenceFieldsAreStored:
         with pytest.raises(ValidationError):
             EvidenceRow.model_validate({**row, "reading": "guessed"})
 
-    def test_a_chart_keeps_the_reference_it_was_compiled_from(self) -> None:
-        ref = {
-            "a_cell": f"{BASELINE}:{RIG}",
-            "b_cell": f"{CHALLENGER}:{RIG}",
-            "measures": [{"measure_id": "extract_ms"}],
-        }
-        viz = Viz.model_validate({"type": "delta_table", "ref": ref, "payload": {"rows": []}})
-
-        assert Viz.model_validate(viz.model_dump(mode="json")).ref == ref
-        # Every stored chart was compiled from a reference, so a chart without one is refused.
-        with pytest.raises(ValidationError, match=r"ref\s+Field required"):
-            Viz(type="delta_table")
+    def test_the_analysis_keeps_the_bundle_it_was_written_over(self) -> None:
+        analysis = _analysis()
+        assert EvalAnalysis.model_validate(analysis.model_dump(mode="json")).bundle == analysis.bundle
+        # Every stored analysis was written over a bundle, so an analysis without one is refused.
+        without = analysis.model_dump(mode="json")
+        del without["bundle"]
+        with pytest.raises(ValidationError, match=r"bundle\s+Field required"):
+            EvalAnalysis.model_validate(without)
 
 
 class TestADecisionsWordingIsNotRefused:
