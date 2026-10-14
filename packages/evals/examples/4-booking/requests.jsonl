@@ -1,0 +1,12 @@
+{"id": "r01", "stratum": "open", "ask": "Book a one-hour sync with Priya this morning, between 9 and 12.", "start": 9, "end": 12, "expect": "book", "world": {"busy": [9, 11]}}
+{"id": "r02", "stratum": "open", "ask": "Find an hour this afternoon, 13:00 to 17:00, for the budget review.", "start": 13, "end": 17, "expect": "book", "world": {"busy": [13, 14]}}
+{"id": "r03", "stratum": "open", "ask": "Any free hour today is fine for a call with the vendor.", "start": 9, "end": 17, "expect": "book", "world": {"busy": [10, 12, 15]}}
+{"id": "r04", "stratum": "open", "ask": "Put the design critique somewhere between 10:00 and 15:00.", "start": 10, "end": 15, "expect": "book", "world": {"busy": [9, 10]}}
+{"id": "r05", "stratum": "tight", "ask": "Book the hiring debrief this morning, between 9 and 12.", "start": 9, "end": 12, "expect": "book", "world": {"busy": [9, 10]}}
+{"id": "r06", "stratum": "tight", "ask": "I need an hour with legal this afternoon, 13:00 to 17:00.", "start": 13, "end": 17, "expect": "book", "world": {"busy": [13, 15, 16]}}
+{"id": "r07", "stratum": "tight", "ask": "Fit a one-hour 1:1 in today, at any time.", "start": 9, "end": 17, "expect": "book", "world": {"busy": [9, 10, 11, 12, 13, 14, 16]}}
+{"id": "r08", "stratum": "tight", "ask": "Schedule the retro late in the day, between 14:00 and 17:00.", "start": 14, "end": 17, "expect": "book", "world": {"busy": [14, 15]}}
+{"id": "r09", "stratum": "full", "ask": "Book a one-hour call this morning, between 9 and 12.", "start": 9, "end": 12, "expect": "decline", "world": {"busy": [9, 10, 11]}}
+{"id": "r10", "stratum": "full", "ask": "Find an hour this afternoon, 13:00 to 17:00, for the quarterly review.", "start": 13, "end": 17, "expect": "decline", "world": {"busy": [13, 14, 15, 16]}}
+{"id": "r11", "stratum": "full", "ask": "Any hour today works for a quick sync.", "start": 9, "end": 17, "expect": "decline", "world": {"busy": [9, 10, 11, 12, 13, 14, 15, 16]}}
+{"id": "r12", "stratum": "full", "ask": "Squeeze the vendor call in between 10:00 and 12:00; no other time works for them.", "start": 10, "end": 12, "expect": "decline", "world": {"busy": [9, 10, 11, 14]}}
