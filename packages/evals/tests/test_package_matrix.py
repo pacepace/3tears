@@ -382,8 +382,9 @@ class RootViolation(NamedTuple):
 
 
 def public_api(root: Path) -> dict[str, frozenset[str]]:
-    """Each public root's ``__all__``, read from its ``__init__.py`` without importing it.
+    """Each public root's ``__all__``, and the package's own, read from its ``__init__.py`` without importing it.
 
+    The package itself declares the quick path's names (``Eval``, ``Judge``, ...), which a consumer imports from it.
     Read statically so the check works on a synthetic tree and on a root whose import would fail,
     which is the state a broken root is in. A root with no literal ``__all__`` declares nothing.
 
@@ -394,8 +395,8 @@ def public_api(root: Path) -> dict[str, frozenset[str]]:
         Absolute root module name -> the names it declares public.
     """
     declared: dict[str, frozenset[str]] = {}
-    for relative in PUBLIC_ROOTS:
-        init = root.joinpath("threetears", "evals", *relative.split("."), "__init__.py")
+    for relative in ("", *PUBLIC_ROOTS):
+        init = root.joinpath("threetears", "evals", *(relative.split(".") if relative else ()), "__init__.py")
         names: frozenset[str] = frozenset()
         if init.is_file():
             for node in ast.parse(init.read_text(encoding="utf-8")).body:
@@ -461,9 +462,9 @@ def public_root_violations(
     Runtime, ``TYPE_CHECKING`` and function-level imports all count, and relative imports are
     resolved. Four shapes are refused: a whole-module import of anything in a package (it grants
     every name the module grows), a ``from`` import out of a module that is not a public root (a
-    submodule reached past its root, or the ``threetears.evals`` marker handing out a package as a
-    module), a name the root does not declare in ``__all__``, and a string literal that is a dotted
-    path below a root (:func:`_string_addressed_imports`).
+    submodule reached past its root), a name the root does not declare in ``__all__`` (the
+    ``threetears.evals`` package declares the quick path's names, and hands out no package as a module), and a
+    string literal that is a dotted path below a root (:func:`_string_addressed_imports`).
 
     Args:
         root: The directory holding the ``threetears`` namespace, for the roots' ``__all__``.

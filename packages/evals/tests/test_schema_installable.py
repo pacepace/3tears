@@ -4,9 +4,11 @@ The schema is the part of the engine an adapter binds to -- the stored shapes an
 the one most likely to be consumed alone; the kernel is the behaviour a host implements against
 beside it. Each set is checked: ``schema`` alone, and ``schema`` with ``kernel``. Their members are
 the modules the package matrix places in those packages -- everything under
-``threetears/evals/schema/`` (and ``kernel/``) plus the ``threetears.evals`` root marker
+``threetears/evals/schema/`` (and ``kernel/``)
 (:func:`~packages.evals.tests.package_placement.modules_placed_in`) -- so membership is the path and
-nothing here lists it. The two assertions below are the ones the matrix cannot make.
+nothing here lists it. The ``threetears.evals`` root is not a member: it serves the quick path's names
+on first use, so it is held to a row of its own, and a set consumed alone imports beneath it as a
+namespace. The two assertions below are the ones the matrix cannot make.
 
 **Closure.** No member may import a module under ``threetears.evals`` outside the package. The
 matrix judges an edge only once its target is placed, so an import of a module still at the
