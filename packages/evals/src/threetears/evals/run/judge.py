@@ -34,6 +34,7 @@ from threetears.evals.schema.models import (
     PASS_FAIL_SCORES,
     SCALES,
     ClientRequestSettings,
+    JudgeCutShort,
     JudgeTemperature,
     KnownReasoningEffort,
 )
@@ -428,8 +429,12 @@ async def run_judge_llm(
         ``cost_usd`` is ``None`` when any attempt reported no price — the dim's dollars are then
         unknown, never the priced attempts' partial sum. A reply the
         provider cut short fails with an error naming that cause and its token
-        counts, after one call. A completion that carries no ``temperature`` (its type does not meet the
-        protocol, :func:`sent_temperature`) is not a failed reply but the host's defect: it raises
+        counts, after one call, and carries ``judge_cut_short``: the same facts as a
+        :class:`~threetears.evals.schema.JudgeCutShort` (its stop reason, the settings the call
+        was sent with, and its token counts), which the result records so a reader can count the
+        trial as lost to the judge's cap (``truncated``) rather than to a fault. A completion that
+        carries no ``temperature`` (its type does not meet the protocol, :func:`sent_temperature`) is
+        not a failed reply but the host's defect: it raises
         :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, naming the conformance check, after
         one call. A finished reply that will not parse — including one
         scoring a criterion with anything but a score on the scale — fails with
@@ -629,6 +634,15 @@ async def run_judge_llm(
                 "error": f"{label} reply was cut short by the provider and was not retried: {incomplete}",
                 "response_preview": (result.content or "")[:200],
                 "judge_usage": _cumulative_usage(),
+                # The cut as a fact, not only a sentence: the stop reason and the settings THIS attempt was sent with
+                # (its cap is the one the reply ran into; None when the client did not say), never the run's asked
+                # settings in their place.
+                "judge_cut_short": JudgeCutShort(
+                    stop_reason=result.stop_reason,
+                    sent_settings=sent,
+                    output_tokens=attempt_output,
+                    reasoning_tokens=getattr(result, "reasoning_tokens", None),
+                ),
             }
 
         # The temperature is read before the reply is. A completion whose type carries none is the host's defect, not

@@ -74,6 +74,7 @@ from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,
     GoalStateOutcome,
     JudgeConfig,
+    JudgeCutShort,
     JudgedArtifact,
     JudgeEvidence,
     LabelKey,
@@ -197,6 +198,10 @@ class JudgeOutcome:
     #: host's describer read what the client raised. Still an ``error`` — the dim is unscored and
     #: the result excluded — and also what stops the run, since every later call is behind the key.
     account_refused: bool = False
+    #: The reply the provider cut short, as facts: its stop reason, what the call was sent with and its token
+    #: counts. Set only beside ``error`` (the call's reply was cut off and not re-bought), and folded onto the
+    #: result's ``judge_cut_short`` so the exclusion it causes is counted as ``truncated``, not as a fault.
+    cut_short: JudgeCutShort | None = None
 
 
 #: The one role a judge call spends under — what a fold of judge calls sums its cost over.
@@ -216,6 +221,8 @@ class JudgeFold(NamedTuple):
     cost_usd: float | None
     #: dim -> the judge's reason, for each call answering it could not tell.
     cannot_tell: dict[str, str]
+    #: dim -> the cut-off reply, for each call whose reply the provider cut short (each also in ``errors``).
+    cut_short: dict[str, JudgeCutShort]
 
 
 def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
@@ -239,6 +246,7 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
     config_ids: dict[str, str] = {}
     errors: list[tuple[str, str]] = []
     cannot_tell: dict[str, str] = {}
+    cut_short: dict[str, JudgeCutShort] = {}
     # Per-dim judge configs may each pin their own model, so the ledger splits rows by
     # model rather than blending the dims into one — see threetears.evals.kernel.usage_capture.
     ledger = RoleUsageLedger(role="judge")
@@ -251,6 +259,8 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
             cannot_tell[dim_id] = outcome.cannot_tell
         elif outcome.score is None:
             errors.append((dim_id, outcome.error or "the judge returned neither a score nor an error"))
+            if outcome.cut_short is not None:
+                cut_short[dim_id] = outcome.cut_short
     rows = ledger.rows()
     return JudgeFold(
         config_ids=config_ids,
@@ -258,6 +268,7 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
         usage=rows,
         cost_usd=blended_cost(rows, _JUDGE_ROLE),
         cannot_tell=cannot_tell,
+        cut_short=cut_short,
     )
 
 
@@ -905,7 +916,12 @@ class JudgeService:
             log.warning("Judge dim=%s failed for case=%s: %s", dim_id, case_id, error_text)
             account_refused = result is not None and result.get("account_refused") is True
             return JudgeOutcome(
-                score=None, config_id=config_id, error=error_text, usage=usage, account_refused=account_refused
+                score=None,
+                config_id=config_id,
+                error=error_text,
+                usage=usage,
+                account_refused=account_refused,
+                cut_short=None if result is None else result.get("judge_cut_short"),
             )
 
         if dim_id in (result.get("criteria_cannot_tell") or []):

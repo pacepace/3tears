@@ -452,7 +452,8 @@ def apply_rejudge(
     the configs, errors and spend are folded exactly as the phase folds them
     (:func:`~threetears.evals.run.judge_service.fold_judge_outcomes`); ``judge_error`` is recomposed
     from the dims that failed again, in the phase's own ``"<dim>: <error>"`` form, and cleared
-    when none did. A :class:`~threetears.evals.schema.models.JudgeRescore` recording all of it is appended.
+    when none did; ``judge_cut_short`` drops every re-asked dim's old entry and records the ones cut off
+    again. A :class:`~threetears.evals.schema.models.JudgeRescore` recording all of it is appended.
 
     ``cost_usd`` and ``usage`` are left as they are — see ``JudgeRescore`` for why.
 
@@ -496,6 +497,7 @@ def apply_rejudge(
             rubric_scores.append(score)
 
     rubric_scores.sort(key=lambda s: rubric_order.get(s.dim, len(rubric_order)))
+    asked = {dim_id for dim_id, _ in outcomes}
     config_ids = {**result.judge_config_ids, **folded.config_ids}
     errors = dict(folded.errors)
     rescore = JudgeRescore(
@@ -520,6 +522,12 @@ def apply_rejudge(
             # A recorded can't-tell is never re-asked (``failed_judge_dims``), so it stands; a dim
             # that failed before and is now answered "can't tell" leaves the errors and joins it.
             "judge_cannot_tell": {**result.judge_cannot_tell, **folded.cannot_tell},
+            # Every dim re-asked leaves its old cut-off behind, whatever became of it now; one cut off again is
+            # recorded afresh, with what THIS call was sent.
+            "judge_cut_short": {
+                **{dim: cut for dim, cut in result.judge_cut_short.items() if dim not in asked},
+                **folded.cut_short,
+            },
             # Stamped from the template's definitions, as the phase stamps them, so a guardrail's can't-tell
             # never drops the trial from the capability measures.
             "judge_cannot_tell_boundary": sorted(

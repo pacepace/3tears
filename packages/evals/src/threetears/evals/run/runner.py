@@ -107,6 +107,7 @@ from threetears.evals.schema.models import (
     EvalTestCase,
     EvalTrace,
     GoalStateOutcome,
+    JudgeCutShort,
     JudgedArtifact,
     JudgeEvidence,
     LatencyMetrics,
@@ -527,6 +528,8 @@ class _JudgeRecord(NamedTuple):
     judge_cannot_tell_boundary: list[str]
     #: The judge role's rows, for the calls that returned — what the result's cost reads them from.
     usage: list[RoleUsage]
+    #: dim -> the reply the provider cut short, for each dim ``judge_error`` names for that cause.
+    judge_cut_short: dict[str, JudgeCutShort]
 
 
 def _judge_record(
@@ -584,6 +587,7 @@ def _judge_record(
         judge_cannot_tell=folded.cannot_tell,
         judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
         usage=folded.usage,
+        judge_cut_short=folded.cut_short,
     )
 
 
@@ -2012,6 +2016,7 @@ def _unjudged_record() -> _JudgeRecord:
         judge_cannot_tell={},
         judge_cannot_tell_boundary=[],
         usage=[],
+        judge_cut_short={},
     )
 
 
@@ -2194,6 +2199,7 @@ def assemble_completed_cell(
         judge_error=judged.judge_error,
         judge_cannot_tell=judged.judge_cannot_tell,
         judge_cannot_tell_boundary=judged.judge_cannot_tell_boundary,
+        judge_cut_short=judged.judge_cut_short,
         variant_key=variant.variant_key,
         identity_version=variant.identity_version,
         # Reached the end of the cell. Stated on the success path too, and not only on the
@@ -2312,6 +2318,7 @@ def _cut_short_cell(
             "judge_config_ids": judged.judge_config_ids,
             "judge_error": judged.judge_error,
             "judge_cannot_tell": judged.judge_cannot_tell,
+            "judge_cut_short": judged.judge_cut_short,
         }
         if judged is not None
         else {}
