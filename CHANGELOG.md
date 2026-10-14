@@ -93,6 +93,66 @@ for a fire that succeeded.
 - The wake fire store accepts the keyword and does not keep it: `wake_fires` has no column for a
   failed fire's output.
 
+### Wake: a wake run by hand, what started a fire, refused deliveries kept, and results that state the schedule
+
+A fire did not say what started it (`create_dispatching` discarded `fire_source`), no fire could be
+asked for outside the schedule, a refused webhook delivery was logged and stored nowhere, and the
+tools' results left out how often a wake fires and when it last did.
+
+- **Migration `agent_wake` v009:** `wake_fires.fire_source` (`TEXT NOT NULL DEFAULT
+  'scheduled_tick'`, CHECK `scheduled_tick | webhook | manual`; earlier rows backfilled, a row
+  with a `webhook_subscription_id` becoming `webhook`), `wake_fires.requested_by` (required on a
+  manual fire, by CHECK), and `agent_wake_schedules.last_manual_fire_at`.
+- **Migration `agent_wake` v010:** `webhook_refusals`, one row per subscription, reason and minute,
+  with a count (`refusals`), the last time and a short `detail`; `ON DELETE CASCADE` with its
+  subscription. Rows older than 30 days (`REFUSALS_KEPT_FOR`) are dropped as new ones are written.
+- **Added, `threetears.agent.wake.manual`:** `claim_manual_fire(pool, schedule, *, requested_by,
+  min_gap, task_prompt=None, now=None)` takes the limit and inserts the `dispatching` row in one
+  statement (an `UPDATE ... RETURNING` on `last_manual_fire_at` feeding the `INSERT`): of any
+  number of callers at once exactly one is claimed. It raises `ManualFireRefused` (`reason`:
+  `too_soon` with `retry_at`, `dispatching`, `gone`) and `ValueError` for a gap that is not
+  positive. `run_manual_fire(claim, *, pool, fires, dispatch_callback)` runs the claimed fire
+  through the tick's dispatch callback and finalizes the row; a callback that raises is a failed
+  fire. A manual fire moves neither `next_fire_at` nor `last_fired_at`. Exported from the package:
+  `ManualFireClaim`, `ManualFireRefused`, `claim_manual_fire`, `run_manual_fire`.
+- **Changed, `FireSource`:** adds `"manual"` (and the REST `WakeFireResponse.fire_source`);
+  `WakeTrigger.requested_by` and `WakeFireResponse.requested_by` (default `None`) are added;
+  `WakeFireEntity.fire_source` and `.requested_by` read the new columns. `create_dispatching`
+  stores `fire_source` and takes `requested_by` (default `None`).
+- **Added, `FireLimits.manual_fires_count` (default `True`):** a manual fire spends the per-wake and
+  per-agent limits like any other. `False` leaves manual fires out of both counts and never refuses
+  one.
+- **Changed, `update_protected`:** a config equal to the wake's writes nothing (`changed` false,
+  the next fire where it was). A fixed-step wake (`interval`, `every_n_hours`) keeps its grid: the
+  anchor is the occurrence before the next fire (`next_fire_at - step`), and the new next fire is
+  the first slot of the new step after now, so 60 -> 90 -> 60 minutes is due where it was. A wake
+  with no next fire starts from now, as before.
+- **Added, `WakeFireCollection.list_for_subscription`**, **`WebhookSubscriptionCollection.record_refusal`
+  and `.list_refusals`**, **`WEBHOOK_REFUSAL_REASONS`**, **`webhook_refusals_table`**, and
+  **`webhook_adapter.record_webhook_refusal`**, which keeps a refusal and never lets a store that
+  cannot be written change the answer. `webhook_receive` keeps a paused subscription's delivery,
+  a missing or bad signature, a source the pattern refuses, a rate-limited delivery, and a body or
+  template that cannot be read. `threetears.channels.webhook.WebhookReceiver` keeps the ones it
+  decides (unknown scheme, missing signature, a signature its verifier refuses). A delivery to an
+  unknown subscription id is not kept: there is no row to hang it on.
+- **Added, `load_wake_schedule_get_tool`** (`wake_schedule_get`: one wake in full, its next three
+  fires and its last), **`load_wake_fires_tool`** (`wake_fires`: a wake's fires, or a webhook's
+  accepted and refused deliveries, each line saying on schedule and how late, by hand and who
+  asked, or a delivery), **`next_fires(entity, count=3)`**, **`load_webhook_subscription_get_tool`**
+  (`webhook_subscription_get`: address, template, source pattern, limit, skill, refusal count; never
+  the secret) and **`standing_same_subscription`**.
+- **Changed, the wake tools' results:** a listing line carries the schedule in words and the last
+  fire (`· interval · every 90 minutes · next: ... · last: ... ·`); `wake_schedule_update` answers
+  with `Changed: field old -> new` and a call whose every value is the current one is `[NO CHANGE]`
+  and writes nothing; pause, resume and delete say what the wake was, and pausing a paused wake is
+  `[NO CHANGE]`. `load_wake_schedule_pause_tool` and `load_wake_schedule_delete_tool` take `tz=`.
+- **Changed, the webhook tools:** `webhook_subscription_create` refuses a subscription identical
+  in name, template, skill, source pattern and limit to one the agent has, with `[NO CHANGE]` and
+  the standing one's id and address, before a secret is made. Update answers `Changed: ...`, a call
+  that changes nothing is `[NO CHANGE]`, and `clear_rate_limit_per_minute` puts the limit back to
+  the default. Create, rotate and list say the address, or that none is configured (list and rotate
+  take `endpoint_base_url=`). Pause, resume and delete say what the subscription was.
+
 ### Wake: the same wake made twice is made once
 
 `wake_schedule_create` had no notion of two rows being one wake: called again with the same
@@ -109,8 +169,7 @@ of its own (and, with wake conversations, a second conversation).
   now gets one.
 - **Added, `tools.schedule_tools.standing_same_wake`:** the lookup, for a host tool that makes a
   wake by another road.
-- Not changed: `webhook_subscription_create` still makes a second subscription, with its own
-  endpoint and secret, on a second identical call.
+- `webhook_subscription_create` refuses an identical subscription the same way (entry above).
 
 ### Models: a refusal by the model's safeguards is its own error, says what ran it, and can be tried again on a CLI of its own
 
