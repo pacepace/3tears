@@ -1,6 +1,6 @@
 """``Eval``: what each cell records, every refusal it makes, and the store it leaves behind.
 
-The rung-one program (``test_rung_one_program.py``) is the happy path read from outside. These are the
+The rung-one program (``test_rung_one_triage.py``) is the happy path read from outside. These are the
 edges: a runner that raises fails its cell and a grader that misbehaves excludes it; every input an
 eval refuses is refused before anything is stored; a caller's own host is used as given; the case set
 is content-addressed; a cancelled run settles the run it started; and a classifier (the first field

@@ -1,8 +1,54 @@
 # Examples
 
-Each file here answers one question about your LLM-backed feature, and adds one capability. Read them in
-order: each builds on the ones before it. Those that call a model call Claude when you set an API key, and replay a
-recording of a live run when you do not, so every one runs offline and free out of the box.
+The ladder comes first: one directory per rung, each in its own domain and recorded on cheap models through
+OpenRouter, so every rung runs offline and free from the recordings beside it. Climb it in order; each rung adds one
+idea to the one before. The single-file examples after it come from before the ladder, and rungs 3 and 4 fold them in.
+
+## The ladder
+
+| Rung | Where | Why you would climb it |
+|---|---|---|
+| 0 | [`1-triage/triage.toml`](1-triage/triage.toml), after [Building an inventory](../docs/building-an-inventory.md) | Write down what your app must never get wrong, then run it with one TOML file. |
+| 1 | [`1-triage/triage.py`](1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
+| 3 | `3-invoices/` (being written) | |
+| 4 | `4-booking/` (being written) | |
+
+Each rung runs from inside its own directory, so the paths it names are read beside it; the store
+(`.evals/evals.sqlite`) and the report (`.evals/reports/<name>/report.html`) are written under the directory you run
+from. In a checkout, from the repo root, after `uv sync`:
+
+```bash
+cd packages/evals/examples/1-triage
+uv run python -m threetears.evals triage.toml   # rung 0
+uv run python -m threetears.evals triage.py     # rung 1
+```
+
+A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
+again, live (`RECORD=1 uv run python -m threetears.evals triage.py`). A recording holds one model at one
+temperature, and an email the recording does not hold is excluded from the run by name, never sent to a model.
+
+### Rungs 0 and 1: email triage, `1-triage/`
+
+[`emails.jsonl`](1-triage/emails.jsonl) is 30 support emails, each with the triage a person gave it: its `category`,
+whether it is `urgent`, and whether it `needs_human`. Twelve are in the `lookalike` stratum, the hard negatives: a
+phishing mail shouting about your account is spam, a calm note that customer data is exposed is urgent, a vendor
+selling a lead list is not a sales lead. `stratum` is a reserved key, so the runner never sees it and the report reads
+each stratum apart.
+
+**Rung 0, [`triage.toml`](1-triage/triage.toml)**, is the eval with no Python: the cases, a prompt to
+`deepseek/deepseek-v4-flash` whose `{email}` is filled from each case, the answer's fields, and three field graders.
+`category` is graded as a label, so it gets a confusion matrix and each label's precision and recall; `urgent` and
+`needs_human` are pass rates. Each email is triaged three times (`k = 3`).
+
+**Rung 1, [`triage.py`](1-triage/triage.py)**, is the same eval with your own function as the runner, in 15 lines.
+`Eval(cases, runner, grader)` takes the three slots. The new grader is `escalates`, a plain function: it fails only
+an email a person must see that the triage left alone. That rule is asymmetric, which a field name cannot say. In
+rung 0's recorded run, `needs_human`, graded both ways, passes 0.81 of the time, and 16 of its 17 misses are emails
+escalated that did not need a person: a minute of someone's time, not a customer left alone. Rung 1's `escalates`
+passes 0.99. Read the misses each run prints before its means.
+
+Recorded on `deepseek/deepseek-v4-flash`: 90 calls for each file, about $0.002 each; `triage.py`'s docstring gives
+both figures as the recordings' cost fields sum them.
 
 ## Running them
 
