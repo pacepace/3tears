@@ -218,15 +218,16 @@ off the readings a finding names, never chosen by the writer.
 a case is a frozen campaign bundle, and the judge reads what the writer read and the memo as written. Code
 checks the structure of model output and never its prose; a judge never grades a fact code can check.
 
-**The headline rests on findings, like everything else** (2026-10). A headline said halving a token budget "does
-not change" latency, cost or delivery, over a contrast that did not separate at five cases. The prompt forbade that
-in a finding, most readers read only the headline, and the headline carried no confidence. So the headline and each
-summary bullet name the findings they rest on, by position (`headline_rests_on`, `summary_rests_on`), and code
-shows each at the weakest confidence and evidence tier of those findings (`analysis/standing.py`): the caveat slot
-the headline lacked, derived rather than written. The same link makes the null check structural: a headline or
-bullet in one of a short list of null phrasings (`analysis/null_claims.py`) is refused when none of its own findings
-cites a reading the bundle established alike. Only "does this sentence say the arms are alike" is read off the
-words; nothing is parsed, so a reworded null passes, and the judge measures the rest.
+**The first screen is code's, not the memo's** (2026-10). A headline said halving a token budget "does not change"
+latency, cost or delivery, over a contrast that did not separate at five cases; another memo headlined "keep the
+current model — adopted" over a run whose judge had been cut off at its output cap on ten of the challenger's twelve
+trials, while the word "truncated" appeared nowhere a reader would look. Most of what a reader needs is countable, so
+the report's first screen — the basis, the verdict and each arm's census of passed, failed and lost trials, by cause
+— is written by code from the bundle, and the memo authors findings and recommendations only, each recommendation
+pinned to its findings and each finding to its trials. The null check moved onto finding titles: a title in one of a
+short list of null phrasings (`analysis/null_claims.py`) is refused when its finding cites no reading the bundle
+established alike. Only "does this title say the arms are alike" is read off the words; nothing is parsed, so a
+reworded null passes, and the judge measures the rest.
 
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
 

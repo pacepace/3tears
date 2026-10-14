@@ -58,19 +58,17 @@ READER = """
 import json
 from collections.abc import Mapping
 from typing import Any
-from threetears.evals.ops import report_read
+from threetears.evals.analysis import DisclosureBlock, campaign_report
 from threetears.evals.quick import Guardrail, callable_host
 from threetears.evals.storage import SqliteDocumentStore
 
 {scorers}
 
 host = callable_host([correct, no_leak], arms=True, store=SqliteDocumentStore({path!r}), {declares})
-report = json.loads(report_read(host, {campaign!r}, "kept", format="json").body)
+report = campaign_report(host, {campaign!r}, "kept")
 print(json.dumps({{
-    "verdicts": [[v["kind"], v["name"], v["arm"], v["outcome"], v["margin"]] for v in report["verdicts"]],
-    "disclosures": [
-        block["text"] for block in report["blocks"] if block["kind"] == "disclosure"
-    ],
+    "verdicts": [[v.kind, v.name, v.arm, v.outcome, v.margin] for v in report.verdicts],
+    "disclosures": [block.text for block in report.blocks if isinstance(block, DisclosureBlock)],
 }}))
 """
 

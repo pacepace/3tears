@@ -73,8 +73,13 @@ def _proposal_schema() -> dict[str, Any]:
     so the guide is sent as an object holding every level any scale has, each a descriptor or ``null``: the
     unwritten levels are dropped before the draft is validated (:func:`_drop_unwritten_levels`), and the model
     still refuses a guide describing a level its dimension's scale does not have.
+
+    A dimension's ``judge`` declaration is left out: which judge scores a dimension is the operator's to declare when
+    the draft becomes a template (``create_template`` refuses a dimension that declares none), never a proposer's to
+    guess, and leaving it out keeps the contract every stored proposer prompt was written against.
     """
     schema = RubricProposal.model_json_schema()
+    del schema["$defs"]["RubricDim"]["properties"]["judge"]
     schema["$defs"]["RubricDim"]["properties"]["scoring_guide"] = {
         "type": "object",
         "description": "Each level of the dimension's scale mapped to what earns it; null for a level not described "

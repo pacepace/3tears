@@ -25,6 +25,7 @@ import pytest
 
 from threetears.evals.negotiation import (
     EFFORT_LADDER,
+    MAX_RESENDS,
     LearnedSettings,
     SettingRefusal,
     SettingFacts,
@@ -158,11 +159,12 @@ async def test_the_served_settings_are_the_closest_ones_and_the_notes_say_why() 
 # --- the bounds --------------------------------------------------------------------------------------------------
 
 
-async def test_a_call_is_resent_at_most_four_times() -> None:
+async def test_a_call_is_resent_at_most_max_resends_times() -> None:
     """A temperature beside reasoning, two effort steps, the temperature again without reasoning: the fifth is raised.
 
     The temperature was refused while the request reasoned, so it came back once reasoning went, and was refused
-    again: a new fact, and the fourth resend. The format's refusal after it is the fifth, and is raised.
+    again: a new fact, and the fourth resend. The format's refusal after it is the fifth, and is raised. The bound is
+    the public ``MAX_RESENDS``, which a host sizes its wall-clock ceiling from, so the two cannot drift apart.
     """
 
     async def send(wire: WireSettings, facts: SettingFacts) -> str:
@@ -193,6 +195,7 @@ async def test_a_call_is_resent_at_most_four_times() -> None:
         (0.2, None, True),
         (None, None, True),
     ]
+    assert MAX_RESENDS == 4 and len(sent) == MAX_RESENDS + 1, "one first send, then MAX_RESENDS resends, all refused"
 
 
 async def test_an_effort_refused_word_after_word_never_walks_the_ladder_into_a_failure() -> None:

@@ -67,6 +67,7 @@ from threetears.evals.kernel import (
     CandidateKind,
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
+    JUDGE_KIND,
     MATCH_MEASURE,
     METRIC_DESCRIPTORS,
     CandidateOutput,
@@ -128,13 +129,14 @@ from threetears.evals.run import (
     TemplateField,
     UnknownSubject,
     build_judge_service,
+    freeze_judge_cases,
     get_result_trace,
     launch_as_group,
     launch_run,
     list_results,
     start_run,
 )
-from threetears.evals.run.authoring import refuse_unsupplied_world
+from threetears.evals.run.authoring import active_judge_config_in, refuse_undeclared_judges, refuse_unsupplied_world
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.quick.answer import unwrap_answer
@@ -1242,7 +1244,10 @@ def _template_id(
         if labels is not None:
             addressed["expected"] = labels
         if judge is not None:
-            addressed["rubric"] = [dim.model_dump(mode="json") for dim in judge.dims]
+            # Less each dimension's judge declaration, which a Judge states for itself (``"builtin"`` unless a
+            # dimension given says otherwise): it says who scores the rubric, not what the rubric is, so a case set's
+            # id stays the one it was before dimensions declared their judge.
+            addressed["rubric"] = [dim.model_dump(mode="json", exclude={"judge"}) for dim in judge.dims]
             addressed["intent"] = intent
         if seeds is not None:
             addressed["seeds"] = seeds
@@ -1281,6 +1286,31 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
             host.storage.save_test_case(
                 test_case if kept is None else test_case.model_copy(update={"created_at": kept.created_at})
             )
+
+
+def _seed_judge_examples(host: EvalHost, template: EvalTemplate, judge: Judge) -> None:
+    """Store ``judge``'s examples as authored cases of the judge template ``<template id>-judge``, in its case set.
+
+    The examples are asked under ``template``'s intent, as its answers are, so a judge campaign over them measures
+    the judge on the question the run asks it. The judge template and the case set are both named
+    ``<template id>-judge``; seeding the same examples again names the stored cases, and a changed list mints the
+    set's next version, listing exactly the examples given.
+    """
+    examples = EvalTemplate(
+        id=f"{template.id}-judge",
+        scope_id=template.scope_id,
+        name=f"judge examples for {template.id}",
+        intent=f"Grade answers to {template.id} as its judge should, on the examples written for it.",
+        candidate_kind=JUDGE_KIND,
+    )
+    _save_unless_unchanged(host, examples, [])
+    freeze_judge_cases(
+        host.storage,
+        template=examples,
+        scope_id=template.scope_id,
+        authored=judge.authored_cases(intent=template.intent),
+        case_set=examples.id,
+    )
 
 
 def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1622,7 +1652,9 @@ async def run_eval(
             call that fails excludes that cell, as any fault of the rig does. A "can't tell" is an answer,
             not a fault: it is recorded on its dimension, counted there (``cannot_tell`` in the summary's
             dimension line), and leaves the cell out of that dimension's mean alone — every other dimension
-            and measure still counts the cell.
+            and measure still counts the cell. Its :attr:`~threetears.evals.quick.judged.Judge.examples` are
+            stored as authored judge cases of the judge template ``<template id>-judge``, listed by the case set
+            of the same name, for a judge campaign to calibrate it on; seeding them calls no model.
         intent: What every case asks of the candidate, in one sentence: the template's intent, which the
             judge reads beside each answer (as ``**Intent:**`` in its prompt) and so can move its scores.
             ``None`` takes the first line of the candidate's docstring, or, with no docstring, a generic
@@ -1877,7 +1909,21 @@ async def run_arms(
             refuse_unsupplied_world(template, profile=host.profile)
         except ValidationFailedError as refused:
             raise ValueError(str(refused)) from refused
+    if judge is not None:
+        # The judge declaration's gate, as authoring holds a host's template to it: a dimension a Judge built is
+        # declared built-in, and one handed in declaring "configured" needs its config in the store this call uses.
+        try:
+            await run_blocking(
+                host.blocking_executor,
+                refuse_undeclared_judges,
+                template,
+                active_judge_config_in(host.storage, scope_id),
+            )
+        except ValidationFailedError as refused:
+            raise ValueError(str(refused)) from refused
     await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
+    if judge is not None and judge.examples:
+        await run_blocking(host.blocking_executor, _seed_judge_examples, host, template, judge)
     # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
     ranges = {
         name: descriptor.value_range

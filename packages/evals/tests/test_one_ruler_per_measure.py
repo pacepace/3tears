@@ -1,40 +1,84 @@
-"""A measure reads in one unit on every surface of a report: its tables, its charts, its words and its summary lines.
+"""A measure reads in one unit on every surface of a report: its tables, its words and its summary lines.
 
-The decision surface chooses each measure's ruler once (:func:`~threetears.evals.analysis.surface_table.measure_rulers`,
-over every cell's mean and every threshold and verdict of a bar on it). A distribution chart that chose its unit over
-its own values — its interval ends among them — drew a latency with means of 900 and 950 ms and an interval reaching
-1100 ms in s, beside a surface table stating it in ms; a 1500 ms bar threshold put the table in s while the chart,
-whose values never reached a second, stayed in ms. Each surface below is held to the ruler instead.
+The report chooses each measure's ruler once (:func:`~threetears.evals.analysis.report.figures.measure_rulers`, over
+every cell's mean and every threshold and verdict of a bar on it), and every table, chart and sentence restates onto
+it. A chart that chose its unit over its own values once drew a latency in s beside a table stating it in ms; a
+1500 ms bar threshold put the table in s while the chart, whose values never reached a second, stayed in ms. Each
+surface below is held to the ruler instead.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.prose_refs import render_reference
+from threetears.evals.analysis.report.figures import measure_rulers
 from threetears.evals.analysis.report.words import evidence_rows
 from threetears.evals.analysis.summary import EvalSummary, RunMeasureSummary
-from threetears.evals.analysis.surface_table import measure_rulers
-from threetears.evals.analysis.viz.intent import chart_intent
-from threetears.evals.analysis.viz.payloads import PayloadError
-from threetears.evals.analysis.viz_refs import DistributionRef, build_viz_payload
-from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection, MeasureSummary
-from threetears.evals.kernel.campaign import EvidenceRow
-from threetears.evals.kernel.host.measures import MeasureRegistry
-from threetears.evals.kernel.surface import DecisionSurface
-from packages.evals.tests.test_surface_table import (
-    CANDIDATE,
-    INCUMBENT,
-    LATENCY,
-    analysis,
-    cell,
-    entry,
-    measures,
-    verdict,
+from threetears.evals.kernel.analysis_measures import (
+    BarAdjudication,
+    BarVerdict,
+    MeasureCollection,
+    MeasureSummary,
 )
+from threetears.evals.kernel.campaign import EvidenceRow, VariantIndexEntry
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
+from threetears.evals.schema.values import SweepableValue
+
+AXIS = "candidate_model"
+CANDIDATE = "model-b-rev2"
+INCUMBENT = "model-b"
+RIG = "a" * 64
+LATENCY = "total_ms"
+
+
+def _level(model: str) -> SweepableValue:
+    return SweepableValue.of(model, display=model)
+
+
+def entry(model: str) -> VariantIndexEntry:
+    """The index entry generation freezes for the arm that ran ``model``."""
+    levers = {AXIS: _level(model)}
+    return VariantIndexEntry(variant_key=compute_variant_key(levers), levers=levers)
+
+
+def cell(model: str, *, n_cases: int, measures: MeasureCollection) -> CellFacts:
+    """One cell of the arm that ran ``model``, under one rig."""
+    return CellFacts(
+        variant_key=entry(model).variant_key,
+        apparatus_class_id=RIG,
+        run_ids=[f"run-{model[:6]}"],
+        n_observations=18,
+        n_cases=n_cases,
+        repeats_per_case_min=3,
+        repeats_per_case_max=3,
+        measures=measures,
+    )
+
+
+def verdict(of: CellFacts, value: float, sem: float, cleared: bool) -> BarVerdict:
+    """A bar verdict on the cell ``of``, decided on an interval around the value."""
+    return BarVerdict(
+        variant_key=of.variant_key,
+        apparatus_class_id=of.apparatus_class_id,
+        run_ids=of.run_ids,
+        value=value,
+        sem=sem,
+        n=6,
+        n_independent=2,
+        ci_low=value - 1.0,
+        ci_high=value + 1.0,
+        cleared=cleared,
+    )
+
+
+def measures() -> dict[str, MeasureFacts]:
+    """The frozen catalogue: a latency in ms."""
+    return {LATENCY: MeasureFacts(unit="ms", merit_axis="latency", higher_is_better=False)}
 
 
 def _latency(mean: float, high: float) -> MeasureSummary:
@@ -75,49 +119,12 @@ def _surface(*, threshold: float | None = None) -> DecisionSurface:
     return DecisionSurface(cells=cells, bars=bars, measures=measures())
 
 
-def _chart_unit(surface: DecisionSurface) -> str:
-    payload = build_viz_payload(
-        DistributionRef(
-            cells=[cell_ref(c.variant_key, c.apparatus_class_id) for c in surface.cells],
-            measure_id=LATENCY,
-            reading="measure",
-        ),
-        surface,
-        [entry(INCUMBENT), entry(CANDIDATE)],
-        measures=MeasureRegistry([]),
-    )
-    return chart_intent("distribution", payload).unit
+class TestTheRulerIsChosenOverEveryFigureTheReportStates:
+    def test_an_interval_end_past_a_second_does_not_move_the_ruler_off_ms(self) -> None:
+        assert measure_rulers(_surface())[LATENCY].unit == "ms"
 
-
-class TestAChartDrawsOnTheMeasuresRuler:
-    def test_an_interval_end_past_a_second_does_not_move_the_chart_off_the_tables_ms(self) -> None:
-        surface = _surface()
-        assert measure_rulers(surface)[LATENCY].unit == "ms"
-        assert _chart_unit(surface) == "ms"
-
-    def test_a_threshold_past_a_second_moves_the_chart_to_the_tables_s(self) -> None:
-        surface = _surface(threshold=1500.0)
-        assert measure_rulers(surface)[LATENCY].unit == "s"
-        assert _chart_unit(surface) == "s"
-
-    def test_a_payload_naming_no_ruler_still_chooses_over_its_own_values(self) -> None:
-        """A chart a host builds by hand has no surface to take a ruler from, and chooses as it always did."""
-        payload: dict[str, Any] = {
-            "groups": [
-                {"label": "a", "ci": {"mean": 950, "low": 800, "high": 1100, "level": 0.95, "variability": "cases"}}
-            ],
-            "unit": "ms",
-        }
-        assert chart_intent("distribution", payload).unit == "s"
-
-    def test_a_stated_unit_off_the_ladder_is_refused(self) -> None:
-        payload: dict[str, Any] = {
-            "groups": [{"label": "a", "ci": {"mean": 9, "low": 8, "high": 11, "level": 0.95, "variability": "cases"}}],
-            "unit": "ms",
-            "stated_unit": "usd",
-        }
-        with pytest.raises(PayloadError, match="no restatement"):
-            chart_intent("distribution", payload)
+    def test_a_threshold_past_a_second_moves_the_ruler_to_s(self) -> None:
+        assert measure_rulers(_surface(threshold=1500.0))[LATENCY].unit == "s"
 
 
 class TestWordsAndEvidenceReadOnTheRuler:
@@ -129,7 +136,8 @@ class TestWordsAndEvidenceReadOnTheRuler:
 
     def test_an_evidence_row_states_its_value_and_spread_on_the_ruler(self) -> None:
         surface = _surface(threshold=1500.0)
-        subject = analysis(surface)
+        # What evidence_rows reads of an analysis: the decision surface it was resolved under.
+        subject = SimpleNamespace(decision_surface=surface)
         slow = next(c for c in surface.cells if c.variant_key == entry(CANDIDATE).variant_key)
         row = EvidenceRow(
             cell_ref=cell_ref(slow.variant_key, slow.apparatus_class_id),
@@ -140,7 +148,7 @@ class TestWordsAndEvidenceReadOnTheRuler:
             n_cases=6,
             dispersion="sem 40; 95% CI [800, 1100]",
         )
-        (stated,) = evidence_rows(subject, [row], lambda ref: ref)
+        (stated,) = evidence_rows(subject, [row], lambda ref: ref)  # type: ignore[arg-type]
         assert (stated["value"].value, stated["value"].unit, stated["value"].text) == (
             pytest.approx(0.95),
             "s",

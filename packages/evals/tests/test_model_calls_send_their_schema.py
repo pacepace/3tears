@@ -80,14 +80,19 @@ def test_a_proposal_sends_the_draft_model_as_a_strict_schema_that_requires_every
 
 
 def test_the_proposal_schema_names_every_field_of_the_draft_model() -> None:
-    """Derived from RubricProposal, so a field the model gains is a field the schema asks for."""
+    """Derived from RubricProposal, so a field the model gains is a field the schema asks for.
+
+    One field is named as left out, and held out: a dimension's ``judge`` declaration is the operator's to make when
+    the draft becomes a template (``create_template`` refuses a dimension declaring none), never the proposer's.
+    """
     schema = _strict(
         plan_draft(
             reset=_RESET, axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C"
         ).response_format
     )
     assert set(schema["properties"]) == set(RubricProposal.model_fields)
-    assert set(schema["$defs"]["RubricDim"]["properties"]) == set(RubricDim.model_fields)
+    assert set(schema["$defs"]["RubricDim"]["properties"]) == set(RubricDim.model_fields) - {"judge"}
+    assert "judge" in RubricDim.model_fields, "the exception names a field the model has"
 
 
 def test_a_variation_call_sends_its_values_envelope_as_a_strict_schema() -> None:
@@ -221,7 +226,7 @@ def _every_directive() -> dict[str, dict[str, Any] | None]:
         "judge (pass_fail)": _judge_request("pass_fail").response_format,
         "simulated user": SIMULATED_USER_RESPONSE_FORMAT,
         "next speaker": next_speaker_response_format(["alice", "bob"]),
-        "analysis": authored_response_format(["scope"], ["delta_table"]),
+        "analysis": authored_response_format(["scope"]),
     }
 
 

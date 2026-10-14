@@ -26,6 +26,7 @@ from threetears.evals.storage.async_bridge import AsyncStoreBridge, bridge_async
 from threetears.evals.storage.memory import InMemoryDocumentStore
 from threetears.evals.storage.routed import (
     ROUTING_RECORD_DOC_TYPE,
+    CoreReset,
     DocTypeRoute,
     MisplacedDocument,
     RouteChanged,
@@ -37,6 +38,7 @@ __all__ = [
     "ROUTING_RECORD_DOC_TYPE",
     "SQLITE_STORE_LAYOUT",
     "AsyncStoreBridge",
+    "CoreReset",
     "DocTypeRoute",
     "InMemoryDocumentStore",
     "MisplacedDocument",

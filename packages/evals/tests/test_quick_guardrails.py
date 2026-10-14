@@ -97,11 +97,12 @@ async def _compare(**overrides: Any) -> Comparison:
     return await compare(CASES, arguments.pop("arms", ARMS), arguments.pop("scorers", [correct, no_leak]), **arguments)
 
 
-def _lines(comparison: Comparison, source: str) -> list[str]:
+def _standing(comparison: Comparison) -> list[str]:
+    """The lines naming an arm a guardrail leaves not shown safe."""
     return [
         block.text
         for block in comparison.report.blocks
-        if isinstance(block, DisclosureBlock) and block.source == source and block.section == "surface"
+        if isinstance(block, DisclosureBlock) and block.source == "guardrails" and block.text.startswith("Arm ")
     ]
 
 
@@ -145,30 +146,33 @@ class TestAScorerGuardrail:
         assert "**Guardrails against the control**" in markdown
         for outcome in ("held", "breached", "undecided"):
             assert f"| {outcome}: " in markdown
-        breach, undecided = _lines(comparison, "guardrails")
+        breach, undecided = _standing(comparison)
         assert breach == (
-            "Arm leaky breached the guardrail No leak score: it is shown worse than the control by more than the "
-            "margin, so it is not adopted, whatever the contrasts below show it gained."
+            "Arm candidate=leaky breached the guardrail No leak score: it is shown worse than the control by more "
+            "than the margin, so it is not adopted, whatever the contrasts below show it gained."
         )
-        assert undecided.startswith("Arm slip is undecided on the guardrail No leak score, so it is not known to be")
+        assert undecided.startswith(
+            "Arm candidate=slip is undecided on the guardrail No leak score, so it is not known"
+        )
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
         (gain,) = [row for row in comparison.contrasts("correct") if row["arm"] == "leaky"]
         assert gain["verdict"] == "improved on the control", "the breached arm gained, and is still not adopted"
 
-    async def test_with_every_scorer_a_guardrail_the_breach_is_named_under_the_guardrails_table(self) -> None:
+    async def test_with_every_scorer_a_guardrail_the_breach_is_named_once_above_the_guardrails_table(self) -> None:
         comparison = await _compare(scorers=[no_leak])
         blocks = comparison.report.blocks
         assert comparison.contrasts() == [], "nothing but the guardrail is graded"
         named = [
             i
             for i, b in enumerate(blocks)
-            if isinstance(b, DisclosureBlock) and b.text.startswith("Arm leaky breached")
+            if isinstance(b, DisclosureBlock) and b.text.startswith("Arm candidate=leaky breached")
         ]
-        assert len(named) == 1 and blocks[named[0]].section == "guardrails"
+        assert len(named) == 1 and blocks[named[0]].section == "contrasts"
         assert blocks[named[0]].text.endswith("so it is not adopted.")
-        assert blocks[named[0] - 1].section == "guardrails", "directly under the guardrails section"
+        table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "guardrails")
+        assert named[0] < table and all(b.section == "contrasts" for b in blocks[named[0] : table + 1])
 
     async def test_a_second_control_reads_the_same_guardrail(self) -> None:
         comparison = await _compare()
@@ -230,6 +234,10 @@ class TestABreachedArmIsNeverRecommended:
     async def test_the_analysis_writer_cannot_adopt_it_whatever_it_gained(self) -> None:
         comparison = await _compare()
         bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
+        # A campaign with no question declared adopts nothing at all; read it as one that declared its question, so
+        # the adoption reaches the guardrail it breached.
+        declared = bundle.reading_scope.model_copy(update={"questions_declared": True})
+        bundle = bundle.model_copy(update={"reading_scope": declared})
         adopting = _adopting_writer()
         with pytest.raises(SoundnessRefusal, match="breached the guardrail no_leak"):
             await generate_analysis(
@@ -263,7 +271,7 @@ def _adopting_writer() -> Any:
             "title": "Correct score by arm",
             "body": f"The tested arm reads {cite[arm]}, the control {cite[control]}.",
             "evidence": [{"cell": cell, "measure_id": tested["name"], "reading": "measure"} for cell in cite],
-            "chart": {"type": "none", "cells": [], "measures": [], "axis": "", "note": "", "caption": ""},
+            "trials": [],
             "confidence": "low",
             "axes": [],
             "caveats": [],
@@ -278,9 +286,7 @@ def _adopting_writer() -> Any:
             "rests_on": [0],
             "revisit_when": "",
         }
-        memo = {"headline": "Adopt the more accurate arm", "summary": "- It is more accurate."}
-        memo |= {"headline_rests_on": [0], "summary_rests_on": [[0]]}
-        memo |= {"findings": [finding], "decisions": [decision], "questions": [], "next": []}
+        memo = {"findings": [finding], "decisions": [decision], "questions": [], "next": []}
         return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
 
     writer.generate = generate

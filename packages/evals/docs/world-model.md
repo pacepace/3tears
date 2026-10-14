@@ -155,9 +155,13 @@ with the run and cannot be re-proven for the template it graded. A stored templa
 grammar rule refuses: the launch records it with the reason, grades every cell on the other checks, and the run
 summary, the bundle and the report name it as refused under the current grammar.
 
-**A refused call is not an action.** The [call ledger](concepts.md#goal-state-check) records only calls that
-succeeded; the trace keeps refusals for the judge. Stored runs re-grade from their ledgers (`recheck_goal_states`) rather
-than re-running.
+**A refused call is not an action, and it is still recorded.** The [call ledger](concepts.md#goal-state-check)'s
+calls are the ones that succeeded, and every call builtin counts only those. The calls a tool refused sit apart on the
+same ledger (`CallLedger.record_refusal`: the tool, the parameters, the reason and where it fell among the calls), and
+`refused("<world>.<tool>")` and `refused_count(...)` read them, so a candidate whose every call was refused no longer
+reads as one that never tried. The quick world records its refusals; a host kind records its tools' own. A ledger that
+keeps no refusal record is never read as "none refused": a refusal check against it cannot be graded. Stored runs
+re-grade from their ledgers (`recheck_goal_states`) rather than re-running.
 
 *Evidence:* conversational agent with tools, 96 runs, 1 campaign, 2026-10, one result passed 7 of 7 action checks
 with every call refused, single campaign.

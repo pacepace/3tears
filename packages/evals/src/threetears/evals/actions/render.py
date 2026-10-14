@@ -447,6 +447,16 @@ def _record_lines(detail: ResultDetail) -> list[str]:
     else:
         lines.append(f"call ledger ({len(record.call_ledger.calls)} call(s) the kind recorded as succeeded):")
         lines += [f"- {call.tool}.{call.action} {_compact(call.params)}" for call in record.call_ledger.calls]
+        refused = record.call_ledger.refused
+        if refused is None:
+            lines.append("refused calls: no refusal record kept")
+        else:
+            lines.append(f"refused calls ({len(refused)} the kind recorded as refused, never among the calls above):")
+            lines += [
+                f"- {refusal.tool}.{refusal.action} {_compact(refusal.params)} after {refusal.position} call(s): "
+                f"{refusal.reason}"
+                for refusal in refused
+            ]
     if record.end_state is not None:
         lines.append(f"end state: {_compact(record.end_state)}")
     if record.judged_artifact is not None:
@@ -576,8 +586,8 @@ def render_analysis_line(analysis: AnalysisLine) -> str:
     """One stored analysis on one line."""
     archived = ", archived" if analysis.archived else ""
     return (
-        f"- {analysis.id}: {analysis.headline} [{analysis.headline_standing}] "
-        f"({analysis.generator_model}, {analysis.generated_at}{archived})"
+        f"- {analysis.id}: {analysis.verdict} [{analysis.findings} finding(s), {analysis.recommendations} "
+        f"recommendation(s)] ({analysis.generator_model}, {analysis.generated_at}{archived})"
     )
 
 
@@ -637,8 +647,12 @@ def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
         + (f"; case set {report.case_set.label}" if report.case_set is not None else ""),
     ]
     lines += [
-        f"- {case.test_case_id}: {case.dim} on result {case.source_result_id} (run {case.source_run_id}), "
-        f"{case.labels} label(s)"
+        f"- {case.test_case_id}: {case.dim} "
+        + (
+            f"authored by {case.authored_by}, its expected verdict its label"
+            if case.authored_by is not None
+            else f"on result {case.source_result_id} (run {case.source_run_id}), {case.labels} label(s)"
+        )
         for case in report.cases
     ]
     if report.skipped:

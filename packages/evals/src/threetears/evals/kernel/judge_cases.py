@@ -13,6 +13,10 @@ This module is the part of that kind every side of the engine reads, so it lives
 - :class:`JudgeCase` — one frozen case, carried on its test case's ``host_payload`` under :data:`JUDGE_CASE_KEY`.
   It is written by the freeze (:func:`~threetears.evals.run.freeze_judge_cases`) and read by the kind
   (:class:`~threetears.evals.run.JudgeKind`).
+- :class:`AuthoredJudgeCase` — a case written by hand rather than frozen from a stored result: a hard negative
+  that must fail its criterion, or an output that looks wrong and must pass. It freezes into a :class:`JudgeCase`
+  (:meth:`JudgeCase.from_authored`) whose one label is its expected verdict, so everything that reads a labelled
+  case reads it unchanged.
 - :class:`JudgeTrial` — what one trial recorded, carried on its result's ``kind_payload``. It is written by the
   kind and read by the readout (:func:`~threetears.evals.analysis.judge_kind_readings`), which pools trials into
   agreement with the labels, agreement with the judge's own repeats, and parse validity, per judge and criterion.
@@ -30,7 +34,7 @@ for is the judge under test, and its spend is recorded under the ``judge`` role 
 
 from __future__ import annotations
 
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -39,6 +43,8 @@ from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
+    PASS_FAIL_SCORES,
+    SCALES,
     ClientRequestSettings,
     DimName,
     EvalTestCase,
@@ -50,6 +56,7 @@ from threetears.evals.schema.models import (
     RubricDim,
     RubricScale,
     KnownUsageRole,
+    RatedOutput,
 )
 
 __all__ = [
@@ -60,7 +67,10 @@ __all__ = [
     "JUDGE_KIND_ROLE",
     "JUDGE_LABEL_AGREEMENT_MEASURE",
     "JUDGE_PARSE_VALID_MEASURE",
+    "AuthoredJudgeCase",
+    "AuthoredVerdict",
     "JudgeCase",
+    "JudgeCaseAuthoring",
     "JudgeCaseLabel",
     "JudgeCaseSource",
     "JudgeKindOverlays",
@@ -101,22 +111,73 @@ JudgeTrialOutcome = Literal["scored", "cannot_tell", "invalid", "no_reply"]
 
 
 class JudgeCaseLabel(EvalBaseModel):
-    """One person's rating of the frozen output on the case's criterion, as it stood when the case was frozen."""
+    """One person's rating of the frozen output on the case's criterion, as it stood when the case was frozen.
+
+    On an authored case, the one label is its author's expected verdict, written with the case: no rating is read.
+    """
 
     rater: str = Field(min_length=1, description="Who rated, as the host names them.")
     score: int = Field(strict=True, description="1-5 on the ordinal scale; 1 (pass) or 0 (fail) on pass/fail.")
     reason: str = Field(min_length=1, description="The rater's own words for the score.")
-    rating_id: str = Field(min_length=1, description="The CalibrationRating the label was read from.")
+    rating_id: str | None = Field(
+        min_length=1,
+        description=(
+            "The CalibrationRating the label was read from; None = an authored case's expected verdict, which its "
+            "author wrote with the case rather than as a rating of a stored result."
+        ),
+    )
+
+
+class JudgeCaseAuthoring(EvalBaseModel):
+    """Who wrote an authored judge case, and why its verdict is what it is: the case's provenance in place of a result."""
+
+    author: str = Field(
+        min_length=1, description="Who wrote the case and its expected verdict, as the host names them."
+    )
+    note: str = Field(
+        min_length=1,
+        description="The author's own words for the verdict: why the output must pass or fail, or earns its score.",
+    )
 
 
 class JudgeCaseSource(EvalBaseModel):
-    """Where a judge case's output came from: the stored result, and what its own judge answered."""
+    """Where a judge case's output came from: the stored result and what its own judge answered, or its author.
 
-    run_id: str = Field(min_length=1, description="The run the judged result belongs to.")
-    result_id: str = Field(min_length=1, description="The judged result whose stored evidence the case replays.")
-    test_case_id: str = Field(min_length=1, description="The source run's test case the result ran.")
+    A case frozen from a durable label (``freeze_judge_cases(from_labels=True)``) names the run and result the label
+    was given on as provenance, which a core baseline reset may since have deleted; it records no test case and no
+    first judge (every ``first_*`` is None): the label carries what was rated, never who first judged it.
+
+    An **authored** case (:class:`AuthoredJudgeCase`) was written by hand rather than produced by any run: it names
+    its author (``authored``) and no run, result, test case or first judge, every one of which is None. Exactly one
+    of the two is set: a stored result's run and result, or an author.
+    """
+
+    run_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The run the judged result belongs to; None = an authored case, which no run produced.",
+    )
+    result_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The judged result whose stored evidence the case replays; None = an authored case, which replays none."
+        ),
+    )
+    test_case_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The source run's test case the result ran; None = frozen from a durable label, which records the run "
+            "and result it was given on but not their test case."
+        ),
+    )
     first_score: int | None = Field(
-        default=None, description="The score the result's own judge gave the criterion; None when it gave none."
+        default=None,
+        description=(
+            "The score the result's own judge gave the criterion; None when it gave none, or when the case was frozen "
+            "from a durable label, where the first judge is not recorded."
+        ),
     )
     first_served_model: str | None = Field(default=None, description="The model that served that score.")
     first_judge_config_id: str | None = Field(
@@ -137,6 +198,138 @@ class JudgeCaseSource(EvalBaseModel):
             "digest."
         ),
     )
+    authored: JudgeCaseAuthoring | None = Field(
+        default=None,
+        description=(
+            "Who wrote the case, for an authored case; None = a case frozen from a stored result or a label. Left "
+            "out of the case's content digest while None, so a case frozen before the field existed keeps its digest."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _a_result_or_an_author(self) -> Self:
+        """Refuse a source naming both a stored result and an author, or neither, or an authored one claiming a judge.
+
+        Raises:
+            ValueError: The source is not exactly one of a stored result (its run and result) or an author, or an
+                authored source records a test case or a first judge, which no hand-written case has.
+        """
+        stored = self.run_id is not None and self.result_id is not None
+        if self.authored is None:
+            if not stored:
+                raise ValueError(
+                    "a judge case's source names the run and result its output was stored by, or its author"
+                )
+            return self
+        recorded = {
+            name: value
+            for name, value in (
+                ("run_id", self.run_id),
+                ("result_id", self.result_id),
+                ("test_case_id", self.test_case_id),
+                ("first_score", self.first_score),
+                ("first_served_model", self.first_served_model),
+                ("first_judge_config_id", self.first_judge_config_id),
+                ("first_judge_temperature", self.first_judge_temperature),
+                ("first_judge_sent_settings", self.first_judge_sent_settings),
+            )
+            if value is not None
+        }
+        if recorded:
+            raise ValueError(
+                f"an authored judge case was produced by no run and judged by no judge, and this source records "
+                f"{sorted(recorded)}"
+            )
+        return self
+
+
+#: An expected verdict as its author states it: a score on the criterion's scale (1-5 ordinal; 1 pass, 0 fail), or
+#: ``"pass"`` / ``"fail"`` on a pass/fail criterion.
+AuthoredVerdict = Annotated[int, Field(strict=True)] | Literal["pass", "fail"]
+
+
+def _verdict_score(dim: str, scale: RubricScale, verdict: int | str) -> int:
+    """``verdict`` as the score it stands for on ``scale``, refused when the scale cannot hold it.
+
+    Raises:
+        ValueError: The verdict is ``"pass"`` / ``"fail"`` on an ordinal criterion, or a score outside the scale's
+            bounds — named with the criterion and its scale, never moved onto the nearest value the scale holds.
+    """
+    spec = SCALES[scale]
+    low, high = spec.scores
+    if isinstance(verdict, str):
+        if scale != "pass_fail" or verdict not in PASS_FAIL_SCORES:
+            raise ValueError(
+                f"criterion {dim!r} is answered on the {scale} scale ({spec.reads_as}), which cannot hold the "
+                f"verdict {verdict!r}; give a score from {low} to {high}"
+            )
+        return PASS_FAIL_SCORES[verdict]
+    if not low <= verdict <= high:
+        raise ValueError(
+            f"criterion {dim!r} is answered on the {scale} scale ({spec.reads_as}), which cannot hold the verdict "
+            f"{verdict}; give a score from {low} to {high}" + (" ('pass' or 'fail')" if scale == "pass_fail" else "")
+        )
+    return verdict
+
+
+class AuthoredJudgeCase(EvalBaseModel):
+    """A calibration case written by hand: an output, the criterion it is judged on, and the verdict it must get.
+
+    What a person writes when no stored result holds the output they need — a **hard negative** that must fail
+    the criterion, or an output that looks wrong and must pass it. It carries what a judge reads when it judges a
+    stored result, at its least: the criterion as the subject's template words it, the scenario (the template's
+    intent), what the output is judged against, and the output itself. Frozen into a judge template
+    (:func:`~threetears.evals.run.freeze_judge_cases`, ``authored=``), it is a :class:`JudgeCase` whose one label
+    is its expected verdict, so the judge kind, the readout and a judge profile treat it as a labelled case.
+
+    Refused at authoring when the criterion's scale cannot hold the verdict, naming both: a hard negative whose
+    verdict is quietly moved is a calibration item that measures nothing.
+    """
+
+    criterion: RubricDim = Field(
+        description=(
+            "The rubric dimension the output is judged on, worded exactly as the subject's template words it: its "
+            "wording is the criterion a judge profile is keyed by, so a reworded copy calibrates another criterion."
+        )
+    )
+    output: str = Field(min_length=1, description="The output under review, as the judge reads it.")
+    case_material: str = Field(min_length=1, description="What the output is judged against: its source, or its facts.")
+    intent: str = Field(
+        min_length=1, description="The scenario the judge reads: the subject template's intent, what each case asks."
+    )
+    expected: AuthoredVerdict = Field(
+        description=(
+            "The verdict the output must get: 'pass' or 'fail' (or 1 / 0) on a pass/fail criterion, a score from 1 to "
+            "5 on an ordinal one."
+        )
+    )
+    author: str = Field(min_length=1, description="Who wrote the case, as the host names them: the label's rater.")
+    note: str = Field(min_length=1, description="Why the output must get that verdict: the label's reason.")
+    subject: str | None = Field(
+        default=None,
+        description="Who or what produced the output, as the judge should know it; None when it speaks for itself.",
+    )
+    judged_artifact: JudgedArtifact = Field(
+        default=JudgedArtifact.DOCUMENT,
+        description="Whether the output is a document judged against its material, or a conversation's transcript.",
+    )
+
+    @model_validator(mode="after")
+    def _a_verdict_its_scale_holds(self) -> Self:
+        """Refuse a verdict the criterion's scale cannot hold, and an output no judge reads.
+
+        Raises:
+            ValueError: The verdict is off the criterion's scale, naming both; or the artifact is declared unjudged.
+        """
+        _verdict_score(self.criterion.name, self.criterion.scale, self.expected)
+        if self.judged_artifact is JudgedArtifact.UNJUDGED:
+            raise ValueError("an authored judge case's output is one a judge reads: a document or a transcript")
+        return self
+
+    @property
+    def expected_score(self) -> int:
+        """The verdict as the stored score it stands for: 1 (pass) or 0 (fail), or the 1-5 score."""
+        return _verdict_score(self.criterion.name, self.criterion.scale, self.expected)
 
 
 class JudgeCase(EvalBaseModel):
@@ -150,6 +343,11 @@ class JudgeCase(EvalBaseModel):
 
     Frozen because everything it is read from moves: a template is edited, a rating is replaced, a result is
     re-judged. A case that re-read them at each trial would change under every arm scored on it.
+
+    **An authored case** (:meth:`from_authored`) is one a person wrote rather than one a run stored: a hard negative
+    that must fail its criterion, or an output that looks wrong and must pass. Its expected verdict IS its label —
+    one label, by its author, carrying no rating id — so a trial, the readout and a judge profile read it exactly as
+    they read a labelled case.
     """
 
     dim: DimName = Field(description="The criterion: a template rubric dim's name, or a reserved axis id.")
@@ -173,6 +371,84 @@ class JudgeCase(EvalBaseModel):
     )
     source: JudgeCaseSource
 
+    @model_validator(mode="after")
+    def _an_authored_case_is_labelled_by_its_verdict(self) -> Self:
+        """Refuse an authored case whose labels are not its one verdict, and a stored one with a label read from no rating.
+
+        Raises:
+            ValueError: An authored case carries other than exactly one label, by its author and with no rating id,
+                on the criterion's scale; or a case frozen from a stored result carries a label with no rating id.
+        """
+        authored = self.source.authored
+        if authored is None:
+            if unrated := [label.rater for label in self.labels if label.rating_id is None]:
+                raise ValueError(
+                    f"a judge case frozen from a stored result carries labels read from ratings, and the label(s) by "
+                    f"{unrated} name none"
+                )
+            return self
+        if len(self.labels) != 1 or self.labels[0].rating_id is not None or self.labels[0].rater != authored.author:
+            raise ValueError(
+                f"an authored judge case carries exactly one label, its expected verdict by its author "
+                f"{authored.author!r} with no rating id; this one carries {len(self.labels)} label(s)"
+            )
+        _verdict_score(self.dim, self.scale, self.labels[0].score)
+        return self
+
+    @classmethod
+    def from_authored(cls, authored: AuthoredJudgeCase) -> Self:
+        """The case a hand-written calibration case freezes into, read from no run.
+
+        Args:
+            authored: The case as its author wrote it, its verdict already held to its criterion's scale.
+
+        Returns:
+            The case: the criterion and scenario as written, the output judged as the authored artifact declares,
+            no variation and no goal outcomes, and the expected verdict as its one label.
+        """
+        return cls(
+            dim=authored.criterion.name,
+            scale=authored.criterion.scale,
+            criterion=authored.criterion,
+            intent=authored.intent,
+            judged_artifact=authored.judged_artifact,
+            evidence=JudgeEvidence(
+                subject=authored.subject, case_material=authored.case_material, artifact=authored.output
+            ),
+            labels=[
+                JudgeCaseLabel(
+                    rater=authored.author, score=authored.expected_score, reason=authored.note, rating_id=None
+                )
+            ],
+            source=JudgeCaseSource(authored=JudgeCaseAuthoring(author=authored.author, note=authored.note)),
+        )
+
+    @classmethod
+    def from_rated(cls, rated: RatedOutput, labels: list[JudgeCaseLabel], source: JudgeCaseSource) -> Self:
+        """The case a durable label's rated content freezes into, read from no result.
+
+        Args:
+            rated: What the label's rater read (``CalibrationRating.rated``), proven against its label key when
+                the rating was written.
+            labels: The person labels on that output and criterion.
+            source: Where the content came from, as provenance (a label's run and result, which may be gone).
+
+        Returns:
+            The case, its content field for field the rated content's.
+        """
+        return cls(
+            dim=rated.dim,
+            scale=rated.scale,
+            criterion=rated.criterion,
+            intent=rated.intent,
+            variation=dict(rated.variation),
+            goal_outcomes=list(rated.goal_outcomes),
+            judged_artifact=rated.judged_artifact,
+            evidence=rated.evidence,
+            labels=labels,
+            source=source,
+        )
+
     def criterion_digest(self) -> str:
         """A digest of the criterion as the case asks it: its id, scale and wording.
 
@@ -187,16 +463,18 @@ class JudgeCase(EvalBaseModel):
     def content_digest(self) -> str:
         """A digest of everything the case freezes, its labels included — what makes two freezes the same case.
 
-        ``source.first_judge_sent_settings`` is left out of the pre-image while it is None, so a case whose first
-        score recorded no sent settings digests as it did before the field existed (the digest-default rule of
+        ``source.first_judge_sent_settings`` and ``source.authored`` are left out of the pre-image while they are
+        None, so a case whose first score recorded no sent settings, and every case frozen from a stored result,
+        digests as it did before the field existed (the digest-default rule of
         :mod:`~threetears.evals.schema.versioning`).
 
         Returns:
             The digest.
         """
         frozen = self.model_dump(mode="json")
-        if frozen["source"]["first_judge_sent_settings"] is None:
-            del frozen["source"]["first_judge_sent_settings"]
+        for added in ("first_judge_sent_settings", "authored"):
+            if frozen["source"][added] is None:
+                del frozen["source"][added]
         return canonical_digest(frozen)
 
 
@@ -270,7 +548,10 @@ class JudgeTrial(EvalBaseModel):
     axis: RubricAxis = Field(description="The axis the criterion was asked on, as the judge request stated it.")
     criterion_digest: str = Field(min_length=1, description="The case's criterion digest (JudgeCase.criterion_digest).")
     case_digest: str = Field(min_length=1, description="The case's content digest (JudgeCase.content_digest).")
-    source_result_id: str = Field(min_length=1, description="The stored result whose output the case replays.")
+    source_result_id: str | None = Field(
+        min_length=1,
+        description="The stored result whose output the case replays; None = an authored case, which replays none.",
+    )
     labels: list[JudgeCaseLabel] = Field(default_factory=list, description="The case's person labels.")
     outcome: JudgeTrialOutcome
     score: int | None = Field(default=None, description="The judge's score, when it scored.")

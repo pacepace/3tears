@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.reporting import ScoreRecord
+from threetears.evals.analysis.reporting import ScoreRecord, self_judging_models
 from threetears.evals.analysis.lenses.program_budget import ProgramBudget
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import EvalResult, RoleUsage
@@ -175,6 +175,7 @@ def _run_summary(
             None if run.elided_payload_paths else profile.sweepables.production_footing(run, run_results)
         ),
         measures=_measure_collection(run_results, profile=profile, undeclared="all_observed"),
+        judge_shares_candidate_model=self_judging_models(run, run_results),
     )
 
 

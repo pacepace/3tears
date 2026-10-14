@@ -23,6 +23,16 @@ the rating, from the stored score rather than from the caller. So the label pair
 byte-identical output on the same criterion, on any result, and a frozen judge case finds it by the key. A
 score made outside a judge phase has none, and its rating is read by its result alone.
 
+**A rating carries what was rated** (durable v15.1). Ratings are durable: a core baseline reset deletes the run,
+result and trace a rating was given on, and the rating stays. So the write copies the content the rater read onto
+the rating (:class:`~threetears.evals.schema.RatedOutput`): the criterion, the scenario and the evidence, rebuilt
+from what the run recorded under the one check a judge freeze rebuilds a case under
+(:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`), and proven against the score's label key. When
+that check refuses (the template was edited after the run, the run is still being written, the trace stored no
+evidence, the score carries no label key), the person's judgment is still recorded: the rating is written with
+``rated_withheld`` set to the refusal, and a warning is logged naming it. It is a label that cannot outlive its
+evidence, and every reader that rebuilds cases from labels names it.
+
 **Deleting a result does not delete its ratings.** They stay, and every agreement read lists them as
 ``result_unresolved`` — a person's judgement is not regenerable, and a rating that silently
 disappeared would shrink a dimension's n with nothing saying why.
@@ -35,22 +45,38 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
-from threetears.evals.schema.models import CalibrationRating, EvalResult, RaterKind
+from threetears.evals.kernel.storage import UnreadableRecordError
+from threetears.evals.run.rejudge import JudgeInputStore, reproducible_judge_inputs
+from threetears.evals.schema.models import (
+    RESERVED_DIM_IDS,
+    CalibrationRating,
+    EvalResult,
+    EvalRun,
+    RatedOutput,
+    RaterKind,
+    RubricScore,
+    label_key_of,
+)
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT, SCHEMA_REMEDY
 
 log = get_logger(__name__)
 
 
-class RatingStore(Protocol):
-    """The two calls a rating makes: read the rated result, write the rating.
+class RatingStore(JudgeInputStore, Protocol):
+    """The calls a rating makes: read the rated result, its run and what its judge read, and write the rating.
 
-    Structural, so :class:`~threetears.evals.kernel.storage.EvalStorage` satisfies it by having
-    the methods. Positional parameters are positional-only.
+    The reads :func:`~threetears.evals.run.rejudge.reproducible_judge_inputs` makes, which rebuild the rated content,
+    plus the result, its run and the write. Structural, so :class:`~threetears.evals.kernel.storage.EvalStorage`
+    satisfies it by having the methods. Positional parameters are positional-only.
     """
 
     def load_eval_result(self, result_id: str, scope_id: str, /) -> EvalResult | None:
         """Load one result within a scope, or ``None``."""
+        ...
+
+    def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
+        """Load one run within a scope, or ``None``."""
         ...
 
     def save_calibration_rating(self, rating: CalibrationRating, /) -> None:
@@ -86,8 +112,9 @@ def rate_result(
 
     Returns:
         The rating as written, carrying the judge score's label key (the fingerprints of the output read
-        and of the criterion) when the score has one. A second rating by the same rater, of the same kind,
-        of the same dimension of the same result replaces the first.
+        and of the criterion) when the score has one, and what was rated (``rated``) or why it could not be
+        rebuilt (``rated_withheld``). A second rating by the same rater, of the same kind, of the same dimension
+        of the same result replaces the first.
 
     Raises:
         NotFoundError: No such result in the scope.
@@ -112,6 +139,7 @@ def rate_result(
             details={"result_id": result_id, "rubric_dim": rubric_dim, "judged_dimensions": scored},
             remedy=f"rate a dimension the result was judged on: {scored or 'it was judged on none'}",
         )
+    rated = _rated_content(storage, result, judged)
     try:
         rating = CalibrationRating(
             scope_id=result.scope_id,
@@ -127,12 +155,23 @@ def rate_result(
             # byte-identical output on the same criterion, not only this result's (#628).
             output_fingerprint=judged.output_fingerprint,
             criterion_fingerprint=judged.criterion_fingerprint,
+            rated=rated if isinstance(rated, RatedOutput) else None,
+            rated_withheld=rated if isinstance(rated, str) else None,
         )
     except ValidationError as e:
         raise ValidationFailedError(
             f"rating of {rubric_dim!r} on result {result_id!r} refused: {e}", remedy=SCHEMA_REMEDY
         ) from e
     storage.save_calibration_rating(rating)
+    if rating.rated_withheld is not None:
+        log.warning(
+            "eval.rate_result rating=%s result=%s dim=%s is stored without what was rated, so it cannot outlive its "
+            "evidence: %s",
+            rating.id,
+            result.id,
+            rubric_dim,
+            rating.rated_withheld,
+        )
     log.info(
         "eval.rate_result result=%s run=%s scope=%s dim=%s rater=%s rater_kind=%s score=%s",
         result.id,
@@ -144,6 +183,57 @@ def rate_result(
         score,
     )
     return rating
+
+
+def _rated_content(storage: RatingStore, result: EvalResult, judged: RubricScore) -> RatedOutput | str:
+    """What the rater read on ``judged``, rebuilt from what the result's run recorded, or why it cannot be.
+
+    Args:
+        storage: Where the run, template, test case and trace are read.
+        result: The rated result.
+        judged: Its judge score on the rated dimension.
+
+    Returns:
+        The content, its fingerprints the score's label key; or the reason it is withheld, in words a reader of the
+        rating is shown.
+
+    Raises:
+        StorageError: A read failed: that is not a reason to withhold, and is raised as every read raises it.
+    """
+    if judged.output_fingerprint is None or judged.criterion_fingerprint is None:
+        return (
+            f"the judge score on {judged.dim!r} carries no label key (a score made outside a judge phase), so nothing "
+            "proves which output and criterion the rater read"
+        )
+    try:
+        run = storage.load_eval_run(result.eval_run_id, result.scope_id)
+        if run is None:
+            return f"the result's run {result.eval_run_id!r} does not load, so what its judge read cannot be rebuilt"
+        inputs = reproducible_judge_inputs(
+            storage, result, run, result.scope_id, request_settings="as_recorded", config_dims=()
+        )
+    except (NotFoundError, ValidationFailedError, UnreadableRecordError) as refused:
+        return f"what the judge read cannot be rebuilt from the run: {refused}"
+    criterion = next((dim for dim in inputs.template.rubric if dim.name == judged.dim), None)
+    if criterion is None and judged.dim not in RESERVED_DIM_IDS:
+        return f"the run's template no longer words {judged.dim!r}, so the criterion the rater read cannot be rebuilt"
+    rated = RatedOutput(
+        dim=judged.dim,
+        scale=judged.scale,
+        criterion=criterion,
+        intent=inputs.template.intent,
+        variation=dict(inputs.test_case.variation_params),
+        goal_outcomes=list(result.goal_state_outcomes),
+        judged_artifact=inputs.judged_artifact,
+        evidence=inputs.judge_evidence,
+    )
+    rebuilt = label_key_of(rated.evidence, criterion if criterion is not None else judged.dim)
+    if rebuilt != (judged.output_fingerprint, judged.criterion_fingerprint):
+        return (
+            "the evidence and criterion rebuilt from the run are not the ones the judge's score was stamped with (its "
+            "label key differs), so they are not what the rater read"
+        )
+    return rated
 
 
 __all__ = ["RatingStore", "rate_result"]

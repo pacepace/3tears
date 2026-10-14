@@ -59,9 +59,6 @@ FIND_TEST_CASE = "results_list names the cases a run ran, by their test case ids
 #: How a caller finds a case set's name and version.
 FIND_CASE_SET = "case_sets_list names this scope's case sets and their versions"
 
-#: How a caller finds a finding of an analysis.
-FIND_FINDING = "report_read states the campaign's analysis with its findings numbered from 0"
-
 #: How a caller finds a job's id.
 FIND_JOB = (
     "a job's id is the one the call that started it returned (run:<id>, sweep:<id>, launch:<id>, ...); "
@@ -99,7 +96,6 @@ __all__ = [
     "FIND_ANALYSIS",
     "FIND_CAMPAIGN",
     "FIND_CASE_SET",
-    "FIND_FINDING",
     "FIND_INSIGHT",
     "FIND_JOB",
     "FIND_JUDGE_CONFIG",

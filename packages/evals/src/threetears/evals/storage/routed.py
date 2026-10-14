@@ -33,6 +33,12 @@ document of the scopes its host names to its placement, then writes the record. 
 (new in this release) is read where the record's store for unregistered types is, so a new type changes nothing
 unless it is placed elsewhere.
 
+**A core baseline is one call, and the stores boot after it.** :meth:`RoutedDocumentStore.reset_core` deletes every
+core and regenerable document of the scopes its host names from every store, wherever it sits, never a durable
+document, a host's own or the placement record, and then relocates (which moves a type placed anew, such as the
+durable lifecycle a route now keeps apart, and writes every store's record). A runbook that truncates tables by name
+instead can wipe the records too, and the router then refuses to start.
+
 **A store's clock passes through when every store has one.** A store offering
 :class:`~threetears.evals.schema.StoreClock` keeps time every process sharing it reads alike, and job leases are
 stamped in it. The router offers ``now()`` exactly when every one of its stores does, and answers from the store
@@ -65,8 +71,19 @@ from typing import Any, Final, Literal, get_args
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
+from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES
+from threetears.evals.schema.logs import get_logger
 
-__all__ = ["ROUTING_RECORD_DOC_TYPE", "DocTypeRoute", "MisplacedDocument", "RouteChanged", "RoutedDocumentStore"]
+__all__ = [
+    "ROUTING_RECORD_DOC_TYPE",
+    "CoreReset",
+    "DocTypeRoute",
+    "MisplacedDocument",
+    "RouteChanged",
+    "RoutedDocumentStore",
+]
+
+log = get_logger(__name__)
 
 #: The ``doc_type`` of the placement record the router writes into every store, inside the routing scope its host
 #: names. Public so a host that registers or audits what its tables hold names the router's own record rather than a
@@ -617,6 +634,85 @@ class RoutedDocumentStore:
         for name, store in children.items():
             store.upsert(_record(name, placements, route.unregistered, routing_scope))
         return moved
+
+    @classmethod
+    def reset_core(
+        cls,
+        children: Mapping[str, DocumentStore],
+        route: DocTypeRoute,
+        *,
+        scope_ids: Iterable[str],
+        routing_scope: str,
+        host_doc_types: Sequence[str] = (),
+    ) -> CoreReset:
+        """The core baseline operation over a router's stores: the one call a deploy runbook makes, engine stopped.
+
+        Deletes every document of every core and regenerable type
+        (:data:`~threetears.evals.schema.versioning.CORE_RESET_DOC_TYPES`) in the named scopes from every store,
+        wherever it sits, so a type placed elsewhere by an older route is reached too; never a durable document
+        (what people author), a host's own, or the placement record, which lives in the routing scope. Then it runs
+        :meth:`relocate` with the same arguments: a durable type the route now keeps apart (a lifecycle route
+        given ``durable`` its own store) is moved there once, and every store's placement record is written, so the
+        router starts on the stores the moment this returns, even if a hand-run TRUNCATE once wiped the records.
+        Safe to run again after an interruption: the deletes find nothing, and :meth:`relocate` is.
+
+        Args:
+            children: The stores, by name, as the router will be built over them.
+            route: Where each type is to be kept.
+            scope_ids: Every scope with documents in these stores.
+            routing_scope: The scope the placement record is kept in, which the router is built with. Never one of
+                ``scope_ids``.
+            host_doc_types: The host's own ``doc_type`` values in these stores: kept, and placed by
+                :meth:`relocate`.
+
+        Returns:
+            What was deleted and what moved.
+
+        Raises:
+            ValueError: As :meth:`relocate`, checked before anything is deleted.
+            MisplacedDocument: As :meth:`relocate`; the deletes have run, and running again after the operator's
+                decision finishes the reset.
+        """
+        routing_scope = _checked_routing_scope(routing_scope)
+        scope_ids = list(scope_ids)
+        if routing_scope in scope_ids:
+            raise ValueError(
+                f"the routing scope {routing_scope!r} is among the scopes to reset; it holds the router's own "
+                "record, never documents, so name a routing scope no document is kept in"
+            )
+        _checked_children(children, route)
+        deleted = dict.fromkeys(sorted(CORE_RESET_DOC_TYPES), 0)
+        for scope_id in scope_ids:
+            for doc_type in deleted:
+                for name, store in children.items():
+                    ids = list(store.iter_by_doc_type(doc_type, scope_id))
+                    dropped = sum(1 for doc_id in ids if store.delete(doc_id, scope_id))
+                    deleted[doc_type] += dropped
+                    if dropped:
+                        log.warning(
+                            "reset_core: dropped %d %s docs from store=%s scope=%s", dropped, doc_type, name, scope_id
+                        )
+        relocated = cls.relocate(
+            children, route, scope_ids=scope_ids, routing_scope=routing_scope, host_doc_types=host_doc_types
+        )
+        for doc_type, count in sorted(relocated.items()):
+            log.warning("reset_core: relocated %d %s docs to their placement", count, doc_type)
+        return CoreReset(deleted=MappingProxyType(deleted), relocated=MappingProxyType(relocated))
+
+
+@dataclass(frozen=True)
+class CoreReset:
+    """What :meth:`RoutedDocumentStore.reset_core` did: the core and regenerable documents deleted, and what moved.
+
+    Attributes:
+        deleted: How many documents were deleted, by ``doc_type``, summed over the stores and scopes; every core and
+            regenerable type is a key.
+        relocated: How many documents the relocation that followed moved, by ``doc_type`` (the durable types, when
+            the route places them anew); empty when nothing moved.
+    """
+
+    deleted: Mapping[str, int]
+    relocated: Mapping[str, int]
 
 
 #: The job record whose store's clock a clocked router reads: runs, sweeps and analysis attempts carry leases,

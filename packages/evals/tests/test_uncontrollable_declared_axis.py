@@ -43,9 +43,7 @@ def _bundle(*, with_apparatus_axis: bool) -> AnalysisContextBundle:
 
 
 def _report_texts(bundle: AnalysisContextBundle) -> list[str]:
-    report = build_code_only_report(
-        bundle, measures=toyhost_profile().measures, assembled_at="2026-10-10T00:00:00+00:00"
-    )
+    report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00+00:00")
     return [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
 
 

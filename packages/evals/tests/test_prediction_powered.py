@@ -189,9 +189,7 @@ class TestTheBundleCarriesItBesideTheJudge:
 
     def test_the_code_only_report_puts_it_after_the_judge_s_figure(self) -> None:
         _, bundle = _bundle(rated={0: 36, 1: 3}, shift=-1, stratified=True)
-        report = build_code_only_report(
-            bundle, measures=toyhost_profile().measures, assembled_at="2026-10-10T00:00:00+00:00"
-        )
+        report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00+00:00")
         cells = [
             str(value)
             for block in report.blocks

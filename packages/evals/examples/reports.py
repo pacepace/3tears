@@ -1,55 +1,25 @@
-"""How do I turn a finished campaign into the files people read: verdicts, report files and charts?
+"""How do I turn a finished campaign into the files people read? ``comparison.write(dir)``.
 
-The earlier examples printed a campaign's report; here it is written out. The verdicts are read as typed data
-and gated as a CI step gates them, the report goes to Markdown and HTML beside the evidence bundle its numbers
-come from, and each chart to a Vega-Lite spec (and an SVG, with the ``[vega]`` extra). New here:
-``report_markdown``, ``report_html``, ``inspect_campaign_bundle``, ``VegaRenderer`` and ``Comparison.gate``.
-Reading a report further: ``docs/reading-reports.md``.
+It writes one page that needs no script, the same page as Markdown, and the evidence bundle every number on it was
+computed from. New here: ``Comparison.write`` and ``Comparison.gate``. Reading the page: ``docs/reading-reports.md``.
 
-Run it with ``python reports.py`` (``README.md`` beside it says how); the files go to ``./eval-report/``. It calls
-no model: both arms are keyword stand-ins, so it always runs offline and costs nothing.
+Run it with ``python reports.py``; the files go to ``./eval-report/``. It calls no model: both arms are keyword
+stand-ins, so it runs offline and costs nothing.
 """
 
 import asyncio
-import json
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from threetears.evals.analysis import ChartBlock, inspect_campaign_bundle, report_html, report_markdown
 from threetears.evals.quick import compare
-from threetears.evals.run import run_blocking
-from threetears.evals.vega import VegaRenderer
 
-# -----------------------------------------------------------------------------
-# 1. The cases: on-call tickets, and whether each one is urgent.
-# -----------------------------------------------------------------------------
-
-CASES = [
-    {"ticket": "Checkout is down for every customer since 09:00.", "label": "urgent"},
-    {"ticket": "URGENT: invoices are going to the wrong customers.", "label": "urgent"},
-    {"ticket": "We lost all of yesterday's orders after the migration.", "label": "urgent"},
-    {"ticket": "Please fix asap, the API returns 500 on every request.", "label": "urgent"},
-    {"ticket": "Possible data breach: our admin page is public.", "label": "urgent"},
-    {"ticket": "Nobody on the team can sign in since the update.", "label": "urgent"},
-    {"ticket": "Could you add a dark mode to the dashboard?", "label": "routine"},
-    {"ticket": "How do I export last month's report to CSV?", "label": "routine"},
-    {"ticket": "Please update the billing address on our account asap.", "label": "routine"},
-    {"ticket": "The tooltip on the pricing page has a typo.", "label": "routine"},
-    {"ticket": "Can we get a copy of the March invoice?", "label": "routine"},
-    {"ticket": "Is there an API rate limit we should know about?", "label": "routine"},
-]
-
-# -----------------------------------------------------------------------------
-# 2. The OFFLINE stand-ins: today's rule and a better one, keyword rules, not models.
-# -----------------------------------------------------------------------------
-
-BASELINE_WORDS = ("urgent", "asap")
-CANDIDATE_WORDS = ("down", "urgent", "lost", "returns 500", "breach", "nobody")
+URGENT = ["Checkout is down since 09:00.", "We lost yesterday's orders.", "The API returns 500.", "Nobody can sign in."]
+ROUTINE = ["Could you add a dark mode?", "Please update our billing address asap.", "The pricing page has a typo."]
+CASES = [{"ticket": text, "label": "urgent"} for text in URGENT] + [{"ticket": t, "label": "routine"} for t in ROUTINE]
 
 
-def offline_triage(words: tuple[str, ...]) -> Callable[[dict], Awaitable[str]]:
-    """A keyword stand-in: urgent when the ticket mentions any of ``words``."""
+def keywords(*words: str) -> Callable[[dict], Awaitable[str]]:
+    """An OFFLINE stand-in for a model: urgent when the ticket mentions any of ``words``."""
 
     async def triage(case: dict) -> str:
         return "urgent" if any(word in case["ticket"].lower() for word in words) else "routine"
@@ -57,65 +27,13 @@ def offline_triage(words: tuple[str, ...]) -> Callable[[dict], Awaitable[str]]:
     return triage
 
 
-# -----------------------------------------------------------------------------
-# 3. Run the campaign, then write the files each reader needs to ``out_dir`` and return the verdicts.
-# -----------------------------------------------------------------------------
-
-
-async def main(out_dir: Path = Path("eval-report")) -> dict[tuple[str, str], str]:
-    print("No model is called: running OFFLINE, with keyword stand-ins for both arms.\n")
-    comparison = await compare(
-        CASES,
-        # Name each arm for what it is: the report calls it ``candidate=<name>``.
-        {"current": offline_triage(BASELINE_WORDS), "more-keywords": offline_triage(CANDIDATE_WORDS)},
-        expected=lambda case: case["label"],
-        control="current",
-        k=2,
-    )
-    report = comparison.report
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # The verdicts as data: each contrast's typed outcome, which a program branches on, beside the words printed.
-    verdicts = {(row["arm"], row["reading"]): row["outcome"] for row in comparison.contrasts()}
-    for row in comparison.contrasts():
-        print(f"{row['arm']} on {row['reading']}: {row['outcome']} ({row['verdict']})")
-    # The same verdicts as a CI gate: it fails on a regression or a guardrail not shown held, by default.
-    print(comparison.gate().render())
-
-    (out_dir / "report.md").write_text(report_markdown(report), encoding="utf-8")  # for a pull request or an agent
-    (out_dir / "report.html").write_text(report_html(report), encoding="utf-8")  # for a person; no script
-    # The evidence every number was computed from; the report cites its fingerprint.
-    bundle = await run_blocking(  # a store read, so it runs off the event loop
-        comparison.host.blocking_executor,
-        inspect_campaign_bundle,
-        comparison.host,
-        comparison.campaign_id,
-        comparison.scope_id,
-    )
-    (out_dir / "bundle.json").write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
-
-    # A chart block carries an intent, not a picture; the Vega-Lite renderer compiles it to a spec.
-    renderer = VegaRenderer.packaged("light")
-    (out_dir / "charts").mkdir(exist_ok=True)
-    svgs = []
-    for index, block in enumerate(block for block in report.blocks if isinstance(block, ChartBlock) and block.intent):
-        name = f"{index:02d}-" + re.sub(r"[^a-z0-9]+", "-", block.intent.title.lower()).strip("-")
-        chart = renderer.draw(block.intent)
-        spec = chart.spec | {"config": renderer.config()}  # the config colours the spec
-        (out_dir / "charts" / f"{name}.vl.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
-        try:
-            (out_dir / "charts" / f"{name}.svg").write_text(renderer.svg(chart), encoding="utf-8")
-            svgs.append(f"charts/{name}.svg")
-        except ImportError:  # drawing an SVG needs the [vega] extra; the spec does not
-            pass
-    if svgs:
-        page = "".join(f'<p><img src="{svg}" alt="{svg}"></p>' for svg in svgs)
-        (out_dir / "charts.html").write_text(f"<!doctype html><title>Charts</title>{page}", encoding="utf-8")
-    else:
-        print('No SVGs: install the [vega] extra (pip install "3tears-evals[vega]") to draw them.')
-
-    print(f"\nWrote report.md, report.html, bundle.json and charts/ to {out_dir.resolve()}")
-    return verdicts
+async def main(out_dir: Path = Path("eval-report")) -> dict[str, Path]:
+    arms = {"current": keywords("asap"), "more-keywords": keywords("down", "lost", "500", "nobody")}
+    comparison = await compare(CASES, arms, expected=lambda case: case["label"], control="current", k=2)
+    print(comparison.gate().render())  # the verdicts as a CI step gates them
+    files = comparison.write(out_dir)  # report.html (no script), report.md, bundle.json
+    print("Wrote", ", ".join(str(path) for path in files.values()))
+    return dict(files)
 
 
 if __name__ == "__main__":

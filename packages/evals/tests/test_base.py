@@ -195,7 +195,6 @@ def test_the_engine_models_are_on_the_engine_base():
     reverted would fail here rather than only shrinking a register.
     """
     from threetears.evals.analysis.reporting import ScoreRecord
-    from threetears.evals.analysis.viz.intent import ChartIntent
     from threetears.evals.analysis.report import Report
     from threetears.evals.kernel.identity import DerivedContextIdentity
     from threetears.evals.kernel.metrics import MetricDescriptor
@@ -210,7 +209,6 @@ def test_the_engine_models_are_on_the_engine_base():
         ScoreRecord,
         ResultCondition,
         ResolvedUsage,
-        ChartIntent,
         Report,
     ):
         assert issubclass(cls, EvalBaseModel), f"{cls.__name__} is not on the eval base"
@@ -377,10 +375,11 @@ def test_a_cassette_at_this_build_s_cassette_version_loads() -> None:
 def test_every_core_model_refuses_a_document_at_a_version_it_does_not_read(
     model: type[EvalBaseModel], version: object
 ) -> None:
-    """A core document from before the baseline, from a newer build, or with no version number does not load."""
+    """A core (or durable) document from before the baseline, from a newer build, or with no version number does not
+    load; the refusal names its version space."""
     document = stored_sample(model)
 
-    with pytest.raises(ValidationError, match=r"core v|not a core version number"):
+    with pytest.raises(ValidationError, match=r"(core|durable) v|not a (core|durable) version number"):
         model.from_dict({**document, "schema_version": version})
 
 

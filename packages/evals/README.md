@@ -6,32 +6,30 @@ real. For an agent, it measures what the agent did to a world your application d
 the open tickets it closed, the meeting it booked, the light it switched on.
 
 > **The public API is still changing.** This package was extracted from a production app's eval engine. From
-> 0.67.0 only its host contract is promised: a name on it moves with a deprecation cycle, and any other public name
+> 0.68.0 only its host contract is promised: a name on it moves with a deprecation cycle, and any other public name
 > may change in any release, recorded in `MIGRATIONS.toml`
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 
 ## First result in 10 minutes
 
-1. **Install** (Python 3.14+). **3tears-evals is not on PyPI until 0.67.0 ships**, so `pip install 3tears-evals`
+1. **Install** (Python 3.14+). **3tears-evals is not on PyPI until 0.68.0 ships**, so `pip install 3tears-evals`
    finds nothing yet. Until then, install it from the repository at a tag. The `TAG=` line is the one place the
    docs name that tag, and every other page's install line points here:
 
    ```bash
    TAG=v0.67.0-evaladopt.25
    pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@$TAG#subdirectory=packages/evals"
-   # adds SVG and PNG chart rendering
-   pip install "3tears-evals[vega] @ git+https://github.com/pacepace/3tears.git@$TAG#subdirectory=packages/evals"
    # adds the FastMCP transport, for driving evals from an agent
    pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@$TAG#subdirectory=packages/evals"
    ```
 
-   Once 0.67.0 is on PyPI these are `pip install 3tears-evals`, `pip install "3tears-evals[vega]"` and
-   `pip install "3tears-evals[fastmcp]"`. In a checkout of this repo, `uv sync` at the root does it.
+   Once 0.68.0 is on PyPI these are `pip install 3tears-evals` and `pip install "3tears-evals[fastmcp]"`. In a
+   checkout of this repo, `uv sync` at the root does it.
    `threetears.evals.__version__` says which version is installed.
 
-   The `[models]` extra (the shipped provider adapter, `threetears.evals.providers`) installs from PyPI once 0.67.0
+   The `[models]` extra (the shipped provider adapter, `threetears.evals.providers`) installs from PyPI once 0.68.0
    ships, as `pip install "3tears-evals[models]"`. Until then it has no install line from a tag: it needs
-   3tears-models and its family packages at 0.67.0, none of them on PyPI yet, so use a checkout of this repo at the
+   3tears-models and its family packages at 0.68.0, none of them on PyPI yet, so use a checkout of this repo at the
    tag and run `uv sync --extra models` at the root.
 
 2. **Run the first example.** It grades a small sentiment classifier on six cases, offline and free. In a
@@ -126,6 +124,7 @@ you installed.
 **Learn**
 
 - [Tutorial](docs/tutorial.md): your first eval, end to end. Start here.
+- [Building an inventory](docs/building-an-inventory.md): what to test, before a line of code — incidents, a behaviour tree, graders, hard negatives, and what you have not tested.
 - [Designing a classifier eval set](docs/designing-classifier-evals.md): which cases to write, and how many.
 - [Reading reports](docs/reading-reports.md): what each part of a comparison and a report means.
 

@@ -36,6 +36,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
@@ -1144,8 +1145,12 @@ def _per_result_measure_names(measures: MeasureRegistry) -> frozenset[str]:
 
 
 def _listed(annotation: object) -> bool:
-    """Whether a field annotation holds a LIST of carriers (one observation per element), through ``Optional``."""
-    if get_origin(annotation) in (list, tuple):
+    """Whether a field annotation holds MANY carriers (one observation per element), through ``Optional``.
+
+    A map counts as a list: ``judge_cut_short`` holds one record per rubric dimension, so a result carries
+    as many ``reasoning_tokens`` under it as it has cut-short dimensions, and no one of them is the result's.
+    """
+    if get_origin(annotation) in (list, tuple, dict):
         return True
     return any(_listed(argument) for argument in get_args(annotation) if argument is not type(None))
 
@@ -1280,6 +1285,27 @@ def resolve_bar_name(
     )
 
 
+def _registered_judged_bar_reading(
+    name: str, *, rubric: Mapping[str, RubricScale], checks: Collection[str], profile: HostProfile
+) -> UnreadableBarName | None:
+    """Why a registered judged bar's dimension is one this campaign's results cannot carry, or None when they can.
+
+    Resolved by :func:`resolve_bar_name`, the path a campaign's own bars take, so the refusal reads as theirs does.
+    A name the template carries as something other than a judged dimension (a goal-state check written the same
+    way) is refused too: the bar was registered as judged, and would otherwise be read as the check.
+    """
+    reading = resolve_bar_name(name, rubric_dimensions=rubric, goal_state_checks=checks, measures=profile.measures)
+    if isinstance(reading, UnreadableBarName):
+        return reading
+    if reading.kind != "judged":
+        return UnreadableBarName(
+            name,
+            "not_carried",
+            f"{name} is registered as a judged dimension, and this campaign's template carries it as a {reading.kind}",
+        )
+    return None
+
+
 class DesignRefused(RefusedInput):
     """A declaration this host cannot honour, as what is wrong with it and what to declare instead.
 
@@ -1385,6 +1411,12 @@ def refuse_an_undeclarable_design(
     result — so a bar on one the kind never emits passes here and is adjudicated as carried by no
     result.
 
+    **A host's registered bar on a judged dimension is resolved here too**
+    (:attr:`~threetears.evals.kernel.host.bars.Bar.judged`). Its registration could not resolve a template-minted
+    name, so every campaign of its behavior that does not override it resolves it against the campaign's template
+    by the same resolver, and is refused in the same words when the template does not carry it as a judged
+    dimension.
+
     **The last two checks are one evaluability axis and one standard**, and they are not one check
     twice. The looser-bar rule is the campaign against the INCUMBENT and can only fire where a
     bar is registered; the direction rule is the campaign against the measure DESCRIPTOR and
@@ -1463,11 +1495,23 @@ def refuse_an_undeclarable_design(
     # bundle passes it to the frontier, which decides each contestant's pass^k interval against it. It is held
     # to pass^k's own range here, since the frontier refuses a threshold outside it.
     unreadable = [
-        (override, reading)
+        (f"the bar at {override.threshold!r} names '{override.measure_id}'", reading)
         for override in design.bars
         if override.measure_id != FRONTIER_RANKING_MEASURE
         and isinstance(reading := resolved[override.measure_id], UnreadableBarName)
     ]
+    # A host's registered bar on a judged dimension names a template-minted name no registry enumerates, so its
+    # registration could not resolve it: each campaign of its behavior resolves it here, against its own template,
+    # by the same resolver and refused in the same words. One the campaign overrides is replaced by the campaign's
+    # own bar, which the resolution above already read.
+    overridden = {override.measure_id for override in design.bars}
+    for bar in profile.bars.bars:
+        if not bar.judged or bar.behavior != behavior or bar.measure in overridden:
+            continue
+        unread = _registered_judged_bar_reading(bar.measure, rubric=rubric, checks=checks, profile=profile)
+        if unread is not None:
+            which = f"host '{profile.host_id}''s registered bar at {bar.threshold!r} names '{bar.measure}'"
+            unreadable.append((which, unread))
     out_of_range = [
         override.threshold
         for override in design.bars
@@ -1482,9 +1526,7 @@ def refuse_an_undeclarable_design(
     if unreadable:
         # The author's own declared value, echoed as written: a refusal quotes its input rather than
         # restating it under the reader-facing number rule, which lives outside the kernel.
-        named = "; ".join(
-            f"the bar at {o.threshold!r} names '{o.measure_id}': {reading.reason}" for o, reading in unreadable
-        )
+        named = "; ".join(f"{which}: {reading.reason}" for which, reading in unreadable)
         if template is None:
             minted = (
                 "The campaign's template: none — this campaign names no template that could be read, so no "
@@ -1625,6 +1667,50 @@ def refuse_an_undeclarable_design(
             )
 
 
+def preregistered_questions(design: CampaignDesign, first_run_at: str | None) -> list[Question]:
+    """The live questions asked no later than the campaign's first run: the ones a reading may confirm.
+
+    **A question asked after the evidence existed may have been asked of it**, so it confirms nothing: a reading it
+    names is a lead, as if no question had named it. The campaign's update path freezes a design once a run has joined
+    (:func:`~threetears.evals.analysis.campaigns.update_campaign`), and this is the backstop that needs no stored field
+    and no trust in that path: it reads each question's own ``asked_at``, which an edit keeps
+    (:func:`reconcile_question_edits`), against the earliest member run's ``created_at``, so a design written by an
+    older build, or edited after every run was removed and re-added, is still read by when its questions were asked.
+    Every reader that scopes a reading by the questions (the comparison families, the reading scope, the verdict
+    order, the exploratory disclosure) reads this, never :meth:`CampaignDesign.live_questions` alone, so none can
+    count a question another treats as post hoc.
+
+    Args:
+        design: The campaign's declaration.
+        first_run_at: The earliest ``created_at`` among the campaign's member runs (ISO-8601), or ``None`` when no
+            run's time is to hand: a campaign with no run yet, where nothing can have been asked after one.
+
+    Returns:
+        The live questions asked at or before ``first_run_at``, in declaration order; every live question when it is
+        ``None``.
+
+    Raises:
+        ValueError: ``first_run_at`` or a question's ``asked_at`` is not an ISO-8601 time with an offset, so which
+            came first cannot be said.
+    """
+    live = design.live_questions()
+    if first_run_at is None:
+        return live
+    first = _instant(first_run_at, "the campaign's first run")
+    return [question for question in live if _instant(question.asked_at, f"question {question.id}") <= first]
+
+
+def _instant(stamp: str, what: str) -> datetime:
+    """``stamp`` as an aware instant, refused by name when it is not one."""
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError as unreadable:
+        raise ValueError(f"{what} is stamped {stamp!r}, which is not an ISO-8601 time") from unreadable
+    if instant.tzinfo is None:
+        raise ValueError(f"{what} is stamped {stamp!r}, with no offset, so it cannot be ordered against another time")
+    return instant
+
+
 __all__ = [
     "NO_TEMPLATE_REMEDY",
     "BarName",
@@ -1645,6 +1731,7 @@ __all__ = [
     "axis_in_question_scope",
     "exploratory_reading",
     "mechanism_measure_names",
+    "preregistered_questions",
     "reconcile_question_edits",
     "refuse_an_undeclarable_design",
     "resolve_bar_name",

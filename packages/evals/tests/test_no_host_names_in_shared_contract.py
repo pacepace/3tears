@@ -515,9 +515,7 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: adapter. Each exists to serve every host, so a host noun in either would be a leak. ``quick``, the
 #: batteries (``run_eval`` and the command line), is whole from birth on the same terms, and so are the
 #: surfaces an agent drives the engine through — ``ops``, ``actions`` and ``transports`` — which every
-#: host mounts. ``vega``, the Vega-Lite chart renderer the package ships as an optional adapter, is whole
-#: on the same terms too: it draws for every host (a host's typeface arrives through the renderer's
-#: theme), and it was scanned as part of ``analysis`` before it moved out of the core.
+#: host mounts.
 #:
 #: ``providers``, the provider adapter the package ships as an optional extra, is whole from birth on the same
 #: terms: it serves every host that brings no client of its own. It names the providers it builds clients for,
@@ -540,7 +538,6 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "ops",
     "actions",
     "transports",
-    "vega",
     "providers",
     "negotiation",
 )
@@ -880,12 +877,10 @@ def _host_module_imports(source: str, path: Path) -> set[str]:
 #: yet spell. That is a real category and not a loophole — a stub holds no code to name anything,
 #: and a driver of host-shaped work can name none of it directly — but it is the category a paid
 #: debt decays into, so each entry says which it is and an entry with no reason fails.
-_HOST_COUPLED_BY_ROLE: dict[str, str] = {
-    "__init__.py": (
-        "the package's front door. It exports the eval surface and describes it, so what "
-        "makes it host-coupled is the inventory it publishes rather than any name in it"
-    ),
-}
+#:
+#: EMPTY today. ``__init__.py`` sat here as the package's front door until ``ROOT_EXTRAS`` began naming
+#: the ``openrouter`` module the ``providers`` root imports; the scan now sees its coupling directly.
+_HOST_COUPLED_BY_ROLE: dict[str, str] = {}
 
 
 def test_every_host_coupled_module_still_exhibits_host_coupling() -> None:

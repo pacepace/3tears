@@ -10,6 +10,12 @@ scorers' measures. Nothing here judges: it declares what the engine's judge read
   :attr:`Judge.context` (``helpful`` becomes ``answer.helpful``), because a judge config binds to a
   dimension by name across every template and a bare one would bind to every product's ``helpful``.
   The rubric is the template's, so it is part of what the case set's id is a digest of.
+- **The judge is declared by the Judge itself.** A dimension registered apart from its judge (a host's template)
+  must say which judge scores it (:attr:`~threetears.evals.schema.RubricDim.judge`); a :class:`Judge` IS that
+  declaration, so every dimension it builds, or is handed without one, is declared ``"builtin"``: scored by the
+  engine's own prompt on :attr:`Judge.client`. Nothing more to state, and nothing found in its place. A
+  :class:`~threetears.evals.schema.RubricDim` handed in declaring ``"configured"`` keeps it, and the run is held to
+  it: refused unless the store it runs on holds an active judge config for that dimension.
 - **The judge** is :class:`~threetears.evals.run.JudgeService`, built by
   :func:`~threetears.evals.run.build_judge_service` as for any judged run, over a client factory that
   hands it :attr:`Judge.client` for the judge role and nothing else. It scores the answer as a document
@@ -21,6 +27,13 @@ scorers' measures. Nothing here judges: it declares what the engine's judge read
 - **The spend** is the client's to report. Each call's tokens and dollars land on the result's ``judge``
   usage row, priced by the client's own ``cost_usd`` and qualified by its ``price_source``; a client that
   prices nothing leaves the judge's spend unknown, never zero.
+
+**Examples seed its calibration.** A judge is checked against people before it is leaned on, and the first items to
+check it on are hard negatives: an answer that must fail a dimension, and one that looks wrong and must pass it.
+Each is a :class:`JudgeExample` on :attr:`Judge.examples`; a run judged by the Judge stores them as authored judge
+cases (:class:`~threetears.evals.kernel.AuthoredJudgeCase`), the expected verdict each one's label, for a judge
+campaign to measure the judge on (:func:`~threetears.evals.quick.run_eval`, ``judge=``). Nothing here asks the judge
+them: seeding calls no model.
 
 **The caller owns the client.** The engine releases every client it is handed when a run ends; the
 judge's is lent to it through :class:`BorrowedJudgeClient`, whose release does nothing, so one client
@@ -35,14 +48,43 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Self
 
+from pydantic import ValidationError
+
 from threetears.evals.schema import CompletionClient, CompletionResult, JudgeEvidence, RubricDim, RubricScale
 from threetears.evals.kernel.host import CompletionClients, CompletionRole
+from threetears.evals.kernel import AuthoredJudgeCase, AuthoredVerdict
 
 #: Renders the material one case's answer is judged against: takes the case, returns non-blank text.
 CaseMaterial = Callable[[Mapping[str, Any]], str]
 
 #: What the judge reads in place of an answer that renders as blank text, which no judge could quote.
 EMPTY_ANSWER = "(the candidate's answer was empty)"
+
+
+#: Who an example's verdict is recorded as written by when it names no author: the label's rater.
+EXAMPLE_AUTHOR = "run_eval example"
+
+
+@dataclass(frozen=True)
+class JudgeExample:
+    """An answer the judge must grade a known way: one that must fail a dimension, or one that looks wrong and must pass.
+
+    Attributes:
+        dimension: The rubric dimension it is graded on, as :attr:`Judge.rubric` names it (bare, or namespaced).
+        answer: The answer, rendered as the judge reads a candidate's (a string as written, anything else as JSON).
+        expected: The verdict it must get: ``"pass"`` or ``"fail"`` on a pass/fail dimension, a score from 1 to 5 on
+            an ordinal one. One the dimension's scale cannot hold is refused when the :class:`Judge` is built.
+        note: Why: the reason its verdict is what it is, in the author's words.
+        case: The case it answers, rendered by :attr:`Judge.case_material` as a run's case is.
+        author: Who wrote it, recorded as the verdict's rater.
+    """
+
+    dimension: str
+    answer: Any
+    expected: AuthoredVerdict
+    note: str
+    case: Mapping[str, Any] = field(default_factory=dict)
+    author: str = EXAMPLE_AUTHOR
 
 
 @dataclass(frozen=True)
@@ -60,7 +102,8 @@ class Judge:
         model: The model ``client`` calls, as the run records it: the run's judge pin, and the arm's
             judge in every comparison of two runs.
         rubric: The dimensions, each a name and what it measures, or :class:`RubricDim` values for a
-            scoring guide or a pass/fail scale.
+            scoring guide or a pass/fail scale. Each is declared ``judge="builtin"`` (:attr:`dims`) unless a
+            :class:`RubricDim` given declares its judge itself.
         scale: How a dimension given as a name and a description is answered: ``"ordinal"`` (1 to 5)
             or ``"pass_fail"``. A :class:`RubricDim` states its own.
         context: The namespace a bare dimension name is given: what the dimensions are scored against.
@@ -70,6 +113,10 @@ class Judge:
             case's expected label is left out, so the judge never grades against the label it is meant to
             judge without. To grade against a reference answer, render it here: what this returns is sent
             as it is, the expected label included if it includes it.
+        examples: Answers the judge must grade a known way (:class:`JudgeExample`): hard negatives that must
+            fail a dimension, and answers that look wrong and must pass it. A run judged by this judge stores
+            them as authored judge cases, the calibration items a judge campaign measures it on
+            (:meth:`authored_cases`). Each is held to its dimension when the judge is built.
     """
 
     client: CompletionClient
@@ -78,6 +125,7 @@ class Judge:
     scale: RubricScale = "ordinal"
     context: str = "answer"
     case_material: CaseMaterial | None = None
+    examples: Sequence[JudgeExample] = ()
     _dims: tuple[RubricDim, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -85,7 +133,9 @@ class Judge:
 
         Raises:
             ValueError: A blank model, an empty rubric, a dimension the engine refuses (a name with more
-                than one ``.``, a blank description), or two dimensions under one name.
+                than one ``.``, a blank description), two dimensions under one name, or an example naming no
+                dimension of the rubric, giving a verdict its dimension's scale cannot hold (naming both), or
+                whose case material cannot be rendered.
         """
         if not self.model.strip():
             raise ValueError("a judge names the model its client calls; the run records it as the judge")
@@ -96,14 +146,18 @@ class Judge:
         if repeated := sorted({name for name in names if names.count(name) > 1}):
             raise ValueError(f"rubric dimensions named {', '.join(repeated)} more than once; each name is one score")
         object.__setattr__(self, "_dims", dims)
+        # Built once here, against a stand-in scenario, so a bad example is refused where it is written.
+        self.authored_cases(intent="the examples are checked when the judge is built")
 
     def _build_dims(self) -> list[RubricDim]:
+        # The Judge is the declaration: the engine's built-in prompt, on this judge's client, for every dimension that
+        # states no judge of its own — so the quick path asks nothing of a caller that a host's template must state.
         if isinstance(self.rubric, Mapping):
             return [
-                RubricDim(name=self.dim_name(name), description=description, scale=self.scale)
+                RubricDim(name=self.dim_name(name), description=description, scale=self.scale, judge="builtin")
                 for name, description in self.rubric.items()
             ]
-        return list(self.rubric)
+        return [dim if dim.judge is not None else dim.model_copy(update={"judge": "builtin"}) for dim in self.rubric]
 
     def dim_name(self, name: str) -> str:
         """``name`` as a stored dimension name: as given when it carries a context, under :attr:`context` when bare.
@@ -116,9 +170,50 @@ class Judge:
         """
         return name if "." in name else f"{self.context}.{name}"
 
+    def authored_cases(self, *, intent: str) -> list[AuthoredJudgeCase]:
+        """The :attr:`examples` as authored judge cases: each answer as the judge reads it, its verdict its label.
+
+        Args:
+            intent: The scenario the judge reads beside each one: the run's template intent, so an example is asked
+                exactly as the run's answers are.
+
+        Returns:
+            One case per example, in order.
+
+        Raises:
+            ValueError: An example names no dimension of the rubric, gives a verdict its dimension's scale cannot
+                hold, or has a case :attr:`case_material` cannot render.
+        """
+        dims = {dim.name: dim for dim in self._dims}
+        authored: list[AuthoredJudgeCase] = []
+        for index, example in enumerate(self.examples):
+            criterion = dims.get(self.dim_name(example.dimension))
+            if criterion is None:
+                raise ValueError(
+                    f"judge example {index} is graded on {example.dimension!r}, which is no dimension of the rubric "
+                    f"({', '.join(sorted(dims))})"
+                )
+            evidence = judge_evidence(self, example.case, example.answer)
+            try:
+                authored.append(
+                    AuthoredJudgeCase(
+                        criterion=criterion,
+                        output=evidence.artifact,
+                        case_material=evidence.case_material,
+                        intent=intent,
+                        expected=example.expected,
+                        author=example.author,
+                        note=example.note,
+                    )
+                )
+            except ValidationError as refused:
+                reasons = "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in refused.errors())
+                raise ValueError(f"judge example {index}: {reasons}") from refused
+        return authored
+
     @property
     def dims(self) -> tuple[RubricDim, ...]:
-        """The rubric as the template stores it, in the order given."""
+        """The rubric as the template stores it, in the order given, each dimension's judge declared."""
         return self._dims
 
     def clients(self) -> CompletionClients:
@@ -272,4 +367,12 @@ def _answer_text(answer: Any) -> str:
     return text if text.strip() else EMPTY_ANSWER
 
 
-__all__ = ["EMPTY_ANSWER", "BorrowedJudgeClient", "CaseMaterial", "Judge", "judge_evidence"]
+__all__ = [
+    "EMPTY_ANSWER",
+    "EXAMPLE_AUTHOR",
+    "BorrowedJudgeClient",
+    "CaseMaterial",
+    "Judge",
+    "JudgeExample",
+    "judge_evidence",
+]

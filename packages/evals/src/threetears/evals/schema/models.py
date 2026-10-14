@@ -53,13 +53,14 @@ from pydantic import (
 from threetears.evals.schema.base import (
     CoreDocumentModel,
     CoreShapeModel,
+    DurableDocumentModel,
     known_unless_newer_minor,
     EvalBaseModel,
     EvalDocumentModel,
     VerbatimJsonObject,
     VerbatimObject,
 )
-from threetears.evals.schema.call_ledger import CallLedger, RecordedCall
+from threetears.evals.schema.call_ledger import CallLedger, RecordedCall, RefusedCall
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 from threetears.evals.schema.hashing import bytes_digest, canonical_digest
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse, referenced_fires
@@ -68,6 +69,7 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.versioning import (
     CASSETTE_SCHEMA_VERSION,
     CORE_SCHEMA_VERSION,
+    DURABLE_SCHEMA_VERSION,
     REGENERABLE_SCHEMA_VERSION,
 )
 from threetears.evals.schema.values import SweepableValue
@@ -167,6 +169,34 @@ def _current_core_only(version: int) -> int:
 #: The ``schema_version`` field type of every core stored document: the current core version, which a stored
 #: read of an older document reaches through its upgraders.
 CoreSchemaVersion = Annotated[int, AfterValidator(_current_core_only)]
+
+
+def _current_durable_only(version: int) -> int:
+    """Refuse a durable document at any version but the current one once its stored read has upgraded it.
+
+    :func:`_current_core_only` in the durable space
+    (:data:`~threetears.evals.schema.versioning.DURABLE_SCHEMA_VERSION`).
+
+    Args:
+        version: The document's ``schema_version``.
+
+    Returns:
+        The version, unchanged.
+
+    Raises:
+        ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.DURABLE_SCHEMA_VERSION`.
+    """
+    if version != DURABLE_SCHEMA_VERSION:
+        raise ValueError(
+            f"a durable document is built at durable v{DURABLE_SCHEMA_VERSION}, not v{version}; an older stored one "
+            "is upgraded by its stored read (from_dict), never by construction"
+        )
+    return version
+
+
+#: The ``schema_version`` field type of every durable stored document (what people author): the current durable
+#: version, which a stored read of an older document reaches through the durable upgraders.
+DurableSchemaVersion = Annotated[int, AfterValidator(_current_durable_only)]
 
 
 def _finite_setting(value: str | bool | int | float) -> str | bool | int | float:
@@ -599,9 +629,9 @@ class ControlEndState(EvalDocumentModel, CoreShapeModel):
     user and the judge never see it. A control that reached the candidate would be a hint about the
     answer.
 
-    It is the seed with what the candidate changed laid over it, plus the calls it made. The overlay
-    is per state key: a key named here replaces the seed's value whole, and a key not named keeps
-    the seed's, so a control states only what the behaviour changed.
+    It is the seed with what the candidate changed laid over it, plus the calls it made and those a tool
+    refused. The overlay is per state key: a key named here replaces the seed's value whole, and a key not
+    named keeps the seed's, so a control states only what the behaviour changed.
     """
 
     describes: str = Field(
@@ -625,6 +655,15 @@ class ControlEndState(EvalDocumentModel, CoreShapeModel):
         description=(
             "Every call the candidate made, in order — the whole ledger, not an overlay: an empty list "
             "states a candidate that made no calls."
+        ),
+    )
+    refused: list[RefusedCall] = Field(
+        default_factory=list,
+        description=(
+            "Every call a tool refused the candidate, in order — what refused() and refused_count() read, kept apart "
+            "from `calls` as a cell's ledger keeps them. Each names an action the host defines and its position "
+            "among `calls` (how many had succeeded before it); its parameters are what was refused, so no schema "
+            "holds them. An empty list states a candidate no tool refused."
         ),
     )
     variation: dict[str, Any] = Field(
@@ -895,6 +934,13 @@ def _namespaced_dim_name(name: str) -> str:
 DimName = Annotated[str, AfterValidator(_namespaced_dim_name)]
 
 
+#: Which judge scores a rubric dimension, as its author declared it (core v15.1). ``builtin``: the engine's own
+#: prompt for the dimension's scale. ``configured``: the scope's active :class:`JudgeConfig` for the dimension, and
+#: never the built-in prompt in its place. Closed: a value an older build did not know would have it score the
+#: dimension with a judge nobody declared.
+JudgeDeclaration = Literal["builtin", "configured"]
+
+
 class RubricDim(EvalDocumentModel, CoreShapeModel):
     """One judge-scored rubric dimension.
 
@@ -902,6 +948,13 @@ class RubricDim(EvalDocumentModel, CoreShapeModel):
     goal-state checks handle the objective portion of scoring. ``scoring_guide`` maps the
     scale's levels (:data:`SCALE_LEVELS`) to behavioral descriptors; empty means the judge
     prompt relies on ``description`` only.
+
+    **Its judge is declared, never found** (``judge``). A dimension registered apart from its judge (a host's
+    template, seeded or authored) says which judge scores it, and registration and every launch refuse one that
+    does not, or whose declaration the scope contradicts
+    (:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`). Before the declaration existed a dimension
+    with no active config was scored by the built-in prompt with nothing saying so, which is how a host's
+    configured judge could be silently replaced by the engine's.
     """
 
     name: DimName
@@ -914,6 +967,17 @@ class RubricDim(EvalDocumentModel, CoreShapeModel):
             "'capability' = something the subject should do well, read into the composite and pass^k; "
             "'boundary' = something it must not do (leak, comply with an unsafe ask, break policy), a guardrail "
             "that is decided on its own and never averaged with capability. The judge stamps it onto each score."
+        ),
+    )
+    judge: JudgeDeclaration | None = Field(
+        default=None,
+        description=(
+            "Which judge scores this dimension (core v15.1): 'builtin' = the engine's built-in prompt for its "
+            "scale; 'configured' = the scope's active judge config for it (run.create_judge_config, rubric_dim_id = "
+            "this name), never the built-in prompt in its place. None = written before the declaration existed: "
+            "a stored template's dimension reads, and registration and every launch refuse it until it is "
+            "declared. A quick-path Judge declares its own dimensions 'builtin'. Not part of the criterion "
+            "(fingerprint_criterion): it says who judges, not what is asked."
         ),
     )
 
@@ -987,7 +1051,7 @@ def fingerprint_criterion(dim: RubricDim | str) -> str:
     label keyed by the id would follow an output to a dimension that now asks something else, and be read as
     agreement with a question nobody put to the person. Keyed by the definition, a reworded dimension (or one
     moved to another scale) is a new criterion that no earlier label claims. Its ``axis`` is left out: it says
-    how a score is read (capability or guardrail), not what was asked.
+    how a score is read (capability or guardrail), not what was asked; so is its ``judge``, which says who asks.
 
     A reserved dual-score axis (:data:`TRANSCRIPT_DIM_ID`, :data:`OUTCOME_DIM_ID`) has no stored definition —
     the engine states it — so its criterion is its id and its 1-5 scale.
@@ -1348,7 +1412,42 @@ def _derived_rating_id(data: dict[str, Any]) -> str:
 RaterKind = Literal["person", "agent"]
 
 
-class CalibrationRating(CoreDocumentModel):
+#: The ``rated_withheld`` a stored read supplies for a rating written before ratings carried what was rated
+#: (durable v15.0, the ``.25`` shape): stated, never a bare None, so every reader that counts labels able to outlive
+#: their evidence names these.
+RATING_WRITTEN_BEFORE_CONTENT: Final[str] = "written before labels carried their content"
+
+
+class RatedOutput(EvalDocumentModel, CoreShapeModel):
+    """What a person rated, carried on the rating so the label outlives the run, result and trace it was given on.
+
+    Everything a judge reads to answer the rated question again — the criterion, the scenario beside the output, and
+    the evidence the cell's kind rendered — as a :class:`~threetears.evals.kernel.judge_cases.JudgeCase` holds it,
+    without the labels and the source. Copied when the rating is written from the same records a judge freeze
+    rebuilds a case from (``reproducible_judge_inputs``), and proven by the rating's own label key: the rating is
+    refused unless the fingerprints of this evidence and this criterion are the ones it carries. So a frozen case
+    rebuilt from a label after a core baseline reset is the question the person answered, byte for byte.
+    """
+
+    dim: DimName = Field(description="The criterion: a template rubric dim's name, or a reserved axis id.")
+    scale: RubricScale = Field(description="The scale the criterion was answered on.")
+    criterion: RubricDim | None = Field(
+        default=None,
+        description=(
+            "The rubric dimension as the rated result's template worded it. None for a reserved axis, whose "
+            "criterion is the engine's own."
+        ),
+    )
+    intent: str = Field(description="The template's intent, which the judge read as the scenario.")
+    variation: dict[str, str] = Field(default_factory=dict, description="The rated case's variation parameters.")
+    goal_outcomes: list[GoalStateOutcome] = Field(
+        default_factory=list, description="The rated cell's goal-state outcomes, which the judge read as evidence."
+    )
+    judged_artifact: JudgedArtifact = Field(description="The rated kind's declaration, which words the evidence.")
+    evidence: JudgeEvidence = Field(description="What the rated cell's kind rendered for its judge, verbatim.")
+
+
+class CalibrationRating(DurableDocumentModel):
     """A rater's score for one judged dimension of one result — a person's, or an agent's.
 
     A person's is the human side of judge calibration. Only a person's rating is agreement with people; an agent's (``rater_kind="agent"``) is stored and listed,
@@ -1376,10 +1475,17 @@ class CalibrationRating(CoreDocumentModel):
     another run, whose evidence is the same, and a frozen judge case looked up by the key
     (``EvalStorage.query_calibration_ratings(label_key=...)``). A rating of a score that carries no label key
     carries none either, and is read by its result alone.
+
+    **Durable, and carrying what was rated** (durable v15.1). A rating is what people author: it outlives every core
+    baseline reset, which deletes the run, result and trace it was given on. So it carries the content it rated
+    (``rated``, proven against its label key), from which a judge case is frozen with no result read
+    (``freeze_judge_cases(from_labels=True)``); ``run_id`` and ``result_id`` are provenance, and may dangle. When the
+    content cannot be rebuilt (a template edited after the run, a score with no label key), the person's judgment
+    is still stored, with ``rated_withheld`` saying why, and every reader that rebuilds cases from labels names it.
     """
 
     doc_type: Literal["calibration_rating"] = "calibration_rating"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1, description="The scope of the rated result.")
     run_id: str = Field(min_length=1, description="The run the rated result belongs to, read off the result.")
     result_id: str = Field(min_length=1, description="The rated result.")
@@ -1432,6 +1538,22 @@ class CalibrationRating(CoreDocumentModel):
             "with output_fingerprint, or not at all."
         ),
     )
+    rated: RatedOutput | None = Field(
+        default=None,
+        description=(
+            "What the rater read, carried so the label outlives the result it was given on: the criterion, the "
+            "scenario and the evidence, whose fingerprints are the rating's label key. None = not carried, and "
+            "rated_withheld says why; exactly one of the two is set."
+        ),
+    )
+    rated_withheld: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Why the rated content is not carried: the refusal that kept it from being rebuilt from what the "
+            "result's run recorded, or that the rating was written before ratings carried it. None = rated is set."
+        ),
+    )
 
     @field_validator("doc_type")
     @classmethod
@@ -1446,13 +1568,41 @@ class CalibrationRating(CoreDocumentModel):
         """The output and criterion this label holds for, or None when the rated score carried no key."""
         return _label_key_halves(self.output_fingerprint, self.criterion_fingerprint, "calibration rating")
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        """The stored read, which states why a rating written before durable v15.1 carries no rated content.
+
+        A rating stored at durable v15.0 (by ``.25``, or by a build that did not know the field) carries neither
+        ``rated`` nor ``rated_withheld``; it is read with ``rated_withheld`` set to
+        :data:`RATING_WRITTEN_BEFORE_CONTENT`. A rating at v15.1 or later that carries neither is refused as drift.
+
+        Args:
+            data: The stored document, as the store returned it.
+
+        Returns:
+            The rating.
+
+        Raises:
+            ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
+        """
+        if (
+            isinstance(data, Mapping)
+            and "rated" not in data
+            and "rated_withheld" not in data
+            and data.get("schema_minor", 0) == 0
+        ):
+            data = {**data, "rated_withheld": RATING_WRITTEN_BEFORE_CONTENT}
+        return super().from_dict(data)
+
     @model_validator(mode="after")
     def _score_on_scale_and_id_derived(self) -> CalibrationRating:
-        """Refuse a score its scale cannot hold, half a label key, and an id that is not the one its fields derive."""
+        """Refuse a score its scale cannot hold, half a label key, rated content that is not what the key says or
+        not stated either way, and an id that is not the one its fields derive."""
         low, high = SCALES[self.scale].scores
         if not low <= self.score <= high:
             raise ValueError(f"score {self.score!r} is not on the {self.scale} scale of {self.rubric_dim!r}")
-        _label_key_halves(self.output_fingerprint, self.criterion_fingerprint, "calibration rating")
+        key = _label_key_halves(self.output_fingerprint, self.criterion_fingerprint, "calibration rating")
+        self._check_rated(key)
         derived = _calibration_rating_id(self.result_id, self.rubric_dim, self.rater, self.rater_kind)
         if self.id != derived:
             raise ValueError(
@@ -1461,13 +1611,51 @@ class CalibrationRating(CoreDocumentModel):
             )
         return self
 
+    def _check_rated(self, key: LabelKey | None) -> None:
+        """Refuse a rating that states neither or both of ``rated`` and ``rated_withheld``, and rated content its
+        label key does not prove.
+
+        Raises:
+            ValueError: Naming what is missing or which fingerprint differs.
+        """
+        if (self.rated is None) == (self.rated_withheld is None):
+            raise ValueError(
+                "a calibration rating carries what was rated (rated) or says why it does not (rated_withheld), "
+                f"exactly one of them; this one sets {'both' if self.rated is not None else 'neither'}"
+            )
+        rated = self.rated
+        if rated is None:
+            return
+        if rated.dim != self.rubric_dim or rated.scale != self.scale:
+            raise ValueError(
+                f"the rated content is {rated.dim!r} on {rated.scale}, and the rating is of {self.rubric_dim!r} on "
+                f"{self.scale}"
+            )
+        if key is None:
+            raise ValueError(
+                "rated content is proven by the rating's label key (output_fingerprint, criterion_fingerprint), and "
+                "this rating carries none"
+            )
+        if fingerprint_judged_output(rated.evidence) != key.output_fingerprint:
+            raise ValueError(
+                "the rated evidence's fingerprint is not the rating's output_fingerprint: the content is not what "
+                "the rater read"
+            )
+        if fingerprint_criterion(rated.criterion if rated.criterion is not None else rated.dim) != (
+            key.criterion_fingerprint
+        ):
+            raise ValueError(
+                "the rated criterion's fingerprint is not the rating's criterion_fingerprint: the content is not the "
+                "question the rater answered"
+            )
+
 
 # =============================================================================
 # EvalTemplate
 # =============================================================================
 
 
-class EvalTemplate(CoreDocumentModel):
+class EvalTemplate(DurableDocumentModel):
     """Abstract scenario blueprint — subject-agnostic, domain-level.
 
     Templates declare WHAT to test (``intent``, ``tools_required``) and HOW
@@ -1491,7 +1679,7 @@ class EvalTemplate(CoreDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_template"] = "eval_template"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     # Identity
@@ -1772,7 +1960,7 @@ def _recorded_judge_identities(recorded: dict[str, str]) -> dict[str, str]:
     return recorded
 
 
-class JudgeConfig(CoreDocumentModel):
+class JudgeConfig(DurableDocumentModel):
     """Versioned judge configuration for one rubric dimension.
 
     A single-dimension judge's prompt, model, and decoding params, captured as
@@ -1788,14 +1976,18 @@ class JudgeConfig(CoreDocumentModel):
     (:data:`TRANSCRIPT_DIM_ID` / :data:`OUTCOME_DIM_ID`).
 
     "Active" config for a dim = the non-archived record with the latest
-    ``created_at`` (see :meth:`EvalStorage.load_active_judge_config`). When no
-    config exists for a dim, the judge service falls back to its built-in
-    default prompt.
+    ``created_at`` (see :meth:`EvalStorage.load_active_judge_config`). A template
+    dim is scored by its active config only when it declares ``judge: "configured"``
+    (:attr:`RubricDim.judge`); a dim declared ``"builtin"`` is scored by the built-in
+    prompt, and a launch refuses either declaration the scope contradicts, so no dim
+    falls back from one judge to the other unannounced. The two reserved axes, which no
+    rubric declares, still take a config when one is active and the built-in prompt
+    otherwise.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["judge_config"] = "judge_config"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     name: str = Field(min_length=1)
@@ -1858,7 +2050,7 @@ class JudgeConfig(CoreDocumentModel):
 # =============================================================================
 
 
-class CatalogRubricDim(CoreDocumentModel):
+class CatalogRubricDim(DurableDocumentModel):
     """A reusable rubric dimension in the shared catalog.
 
     Distinct from the embedded :class:`RubricDim` value object that
@@ -1889,7 +2081,7 @@ class CatalogRubricDim(CoreDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["rubric_dim"] = "rubric_dim"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     key: str = Field(min_length=1, description="Stable version-group slug; re-authoring keeps the key, mints a new id.")
@@ -1969,7 +2161,7 @@ def stored_variation(params: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-class RubricDimTombstone(CoreDocumentModel):
+class RubricDimTombstone(DurableDocumentModel):
     """The record that a rubric dim key was deleted, so a seed never writes it back.
 
     Seeding fills empty slots only (:func:`~threetears.evals.run.definition_seed.seed_eval_definitions`),
@@ -1985,7 +2177,7 @@ class RubricDimTombstone(CoreDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["rubric_dim_tombstone"] = "rubric_dim_tombstone"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     key: str = Field(min_length=1, description="The deleted dim's version-group key — the seed's slot.")
@@ -2001,7 +2193,7 @@ class RubricDimTombstone(CoreDocumentModel):
         return v
 
 
-class JudgeConfigTombstone(CoreDocumentModel):
+class JudgeConfigTombstone(DurableDocumentModel):
     """The record that a judge config slot was deleted, so a seed never writes it back.
 
     :class:`RubricDimTombstone`'s mechanism for the seed's judge-config slot, ``(rubric_dim_id, name)``: a
@@ -2014,7 +2206,7 @@ class JudgeConfigTombstone(CoreDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["judge_config_tombstone"] = "judge_config_tombstone"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     rubric_dim_id: str = Field(min_length=1, description="The dim the deleted config scored — half the seed's slot.")
@@ -2067,7 +2259,7 @@ class CaseSetRef(EvalBaseModel, CoreShapeModel):
         return f"{self.name} v{self.version}"
 
 
-class CaseSet(CoreDocumentModel):
+class CaseSet(DurableDocumentModel):
     """A named, versioned, frozen list of one template's test cases — what a launch can target by name.
 
     **Append-only.** A version, once stored, is never rewritten: storing a ``(scope, name, version)`` that exists
@@ -2084,7 +2276,7 @@ class CaseSet(CoreDocumentModel):
 
     id: str = Field(default="", description="Derived from name and version (``case_set_doc_id``); set on mint.")
     doc_type: Literal["case_set"] = "case_set"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     name: str = Field(min_length=1, description="The set's name, unique within its scope across its versions.")
@@ -2141,7 +2333,7 @@ class CaseSet(CoreDocumentModel):
         return v
 
 
-class EvalTestCase(CoreDocumentModel):
+class EvalTestCase(DurableDocumentModel):
     """Concrete, immutable inputs generated from an ``EvalTemplate``.
 
     Once persisted, a test case's content never mutates.  ``variation_params`` freezes
@@ -2158,7 +2350,7 @@ class EvalTestCase(CoreDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_test_case"] = "eval_test_case"
-    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     # Lineage
@@ -4706,9 +4898,9 @@ class EvalTrace(CoreDocumentModel):
     judge_evidence: JudgeEvidence | None = None
     #: The kind's declaration that picked the judged axes, stored with the evidence it applies to.
     judged_artifact: JudgedArtifact | None = None
-    #: The calls the candidate made that succeeded, as its kind recorded them and graded its goal
-    #: checks against. Stored so a re-check re-grades from what the candidate did rather than from
-    #: the verdicts alone. ``None`` when the kind keeps no ledger.
+    #: The calls the candidate made that succeeded, and apart from them those a tool refused, as its kind
+    #: recorded them and graded its goal checks against. Stored so a re-check re-grades from what the candidate
+    #: did rather than from the verdicts alone. ``None`` when the kind keeps no ledger.
     call_ledger: CallLedger | None = None
     #: The world the cell left behind, keyed by declared dimension name: every dimension of every carrier
     #: the cell attached, read back through its ``read`` handle once the kind's ``invoke`` returned (or
@@ -5025,6 +5217,74 @@ class SecondJudging(EvalDocumentModel, CoreShapeModel):
         if repeated := sorted({dim for dim in dims if dims.count(dim) > 1}):
             raise ValueError(f"a second judge asks each dimension once; repeated: {repeated}")
         return scores
+
+
+#: Why a completion stopped, in the engine's words. A host maps its provider's own finish reason
+#: onto one of these before eval sees it: ``"end_turn"`` is a completion that finished, and every
+#: other member (:data:`~threetears.evals.kernel.provider.INCOMPLETE_STOP_REASONS`) is one that was cut short —
+#: ``"max_tokens"`` at the output cap (OpenAI's ``length``), ``"content_filter"`` by the provider's filter,
+#: ``"truncated"`` when output exists and stopped early for a reason the provider did not name (no finish reason at
+#: all, one this build does not know, or a pause such as Anthropic's ``pause_turn``), and ``"error"``
+#: when the provider reported an error in place of a completion (OpenRouter's ``error`` finish
+#: reason) or returned no choices at all. ``"truncated"`` and ``"error"`` are kept apart because they
+#: send an operator different ways: one is output that stopped early, the other a call that failed.
+#: Defined here rather than beside the completion port, which re-exports it, because a stored judge reply
+#: that was cut off (:class:`JudgeCutShort`) records it.
+StopReason = Literal["end_turn", "max_tokens", "content_filter", "truncated", "error"]
+
+
+#: The stop reasons that say a judge reply ran out of room: the output cap (``max_tokens``), or output that stopped
+#: early for a cause the provider did not name (``truncated``). A cut-off reply with either is excluded as
+#: ``truncated`` (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`); a filtered or errored one stays
+#: a fault of the rig.
+OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
+
+
+class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
+    """A judge reply the provider reported cut short, with the cap the call was sent: why a dim carries no score.
+
+    The structured half of the dim's ``judge_error`` line, which stays as it was: the error text says it to a
+    person, this says it to a reader that counts. The reply was not retried and its call not bought again, so the
+    dim is unscored and the result excluded; recording the stop reason and the settings the call was sent with is
+    what lets a report say the trial was lost to the judge's output cap (``truncated``) rather than to a fault of
+    the rig, and name the cap.
+
+    **Read only while it explains a missing score.** An entry is trusted for a dim that carries no score while the
+    result's ``judge_error`` is set. An older build that re-judges the dim writes its score and clears or rewrites
+    ``judge_error`` without knowing this field, so an entry beside a score, or beside no error, is stale and is
+    ignored, never read as a cut-off.
+    """
+
+    stop_reason: StopReason = Field(
+        description="Why the provider stopped the reply: one of the cut-short reasons, never `end_turn`."
+    )
+    sent_settings: ClientRequestSettings | None = Field(
+        description=(
+            "What the cut-off call was sent with, as its completion reported it (`sent_settings_of`): its "
+            "`max_tokens` is the cap the reply ran into. None = the client did not say, which a report states as "
+            "an unreported cap rather than reading the run's asked settings in its place."
+        ),
+    )
+    output_tokens: int | None = Field(
+        ge=0, description="Output tokens the reply spent, as the provider reported them; None = unreported."
+    )
+    reasoning_tokens: int | None = Field(
+        ge=0,
+        description="The reasoning share of `output_tokens`, as the provider reported it; None = unreported.",
+    )
+
+    @field_validator("stop_reason")
+    @classmethod
+    def _cut_short(cls, stop_reason: StopReason) -> StopReason:
+        """Refuse ``end_turn``: a reply that finished was not cut short, and recording it as one would exclude it."""
+        if stop_reason == "end_turn":
+            raise ValueError("a judge reply that ended on its own terms (end_turn) was not cut short")
+        return stop_reason
+
+    @property
+    def out_of_room(self) -> bool:
+        """Whether the reply ran out of room (:data:`OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
+        return self.stop_reason in OUT_OF_ROOM_STOP_REASONS
 
 
 class EvalResult(CoreDocumentModel):
@@ -5394,6 +5654,16 @@ class EvalResult(CoreDocumentModel):
             "capability dim's."
         ),
     )
+    judge_cut_short: dict[DimName, JudgeCutShort] = Field(
+        default_factory=dict,
+        description=(
+            "dim -> the cut-off reply, for each dim whose judge reply the provider reported cut short (core v15.1): "
+            "its stop reason, the settings the call was sent with (the cap it ran into) and its token counts. Each "
+            "such dim is also named on judge_error, in words. Read only for a dim that carries no score while "
+            "judge_error is set (JudgeCutShort's read rule): an older build's re-judge leaves a stale entry behind. "
+            "Empty when no judge reply was cut short."
+        ),
+    )
 
     # Error taxonomy. A result's error is one of two kinds,
     # and scoring treats them oppositely (an infra failure
@@ -5694,6 +5964,9 @@ __all__ = [
     "DEFAULT_JUDGE_TEMPERATURE",
     "CassetteSchemaVersion",
     "CoreSchemaVersion",
+    "DurableSchemaVersion",
+    "RATING_WRITTEN_BEFORE_CONTENT",
+    "RatedOutput",
     "MODEL_DEFAULT_TEMPERATURE",
     "JudgeTemperature",
     "NON_TERMINAL_RUN_STATUSES",

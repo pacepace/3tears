@@ -1,7 +1,7 @@
 """The server half of two significance rules the browser kit restates.
 
 `threetears.evals.analysis.significance.significance_read` decides whether a significance flag may be
-reported at all, and a finding's `delta_table` payload decides what an effect size is CALLED. The
+reported at all, and `format_significance` decides what an effect size is CALLED. The
 browser kit that renders the same stored rows restates both rules in TypeScript; the pins between
 the two languages live with that kit, in the host that ships it. What stays here is this side of
 each rule, asserted as the facts the kit's copy is pinned against: change one of these and the
@@ -18,16 +18,9 @@ from threetears.evals.analysis.significance import (
     PAIRED_EFFECT_LABEL,
     SIGNIFICANT_LABEL,
     UNPAIRED_EFFECT_LABEL,
+    format_significance,
     significance_read,
 )
-from threetears.evals.analysis.viz import chart_intent
-from threetears.evals.analysis.viz.payloads import DeltaRow
-
-
-def _effect_cell(row: DeltaRow) -> str:
-    """The effect column the compiled delta table carries for one row, through the public intent builder."""
-    [compiled] = chart_intent("delta_table", {"rows": [row.model_dump()]}).rows
-    return str(compiled["effect"])
 
 
 def test_p_or_d_z_is_the_test_ran_predicate():
@@ -47,26 +40,11 @@ def test_the_three_labels_are_three_distinct_words():
     assert len({SIGNIFICANT_LABEL, NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL}) == 3
 
 
-def test_a_row_that_does_not_state_its_pairing_is_unpaired():
-    """One stored dict, two renderers: absence has to mean unpaired, and the server renders it so.
+def test_the_effect_size_is_named_for_the_test_that_ran():
+    """Unpaired is the weaker claim and the name a caller gets unless it states the pairing; a stated one earns d_z.
 
-    The payload default is asserted as the fact it is, and then the rendering is exercised, because
-    a default nothing reads would agree with the kit while the compiler went on printing the paired
-    name.
+    Pinned both ways so a fix that hard-codes either label fails here.
     """
-    assert DeltaRow.model_fields["paired"].default is False
-
-    unstated = DeltaRow(metric="cost_usd", a=0.011, b=0.019, d_z=1.2, p=0.004, n=24, significant=True)
-
-    assert f"{UNPAIRED_EFFECT_LABEL}=1.2" in _effect_cell(unstated)
-
-
-def test_a_row_that_states_its_pairing_is_named_for_the_test_it_states():
-    """The default is the weaker claim, not a ceiling -- a stated pairing still earns d_z.
-
-    Pinned beside the default so a fix that hard-codes the unpaired label -- the same defect this
-    pair replaced, one direction over -- fails here.
-    """
-    stated = DeltaRow(metric="cost_usd", a=0.011, b=0.019, d_z=1.2, p=0.004, n=24, significant=True, paired=True)
-
-    assert f"{PAIRED_EFFECT_LABEL}=1.2" in _effect_cell(stated)
+    unpaired = format_significance(significant=True, paired=False, p=0.004, effect=1.2, n=24)
+    paired = format_significance(significant=True, paired=True, p=0.004, effect=1.2, n=24)
+    assert f"{UNPAIRED_EFFECT_LABEL}=1.2" in unpaired and f"{PAIRED_EFFECT_LABEL}=1.2" in paired

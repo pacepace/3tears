@@ -34,7 +34,7 @@ from threetears.evals.kernel.authoring_fields import edited_core_document, rejec
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
 
@@ -518,6 +518,15 @@ def update_campaign(
     update leaves, checked and never stored, so it is refused beside a design, and on a declared campaign whose
     declaration this update keeps.
 
+    **The design is frozen once a run has joined.** A design is what the campaign's runs were launched to answer, so
+    once it holds a run, ``declared_design`` is refused in any form (set, replaced, withdrawn, or declared on an
+    exploratory campaign): a question added or reworded now would read as asked before results that existed when it
+    was asked. ``name`` and ``description`` stay editable, and the control may be addressed once, from a run, while
+    the design has none (which is how a comparison names its control after launching its arms); re-pointing or
+    clearing a control on a campaign with runs is refused too. The amended design is a new campaign
+    (``campaign_create``), launched into. :func:`~threetears.evals.kernel.declaration.preregistered_questions` is the
+    backstop for a design changed some other way.
+
     **The control is named here too, in the same write**: ``control_from_run_id`` names a member run whose variant
     becomes the declaration's control, resolved exactly as :func:`set_campaign_control` resolves it, and
     ``clear_control`` clears it. Declaring a design and naming its control is one write rather than two, so a
@@ -547,6 +556,8 @@ def update_campaign(
 
     Raises:
         NotFoundError: No campaign with that id in the scope.
+        ConflictError: The campaign holds a run, and the update writes ``declared_design``, clears its control, or
+            names a control where one is already declared (:func:`_refuse_frozen_design`).
         ValidationFailedError: ``updates`` is empty and no control is named or cleared, names a field that is
             not updatable, drops a stored question, fails campaign validation, or declares a design this
             host cannot honour; sets ``declared_design`` to None without ``exploratory``;
@@ -593,6 +604,12 @@ def update_campaign(
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
         raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
+    _refuse_frozen_design(
+        campaign,
+        writes_design="declared_design" in updates,
+        clears_control=clear_control,
+        names_control=control_from_run_id is not None,
+    )
     if exploratory and "declared_design" not in updates and campaign.declared_design is not None:
         raise ValidationFailedError(
             f"campaign '{campaign_id}' declares a design and this update keeps it, so exploratory: true says "
@@ -946,6 +963,10 @@ def set_campaign_control(
     comparison, so a campaign with nothing declared to compare has nothing for one to
     reference.
 
+    **Once, on a campaign with runs.** The control may be addressed while the design declares none, which is how a
+    comparison names its control after launching its arms; re-pointing it, or clearing it, once a run has joined is
+    refused, as every other change to a frozen design is (:func:`update_campaign`).
+
     **The declaration is re-stamped**, because changing the control changes what the campaign
     says it set out to learn. Leaving ``declared_by`` / ``declared_at`` where the axes' author
     put them would render, directly above the control on the campaign page, the name and date
@@ -969,6 +990,8 @@ def set_campaign_control(
 
     Raises:
         NotFoundError: No campaign with that id in the scope.
+        ConflictError: The campaign holds a run and already declares a control, which a designation would re-point
+            or a clear would remove: a control is addressed once (:func:`_refuse_frozen_design`).
         ValidationFailedError: A DESIGNATION was asked for and the campaign declares no
             design; or ``run_id`` is not attached or does not resolve in the scope.
         LeverCoordinateError: The run recorded no lever map, and the host's variant map disagrees
@@ -991,6 +1014,9 @@ def set_campaign_control(
             remedy="declare one with campaign_update, which names the control in the same call (declared_design and "
             "control_from_run_id)",
         )
+    _refuse_frozen_design(
+        campaign, writes_design=False, clears_control=run_id is None, names_control=run_id is not None
+    )
     addressed = None if run_id is None else _address_control(storage, campaign, run_id, profile=profile)
 
     # Logged because the design is what every later analysis is computed against, and a
@@ -1017,6 +1043,48 @@ class _AddressedControl(NamedTuple):
     key: str
     levers: dict[str, SweepableValue] | None
     identity_version: int
+
+
+def _refuse_frozen_design(
+    campaign: EvalCampaign, *, writes_design: bool, clears_control: bool, names_control: bool
+) -> None:
+    """Refuse a change to the design of a campaign holding a run: its design is what those runs were launched to answer.
+
+    The one rule :func:`update_campaign` and :func:`set_campaign_control` hold a campaign to. With no run, nothing is
+    frozen. With one, the design is refused in any form (set, replaced, withdrawn, or declared on an exploratory
+    campaign, which would be a design declared after its data), and so is a control re-pointed or cleared; a control
+    addressed for the first time, while the design declares none, is allowed. ``name`` and ``description`` are never
+    asked about here.
+
+    Args:
+        campaign: The stored campaign.
+        writes_design: Whether the change writes ``declared_design``.
+        clears_control: Whether it clears the declared control.
+        names_control: Whether it addresses a control from a run.
+
+    Raises:
+        ConflictError: The campaign holds a run and the change does one of the refused things.
+    """
+    if not campaign.run_ids:
+        return
+    declared_control = campaign.declared_design.control if campaign.declared_design is not None else None
+    if writes_design:
+        changed = "its design"
+    elif clears_control and declared_control is not None:
+        changed = "its control (clearing it)"
+    elif names_control and declared_control is not None:
+        changed = "its control (re-pointing it; a control is addressed once)"
+    else:
+        return
+    raise ConflictError(
+        f"campaign '{campaign.id}' holds {len(campaign.run_ids)} run(s), so its design is frozen: it is what those "
+        f"runs were launched to answer, and changing {changed} now would make a question asked after the results read "
+        "as one asked before them",
+        remedy=(
+            "create a new campaign with the amended design (campaign_create) and launch into it; name and description "
+            "stay editable here"
+        ),
+    )
 
 
 def _address_control(

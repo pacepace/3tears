@@ -177,8 +177,12 @@ async def _exploratory(tool: MountedTool) -> tuple[OpsFixture, str, AnalysisCont
     return fixture, stored.id, bundle
 
 
-def _scope_said(report: Report) -> list[DisclosureBlock]:
-    return [block for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "scope"]
+#: How line 2 of a report opens when no question was declared before the run.
+_EXPLORATORY_BASIS = "EXPLORATORY — no question was declared before the run"
+
+
+def _exploratory_said(report: Report) -> list[DisclosureBlock]:
+    return [block for block in report.blocks if isinstance(block, DisclosureBlock) and "EXPLORATORY" in block.text]
 
 
 async def test_the_bundle_calls_an_undeclared_campaign_exploratory_once(evals: MountedTool) -> None:
@@ -196,16 +200,16 @@ async def test_the_code_only_report_says_so_once_straight_after_its_opening_line
     fixture, campaign_id, _bundle = await _exploratory(evals)
 
     read = await evals.call(
-        {"action": "report_read", "campaign_id": campaign_id, "format": "json"}, host=fixture.host, caller=CALLER
+        {"action": "report_read", "campaign_id": campaign_id, "format": "markdown"}, host=fixture.host, caller=CALLER
     )
 
     assert not read.is_error, read.text
-    report = Report.model_validate_json(read.structured["body"])
-    assert report.basis == "code_only"
-    (said,) = _scope_said(report)
-    assert said.text == NO_DESIGN_EXPLORATORY
-    # At the top: the first block after the one-line opening saying no analysis was generated, which stays one line.
-    assert report.blocks.index(said) == 1 and said.section == "questions"
+    page = read.structured["body"]
+    # At the top: line 2, the basis, straight under the one-line title, and nowhere else on the page.
+    lines = page.splitlines()
+    assert lines[0].startswith("# ") and lines[0].endswith("no analysis written")
+    assert lines[1].startswith(_EXPLORATORY_BASIS)
+    assert page.count("EXPLORATORY") == 1
 
 
 async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: MountedTool) -> None:
@@ -230,9 +234,9 @@ async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: 
     report = build_report(analysis)
 
     assert analysis.design_snapshot is None
-    (said,) = _scope_said(report)
-    assert said.text == NO_DESIGN_EXPLORATORY and said.section == "summary"
-    assert all(block.section == "summary" for block in report.blocks[: report.blocks.index(said) + 1])
+    (said,) = _exploratory_said(report)
+    assert said.text.startswith(_EXPLORATORY_BASIS) and said.source == "basis"
+    assert report.blocks.index(said) == 0 and said.section == "header"
 
 
 async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(evals: MountedTool) -> None:

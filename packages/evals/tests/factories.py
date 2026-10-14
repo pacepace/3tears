@@ -21,7 +21,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TelemetryRollup
+from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
+from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
@@ -53,6 +55,7 @@ from threetears.evals.schema.models import (
     EvalTrace,
     GoalStateOutcome,
     JudgeConfig,
+    JudgeDeclaration,
     RubricDim,
     RubricScore,
     WorldSeed,
@@ -71,8 +74,10 @@ __all__ = [
     "DEFAULT_SUBJECT",
     "RECORDED_REQUEST_SETTINGS",
     "as_listed",
+    "declared",
     "fixture_variant_key",
     "load_listed",
+    "empty_bundle",
     "make_analysis",
     "make_analysis_attempt",
     "make_campaign",
@@ -167,10 +172,23 @@ def make_template(**overrides: Any) -> EvalTemplate:
             }
         ),
         goal_state_checks=["state.shop.cart.length >= 1"],
-        rubric=[RubricDim(name="conversation.tone", description="Sounds like the subject", scale="ordinal")],
+        rubric=[declared(RubricDim(name="conversation.tone", description="Sounds like the subject", scale="ordinal"))],
     )
     defaults.update(overrides)
     return EvalTemplate(**defaults)
+
+
+def declared(dim: RubricDim, judge: JudgeDeclaration = "builtin") -> RubricDim:
+    """``dim`` declaring its judge, as a template a run launches from must (``RubricDim.judge``).
+
+    Args:
+        dim: A rubric dimension, declared or not.
+        judge: The judge it declares: the built-in prompt unless the test authors a config for it.
+
+    Returns:
+        A copy declaring ``judge``.
+    """
+    return dim.model_copy(update={"judge": judge})
 
 
 def make_test_case(**overrides: Any) -> EvalTestCase:
@@ -454,8 +472,31 @@ def make_campaign(**overrides: Any) -> EvalCampaign:
     return EvalCampaign(**fields)
 
 
+def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
+    """An evidence bundle over no runs: the frozen bundle an analysis of nothing carries."""
+    fields: dict[str, Any] = dict(
+        campaign_id="campaign-1",
+        subject_id="subject-1",
+        behavior="conversation",
+        scope_id="uni-1",
+        comparison=ComparisonSetsResult(),
+        frontier=FrontierResult(),
+        telemetry=TelemetryRollup(
+            n_runs=0,
+            n_results=0,
+            n_errors=0,
+            total_cost_usd=0.0,
+            incomplete_cost_usd=0.0,
+            unattributed_cost_usd=0.0,
+        ),
+        host_declarations_digest="sha256:declarations",
+    )
+    fields.update(overrides)
+    return AnalysisContextBundle(**fields)
+
+
 def make_analysis(**overrides: Any) -> EvalAnalysis:
-    """Create an ``EvalAnalysis`` in the default scope with an empty authored document."""
+    """Create an ``EvalAnalysis`` in the default scope with an empty authored document over an empty bundle."""
     fields: dict[str, Any] = dict(
         scope_id="uni-1",
         campaign_id="campaign-1",
@@ -477,8 +518,9 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
             bundle_schema_version=CURRENT_BUNDLE_SHAPE,
             host_declarations_digest="sha256:declarations",
         ),
-        document=AuthoredAnalysis(headline="h", summary="", findings=[], decisions=[], questions=[], next=[]),
+        document=AuthoredAnalysis(findings=[], decisions=[], questions=[], next=[]),
         decision_surface=DecisionSurface(),
+        bundle=empty_bundle(campaign_id=overrides.get("campaign_id", "campaign-1")).to_dict(),
     )
     fields.update(overrides)
     return EvalAnalysis(**fields)
@@ -502,7 +544,10 @@ def make_analysis_attempt(**overrides: Any) -> EvalAnalysisAttempt:
 
 
 def make_calibration_rating(**overrides: Any) -> CalibrationRating:
-    """Create a ``CalibrationRating``: one person's 4 for ``conversation.tone`` on ``make_eval_result``'s result."""
+    """Create a ``CalibrationRating``: one person's 4 for ``conversation.tone`` on ``make_eval_result``'s result.
+
+    It carries no rated content (``rated_withheld`` says so) unless ``rated`` is given.
+    """
     defaults: dict[str, Any] = {
         "scope_id": "uni-1",
         "run_id": "run-1",
@@ -513,8 +558,11 @@ def make_calibration_rating(**overrides: Any) -> CalibrationRating:
         "scale": "ordinal",
         "score": 4,
         "reason": "warm and on topic",
+        "rated_withheld": "a factory rating of no stored result",
     }
     defaults.update(overrides)
+    if "rated" in overrides and "rated_withheld" not in overrides:
+        defaults.pop("rated_withheld")
     return CalibrationRating(**defaults)
 
 

@@ -61,9 +61,25 @@ judge = Judge(
 )
 ```
 
+Name the judge's model by a concrete model id, never an alias: the served model is part of the judge's calibration
+key, so an alias re-pointed to a new model under the same name merges two judges' evidence (Step 7).
+
 A scoring guide's levels must be the scale's own (`pass`/`fail`, or `1`–`5`). For a quick rubric, pass a mapping
 of name to description and one `scale=` for all of them: `Judge(client=client, model="judge-model",
 rubric={"helpful": "..."}, scale="pass_fail")` names the dimension `answer.helpful`.
+
+**A dimension declares its judge.** `RubricDim.judge` says which judge scores it: `"builtin"`, the engine's own
+prompt for its scale, or `"configured"`, the scope's active `JudgeConfig` for the dimension (created with
+`create_judge_config` in `threetears.evals.run`, `rubric_dim_id` set to the dimension's name). On the quick path a
+`Judge` is the declaration: every dimension it builds, or is handed without one, is declared `"builtin"`, so the
+examples above state nothing more. On a host, where a template's rubric is registered apart from its judges (`create_template`, a seed corpus,
+`update_template` writing `rubric`), every judged dimension must carry it, and registration refuses one that does
+not, naming every such dimension at once. Registration and every launch also refuse `"configured"` with no active
+config, and `"builtin"` beside an active (or launch-selected) one, so no dimension is ever scored by the built-in
+prompt in its config's place, or the reverse. A template stored before the declaration existed reads, and its
+launch is refused until `update_template` declares its dimensions. The declaration is not part of the criterion
+(`fingerprint_criterion`), so labels keep pairing across it. The two reserved axes (transcript and outcome) are
+declared by the kind, not by a rubric, and keep taking a config when one is active.
 
 ## Step 3: guardrails are not capabilities
 
@@ -118,11 +134,18 @@ void for the question ([the void run](#the-2026-10-10-run-is-void)). On a judge 
 0 is requested but never applied: the run stamps `judge_temperature=0` (the request) while each score records
 `model_default` (what was sent).
 
-**Request settings.** The judge asks for `JUDGE_REQUEST_SETTINGS` (`threetears.evals.run`): an output cap of
-10,240 tokens, reasoning effort `high` and strict output. Your client builder applies it to the judge's client (the
-shipped `models_clients` does for its `judge` role), and a judged run records it as its `judge_asked_settings`. What a call was actually sent with is the client's to say, as the optional `sent_settings` on
-its completion: a client may send a model the closest setting it accepts (a budget in place of an effort word, a
-lower effort word, no enforcement where a router could not place the call). Each score records it
+**Request settings.** The judge asks for `JUDGE_REQUEST_SETTINGS` (`threetears.evals.run`): a reasoning budget of
+8,192 tokens (`reasoning_max_tokens`, `JUDGE_REASONING_HEADROOM_TOKENS`) under an output cap of 10,240, which is the
+budget plus the 2,048 the reply's schema needs (`JUDGE_ANSWER_BUDGET_TOKENS`: one reasoning paragraph and one score),
+and strict output. Reasoning is asked as a bound because a word bounds no tokens: a model that read `high` as licence
+to think on reasoned past the cap and was cut off with no answer written. A model that takes a budget (Anthropic's
+`thinking.budget_tokens`) is held to it; a model that takes effort words only is sent the word the budget's share of
+the cap reads as, `high` (0.80, `BUDGET_SHARES`), which is exactly what it was sent before, and there the cap stays
+the only hard stop. Reasoning stays on for every scale, pass/fail included: it is part of the instrument. Your client
+builder applies the settings to the judge's client (the shipped `models_clients` does for its `judge` role), and a
+judged run records them as its `judge_asked_settings`. What a call was actually sent with is the client's to say, as
+the optional `sent_settings` on its completion: a client may send a model the closest setting it accepts (an effort
+word in place of a budget, a lower effort word, no enforcement where a router could not place the call). Each score records it
 (`RubricScore.judge_sent_settings`; `None` when the client did not say, which is unverified, never refused), and
 that is part of the judge's identity too, the sixth component of `JudgeKey`: agreement, evidence tiers, judge
 profiles and drift are kept apart per sent settings, so a judge sent `high` and the same model sent a reasoning budget
@@ -132,7 +155,16 @@ sentence names what its judge was sent, or says `request settings unconfirmed`, 
 shown to be sent as asked says so in one sentence on its summary
 ([reading reports](reading-reports.md#how-the-judge-and-the-simulated-user-were-sent)).
 
-**The built-in prompt is a judge too.** A dimension with no `JudgeConfig` is judged with the engine's own
+**A reply cut off at the cap is excluded as `truncated`, never re-bought.** When the provider stops a judge reply at
+its output cap (or early, for a cause it does not name), the dimension is left unscored, the call is not retried,
+and the result records the cut as a fact beside its `judge_error` line: `EvalResult.judge_cut_short[dim]` holds the
+stop reason, the settings the call was sent with (whose `max_tokens` is the cap it ran into; `None` when the client
+did not say) and its token counts. The trial is excluded with cause `truncated` rather than `infra`
+(`trial_exclusion`), and the analysis bundle counts each arm's exclusions by cause with the caps the cut calls were
+sent ([reading reports](reading-reports.md#excluded-trials-by-cause)). A reply the provider filtered, or that came
+back as an error, is recorded the same way and stays a fault of the rig.
+
+**The built-in prompt is a judge too.** A dimension declared `"builtin"` is judged with the engine's own
 instructions: one for the transcript axis, one for the outcome axis, and one template a rubric dimension's name,
 description and scoring guide are filled into. That wording is part of the judge, as an operator's prompt is, so it
 has an identity. Each call records `builtin:<sha12>` in the result's `judge_config_ids`, where a configured call
@@ -214,6 +246,20 @@ labels = await run_blocking(host.blocking_executor, host.storage.query_calibrati
 A score no key was computed for (one restated from a judge trial) has none, and neither does a rating of it. Such a
 rating is read by its result alone.
 
+### A rating carries what was rated, so it outlives the run
+
+Ratings are durable: a core baseline reset deletes runs, results and traces, and keeps every rating. So `rate_result`
+also copies what the rater read onto the rating (`CalibrationRating.rated`, a `RatedOutput`): the criterion as the
+template worded it, the scenario intent, the variation, the goal outcomes and the `JudgeEvidence`. It rebuilds them
+under the check a judge freeze uses (`reproducible_judge_inputs`), and the rating is refused unless their
+fingerprints are its label key, so the content is provably what was read.
+
+When that check refuses, the person's rating is still stored, with `rated_withheld` saying why: the run is still
+being written, its template was edited after it ran, its trace stored no evidence, or the score carries no label
+key. A warning is logged naming it. Such a label calibrates the judge while its result exists, and cannot outlive
+it. A rating stored before ratings carried their content (by `.25`) reads with `rated_withheld` set to
+`RATING_WRITTEN_BEFORE_CONTENT`. Budget storage at about one judged transcript per label.
+
 ## Step 6: read agreement: kappa
 
 ```python
@@ -285,6 +331,10 @@ undetermined — agreement with people 0.4085 (bounds 0.05449 to 0.7088) over 24
 the bounds straddle (bar 0.6 over at least 20 results) — about 35 more results would decide it if agreement holds;
 with its own repeats not measured (bar 0.8 over at least 120 results) — needs 120 results.
 ```
+
+**Pin a concrete model id for a judge, never an alias.** The served model, as the provider names it in its response,
+is part of the judge's calibration key (`JudgeKey`), so a provider alias that quietly re-points to a new model under
+the same name merges two judges' evidence into one.
 
 **"Needs N more"** is the rest of the floor when there are too few results. When the bounds straddle the bar, it
 says about how many more results would carry them clear if agreement held at its estimate. Tiers are flagged and
@@ -603,6 +653,64 @@ Each case is rebuilt under the same check a re-judge uses (`reproducible_judge_i
 the reason, if its run did not record its judging or its template was edited since. Freezing the same output,
 criterion and labels again returns the stored case. A re-freeze after a label changed mints a new case, and the
 new case-set version lists only the new one. The action is `judge_cases_freeze`.
+
+**Freeze from the labels alone, across a core reset.** `freeze_judge_cases(..., from_labels=True)` (and
+`from_labels: true` on the action, with no `judged_run_ids`) reads no run, result or trace. It groups the scope's
+person ratings by label key, one case per output and criterion, and builds each case from the content its labels
+carry. Its labels are every person rating on that key, one per rater, the latest standing. A label that carries no
+content is skipped by name (`JudgeCaseSkip.rating_id`) with the reason the rating states. The case's source names
+the label's run and result as provenance and records no first judge. So the calibration path after a core baseline
+reset is: rate (before the reset), freeze from labels, run the judge campaign over the case set, then record its
+profile. It costs judge calls only.
+
+```python
+frozen = await run_blocking(
+    host.blocking_executor, freeze_judge_cases,
+    host.storage, template=judge_template, scope_id=summary.scope_id, from_labels=True, case_set="grounded-judge",
+)
+```
+
+### Seeding hard negatives
+
+Labels on stored results only cover what your candidates happened to write. The first calibration items to write
+are the ones they have not: a **hard negative**, an output that must fail a dimension though a lenient judge would
+pass it, and an output that looks wrong but must pass. Write each as an **authored case**
+(`AuthoredJudgeCase`): the output, what it is judged against, the criterion and scenario exactly as the subject's
+template words them, and the verdict it must get, with your note on why. Its verdict is its one label, so a trial,
+`judge_kind_readings` and a judge profile read it as they read a labelled case.
+
+```python
+from threetears.evals.kernel import AuthoredJudgeCase
+
+grounded = judge.dims[0]  # the dimension as the run's template stores it: its wording keys the judge's profile
+material = judge.case_material({"question": "Can I return worn shoes?"})
+hard = [
+    AuthoredJudgeCase(
+        criterion=grounded, intent=summary.intent, case_material=material, output="Yes, within 60 days.",
+        expected="fail", author="ana@example.com", note="60 days is in no policy: a confident, wrong number",
+    ),
+    AuthoredJudgeCase(
+        criterion=grounded, intent=summary.intent, case_material=material, output="No.",
+        expected="pass", author="ana@example.com", note="curt, but worn items are exactly what the policy excludes",
+    ),
+]
+seeded = await run_blocking(
+    host.blocking_executor, freeze_judge_cases,
+    host.storage, template=judge_template, scope_id=summary.scope_id, authored=hard, case_set="grounded-hard",
+)
+```
+
+`authored=` also rides beside `run_ids` or `from_labels`, so one case set can list both kinds. A verdict the
+dimension's scale cannot hold (`"fail"` on an ordinal dimension, `7`, `3` on pass/fail) is refused when the case is
+written, naming both. Through an agent, the `judge_case_author` action writes one case, naming the dimension by its
+template (`criterion_template_id`, `criterion`) and recording the caller as its author. On the quick path, hand the
+`Judge` its examples, and every judged `run_eval` stores them as authored cases of the judge template
+`<template id>-judge`, listed by the case set of that name, calling no model:
+
+```
+Judge(client=client, model="judge-model", rubric=[GROUNDED], case_material=...,
+      examples=[JudgeExample("grounded", "Yes, within 60 days.", "fail", "60 days is in no policy", case=ticket)])
+```
 
 Run one arm per judge. Through a launch, a host registers `launchable_judge_kind` for `JUDGE_KIND` and declares
 `JUDGE_KIND_CONTRACT` (and `JUDGE_KIND_MEASURES`) on its profile. Then each arm is a `run_launch` of the judge

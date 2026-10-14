@@ -93,7 +93,7 @@ _KEY = JudgeKey(
     "ordinal",
     _JUDGE,
     builtin_judge_config_ids(
-        [RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
+        [RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal", judge="builtin")],
         judged_artifact=JudgedArtifact.DOCUMENT,
     )[_DIM],
     MODEL_DEFAULT_TEMPERATURE,
@@ -296,7 +296,7 @@ async def _judged_run(
         name="repeat",
         intent="run a fair encounter",
         candidate_kind=_KIND,
-        rubric=[RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
+        rubric=[RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal", judge="builtin")],
     )
     off_loop(host.storage.save_template, template)
     test_cases = [

@@ -1,112 +1,73 @@
-"""The ``Report`` — one versioned document every surface renders an analysis from.
+"""The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
-**The report is a document, not an assembly.** A stored analysis reaches a reader as one document, not as
-four reads (the analysis, its arm table, its decision-surface table, its compiled charts) that each surface
-would put together for itself, dropping every chart's data on the way to Markdown. A
-:class:`Report` is all of it, in reading order, as an ordered list of blocks — ``text`` with a role,
-``table``, ``chart`` and ``disclosure`` — each linked to the findings it belongs to or rests on. It has
-a published JSON Schema (``schema.json`` beside this module), so a host generates its client types from
-the schema rather than mirroring them by hand. **The schema checks the shape and every cross-field rule JSON
-Schema can state** — a code-only report names no analysis or model and holds no headline, finding or text
-block; a report with no findings links no block to one; a finding's own words name their finding; a chart
-block carries exactly one of an intent and an error, the intent of its own type; a table cell's unit qualifies
-only a number. Three rules compare a value
-with a sibling's, which JSON Schema cannot: a block's finding positions are below ``finding_count`` on a
-report that has findings, a table's ``total_rows`` is at least the rows it shows, and a row keys exactly its
-table's columns. Those the model's validators hold, so a document is a report when the model accepts it, and
-the schema accepts a superset by exactly those three. It ships three serializers: JSON (canonical, this
-model's own dump), Markdown (the agent-facing form) and HTML that reads without a script.
+**One page, verdict first.** A report is an ordered list of blocks in six screens: the first screen (the title line,
+the basis line, the verdict line and the scoreboard), what it means (the memo's findings and recommendations, then
+the contrasts against the control), the cases, the trials to drill into, what was not tested, and the methods. Every
+count, rate, interval and cost in it is code's, computed from the evidence bundle the report carries
+(:attr:`Report.bundle`); a memo contributes only its findings and recommendations, each pinned to the evidence it
+rests on.
 
-**The words are served, not ported.** Every word a reader is shown is in the JSON, written here: the report's
-:attr:`~Report.title` and :attr:`~Report.byline`, each block's :attr:`~_Block.section_title`, the
-:attr:`~_Block.finding_number` and :attr:`~_Block.rests_on_numbers` a reader counts findings by, and each table
-cell's :attr:`~TableCell.text` beside its :attr:`~TableCell.value` — the value for sorting and drawing, the text spelled by the one number
-rule (:func:`~threetears.evals.analysis.viz.quantities.render_cell`). A chart block serves its values-as-drawn
-table the same way (:attr:`ChartBlock.columns`, :attr:`ChartBlock.rows`), its columns already chosen for
-printing. So a browser, a terminal and this package's own serializers print the same words, and no client
-re-implements the number rule or the section headings. They are derived from the fields beside them
-(each a ``computed_field``), never stored: a document read back has them re-derived and what it said for them
-discarded, so a served word cannot drift from what it states, and the schema marks every one required, so a
-client generating its types from it can rely on each.
+**Who wrote what is part of the shape.** A ``text`` block holds what the analysis's author wrote, and nothing else;
+what code says — the verdict, the basis, a table's caption, a reason something is not drawn — is a ``disclosure``.
+A code-only report (no analysis was generated) holds no ``text`` block at all, and its model refuses one, so a
+reader never takes code's computation for an analyst's judgement, or the reverse.
 
-**A report is of an analysis, or of the evidence alone — and it says which** (:attr:`Report.basis`). A
-campaign with a generated analysis is reported through it (``analysis``). A campaign with none — no
-analyst has run, and the package ships no keyless one — is still reported (``code_only``): the arm
-table, the decision surface, the contrasts against the control, a chart per measure, a classifier's
-per-label table and every disclosure the evidence carries, all computed by code, with NO text block at
-all, and a disclosure stating plainly that no analysis was generated. The shape refuses a code-only
-report carrying an author's words, and an analysis report missing its analysis.
+**Two charts, drawn by the package.** A ``chart`` block is an outcome bar (one stacked bar per arm: passed, failed and
+lost by cause, every segment's count written beside it) or interval rows (a dot and its interval per row, with the
+value, the interval and the cases written as text). Both carry their values, so Markdown prints them as a table and
+HTML draws them as inline SVG (:mod:`~threetears.evals.analysis.report.svg`) beside the same table. A chart row is
+drawn only for an arm with :data:`~threetears.evals.analysis.report.verdict.MIN_CASES` usable cases and an
+interval, and a chart with no such row is not built.
 
-**Who wrote what is part of the shape.** A ``text`` block holds what the analysis's author wrote, and
-nothing else; what code has to add — a chart's restatement, an arm the join could not place, why the
-time axis is days — is a ``disclosure``, never appended to the author's words. A chart block carries its
-:class:`~threetears.evals.analysis.viz.intent.ChartIntent` (what it draws and must say) or the reason it
-cannot be drawn — never a renderer's spec, which is the host's to make.
-
-**Where a caveat goes.** An author's caveat is attached to its finding, always, as written — the author
-placed it there, and moving it would be code overruling the author about what qualifies their claim. The
-authored :class:`~threetears.evals.kernel.authored.Caveat` carries no magnitude, so placing caveats by
-how material they are would mean reading materiality out of prose, which code does not do; the number
-that does say whether a difference is worth acting on — a measure's materiality threshold — is code's,
-and it already labels the delta it applies to (``immaterial``) where that delta is drawn. What belongs in
-an appendix is what no single finding owns: the ``methods`` section holds the analysis-wide disclosures
-(the arms the join could not place, the bars no cell could be read against, the time axis's basis, how
-the analysis was generated).
+**The bundle is the machine form.** There is no published JSON of the report: a program reads ``bundle.json``,
+which :meth:`Report.write` puts beside the page, and the page names its fingerprint.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Literal, Self, get_args
 
-from pydantic import ConfigDict, Field, computed_field, model_validator
+from pydantic import Field, model_validator
 
-from threetears.evals.analysis.viz.intent import ChartValue, ChartColumn, ChartIntent, ChartType
-from threetears.evals.analysis.viz.intents.distribution import SHAPE_UNKNOWN
-from threetears.evals.analysis.viz.quantities import render_cell, with_unit
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialCheck, TrialJudgement, TrialState
+from threetears.evals.analysis.quantities import render_cell, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
-#: The report shape's version. Moves when a field or block kind is added, renamed or removed, or when a
-#: field's meaning moves under its name; a host reads it to know what it was handed. A field added moves it too:
-#: the published schema refuses a key it does not name, and marks every field with a default required, since every
-#: dump carries it, so a client holding an older version's schema would refuse a document carrying the new field.
-#:
-#: - **9** — the pre-release baseline (``.21`` to ``.24``); no release wrote it.
-#: - **10** — the first public release's report shape (from ``v0.67.0-evaladopt.25``): a judge's evidence tier is the
-#:   tier of a judge keyed by the request settings its calls were sent with too, and its sentence names them; a
-#:   ``measurement`` disclosure says where a role's request settings were sent other than asked, unverified,
-#:   unenforced or mixed. The same text under 9 named a judge without them.
-REPORT_VERSION: Literal[10] = 10
+#: A table cell's value: a number, words, a boolean, or None where there is none.
+CellValue = str | int | float | bool | None
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
 
-#: Where a block sits, in reading order.
-ReportSection = Literal[
-    "summary", "questions", "decisions", "guardrails", "findings", "arms", "surface", "next", "methods"
-]
+#: Where a block sits, in reading order. ``header`` is the first screen's title, basis and verdict lines, and
+#: ``scoreboard`` the rest of the first screen; ``memo`` and ``contrasts`` are what it means; ``cases`` and
+#: ``trials`` the cases and their drill-down; ``not_tested`` what the campaign could not speak to; ``methods`` how
+#: everything was measured.
+ReportSection = Literal["header", "scoreboard", "memo", "contrasts", "cases", "trials", "not_tested", "methods"]
 
-#: Each section's heading, in reading order — the order every serializer lays the sections out in, and the
-#: heading every block carries as its ``section_title``.
+#: Each section's heading, in reading order — the order every serializer lays the sections out in. The first screen
+#: (``header`` and ``scoreboard``) carries no heading: it is the page's own head.
 SECTION_TITLES: dict[str, str] = {
-    "summary": "Summary",
-    "questions": "Declared questions",
-    "decisions": "Decisions",
-    "guardrails": "Guardrails",
-    "findings": "Findings",
-    "arms": "Arms",
-    "surface": "Decision surface",
-    "next": "What to run next",
+    "header": "",
+    "scoreboard": "Scoreboard",
+    "memo": "What it means",
+    "contrasts": "Contrasts against the control",
+    "cases": "Cases",
+    "trials": "Trials",
+    "not_tested": "Not tested",
     "methods": "Methods and disclosures",
 }
 
+#: The sections the first screen is made of.
+FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
+
 #: What a text block's author wrote it as.
 TextRole = Literal[
-    "headline",
-    "summary",
     "answer",
-    "decision",
+    "recommendation",
     "revisit_when",
     "finding_title",
     "finding_body",
@@ -116,17 +77,22 @@ TextRole = Literal[
     "next_step_why",
 ]
 
-#: Who a disclosure speaks for. ``runs``: member runs left out, unfinished or short. ``measurement``: how
-#: and when the runs were launched and measured. ``apparatus``: the rig — controls, confounds, cells that
-#: did not pool. ``comparisons``: how the contrasts against the control were tested and corrected.
-#: ``strata``: a stratum of cases too small to be read on its own. ``guardrails``: how the guardrails were decided,
-#: or why none could be. ``scope``: which readings no declared question asked about — exploratory.
+#: Who a disclosure speaks for. ``basis``: whether a question was declared before the run (line 2). ``verdict``: the
+#: verdict line. ``design``, ``charts`` and ``cost``: the lines under the scoreboard. ``memo``: who wrote the memo,
+#: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
+#: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
+#: grading its own model's answers. ``comparisons``: how the contrasts against the control were tested and
+#: corrected. ``strata``: a stratum too small to read alone. ``guardrails``: how guardrails were decided.
+#: ``scope``: which readings no declared question asked about. ``not_tested``: something the campaign could not
+#: speak to. ``calibration``: a judge not yet calibrated against people's labels — a state with its next step, never a
+#: failure. ``generation``: how the report itself was made.
 DisclosureSource = Literal[
-    "chart",
-    "arms",
-    "surface",
-    "time_axis",
-    "generation",
+    "basis",
+    "verdict",
+    "design",
+    "charts",
+    "cost",
+    "memo",
     "runs",
     "measurement",
     "apparatus",
@@ -134,8 +100,10 @@ DisclosureSource = Literal[
     "strata",
     "guardrails",
     "scope",
+    "not_tested",
+    "calibration",
+    "generation",
 ]
-
 
 #: Which reading a :class:`Verdict` is: a contrast tested against the control, a bar read on one cell, or a guardrail
 #: checked for one arm against the control.
@@ -158,14 +126,14 @@ VERDICT_OUTCOMES: dict[str, frozenset[str]] = {
 }
 
 #: Why a verdict came out as it did, as a code a program branches on (``reason_detail`` says it in words where
-#: there is more to say). A contrast: ``separated`` (its Holm-adjusted p is below α and its interval excludes 0), ``inside_margin`` (the
-#: equivalence test shows the difference inside the margin), ``no_margin`` (not separated, and with no margin it
-#: could not be shown equivalent), ``margin_untested`` (not separated, a margin is declared and no equivalence test
-#: could run: no declared range, or an unpaired test), ``not_inside_margin`` (not separated, and the equivalence
-#: test did not show it inside the margin), ``untestable`` (no test could run). A bar: ``interval_clears``,
-#: ``interval_misses``, ``interval_straddles``, ``too_few_observations`` (a value from fewer than two, which is not
-#: read), ``no_observations``. A guardrail: ``within_margin`` (held), ``beyond_margin`` (breached),
-#: ``interval_straddles`` or ``no_interval`` (undecided).
+#: there is more to say). A contrast: ``separated`` (its Holm-adjusted p is below α and its interval excludes 0),
+#: ``inside_margin`` (the equivalence test shows the difference inside the margin), ``no_margin`` (not separated,
+#: and with no margin it could not be shown equivalent), ``margin_untested`` (not separated, a margin is declared
+#: and no equivalence test could run), ``not_inside_margin`` (not separated, and the equivalence test did not show
+#: it inside the margin), ``untestable`` (no test could run), ``too_few_cases`` (an arm had fewer cases than a rate
+#: is read on, so the report states no difference). A bar: ``interval_clears``, ``interval_misses``,
+#: ``interval_straddles``, ``too_few_observations``, ``no_observations``. A guardrail: ``within_margin`` (held),
+#: ``beyond_margin`` (breached), ``interval_straddles`` or ``no_interval`` (undecided).
 VerdictReason = Literal[
     "separated",
     "inside_margin",
@@ -173,6 +141,7 @@ VerdictReason = Literal[
     "margin_untested",
     "not_inside_margin",
     "untestable",
+    "too_few_cases",
     "interval_clears",
     "interval_misses",
     "interval_straddles",
@@ -187,8 +156,8 @@ VerdictReason = Literal[
 class Verdict(EvalDocumentModel):
     """One verdict the report states, typed: what a program reads instead of the words printed from it.
 
-    The source of truth for every verdict the report prints: the ``comparisons`` table's ``verdict`` cell and the
-    ``guardrails`` table's ``decision`` cell are each a verdict's :attr:`words`, rendered from it, never the reverse.
+    The source of truth for every verdict the report prints: the contrasts table's ``verdict`` cell and the
+    guardrails table's ``decision`` cell are each a verdict's :attr:`words`, rendered from it, never the reverse.
     """
 
     kind: VerdictKind = Field(description="A contrast against the control, a bar on one cell, or a guardrail.")
@@ -278,69 +247,32 @@ class _Block(EvalDocumentModel):
     finding: int | None = Field(
         default=None,
         ge=0,
-        description="The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
+        description="The finding this block belongs to, by its position (0 is the first); None when it belongs to none.",
     )
     rests_on: list[int] = Field(
         default_factory=list, description="Positions of the findings this block rests on, as the author linked them."
     )
-
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description="The section's heading, as every serializer prints it (`SECTION_TITLES`)."
+    anchor: str | None = Field(
+        default=None, description="The id a link to this block names (`F1`, `case-3`, `T7`); None when none does."
     )
-    @property
-    def section_title(self) -> str:
-        """The heading of the section the block sits in."""
-        return SECTION_TITLES[self.section]
 
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "The finding this block belongs to as a reader counts findings — from 1, where `finding` counts from 0; "
-            "None when it belongs to none."
-        )
-    )
     @property
     def finding_number(self) -> int | None:
-        """``finding`` counted from one, as every serializer numbers a finding; None when the block names none."""
-        return None if self.finding is None else _reader_number(self.finding)
+        """``finding`` counted from one, as a reader counts findings; None when the block names none."""
+        return None if self.finding is None else self.finding + 1
 
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "The findings this block rests on as a reader counts findings — from 1, as `finding_number` counts, where "
-            "`rests_on` counts from 0; in `rests_on`'s order."
-        )
-    )
     @property
     def rests_on_numbers(self) -> list[int]:
-        """``rests_on`` counted from one, as ``finding_number`` counts and every serializer prints them."""
-        return [_reader_number(position) for position in self.rests_on]
-
-
-def _reader_number(position: int) -> int:
-    """A finding's position in the document (0 is the first) as a reader counts findings: from one."""
-    return position + 1
+        """``rests_on`` counted from one, as a reader counts findings."""
+        return [position + 1 for position in self.rests_on]
 
 
 #: The text roles that are part of one finding, and so name it.
 FINDING_ROLES: frozenset[str] = frozenset({"finding_title", "finding_body", "caveat", "carried_forward"})
 
 
-#: Only whitespace — what an empty author field, or a chart block's empty error, reads as.
-_BLANK = r"^\s*$"
-
-#: Some non-whitespace — what a chart block's error is when it carries one.
-_SAID = r"\S"
-
-
 class TextBlock(_Block):
     """What the analysis's author wrote, exactly as written, with the facts code states beside it."""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            # A finding's own words name it (``_a_findings_own_words_name_it``), stated in the schema too.
-            "if": {"properties": {"role": {"enum": [role for role in sorted(FINDING_ROLES)]}}, "required": ["role"]},
-            "then": {"properties": {"finding": {"type": "integer"}}, "required": ["finding"]},
-        }
-    )
 
     kind: Literal["text"] = Field(default="text", description="Which kind of block this is.")
     role: TextRole = Field(description="What the author wrote it as.")
@@ -371,33 +303,23 @@ class TableColumn(EvalDocumentModel):
 class TableCell(EvalDocumentModel):
     """One cell of a report table: its value, and the text a reader is shown for it.
 
-    The value is what a client sorts by and draws from; the text is what it prints, spelled here by the one
-    number rule (:func:`~threetears.evals.analysis.viz.quantities.render_cell`: an absent value is a dash, never a
-    zero; a boolean is yes or no), so a client never formats a number of its own.
+    The value is what a program sorts by; the text is what every serializer prints, spelled by the one number rule
+    (:func:`~threetears.evals.analysis.quantities.render_cell`: an absent value is a dash, never a zero; a
+    boolean is yes or no).
     """
 
-    model_config = ConfigDict(
-        json_schema_extra={
-            # A unit qualifies only a number (``_a_unit_qualifies_a_number``), stated in the schema too: JSON
-            # Schema's `number` holds no boolean, as the model's check holds none.
-            "if": {"properties": {"unit": {"minLength": 1}}, "required": ["unit"]},
-            "then": {"properties": {"value": {"type": "number"}}},
-        }
-    )
-
-    value: ChartValue = Field(description="The cell's value: a number, words, a boolean, or null where there is none.")
+    value: CellValue = Field(description="The cell's value: a number, words, a boolean, or null where there is none.")
     unit: str = Field(
         default="",
         description=(
             "The unit a number in this cell is stated in, already restated onto its measure's one ruler for the "
-            "report (a latency stored in ms and reaching a second reads in s on every table). Empty for a "
-            "unitless number, for words, and wherever the column's header names the unit instead."
+            "report. Empty for a unitless number, for words, and wherever the column's header names the unit."
         ),
     )
 
     @model_validator(mode="after")
     def _a_unit_qualifies_a_number(self) -> Self:
-        """Refuse a unit on anything but a number: words and a boolean carry none, and an absent value states none.
+        """Refuse a unit on anything but a number.
 
         Raises:
             ValueError: ``unit`` is set and ``value`` is not a number.
@@ -406,12 +328,6 @@ class TableCell(EvalDocumentModel):
             raise ValueError(f"a cell's unit qualifies a number, and this cell holds {self.value!r}")
         return self
 
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "The value as a reader is shown it: a number spelled by the number rule and joined to its unit, null as "
-            "`—`, a boolean as yes or no."
-        )
-    )
     @property
     def text(self) -> str:
         """``value`` as every serializer prints it."""
@@ -420,8 +336,8 @@ class TableCell(EvalDocumentModel):
         return render_cell(self.value)
 
 
-def table_row(values: Mapping[str, ChartValue]) -> dict[str, TableCell]:
-    """A table row from its values, each made a :class:`TableCell` — how a builder lays a row into a table block.
+def table_row(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
+    """A table row from its values, each made a :class:`TableCell`.
 
     Args:
         values: The row's values, by column key.
@@ -436,52 +352,31 @@ class TableBlock(_Block):
     """A table code laid out — its columns, its rows in their stated order, and how much of it is shown."""
 
     kind: Literal["table"] = Field(default="table", description="Which kind of block this is.")
-    name: str = Field(
-        min_length=1,
-        description=(
-            "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts "
-            "against the control, as code tested them), `questions` (the declared questions, on a code-only report), "
-            "`strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases "
-            "declare strata), `labels` (a classifier's per-label precision, recall and F1, a row per label and "
-            "arm, on a code-only report) or `coverage` (each lever of an analysis's coverage map, the findings "
-            "naming it and the next steps that would measure it)."
-        ),
-    )
+    name: str = Field(min_length=1, description="Which table this is, e.g. `scoreboard`, `comparisons`, `cases`.")
     title: str = Field(min_length=1, description="The table's heading.")
     columns: list[TableColumn] = Field(min_length=1, description="The columns, in display order.")
-    rows: list[dict[str, TableCell]] = Field(
-        description=(
-            "The rows shown, in the stated order, each keyed by every column's key: each cell its value and its text, "
-            "an absent value a cell whose value is null."
-        )
-    )
+    rows: list[dict[str, TableCell]] = Field(description="The rows shown, in the stated order, keyed by every column.")
     order: str = Field(min_length=1, description="The order the rows are in, in words.")
     total_rows: int = Field(ge=0, description="How many rows the table has; more than are shown when it is truncated.")
+    details: bool = Field(
+        default=False, description="Whether the table is drill-down: HTML folds it in a `<details>`, closed."
+    )
 
     @model_validator(mode="after")
     def _rows_fit_the_table(self) -> Self:
-        """Refuse a table showing more rows than it has, a row stating a value no column shows, or one missing a column.
-
-        A row keys every column, an absent value as a cell whose value is null, so a client prints each row's
-        cells as served and never decides for itself what a missing one reads as.
+        """Refuse a table showing more rows than it has, or a row keying other columns than the table's.
 
         Raises:
-            ValueError: ``total_rows`` is below the rows shown, or a row carries a key that is not a column, or
-                lacks one that is.
+            ValueError: ``total_rows`` is below the rows shown, or a row's keys are not exactly the columns'.
         """
         if self.total_rows < len(self.rows):
             raise ValueError(f"table {self.name!r} shows {len(self.rows)} rows but says it has {self.total_rows}")
         keys = {column.key for column in self.columns}
-        if stray := sorted({key for row in self.rows for key in row} - keys):
-            raise ValueError(f"table {self.name!r} has rows keyed {', '.join(stray)}, which no column shows")
-        if missing := sorted({key for row in self.rows for key in keys - row.keys()}):
-            raise ValueError(
-                f"table {self.name!r} has rows missing {', '.join(missing)}; a row keys every column, an absent "
-                "value as a cell whose value is null"
-            )
+        if bad := sorted({key for row in self.rows for key in row.keys() ^ keys}):
+            raise ValueError(f"table {self.name!r} has rows that do not key exactly its columns: {', '.join(bad)}")
         return self
 
-    def values(self) -> list[dict[str, ChartValue]]:
+    def values(self) -> list[dict[str, CellValue]]:
         """The rows shown as their values alone — what a program reads a table for.
 
         Returns:
@@ -490,85 +385,137 @@ class TableBlock(_Block):
         return [{key: cell.value for key, cell in row.items()} for row in self.rows]
 
 
+#: The two charts a report draws.
+ChartKind = Literal["outcome_bar", "interval_rows"]
+
+
+class OutcomeSegment(EvalDocumentModel):
+    """One segment of an arm's outcome bar: passed, failed, or lost to one cause, with its count."""
+
+    state: TrialState = Field(description="passed, failed or lost.")
+    label: str = Field(min_length=1, description="The segment in words (`passed`, `lost: judge truncated`).")
+    count: int = Field(ge=1, description="Trials in it.")
+
+
+class OutcomeBar(EvalDocumentModel):
+    """One arm's census as a stacked bar: every trial it ran, by how it ended."""
+
+    arm: str = Field(min_length=1, description="The arm, as the report names it.")
+    segments: list[OutcomeSegment] = Field(description="Passed, then failed, then lost, each cause its own segment.")
+
+    @property
+    def total(self) -> int:
+        """Every trial the bar stands for."""
+        return sum(segment.count for segment in self.segments)
+
+
+class IntervalRow(EvalDocumentModel):
+    """One row of an interval chart: a value, its interval and the cases it rests on."""
+
+    label: str = Field(min_length=1, description="The row: an arm, or an arm against the control.")
+    value: float = Field(description="The value, on the chart's ruler.")
+    low: float = Field(description="The interval's low end, on the chart's ruler.")
+    high: float = Field(description="The interval's high end, on the chart's ruler.")
+    n_cases: int = Field(ge=1, description="The cases the value rests on.")
+    verdict: str | None = Field(default=None, description="The row's verdict in words, where it has one.")
+
+    @model_validator(mode="after")
+    def _the_interval_holds_the_value(self) -> Self:
+        """Refuse an interval that runs backwards.
+
+        Raises:
+            ValueError: ``low`` is above ``high``.
+        """
+        if self.low > self.high:
+            raise ValueError(f"row {self.label!r}: its interval runs from {self.low} down to {self.high}")
+        return self
+
+
 class ChartBlock(_Block):
-    """A chart: a finding's (its intent, or why the stored chart cannot be drawn), or one code chose.
-
-    A chart code chose — on a code-only report, one per measure the surface can draw — names no finding.
-    """
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            # Exactly one of an intent and the reason it cannot be drawn, and the intent of the block's own type
-            # (``_drawn_or_says_why_not``), stated in the schema too.
-            "if": {"properties": {"intent": {"type": "null"}}, "required": ["intent"]},
-            "then": {"properties": {"error": {"type": "string", "pattern": _SAID}}},
-            "else": {"properties": {"error": {"type": "string", "pattern": _BLANK}}},
-            "allOf": [
-                {
-                    "if": {"properties": {"viz_type": {"const": chart_type}}, "required": ["viz_type"]},
-                    "then": {
-                        "properties": {
-                            "intent": {"anyOf": [{"type": "null"}, {"properties": {"type": {"const": chart_type}}}]}
-                        }
-                    },
-                }
-                for chart_type in get_args(ChartType)
-            ],
-        }
-    )
+    """One of the two charts a report draws, with every value it draws, so it prints as a table too."""
 
     kind: Literal["chart"] = Field(default="chart", description="Which kind of block this is.")
-    viz_type: ChartType = Field(description="The chart type the finding carries.")
-    intent: ChartIntent | None = Field(
-        default=None, description="What the chart draws and must say; None when it cannot be drawn."
-    )
-    error: str = Field(
-        default="",
-        description=(
-            "Why the stored chart cannot be drawn, naming the offending field; empty when it can. Served rather than "
-            "omitted: a chart missing from a report is otherwise indistinguishable from a finding that carried none."
-        ),
+    chart: ChartKind = Field(description="`outcome_bar` or `interval_rows`.")
+    title: str = Field(min_length=1, description="What the chart shows.")
+    bars: list[OutcomeBar] = Field(default_factory=list, description="An outcome bar's arms, one bar each.")
+    rows: list[IntervalRow] = Field(default_factory=list, description="An interval chart's rows, in drawn order.")
+    unit: str = Field(default="", description="The unit an interval chart's values are stated in; empty for none.")
+    zero_line: bool = Field(default=False, description="Whether the chart draws a line at zero (a difference's).")
+    margin: float | None = Field(
+        default=None, description="A margin band either side of zero, on the chart's ruler; None when none declared."
     )
 
     @model_validator(mode="after")
-    def _drawn_or_says_why_not(self) -> Self:
-        """Refuse a chart block that carries both an intent and an error, or neither.
+    def _draws_what_its_kind_draws(self) -> Self:
+        """Refuse a chart with nothing to draw, or one carrying the other kind's marks.
 
         Raises:
-            ValueError: The block is drawable and failed, or neither.
+            ValueError: An outcome bar with rows or no bar, or an interval chart with bars or no row.
         """
-        if (self.intent is None) == (not self.error.strip()):
-            raise ValueError("a chart block carries exactly one of an intent and the reason it cannot be drawn")
-        if self.intent is not None and self.intent.type != self.viz_type:
-            raise ValueError(f"a {self.viz_type} chart block carries a {self.intent.type} intent")
+        if self.chart == "outcome_bar" and (self.rows or not self.bars):
+            raise ValueError("an outcome bar draws one bar per arm and no interval row")
+        if self.chart == "interval_rows" and (self.bars or not self.rows):
+            raise ValueError("an interval chart draws at least one row and no outcome bar")
         return self
 
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "The values-as-drawn table's columns as printed, in display order: the intent's, less a distribution's "
-            "`shape` when no row knows one. Empty when the chart cannot be drawn."
-        )
-    )
-    @property
-    def columns(self) -> list[TableColumn]:
-        """The intent's values-table columns, as every serializer prints them."""
-        if self.intent is None:
-            return []
-        return [TableColumn(key=column.key, header=column.header) for column in _printed_columns(self.intent)]
+    def values_table(self) -> tuple[list[str], list[list[str]]]:
+        """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture.
 
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "The values-as-drawn rows, in drawn order, keyed by `columns`: each cell its value (in the drawn unit) and "
-            "its text. Empty when the chart cannot be drawn."
-        )
-    )
-    @property
-    def rows(self) -> list[dict[str, TableCell]]:
-        """The intent's values-table rows over :attr:`columns`, each cell its value and its text."""
-        if self.intent is None:
-            return []
-        columns = _printed_columns(self.intent)
-        return [{column.key: TableCell(value=row.get(column.key)) for column in columns} for row in self.intent.rows]
+        Returns:
+            ``(headers, rows)``, each row's cells as text.
+        """
+        if self.chart == "outcome_bar":
+            labels = list(dict.fromkeys(segment.label for bar in self.bars for segment in bar.segments))
+            headers = ["Arm", "ran", *labels]
+            body = []
+            for bar in self.bars:
+                counts = {segment.label: segment.count for segment in bar.segments}
+                body.append([bar.arm, str(bar.total), *(str(counts.get(label, 0)) for label in labels)])
+            return headers, body
+        unit = f" ({self.unit})" if self.unit else ""
+        headers = [
+            "Row",
+            f"Value{unit}",
+            f"Interval{unit}",
+            "Cases",
+            *(["Verdict"] if any(row.verdict for row in self.rows) else []),
+        ]
+        body = []
+        for row in self.rows:
+            cells = [row.label, interval_value_text(row.value), interval_text(row.low, row.high), str(row.n_cases)]
+            if len(headers) == 5:
+                cells.append(row.verdict or "—")
+            body.append(cells)
+        return headers, body
+
+
+def interval_value_text(value: float) -> str:
+    """A charted value as text, by the one number rule."""
+    return render_cell(value)
+
+
+def interval_text(low: float, high: float) -> str:
+    """A charted interval as text: ``[low, high]``."""
+    return f"[{render_cell(low)}, {render_cell(high)}]"
+
+
+class TrialBlock(_Block):
+    """One trial to drill into: what the case asked, what the judge saw and said, and why it ended as it did."""
+
+    kind: Literal["trial"] = Field(default="trial", description="Which kind of block this is.")
+    trial_id: str = Field(min_length=1, description="The trial, as the report numbers it.")
+    case_label: str = Field(min_length=1, description="The case, as a reader names it.")
+    arm: str = Field(min_length=1, description="The arm, as the report names it.")
+    repeat: int = Field(ge=1, description="Which repeat of the case.")
+    state: TrialState = Field(description="passed, failed or lost.")
+    cause_words: str | None = Field(default=None, description="Why it failed or was lost, in words.")
+    first_input: str = Field(default="", description="What the case asked.")
+    excerpt: str = Field(default="", description="The tail of what the judge was handed.")
+    failed_checks: list[TrialCheck] = Field(default_factory=list, description="Each check it failed.")
+    judge: list[TrialJudgement] = Field(default_factory=list, description="What the judge said, per dimension.")
+    error_words: str | None = Field(default=None, description="The recorded error, for a lost or failed trial.")
+    result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
+    open: bool = Field(default=False, description="Whether HTML shows it open: a lost or failed trial, up to a cap.")
 
 
 class DisclosureBlock(_Block):
@@ -580,7 +527,7 @@ class DisclosureBlock(_Block):
 
 
 #: A report block, discriminated by ``kind``.
-ReportBlock = Annotated[TextBlock | TableBlock | ChartBlock | DisclosureBlock, Field(discriminator="kind")]
+ReportBlock = Annotated[TextBlock | TableBlock | ChartBlock | TrialBlock | DisclosureBlock, Field(discriminator="kind")]
 
 
 class ReportSource(EvalDocumentModel):
@@ -589,113 +536,41 @@ class ReportSource(EvalDocumentModel):
     analysis_id: str | None = Field(
         default=None, min_length=1, description="The analysis the report renders; None on a code-only report."
     )
-    campaign_id: str = Field(min_length=1, description="The campaign the analysis is of.")
-    campaign_name: str | None = Field(
-        default=None,
-        min_length=1,
-        description=(
-            "The campaign's name, which the report's title names it by; None where the report was built without "
-            "it, and a code-only report's title then names the campaign by its id."
-        ),
-    )
-    scope_id: str = Field(min_length=1, description="The scope both live in.")
-    subject_id: str = Field(min_length=1, description="The analysed subject.")
-    subject_kind: str = Field(description="The subject's kind; empty when the campaign declared none.")
+    campaign_id: str = Field(min_length=1, description="The campaign.")
+    campaign_name: str | None = Field(default=None, min_length=1, description="The campaign's name, where known.")
+    scope_id: str = Field(min_length=1, description="The scope the campaign lives in.")
     behavior: str = Field(min_length=1, description="The behaviour under analysis.")
     generated_at: str = Field(
         min_length=1,
-        description=(
-            "When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled for it."
-        ),
+        description="When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled.",
     )
     generator_model: str | None = Field(
-        default=None,
-        min_length=1,
-        description="The model that wrote the analysis, as the provider reported it; None on a code-only report.",
+        default=None, min_length=1, description="The model that wrote the analysis; None on a code-only report."
     )
-    bundle_fingerprint: str = Field(
-        min_length=1,
-        description=(
-            "The fingerprint of the evidence bundle the analysis was written over; on a code-only report, of the "
-            "bundle the report was computed from."
-        ),
-    )
+    bundle_fingerprint: str = Field(min_length=1, description="The fingerprint of the bundle the report renders.")
+
+
+#: The files :meth:`Report.write` writes, by role.
+ReportFile = Literal["html", "bundle", "markdown"]
 
 
 class Report(EvalDocumentModel):
-    """One analysis, as a document every surface renders. See the module docstring for the contract."""
+    """A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states."""
 
-    model_config = ConfigDict(
-        json_schema_extra={
-            "allOf": [
-                # A code-only report names no analysis or model and holds nothing an author wrote
-                # (``_the_basis_matches_what_the_report_holds``); an analysis report names both.
-                {
-                    "if": {"properties": {"basis": {"const": "code_only"}}, "required": ["basis"]},
-                    "then": {
-                        "properties": {
-                            "headline": {"type": "string", "pattern": _BLANK},
-                            "finding_count": {"const": 0},
-                            "source": {
-                                "properties": {"analysis_id": {"type": "null"}, "generator_model": {"type": "null"}}
-                            },
-                            "blocks": {
-                                "items": {"not": {"properties": {"kind": {"const": "text"}}, "required": ["kind"]}}
-                            },
-                        }
-                    },
-                    "else": {
-                        "properties": {
-                            "source": {
-                                "properties": {
-                                    "analysis_id": {"type": "string"},
-                                    "generator_model": {"type": "string"},
-                                },
-                                "required": ["analysis_id", "generator_model"],
-                            }
-                        }
-                    },
-                },
-                # A report with no findings links no block to one (``_positions_point_at_findings``, at the one
-                # finding_count the schema can compare against).
-                {
-                    "if": {"properties": {"finding_count": {"const": 0}}, "required": ["finding_count"]},
-                    "then": {
-                        "properties": {
-                            "blocks": {
-                                "items": {"properties": {"finding": {"type": "null"}, "rests_on": {"maxItems": 0}}}
-                            }
-                        }
-                    },
-                },
-            ]
-        }
-    )
-
-    report_version: Literal[10] = Field(default=REPORT_VERSION, description="This shape's version.")
-    basis: ReportBasis = Field(
-        description=(
-            "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "
-            "report is the campaign's evidence as code computed it — no headline, no findings, no author's words."
-        )
-    )
-    headline: ModelProse = Field(
-        description="The author's headline, as written; empty when the author wrote none, and on a code-only report."
-    )
-    finding_count: int = Field(
-        ge=0, description="How many findings the document holds — the range every position is in."
-    )
+    basis: ReportBasis = Field(description="`analysis` over a generated memo, `code_only` over the evidence alone.")
+    title: str = Field(min_length=1, description="The title line: the campaign, its arms, the date and the basis.")
+    finding_count: int = Field(ge=0, description="How many findings the memo holds.")
     source: ReportSource = Field(description="What this is a report of.")
     blocks: list[ReportBlock] = Field(description="The report, in reading order.")
     verdicts: list[Verdict] = Field(
         default_factory=list,
         description=(
-            "Every verdict the report states, typed — the source each printed verdict is rendered from: the "
-            "guardrails (for each arm against the control), then each bar on each cell, then the contrasts against "
-            "the control, each group in its table's row order. A code-only report carries all three; an analysis "
-            "report carries the guardrails and bars its frozen decision surface holds, and no contrast, as it "
-            "prints no contrasts table."
+            "Every verdict code reaches, typed — the guardrails, then each bar on each cell, then the contrasts "
+            "against the control — the source each printed verdict is rendered from."
         ),
+    )
+    bundle: AnalysisContextBundle = Field(
+        exclude=True, description="The evidence every number here was computed from, written beside the page."
     )
 
     @model_validator(mode="after")
@@ -718,12 +593,9 @@ class Report(EvalDocumentModel):
     def _the_basis_matches_what_the_report_holds(self) -> Self:
         """Refuse a report whose basis disagrees with its source or its blocks.
 
-        An analysis report names its analysis and the model that wrote it. A code-only report names
-        neither, and holds nothing an author wrote: no headline, no findings, no text block — so a
-        reader can never take code's computation for an analyst's judgement, or the reverse.
-
         Raises:
-            ValueError: The basis and what the report holds disagree.
+            ValueError: An analysis report names no analysis or model, or a code-only report names one or holds a
+                finding or an author's words.
         """
         source = self.source
         if self.basis == "analysis":
@@ -731,104 +603,64 @@ class Report(EvalDocumentModel):
                 raise ValueError("an analysis report names its analysis_id and generator_model in its source")
             return self
         if source.analysis_id is not None or source.generator_model is not None:
-            raise ValueError(
-                "a code-only report renders no analysis, so its source names no analysis_id or generator_model"
-            )
-        if self.headline.strip():
-            raise ValueError("a code-only report has no author, so it carries no headline")
+            raise ValueError("a code-only report renders no analysis, so it names no analysis_id or generator_model")
         if self.finding_count:
             raise ValueError(f"a code-only report has no findings, and this one counts {self.finding_count}")
         if authored := [index for index, block in enumerate(self.blocks) if isinstance(block, TextBlock)]:
             raise ValueError(f"a code-only report holds no author's words, and blocks {authored} are text blocks")
         return self
 
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "The report's title, as every serializer prints it: an analysis report's headline (`(blank headline)` "
-            "when the author wrote none), led by the campaign's name where the report carries it; a code-only "
-            "report's names the campaign, by its name or else its id, and says there is no analysis."
-        )
-    )
-    @property
-    def title(self) -> str:
-        """The title, one line before escaping."""
-        name = self.source.campaign_name
-        if self.basis == "code_only":
-            return f"Campaign {name or self.source.campaign_id}: its evidence, with no analysis"
-        headline = self.headline.strip() or "(blank headline)"
-        return f"{name}: {headline}" if name else headline
+    def write(self, out_dir: Path | str) -> dict[ReportFile, Path]:
+        """Write the report as one self-contained page, its Markdown, and the bundle it was computed from.
 
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "What the report is of and how it was made, as every serializer prints it under the title; it names "
-            "the campaign by its id either way."
-        )
-    )
-    @property
-    def byline(self) -> str:
-        """The byline, before escaping.
+        ``report.html`` needs nothing beside it — no script, no stylesheet, no image — and ``bundle.json`` is the
+        bundle with its ``schema_version``, so the fingerprint the page names is the one a reader computes from the
+        file (``AnalysisContextBundle.from_json(...).fingerprint()``). ``report.md`` is the same page as Markdown.
 
-        A code-only report's byline does not say that no analysis was generated: the summary's one line
-        (``NO_ANALYSIS``) says it, directly below.
-        """
-        source = self.source
-        if self.basis == "code_only":
-            return (
-                f"Code-only report of campaign {source.campaign_id} — {source.behavior}; computed from its evidence on "
-                f"{source.generated_at}."
-            )
-        return (
-            f"Analysis {source.analysis_id} of campaign {source.campaign_id} — {source.behavior}; generated "
-            f"{source.generated_at} by {source.generator_model}."
-        )
-
-    def to_canonical_json(self) -> str:
-        """The report as its canonical JSON — the form the published schema validates.
+        Args:
+            out_dir: The directory; created when missing.
 
         Returns:
-            The JSON text, indented, keys in model order.
+            Each file written, by role.
         """
-        return self.model_dump_json(indent=2)
+        # Deferred: the serializers import this module for the block types they lay out.
+        from threetears.evals.analysis.report.serialize_html import report_html
+        from threetears.evals.analysis.report.serialize_md import report_markdown
 
-
-def _printed_columns(intent: ChartIntent) -> list[ChartColumn]:
-    """The columns of a chart's values table as a chart block serves it: the intent's, less a shape no row knows.
-
-    A distribution's ``shape`` column reads :data:`SHAPE_UNKNOWN` in every row when every group reported only
-    an interval, and printed beside a table that shows each group's interval and nothing between its ends, it
-    tells the reader nothing the table does not. It is printed as soon as one row's shape is known, and the
-    intent keeps it either way, for a renderer that draws the band. Applied where the block serves its table, so
-    every client receives the columns already chosen.
-
-    Args:
-        intent: The chart's intent.
-
-    Returns:
-        The columns to print, in display order.
-    """
-    if intent.rows and all(row.get("shape") == SHAPE_UNKNOWN for row in intent.rows):
-        return [column for column in intent.columns if column.key != "shape"]
-    return list(intent.columns)
+        directory = Path(out_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        files: dict[ReportFile, Path] = {
+            "html": directory / "report.html",
+            "bundle": directory / "bundle.json",
+            "markdown": directory / "report.md",
+        }
+        files["html"].write_text(report_html(self), encoding="utf-8")
+        files["bundle"].write_text(self.bundle.to_json(indent=2) + "\n", encoding="utf-8")
+        files["markdown"].write_text(report_markdown(self), encoding="utf-8")
+        return files
 
 
 __all__ = [
-    "REPORT_VERSION",
+    "FINDING_ROLES",
+    "FIRST_SCREEN",
+    "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",
-    "ContrastOutcome",
-    "GuardrailOutcome",
-    "Verdict",
-    "VerdictKind",
-    "VerdictReason",
-    "SECTION_TITLES",
+    "CellValue",
     "ChartBlock",
+    "ChartKind",
+    "ContrastOutcome",
     "DisclosureBlock",
     "DisclosureSource",
-    "FINDING_ROLES",
     "Fact",
+    "GuardrailOutcome",
+    "IntervalRow",
+    "OutcomeBar",
+    "OutcomeSegment",
     "Report",
     "ReportBasis",
     "ReportBlock",
+    "ReportFile",
     "ReportSection",
     "ReportSource",
     "TableBlock",
@@ -836,5 +668,11 @@ __all__ = [
     "TableColumn",
     "TextBlock",
     "TextRole",
+    "TrialBlock",
+    "Verdict",
+    "VerdictKind",
+    "VerdictReason",
+    "interval_text",
+    "interval_value_text",
     "table_row",
 ]

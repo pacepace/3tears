@@ -32,7 +32,6 @@ from threetears.evals.analysis import stats
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import cell_dimension_facts
 from threetears.evals.analysis.bundle.insights import insight_standing
-from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import (
     build_user_message,
@@ -460,10 +459,7 @@ class TestThePromptVersionIsWhatTheModelWasTold:
         system, _, contract = first_request(_bundle(), PROMPT, profile)
         told = system + "\n" + json.dumps(contract, sort_keys=True, separators=(",", ":"))
         assert _bundle().time_axis is None, "the toy campaign runs on one day under no build label"
-        assert (
-            prompt_content_version(PROMPT, profile, time_axis=False)
-            == hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
-        )
+        assert prompt_content_version(PROMPT, profile) == hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass
@@ -515,45 +511,25 @@ class TestTheBilledCostIsSpelledByTheNumberRule:
         assert f"${format_number(1234.5)} was billed on the one call" in str(raised.value)
 
 
-def _delta_chart(bundle: Any) -> dict[str, Any]:
-    """A drawable chart over the two toy arms: narrow first, then wide, on wall-clock — cells as the writer names them."""
-    narrow, wide = alias_at(bundle, TOYHOST_NARROW), alias_at(bundle, TOYHOST_WIDE)
-    return {
-        "type": "delta_table",
-        "cells": [narrow, wide],
-        "measures": [{"measure_id": "total_ms", "reading": "measure"}],
-        "axis": "",
-        "note": "",
-        "caption": "Wall-clock per document at each width.",
-    }
-
-
-def _misspelt_reading_at(site: str, bundle: Any) -> dict[str, Any]:
-    """The fixtured memo with a reading at ``site`` spelt ``raeding`` — a key that decides what is read."""
+def _misspelt_reading(bundle: Any) -> dict[str, Any]:
+    """The fixtured memo with each evidence reading spelt ``raeding`` — a key that decides what is read."""
     payload = copy.deepcopy(memo_payload(bundle))
-    finding = _finding(payload)
-    if site == "evidence":
-        readings = finding["evidence"]
-    elif site == "chart measure":
-        finding["chart"] = _delta_chart(bundle)
-        readings = finding["chart"]["measures"]
-    for reading in readings:
+    for reading in _finding(payload)["evidence"]:
         reading["raeding"] = reading.pop("reading")
     return payload
 
 
 class TestEveryReadingSiteIsParsedByTheOneContract:
-    """A key that is no field is refused at every site, and a chart's numbers are compiled by code."""
+    """A key that is no field is refused, and a writer draws nothing: the report's two charts are code's."""
 
-    @pytest.mark.parametrize("site", ["evidence", "chart measure"])
-    async def test_a_misspelt_field_is_refused_rather_than_read_as_the_default(self, site: str) -> None:
+    async def test_a_misspelt_field_is_refused_rather_than_read_as_the_default(self) -> None:
         bundle = _bundle()
         with pytest.raises(SoundnessRefusal, match=r"raeding\s+Extra inputs are not permitted"):
-            await _generate(bundle, _misspelt_reading_at(site, bundle))
+            await _generate(bundle, _misspelt_reading(bundle))
 
     async def test_the_same_memo_spelt_correctly_is_accepted_in_one_call(self) -> None:
         bundle = _bundle()
-        payload = _misspelt_reading_at("evidence", bundle)
+        payload = _misspelt_reading(bundle)
         for reading in _finding(payload)["evidence"]:
             reading["reading"] = reading.pop("raeding")
 
@@ -562,34 +538,14 @@ class TestEveryReadingSiteIsParsedByTheOneContract:
         assert len(client.calls) == 1
         assert [row.reading for row in analysis.resolutions[0].evidence] == ["measure", "measure"]
 
-    async def test_a_payload_typed_beside_a_chart_is_refused(self) -> None:
-        """A chart carries cells and readings; a number typed into it is off-contract, never drawn."""
+    async def test_a_chart_a_writer_adds_to_a_finding_is_refused(self) -> None:
+        """The writer authors findings and recommendations; a chart it types is off-contract, never drawn."""
         bundle = _bundle()
         payload = copy.deepcopy(memo_payload(bundle))
-        _finding(payload)["chart"] = {
-            **_delta_chart(bundle),
-            "payload": {"rows": [{"metric": "total_ms", "a": 1.0, "b": 2.0}]},
-        }
+        _finding(payload)["chart"] = {"type": "delta_table", "cells": [alias_at(bundle, TOYHOST_NARROW)]}
 
-        with pytest.raises(SoundnessRefusal, match=r"payload\s+Extra inputs are not permitted"):
+        with pytest.raises(SoundnessRefusal, match=r"chart\s+Extra inputs are not permitted"):
             await _generate(bundle, payload)
-
-    async def test_the_charts_numbers_are_the_surfaces(self) -> None:
-        bundle = _bundle()
-        payload = copy.deepcopy(memo_payload(bundle))
-        _finding(payload)["chart"] = _delta_chart(bundle)
-        narrow, wide = cell_at(bundle, TOYHOST_NARROW), cell_at(bundle, TOYHOST_WIDE)
-
-        analysis, client = await _generate(bundle, payload)
-
-        assert len(client.calls) == 1
-        chart = analysis.resolutions[0].chart
-        assert chart is not None and chart.type == "delta_table"
-        (row,) = chart.payload["rows"]
-        means = {
-            cell_ref(c.variant_key, c.apparatus_class_id): _measure(c, "total_ms").mean for c in bundle.cell_measures
-        }
-        assert (row["a"], row["b"]) == (means[narrow], means[wide])
 
 
 class TestProseIsNotRefused:
@@ -598,15 +554,15 @@ class TestProseIsNotRefused:
     async def test_a_memo_whose_prose_the_removed_gates_refused_is_stored_in_one_call(self) -> None:
         bundle = _bundle()
         payload = copy.deepcopy(memo_payload(bundle))
-        # A headline naming a level, a rendered table in a finding's body, and a figure the bundle
+        # A title naming a level, a rendered table in a finding's body, and a figure the bundle
         # never computed: the headline gate, the rendered-table gate and the prose fact gate each
         # would refuse one of these.
-        payload["headline"] = f"{TOYHOST_NARROW}tok beats {TOYHOST_WIDE}tok on wall-clock by 99999 ms."
+        _finding(payload)["title"] = f"{TOYHOST_NARROW}tok beats {TOYHOST_WIDE}tok on wall-clock by 99999 ms."
         _finding(payload)["body"] = "| width | ms |\n|---|---|\n| 256tok | 920 |\n| 1024tok | 1420 |"
 
         analysis, client = await _generate(bundle, payload)
 
         assert len(client.calls) == 1
-        assert analysis.document.headline.startswith(f"{TOYHOST_NARROW}tok beats")
+        assert analysis.document.findings[0].title.startswith(f"{TOYHOST_NARROW}tok beats")
         assert "|---|" in analysis.document.findings[0].body
         assert analysis.document.findings[0].title == _finding(payload)["title"]

@@ -8,7 +8,7 @@
   "judged_artifact": null,
   "otel_trace": [],
   "result_id": "res-1",
-  "schema_minor": 0,
+  "schema_minor": 1,
   "schema_version": 15,
   "scope_id": "uni-1",
   "trace": [

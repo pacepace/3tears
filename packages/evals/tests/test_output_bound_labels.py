@@ -368,6 +368,7 @@ class TestTheBundleReadsLabelsOfWhatItsJudgeScored:
                 scale="ordinal",
                 score=3,
                 reason="read the same extraction elsewhere",
+                rated_withheld="given on a result outside this store",
                 output_fingerprint=key.output_fingerprint,
                 criterion_fingerprint=key.criterion_fingerprint,
             )

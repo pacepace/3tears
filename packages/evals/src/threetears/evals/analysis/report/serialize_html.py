@@ -1,29 +1,27 @@
-"""The report as HTML that reads without a script.
+"""The report as one self-contained HTML page that needs no script.
 
-**No script, ever, and nothing that runs.** The page is a document: every text node escaped, no
-``<script>``, no event-handler attribute, no external resource, no URL at all. A chart block is a
-``<figure>`` holding its title, the author's caption, its values as drawn as a ``<table>`` and its
-disclosures — so the page loses nothing a chart claims with scripting off — and it carries its
-:class:`~threetears.evals.analysis.viz.intent.ChartIntent` as JSON in a ``data-chart-intent`` attribute,
-which a host's own renderer reads to draw the picture beside or over the table. The package draws no
-picture here: how a chart looks is the host's.
+**No script, ever, and nothing that runs.** The page is a document: every text node escaped, no ``<script>``, no
+event-handler attribute, no external resource and no URL but a ``#`` link to a place on the page itself. Drill-down
+is ``<details>``; moving between the screens is ``#`` anchors. The two charts are inline SVG
+(:mod:`~threetears.evals.analysis.report.svg`), each beside a visually hidden table of the values it draws, so a
+screen reader and a page with styles off lose nothing.
 
-The author's words are Markdown; this renders the part of it a memo uses — paragraphs, bullet lists,
-``**bold**`` and ``code`` — over text that is escaped first, so nothing an author wrote can become
-markup.
+**The first screen is the page's ``<header>``**: the title line, the basis line (always line 2), the verdict line,
+and the scoreboard with its outcome bar. Everything a reader needs to decide whether to read on is there, written by
+code.
 
-Every word it prints is one the report serves — its title and byline, each block's section title and finding
-number, each cell's text — so the page says what the JSON says.
+The author's words are Markdown; this renders the part of it a memo uses — paragraphs, bullet lists, ``**bold**``
+and ``code`` — over text escaped first, so nothing an author wrote can become markup.
 """
 
 from __future__ import annotations
 
 import html
-import json
 import re
 from collections.abc import Sequence
 
 from threetears.evals.analysis.report.model import (
+    FIRST_SCREEN,
     SECTION_TITLES,
     ChartBlock,
     DisclosureBlock,
@@ -31,46 +29,66 @@ from threetears.evals.analysis.report.model import (
     Report,
     ReportBlock,
     TableBlock,
-    TableCell,
-    TableColumn,
     TextBlock,
+    TrialBlock,
 )
+from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg
 
-#: The page's whole stylesheet: system fonts, a readable measure, light and dark from the reader's setting.
-#:
-#: The page is bounded at 920px so a table or figure has room, but at a 16px body that is about a hundred
-#: characters a line, too long to read prose at; so every prose block (headings that carry a sentence,
-#: paragraphs, list items, a chart's caption, a disclosure, a caveat) is capped at 70 characters, and tables
-#: and figures keep the page's full width (#683).
+#: The page's stylesheet: the system's own fonts (named once, as variables — the page loads no font), a readable measure, light and dark from the reader's setting (and a
+#: ``data-theme`` a host's page may set), with the charts' own classes after it.
 _STYLE = """
-:root { color-scheme: light dark; --fg: #1d1d1f; --muted: #5f6368; --bg: #ffffff; --rule: #d9d9de; --note: #f4f4f6; }
+:root { color-scheme: light dark; --fg: #1d1d1f; --muted: #5f6368; --bg: #ffffff; --rule: #d9d9de; --note: #f4f4f6;
+  --verdict: #fff4e5; --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (prefers-color-scheme: dark) {
-  :root { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #3a3a42; --note: #222228; }
+  :root:not([data-theme="light"]) { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #3a3a42; --note: #222228;
+    --verdict: #2b2418; }
 }
-body { font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg);
-  margin: 0 auto; padding: 24px 16px 64px; max-width: 920px; }
-h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 4px; }
+:root[data-theme="dark"] { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #3a3a42; --note: #222228;
+  --verdict: #2b2418; }
+body { font: 16px/1.55 var(--font-sans); color: var(--fg); background: var(--bg);
+  margin: 0 auto; padding: 24px 16px 64px; max-width: 1040px; }
+h1 { font-size: 1.45rem; line-height: 1.3; margin: 0 0 6px; }
 h2 { font-size: 1.25rem; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
 h3 { font-size: 1.05rem; margin: 24px 0 6px; }
-.source, .facts, .order { color: var(--muted); font-size: 0.9rem; }
+header { border-bottom: 2px solid var(--rule); padding-bottom: 12px; }
+.basis { font-weight: 600; margin: 0 0 8px; }
+.verdict { background: var(--verdict); border-left: 4px solid var(--muted); padding: 10px 14px; margin: 8px 0 12px; }
+nav { font-size: 0.9rem; margin: 12px 0; }
+nav a { margin-right: 14px; }
+.facts, .order, .line { color: var(--muted); font-size: 0.9rem; }
 .disclosure, .caveat { background: var(--note); border-left: 3px solid var(--rule); padding: 8px 12px; margin: 10px 0; }
 .table-wrap { overflow-x: auto; margin: 8px 0; }
 table { border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
 th, td { border-bottom: 1px solid var(--rule); padding: 4px 10px; text-align: left; vertical-align: top; }
 th { font-weight: 600; }
 figure { margin: 16px 0; }
-figcaption { margin-bottom: 6px; }
-h1, h3, p, li, figcaption, .disclosure, .caveat { max-width: 70ch; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+figcaption { margin-bottom: 6px; font-weight: 600; }
+details { margin: 8px 0; }
+details > summary { cursor: pointer; }
+details.trial { border: 1px solid var(--rule); border-radius: 4px; padding: 6px 10px; }
+details.trial dl { margin: 8px 0 0; }
+details.trial dt { font-weight: 600; margin-top: 8px; }
+details.trial dd { margin: 2px 0 0 0; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--note); padding: 8px; margin: 4px 0;
+  font: 0.85rem/1.45 var(--font-mono); max-height: 28rem; overflow-y: auto; }
+p, li, .disclosure, .caveat { max-width: 75ch; }
+code { font-family: var(--font-mono); font-size: 0.9em; }
 """
 
 #: Inline Markdown a memo uses, applied to text already escaped — so its delimiters are the only markup it can make.
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _CODE = re.compile(r"`([^`]+)`")
 
+#: A trial id in a table cell, linked to its drill-down.
+_TRIAL_ID = re.compile(r"\bT\d+\b")
+
+#: A case as the cases table numbers it, whose number its row's anchor is made of.
+_CASE_NUMBER = re.compile(r"case (\d+)")
+
 
 def report_html(report: Report) -> str:
-    """Render a report as a standalone HTML page that needs no script.
+    """Render a report as one standalone HTML page that needs no script.
 
     Args:
         report: The report.
@@ -78,45 +96,50 @@ def report_html(report: Report) -> str:
     Returns:
         The page.
     """
-    title = report.title
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     parts = [
         "<!doctype html>",
         '<html lang="en">',
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>{_escape(_one_line(title))}</title>",
-        f"<style>{_STYLE}</style>",
+        f"<title>{_escape(_one_line(report.title))}</title>",
+        f"<style>{_STYLE}{SVG_STYLE}</style>",
         "</head>",
         "<body>",
         f'<article data-basis="{_escape(report.basis)}">',
-        f"<h1>{_inline(_one_line(title))}</h1>",
-        f'<p class="source">{_escape(_one_line(report.byline))}</p>',
+        "<header>",
+        f"<h1>{_escape(_one_line(report.title))}</h1>",
+        *(_block(block, index) for index, block in enumerate(head)),
+        "</header>",
     ]
-    for section in SECTION_TITLES:
-        blocks = [block for block in report.blocks if block.section == section]
-        if not blocks:
-            continue
-        parts.append(f'<section data-section="{section}">')
-        parts.append(f"<h2>{_escape(blocks[0].section_title)}</h2>")
-        parts.extend(_block(block) for block in blocks)
+    sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN]
+    present = [section for section in sections if any(block.section == section for block in report.blocks)]
+    parts.append(
+        "<nav>"
+        + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in present)
+        + "</nav>"
+    )
+    for section in present:
+        blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
+        parts.append(f'<section id="{section}">')
+        parts.append(f"<h2>{_escape(SECTION_TITLES[section])}</h2>")
+        parts.extend(_block(block, index) for index, block in blocks)
         parts.append("</section>")
     parts += ["</article>", "</body>", "</html>"]
     return "\n".join(parts) + "\n"
 
 
-def _block(block: ReportBlock) -> str:
-    """One block as HTML."""
+def _block(block: ReportBlock, index: int) -> str:
+    """One block as HTML; ``index`` makes a chart's ids unique on the page."""
     if isinstance(block, TextBlock):
         return _text(block)
     if isinstance(block, TableBlock):
-        return (
-            f'<div class="table-block" data-table="{_escape(block.name)}">'
-            f'<p><strong>{_escape(block.title)}</strong> <span class="order">({_escape(block.order)})</span></p>'
-            f"{_table(block)}</div>"
-        )
+        return _table(block)
     if isinstance(block, ChartBlock):
-        return _chart(block)
+        return _chart(block, f"chart-{index}")
+    if isinstance(block, TrialBlock):
+        return _trial(block)
     return _disclosure(block)
 
 
@@ -124,81 +147,146 @@ def _text(block: TextBlock) -> str:
     """An author's words, laid out by what they were written as, with code's facts beside them."""
     facts = _facts(block.facts)
     rests = (
-        f'<p class="facts">Rests on finding {", ".join(map(str, block.rests_on_numbers))}.</p>'
+        '<p class="facts">Rests on '
+        + ", ".join(f'<a href="#F{number}">F{number}</a>' for number in block.rests_on_numbers)
+        + ".</p>"
         if block.rests_on
         else ""
     )
-    if block.role == "headline":
-        # The title prints the headline's words; this block says what they stand on.
-        return f'<div data-role="headline"><p class="facts">The headline: {facts}.</p>{rests}</div>'
     if block.role == "finding_title":
-        heading = f"<h3>{block.finding_number}. {_inline(_one_line(block.body))}</h3>"
+        anchor = f' id="{_escape(block.anchor)}"' if block.anchor else ""
+        heading = f"<h3{anchor}>F{block.finding_number}. {_inline(_one_line(block.body))}</h3>"
         return heading + (f'<p class="facts">{facts}</p>' if facts else "")
     if block.role == "caveat":
-        return f'<div class="caveat"><strong>Caveat</strong> <span class="facts">({facts})</span> {_markdown(block.body)}</div>'
+        caveat = f'<strong>Caveat</strong> <span class="facts">({facts})</span>'
+        return f'<div class="caveat">{caveat} {_markdown(block.body)}</div>'
     if block.role in ("revisit_when", "next_step_why"):
         label = "Revisit when" if block.role == "revisit_when" else "Why"
         return f"<div><em>{label}:</em> {_markdown(block.body)}</div>"
     if block.role == "carried_forward":
         return f"<div><em>Carried forward:</em> {_markdown(block.body)}</div>"
-    lead = (
-        f"<p><strong>{_inline(_one_line(block.body))}</strong></p>" if block.role in ("decision", "next_step") else ""
-    )
-    body = "" if lead else _markdown(block.body)
+    if block.role in ("recommendation", "next_step"):
+        lead = "Recommendation: " if block.role == "recommendation" else "Next: "
+        body = f"<p><strong>{lead}{_inline(_one_line(block.body))}</strong></p>"
+    else:
+        body = _markdown(block.body)
     return (
-        f'<div data-role="{_escape(block.role)}">{lead}{body}'
+        f'<div data-role="{_escape(block.role)}">{body}'
         + (f'<p class="facts">{facts}</p>' if facts else "")
         + f"{rests}</div>"
     )
 
 
-def _chart(block: ChartBlock) -> str:
-    """A chart as a figure: its values as drawn, its words, and its intent for a host renderer to draw."""
-    if block.intent is None:
-        return (
-            f'<div class="disclosure" data-chart-error="{_escape(block.viz_type)}">A {_escape(block.viz_type)} chart is '
-            f"stored for this finding and cannot be drawn: {_escape(block.error)}</div>"
-        )
-    intent = block.intent
-    payload = json.dumps(intent.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
-    caption = f" {_inline(_one_line(intent.caption))}" if intent.caption.strip() else ""
-    notes = [line for line in (intent.footnote, *intent.disclosures) if line]
-    listed = "<ul>" + "".join(f"<li>{_escape(note)}</li>" for note in notes) + "</ul>" if notes else ""
-    table = _grid(block.columns, block.rows)
+def _table(block: TableBlock) -> str:
+    """A table block: its caption and order, its rows, or a line saying it has none; folded when it is drill-down."""
+    if not block.rows:
+        grid = '<p class="order">(no rows)</p>'
+    else:
+        grid = _grid(block)
+        if block.total_rows > len(block.rows):
+            grid += f'<p class="order">{len(block.rows)} of {block.total_rows} rows shown.</p>'
+    caption = f'<strong>{_escape(block.title)}</strong> <span class="order">({_escape(block.order)})</span>'
+    if block.details:
+        return f'<details data-table="{_escape(block.name)}"><summary>{caption}</summary>{grid}</details>'
+    return f'<div class="table-block" data-table="{_escape(block.name)}"><p>{caption}</p>{grid}</div>'
+
+
+def _grid(block: TableBlock) -> str:
+    """A table of served cells' text, scrolling inside its own box rather than widening the page."""
+    head = "".join(f'<th scope="col">{_escape(column.header)}</th>' for column in block.columns)
+    body = []
+    for row in block.rows:
+        cells = []
+        for column in block.columns:
+            text = _escape(row[column.key].text)
+            if block.name == "cases" and column.key == "trials":
+                text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
+            cells.append(f"<td>{text}</td>")
+        anchor = ""
+        # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
+        if block.name == "cases" and "case" in row and (number := _CASE_NUMBER.fullmatch(row["case"].text)):
+            anchor = f' id="case-{number.group(1)}"'
+        body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
+    return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
+def _chart(block: ChartBlock, chart_id: str) -> str:
+    """A chart as a figure: its title, the SVG, and a visually hidden table of every value it draws."""
+    headers, rows = block.values_table()
+    head = "".join(f'<th scope="col">{_escape(header)}</th>' for header in headers)
+    body = "".join("<tr>" + "".join(f"<td>{_escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
     return (
-        f'<figure class="chart" data-chart-type="{_escape(intent.type)}" data-chart-intent="{_escape(payload)}">'
-        f"<figcaption><strong>{_escape(intent.title)}</strong>{caption}</figcaption>"
-        f"{table}{listed}</figure>"
+        f'<figure class="chart" data-chart="{_escape(block.chart)}">'
+        f"<figcaption>{_escape(block.title)}</figcaption>"
+        f"{chart_svg(block, chart_id=chart_id)}"
+        f'<table class="visually-hidden"><caption>{_escape(block.title)}</caption><thead><tr>{head}</tr></thead>'
+        f"<tbody>{body}</tbody></table></figure>"
+    )
+
+
+def _trial(block: TrialBlock) -> str:
+    """One trial's drill-down: what it asked, what the judge saw and said, what failed, and where the record is."""
+    state = block.state if block.cause_words is None else f"{block.state}: {block.cause_words}"
+    summary = (
+        f"<strong>{_escape(block.trial_id)}</strong> · {_escape(block.case_label)} · {_escape(block.arm)} · "
+        f"repeat {block.repeat} · {_escape(state)}"
+    )
+    parts: list[str] = []
+    if block.first_input:
+        parts.append(f"<dt>What the case asked</dt><dd><pre>{_escape(block.first_input)}</pre></dd>")
+    if block.excerpt:
+        parts.append(f"<dt>What the judge saw (its last part)</dt><dd><pre>{_escape(block.excerpt)}</pre></dd>")
+    if block.failed_checks:
+        checks = "".join(
+            f"<li>{_escape(check.name)}: <code>{_escape(check.expression)}</code></li>" for check in block.failed_checks
+        )
+        parts.append(f"<dt>Failed checks</dt><dd><ul>{checks}</ul></dd>")
+    if block.judge:
+        judged = "".join(
+            f"<li><strong>{_escape(entry.dim)}</strong>: "
+            + ("could not tell" if entry.score is None else f"{entry.score} ({_escape(entry.scale)})")
+            + (f'<br><span class="facts">Asked: {_escape(entry.criterion)}</span>' if entry.criterion else "")
+            + (f"<br>{_escape(entry.reason)}" if entry.reason else "")
+            + "</li>"
+            for entry in block.judge
+        )
+        parts.append(f"<dt>What the judge said</dt><dd><ul>{judged}</ul></dd>")
+    if block.error_words:
+        parts.append(f"<dt>Recorded error</dt><dd><pre>{_escape(block.error_words)}</pre></dd>")
+    parts.append(f"<dt>Stored result</dt><dd><code>{_escape(block.result_id)}</code> (read it with result_get)</dd>")
+    opened = " open" if block.open else ""
+    return (
+        f'<details class="trial" id="{_escape(block.trial_id)}" data-state="{_escape(block.state)}"{opened}>'
+        f"<summary>{summary}</summary><dl>{''.join(parts)}</dl></details>"
     )
 
 
 def _disclosure(block: DisclosureBlock) -> str:
-    """Something code had to say, set apart from the author's words."""
+    """Something code had to say: the first screen's lines as lines, every other one set apart from the author's."""
+    if block.source == "basis":
+        return f'<p class="basis">{_escape(block.text)}</p>'
+    if block.source == "verdict":
+        return f'<p class="verdict"><strong>{_escape(block.text)}</strong></p>'
+    if block.section in FIRST_SCREEN:
+        return f'<p class="line" data-source="{_escape(block.source)}">{_escape(block.text)}</p>'
     return f'<div class="disclosure" data-source="{_escape(block.source)}">{_escape(block.text)}</div>'
 
 
-def _table(block: TableBlock) -> str:
-    """A table block's rows, or a line saying it has none."""
-    if not block.rows:
-        return '<p class="order">(no rows)</p>'
-    grid = _grid(block.columns, block.rows)
-    if block.total_rows > len(block.rows):
-        grid += f'<p class="order">{len(block.rows)} of {block.total_rows} rows shown.</p>'
-    return grid
-
-
-def _grid(columns: Sequence[TableColumn], rows: Sequence[dict[str, TableCell]]) -> str:
-    """A table of served cells' text, scrolling inside its own box rather than widening the page."""
-    head = "".join(f'<th scope="col">{_escape(column.header)}</th>' for column in columns)
-    body = "".join(
-        "<tr>" + "".join(f"<td>{_escape(row[column.key].text)}</td>" for column in columns) + "</tr>" for row in rows
-    )
-    return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
-
-
 def _facts(facts: Sequence[Fact]) -> str:
-    """Facts code states beside an author's words, escaped, on one line."""
-    return " · ".join(f"{_escape(fact.name)}: {_escape(fact.value)}" for fact in facts)
+    """Facts code states beside an author's words, escaped, on one line; a ``See`` fact's cases linked."""
+    rendered = []
+    for fact in facts:
+        if fact.name == "See":
+            links = ", ".join(
+                f'<a href="#case-{number.group(1)}">{_escape(case)}</a>'
+                if (number := _CASE_NUMBER.fullmatch(case))
+                else _escape(case)
+                for case in fact.value.split(", ")
+            )
+            rendered.append(f"See {links}")
+        else:
+            rendered.append(f"{_escape(fact.name)}: {_escape(fact.value)}")
+    return " · ".join(rendered)
 
 
 def _markdown(text: str) -> str:

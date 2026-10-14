@@ -10,10 +10,11 @@ imports none of them.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 
 from threetears.evals.analysis.agreement import (
     JudgeAgreement,
@@ -51,7 +52,8 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, ReadingKind, VariantIndexEntry
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
-from threetears.evals.kernel.declaration import CampaignDesign
+from threetears.evals.kernel.declaration import CampaignDesign, preregistered_questions
+from threetears.evals.kernel.result_condition import ExclusionCause
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
@@ -65,6 +67,7 @@ from threetears.evals.kernel.metrics import (
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import (
     ApparatusProvenance,
+    CaseSetRef,
     ClientRequestSettings,
     GoalCheckProof,
     RubricAxis,
@@ -877,8 +880,9 @@ class JudgedArm(EvalDocumentModel):
         default=0,
         ge=0,
         description=(
-            "Scores the judge gave to observations the harness had already faulted, left out of `n` and the "
-            "mean: a judge reading a broken transcript is not measuring the candidate."
+            "Scores the judge gave to observations excluded as a whole, left out of `n` and the mean: ones the "
+            "harness had already faulted (a judge reading a broken transcript is not measuring the candidate), "
+            "and ones another dimension's judge reply was cut off on (`truncated`); `exclusions` says which."
         ),
     )
     case_means: list[float] | None = Field(
@@ -1195,6 +1199,13 @@ class RunSummary(EvalDocumentModel):
     )
     measures: MeasureCollection = Field(
         default_factory=MeasureCollection, description="Scope-tagged measures over the run's results."
+    )
+    judge_shares_candidate_model: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Each model that both judged the run's answers and produced them, sorted: a model tends to rate its own "
+            "output higher, so a judged reading of this run's arm may favour it for that reason alone. Empty when none."
+        ),
     )
 
 
@@ -1835,7 +1846,20 @@ class ReadingScope(EvalDocumentModel):
     """
 
     questions_declared: bool = Field(
-        default=False, description="Whether the campaign declares at least one live question."
+        default=False,
+        description=(
+            "Whether the campaign declares at least one live question asked before its first run "
+            "(preregistered_questions): only such a question makes a reading confirmatory. A question declared "
+            "after the first run is in `post_hoc_questions`, not here."
+        ),
+    )
+    post_hoc_questions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The ids of live questions asked after the campaign's first member run was created, in declaration "
+            "order: read as exploratory, since a question asked once results existed may have been asked of them. "
+            "Their families are not built and their axes confirm nothing; the disclosure names them."
+        ),
     )
     exploratory_measures: list[str] = Field(
         default_factory=list,
@@ -1855,10 +1879,11 @@ class ReadingScope(EvalDocumentModel):
     disclosure: str | None = Field(
         default=None,
         description=(
-            "Set when the campaign declares no live question: the one sentence saying every finding is "
-            "exploratory — and, when it declared no design at all (`declared_design` null), that it is an "
-            "exploratory campaign whose design was inferred from the runs. None when questions are declared, "
-            "where the two lists above carry the label."
+            "Set when the campaign declares no live question asked before its first run: the one sentence saying "
+            "every finding is exploratory — naming the questions declared after it, when that is why, and, when it "
+            "declared no design at all (`declared_design` null), that it is an exploratory campaign whose design "
+            "was inferred from the runs. None when a question was declared before the first run, where the two "
+            "lists above carry the label."
         ),
     )
 
@@ -1878,23 +1903,231 @@ NO_DESIGN_EXPLORATORY = (
 )
 
 
-def exploratory_disclosure(declared: CampaignDesign | None) -> str | None:
-    """The one sentence saying a whole campaign is exploratory, or None when a live question makes it confirmatory.
+def post_hoc_disclosure(question_ids: Sequence[str]) -> str:
+    """The sentence a campaign gets when its only live questions were declared after its first run.
+
+    Args:
+        question_ids: The post-hoc questions' ids, in declaration order.
+
+    Returns:
+        The disclosure.
+    """
+    return (
+        f"This campaign's question(s) {', '.join(question_ids)} were declared after its first run, so every finding "
+        "it supports is exploratory: a question asked once results existed may have been asked of them, and a "
+        "pattern found here is a lead for a campaign that declares its question before it launches, not an answer."
+    )
+
+
+def exploratory_disclosure(declared: CampaignDesign | None, first_run_at: str | None = None) -> str | None:
+    """The one sentence saying a whole campaign is exploratory, or None when a question asked in time confirms it.
 
     One derivation for the bundle's ``reading_scope`` and the report built from a stored analysis, so the two
     cannot word it differently. An undeclared campaign (``declared is None``) is exploratory by definition — that
     is derived here, never stored as a flag of its own — and says so as such; a declared one with no live
-    question gets the no-question line.
+    question gets the no-question line, and one whose live questions were all declared after its first run
+    (:func:`~threetears.evals.kernel.declaration.preregistered_questions`) the post-hoc line naming them.
 
     Args:
         declared: The campaign's declaration, or None when it declared none.
+        first_run_at: When the campaign's first member run was created, or None where no run's time is to hand (a
+            report laid out from a stored analysis, which keeps none, or a campaign with no run yet), where every
+            live question reads as asked before.
 
     Returns:
-        The disclosure, or None when the campaign declares at least one live question.
+        The disclosure, or None when the campaign declares at least one live question asked before its first run.
     """
     if declared is None:
         return NO_DESIGN_EXPLORATORY
-    return None if declared.live_questions() else NO_QUESTION_EXPLORATORY
+    if preregistered_questions(declared, first_run_at):
+        return None
+    post_hoc = [question.id for question in declared.live_questions()]
+    return post_hoc_disclosure(post_hoc) if post_hoc else NO_QUESTION_EXPLORATORY
+
+
+class ArmExclusions(EvalDocumentModel):
+    """How many of one arm's trials were left out of its measures, and why: the per-arm count by cause.
+
+    One per cell (the arm, under one rig), over every member result the cell holds. A trial is excluded for one
+    cause (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`): ``infra`` (the harness faulted it),
+    ``truncated`` (a judge reply ran out of room at the cap it was sent, and was not re-bought) or
+    ``judge_cannot_tell`` (the judge could not score a capability dimension, which leaves the trial out of pass^k
+    and the composite only). A candidate's failure is not an exclusion: it fails, and is counted.
+    """
+
+    variant_key: str = Field(min_length=1, description="The arm's variant — its key into variant_index.")
+    apparatus_class_id: str = Field(min_length=1, description="The rig it was measured under.")
+    n_trials: int = Field(ge=0, description="Member results in the cell, excluded or not.")
+    n_usable: int = Field(ge=0, description="Of those, the ones no cause excluded: n_trials less every count below.")
+    by_cause: dict[ExclusionCause, int] = Field(
+        default_factory=dict,
+        description="Excluded trials per cause, only the causes that excluded one; empty when none was excluded.",
+    )
+    truncated_sent_caps: list[int] = Field(
+        default_factory=list,
+        description=(
+            "The output caps (`max_tokens`) the cut-off judge calls of the `truncated` trials were sent, distinct and "
+            "sorted, as each call's completion reported them. Empty when no trial was truncated, or none reported "
+            "what it was sent (`truncated_cap_unreported`)."
+        ),
+    )
+    truncated_cap_unreported: bool = Field(
+        default=False,
+        description=(
+            "Whether a cut-off judge call of a `truncated` trial did not report what it was sent, so its cap is "
+            "unknown: said as 'cap unreported', never filled from the run's asked settings."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _counts_add_up(self) -> ArmExclusions:
+        """Refuse counts that do not add up to the trials."""
+        if self.n_usable + sum(self.by_cause.values()) != self.n_trials:
+            raise ValueError(
+                f"arm {self.variant_key!r}: {self.n_usable} usable and {sum(self.by_cause.values())} excluded trials "
+                f"are not its {self.n_trials}"
+            )
+        return self
+
+
+class DifferentialExclusion(EvalDocumentModel):
+    """One arm losing more than the threshold share of its trials to one cause: the differential-exclusion flag.
+
+    The rigor flag a report shows before any comparison of the arm: past the threshold the arms are no longer read
+    over comparable trials, because the lost ones were lost for a reason that may differ by arm. A flag, not a
+    test: whether the shares differ beyond chance is not asked here.
+    """
+
+    variant_key: str = Field(min_length=1, description="The arm whose trials one cause took.")
+    apparatus_class_id: str = Field(min_length=1, description="The rig it was measured under.")
+    cause: ExclusionCause = Field(description="The cause.")
+    n_excluded: int = Field(ge=1, description="The arm's trials that cause excluded.")
+    n_trials: int = Field(ge=1, description="The arm's trials.")
+    share: float = Field(gt=0.0, le=1.0, description="n_excluded / n_trials.")
+    threshold: float = Field(description="The share it is above: DIFFERENTIAL_EXCLUSION_SHARE.")
+    other_arms: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Every other arm under the same rig, by variant key: the share of ITS trials the same cause excluded "
+            "(0.0 when it excluded none), so a reader sees whether the loss is the arm's or the whole campaign's."
+        ),
+    )
+
+
+#: Why a trial was lost to the test setup, as :func:`~threetears.evals.kernel.result_condition.trial_exclusion` names
+#: it: ``infra`` (the harness faulted it), ``judge_cannot_tell`` (the judge said it could not score a dimension the
+#: trial needs), ``truncated`` (the judge's reply was cut off at its output cap). A string rather than the kernel's
+#: ``Literal`` so a cause a newer build names reads as itself rather than failing the bundle.
+LossCause = str
+
+#: Why a trial failed: the candidate's own failure (:data:`~threetears.evals.kernel.CandidateFailureCause`:
+#: ``model_failed``, ``turn_budget``, ``output_cap``), a check it failed (``check``: a goal check, or a pass/fail
+#: scorer), or a judged dimension scored under the bar (``judged``).
+FailCause = Literal["model_failed", "turn_budget", "output_cap", "check", "judged"]
+
+#: How a trial ended: passed, failed (the candidate's failure, counted against it) or lost (the test setup failed,
+#: and it counts for nothing).
+TrialState = Literal["passed", "failed", "lost"]
+
+
+class TrialCheck(EvalDocumentModel):
+    """A check a trial failed: its reader name, and the expression it evaluates."""
+
+    name: str = Field(min_length=1, description="The check as a reader names it.")
+    expression: str = Field(min_length=1, description="What it evaluates, as written.")
+
+
+class TrialJudgement(EvalDocumentModel):
+    """What the judge said of one dimension on one trial."""
+
+    dim: str = Field(min_length=1, description="The judged dimension, by its reader name.")
+    criterion: str | None = Field(
+        default=None, description="The rubric criterion the judge was asked; None when the template is not to hand."
+    )
+    score: int | None = Field(default=None, description="The score, on the dimension's scale; None for can't tell.")
+    scale: str = Field(min_length=1, description="`ordinal` (1 to 5) or `pass_fail` (1 pass, 0 fail).")
+    reason: str = Field(description="The judge's reasoning, or why it could not tell; capped.")
+
+
+class TrialRow(EvalDocumentModel):
+    """One trial — one case run once on one arm — and how it ended, with what a reader needs to see why."""
+
+    trial_id: str = Field(min_length=1, description="The trial, as the report numbers it (`T1`, `T2`, ...).")
+    case_id: str = Field(min_length=1, description="The test case.")
+    case_label: str = Field(
+        min_length=1,
+        description=(
+            "The case as a reader names it: its stratum, then the first 80 characters of the first input its first "
+            "trial's transcript recorded, else its id."
+        ),
+    )
+    stratum: str | None = Field(default=None, description="The case's stratum; None when it declares none.")
+    arm: str = Field(min_length=1, description="The arm's variant key.")
+    repeat: int = Field(ge=1, description="Which repeat of the case this is.")
+    state: TrialState = Field(description="passed, failed or lost.")
+    cause: str | None = Field(
+        default=None,
+        description="Why it failed (`FailCause`) or was lost (`LossCause`); None for a passed trial.",
+    )
+    failed_checks: list[TrialCheck] = Field(default_factory=list, description="Each check it failed.")
+    judged: dict[str, int] = Field(default_factory=dict, description="Each judged dimension's score, by reader name.")
+    judge: list[TrialJudgement] = Field(
+        default_factory=list, description="What the judge said, dimension by dimension."
+    )
+    first_input: str = Field(default="", description="What the case asked, as the judge was shown it; capped.")
+    excerpt: str = Field(
+        default="",
+        description=(
+            "The tail of what the judge was handed, at most the cap, led by `[… N characters earlier]` when cut; "
+            "empty when nothing was rendered for a judge."
+        ),
+    )
+    error_words: str | None = Field(
+        default=None, description="The recorded error, as the run wrote it, for a lost or failed trial; capped."
+    )
+    result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
+
+
+class ArmScoreboard(EvalDocumentModel):
+    """One arm's census: how many trials it ran, lost, could use, passed and failed, and what it cost."""
+
+    variant_key: str = Field(min_length=1, description="The arm.")
+    ran: int = Field(ge=0, description="Trials run.")
+    lost: dict[str, int] = Field(default_factory=dict, description="Trials lost to the test setup, by cause.")
+    usable: int = Field(ge=0, description="Trials not lost: `ran` less every lost one.")
+    passed: int = Field(ge=0, description="Usable trials that passed.")
+    failed: dict[str, int] = Field(default_factory=dict, description="Usable trials that failed, by cause.")
+    cases: int = Field(ge=0, description="Distinct cases run.")
+    usable_cases: int = Field(ge=0, description="Distinct cases with at least one usable trial.")
+    no_criterion: int = Field(
+        default=0,
+        ge=0,
+        description="Passed trials that carried no pass criterion (no check, scorer or judge): nothing could fail them.",
+    )
+    test_cost_usd: float | None = Field(
+        default=None, description="What this arm's trials cost, every role; None when no result was priced."
+    )
+    n_cost_unpriced: int = Field(default=0, ge=0, description="Trials whose spend went unpriced, so not in the cost.")
+    reply_cost_usd: float | None = Field(
+        default=None,
+        description="The candidate's spend per trial that took a turn — what the model costs per reply; None unmeasured.",
+    )
+
+    @model_validator(mode="after")
+    def _the_census_adds_up(self) -> ArmScoreboard:
+        """Refuse a census whose parts do not sum to its whole.
+
+        Raises:
+            ValueError: lost and usable do not make ran, or passed and failed do not make usable.
+        """
+        lost = sum(self.lost.values())
+        if lost + self.usable != self.ran:
+            raise ValueError(f"arm {self.variant_key}: {lost} lost + {self.usable} usable != {self.ran} ran")
+        if self.passed + sum(self.failed.values()) != self.usable:
+            raise ValueError(
+                f"arm {self.variant_key}: {self.passed} passed + {sum(self.failed.values())} failed != {self.usable} usable"
+            )
+        return self
 
 
 class AnalysisContextBundle(EvalDocumentModel):
@@ -1939,9 +2172,15 @@ class AnalysisContextBundle(EvalDocumentModel):
     # `RealizedDesign.earlier_control` and `FrontierPoint.earlier_control` at 51, then the earlier control's
     # disclosure saying a marginal row counts its cells at 52. 53: `judge_sent_settings` and `simulator_sent_settings` join the apparatus partition, a judge
     # change level and every judge-identity row carry the settings a judge was sent with, and
-    # `request_settings_disclosure` is fingerprinted.
+    # `request_settings_disclosure` is fingerprinted. 54: `exclusions` (each arm's excluded trials by cause, a cut-off
+    # judge reply counted as `truncated` with the cap it was sent) and `differential_exclusions`; a question declared
+    # after the campaign's first run no longer makes it confirmatory (`reading_scope.post_hoc_questions`,
+    # `question_declared`), which moves the families, the reading scope and the verdict order over unchanged runs; and
+    # the trials and their census — `scoreboard` (each arm's ran, lost, usable, passed and failed), `trials` (one row
+    # per trial, capped) and `trials_omitted`, `case_sets`, `design_frozen_at` and each run summary's
+    # `judge_shares_candidate_model` — added; `package_version` is carried and left out of the fingerprint.
     schema_version: int = Field(
-        default=53, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=54, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2305,12 +2544,68 @@ class AnalysisContextBundle(EvalDocumentModel):
             "run margin was withheld."
         ),
     )
+    scoreboard: list[ArmScoreboard] = Field(
+        default_factory=list,
+        description=(
+            "Each arm's census, in the order of `variant_index`: trials ran, lost to the test setup by cause, usable, "
+            "passed and failed by cause, the cases run and the cases with a usable trial, and what the arm cost. A "
+            "count, never a score: `usable` is how many trials could be read, not how good they were."
+        ),
+    )
+    trials: list[TrialRow] = Field(
+        default_factory=list,
+        description=(
+            "One row per trial — one case run once on one arm — with how it ended and why: its failed checks, the "
+            "judge's scores and reasons, what the case asked, the tail of what the judge was handed and the recorded "
+            "error, each capped. Ordered by case, then arm, then repeat; capped, lost and failed trials kept first, "
+            "and `trials_omitted` counts the rest."
+        ),
+    )
+    trials_omitted: int = Field(
+        default=0, ge=0, description="Trials beyond the cap, left out of `trials`; the scoreboard counts every one."
+    )
+    case_sets: list[CaseSetRef] = Field(
+        default_factory=list,
+        description="The named, versioned case sets the member runs were launched against, distinct and sorted.",
+    )
+    design_frozen_at: str | None = Field(
+        default=None,
+        description=(
+            "When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs "
+            "included, after which a design edit is refused and a question asked confirms nothing "
+            "(`reading_scope.post_hoc_questions`). None when the campaign holds no run yet."
+        ),
+    )
+    package_version: str | None = Field(
+        default=None,
+        description=(
+            "The 3tears-evals version that assembled the bundle; None when the build carries no distribution metadata "
+            "(a source tree on the path). Left out of `fingerprint()`: a build is not evidence."
+        ),
+    )
     reading_scope: ReadingScope = Field(
         default_factory=ReadingScope,
         description=(
             "Which readings no declared question asked about: exploratory, reportable as leads and never as "
-            "confirmed answers. Where no question is declared, or no design, one sentence says every finding is "
-            "exploratory."
+            "confirmed answers. Where no question is declared, or no design, or every question was declared after "
+            "the first run, one sentence says every finding is exploratory."
+        ),
+    )
+    exclusions: list[ArmExclusions] = Field(
+        default_factory=list,
+        description=(
+            "Per arm (cell), in coordinate order: how many of its trials were left out of its measures, by cause — "
+            "`infra` (the harness faulted it), `truncated` (a judge reply cut off at the cap it was sent, named in "
+            "`truncated_sent_caps`), `judge_cannot_tell` — so a shrunken n says why, arm by arm. A `truncated` "
+            "trial is also in every cell read's `n_infra_excluded`, which counts what the measures left out."
+        ),
+    )
+    differential_exclusions: list[DifferentialExclusion] = Field(
+        default_factory=list,
+        description=(
+            "Every (arm, cause) where one cause took more than DIFFERENTIAL_EXCLUSION_SHARE (10%) of the arm's "
+            "trials, with every other arm's share of the same cause beside it. Non-empty is the flag: the arms are "
+            "not compared on the same trials, which a reading of any comparison involving that arm states first."
         ),
     )
     verdict_order: VerdictOrder = Field(
@@ -2640,6 +2935,28 @@ class AnalysisContextBundle(EvalDocumentModel):
         ),
     )
 
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "Whether the campaign declared a live question before its first run (`reading_scope.questions_declared`): "
+            "the one condition under which any of its readings is confirmatory."
+        )
+    )
+    @property
+    def question_declared(self) -> bool:
+        """Whether a question was declared before the evidence existed, as the reading scope derived it."""
+        return self.reading_scope.questions_declared
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "The ids of live questions declared after the campaign's first run (`reading_scope.post_hoc_questions`): "
+            "read as exploratory, whatever they ask."
+        )
+    )
+    @property
+    def post_hoc_questions(self) -> list[str]:
+        """The questions declared once results existed, as the reading scope derived them."""
+        return list(self.reading_scope.post_hoc_questions)
+
     def fingerprint(self) -> str:
         """Return the sha256 of the bundle's canonical JSON — a stable A/B key.
 
@@ -2661,7 +2978,26 @@ class AnalysisContextBundle(EvalDocumentModel):
         Returns:
             A 64-character lowercase hex digest.
         """
-        return canonical_digest(self.to_dict())
+        return evidence_digest(self.to_dict())
+
+
+#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, not what it read.
+_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version"})
+
+
+def evidence_digest(document: Mapping[str, Any]) -> str:
+    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``).
+
+    The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
+    rather than the model — a frozen reporter case checks the bundle it holds against the fingerprint it recorded.
+
+    Args:
+        document: A bundle as its stored dict.
+
+    Returns:
+        A 64-character lowercase hex digest.
+    """
+    return canonical_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE})
 
 
 class BundleInspection(EvalDocumentModel):
@@ -2949,4 +3285,5 @@ __all__ = [
     "UNVERIFIED_FOLD_PREFIX",
     "VerdictOrder",
     "WholeSwing",
+    "evidence_digest",
 ]

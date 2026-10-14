@@ -47,7 +47,12 @@ another part's, and a sibling cell sees all of it.
   before it is made. **A run whose paid calls are all reserved never spends past its cap**, however many cells
   run at once. The shipped adapter's resend of a request a provider refused for a setting it carried is not another
   attempt: the refused request generated nothing and is taken to be unbilled (an assumption no provider documents),
-  so its `price_ceiling` prices one attempt per request. The engine reserves its own calls this way: every simulator call (a conversation's
+  so its `price_ceiling` prices one attempt per request. **It is not free in time.** A refused send can take up to
+  one request timeout before it is refused, and a call makes at most `MAX_RESENDS` of them
+  (`threetears.evals.negotiation`, 4) before the one that is served, so an outer wall-clock ceiling around one call
+  (a host's own, or a cell timeout sized for a number of calls) allows `MAX_RESENDS` × the request timeout past the
+  served request's own: up to `MAX_RESENDS + 1` timeouts per call. A host's own client built on `negotiate` is
+  bounded the same way. The engine reserves its own calls this way: every simulator call (a conversation's
   `drive_conversation`), every judge call in a cell's judge phase, the judge kind's call and the reporter kind's
   generator calls. A host's kind reserves its candidate's calls through `CellSink.reserve`, or wraps the client
   in `CappedCompletion`.

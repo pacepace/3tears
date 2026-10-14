@@ -40,9 +40,9 @@ recorded as witnessed rather than left to chance. See [world model](world-model.
 
 **Code checks facts, a judge assesses judgment, and people check the judge; the three never swap.**
 Code never grades a model's prose: a deterministic gate over free text never converges, because each
-generation finds a phrasing it does not parse. A headline and each summary bullet name the findings they rest on,
-so their standing is code's and a null claim there is checked against those findings structurally; only whether a
-sentence uses one of a few null phrasings is read off its words
+generation finds a phrasing it does not parse. The verdict and every count on a report are code's, a recommendation
+names the findings it rests on, and a null claim in a finding's title is checked against that finding's evidence
+structurally; only whether a title uses one of a few null phrasings is read off its words
 ([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
 A judge never grades a count or order code can check, and a prompt never coaches toward a grader's words, which
 measures obedience.

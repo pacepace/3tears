@@ -260,11 +260,12 @@ One trial's record (`EvalResult`): one case, one model, one repeat, with its goa
 scores, cost and what the kind reported. Its turn-by-turn trace is stored beside it (`EvalTrace`).
 
 #### Evidence core
-The stored documents a later release always reads (`CORE_DOC_TYPES`): cases, runs, results and their traces,
-calibration ratings, out-of-run spend, case sets, the templates, judge configs and rubric dims they name,
-campaigns, sweeps, analysis attempts, generation slots, and the records of every other job (launches, second
-judge passes, judge temperature comparisons, host action jobs). An older one is upgraded as it is read, and one a
-newer minor wrote (an additive change) is read with the fields this build does not know kept and written back.
+The stored documents a run produced or binds (`CORE_DOC_TYPES`): runs, results and their traces, out-of-run
+spend, campaigns, sweeps, analysis attempts, generation slots, and the records of every other job (launches, second
+judge passes, judge temperature comparisons, host action jobs). Read from the core baseline on: an older one is
+upgraded as it is read, and one a newer minor wrote (an additive change) is read with the fields this build does
+not know kept and written back. A core baseline reset deletes it (`reset_core`). What people author is not in it:
+see [durable](#kept-durable-and-regenerable).
 Analyses, insights, judge
 profiles and cassettes are outside it: a release that changes their format refuses them, and they are made again
 ([what is kept](adopting-a-host.md#stored-data-what-is-kept)). A cassette's format has a version of its own, so a
@@ -323,9 +324,11 @@ A model the engine asks to score a result against a rubric, reading only the evi
 #### Judged dimension (rubric dimension)
 One subjective quality a judge scores (`RubricDim`): a name, a description and a scoring guide. *Example:*
 "does the auto-reply sound polite", for a variant that also drafts a reply. A **judge config**
-(`JudgeConfig`) is a versioned prompt, model and settings for one dimension. Every judge call is requested at
-temperature 0 (`DEFAULT_JUDGE_TEMPERATURE`) unless a config states another, whether or not the dimension has a
-config; a model that refuses a temperature is sent none, and each score records what was sent.
+(`JudgeConfig`) is a versioned prompt, model and settings for one dimension; name its model by a concrete model id,
+never an alias, since the served model is part of the judge's calibration key and an alias re-pointed under the same
+name merges two judges' evidence. Every judge call is requested at temperature 0 (`DEFAULT_JUDGE_TEMPERATURE`)
+unless a config states another, whether or not the dimension has a config; a model that refuses a temperature is sent
+none, and each score records what was sent.
 
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
@@ -404,13 +407,21 @@ written: the bundle is the whole context. The CLI's `bundle` prints it inside a 
 `bundle.to_json()`.
 
 #### Analysis
-Findings a model wrote over a bundle (`EvalAnalysis`): a headline, findings, decisions and next steps, with
-every number in its prose replaced by the value code read. Optional, and it costs money.
+Findings a model wrote over a bundle (`EvalAnalysis`): findings, recommendations and next steps, with every number
+in its prose replaced by the value code read, stored with the bundle it was written over. Optional, and it costs
+money; the verdict and every count on the report are code's either way.
 
 #### Report
-The one document a campaign is read through (`Report`): ordered text, table, chart and disclosure blocks,
-serialised as Markdown, HTML or canonical JSON. Without an analysis it is a **code-only report**
-(`basis="code_only"`): the evidence, with no author's words.
+The one page a campaign is read through (`Report`), verdict first: a basis line, code's verdict line and each arm's
+scoreboard, then the memo and the contrasts, the cases, one drill-down per trial, what was not tested and the methods
+([Reading reports](reading-reports.md)). `Report.write(dir)` writes it as one scriptless HTML page, as Markdown, and
+the bundle it was computed from. Without an analysis it is a **code-only report** (`basis="code_only"`): the
+evidence, with no author's words.
+
+#### Trial
+One case run once on one arm — one stored result. It is passed, failed (the candidate's failure: its model, its
+budget, a check or a judged dimension) or lost (the test setup's: the harness faulted, the judge could not tell, or
+the judge's reply was cut off at its cap). A lost trial says nothing about the candidate.
 
 #### Decision surface
 The campaign's measured analysis cells (one `CellFacts` each) and the bars they were held to, frozen when
@@ -433,8 +444,11 @@ The words [Adopting the engine](adopting-a-host.md) uses for what a host author 
 A standard one measure must reach for one behavior (`Bar`, registered on the profile's `BarRegistry`, with
 `PassThreshold` for the 1–5 level an attempt must reach to pass). It is decided on a cell's interval, never its
 mean: `cleared`, `missed` or `undecided`. A campaign's design may declare a bar tighter than the registered one,
-never looser, and the frontier takes one as `bar=`. *Example:* routing accuracy of at least 0.9 for the `routing`
-behavior. See [Reading reports: Methods](reading-reports.md#methods).
+never looser, and the frontier takes one as `bar=`. Either kind of bar can cover judged behaviour: a campaign's
+`BarOverride.measure_id` may name a rubric dimension of its template, and a registered `Bar` with `judged=True` names
+one that each campaign of the behavior resolves against its own template, refused at authoring when the template does
+not declare it. *Example:* routing accuracy of at least 0.9 for the `routing` behavior. See
+[Reading reports: Methods](reading-reports.md#methods).
 
 #### Conformance kit
 A set of checks you run in your own test suite against what you implemented, so a gap fails there and not in a
@@ -461,9 +475,12 @@ written into, the lever gets no row or confound of its own and the arm is named 
 could test is disclosed as `unverified_fold:<lever>`. See [the host](adopting-a-host.md#the-host) and
 [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating).
 
-#### Kept and regenerable
+#### Kept, durable and regenerable
 Every stored type's **lifecycle** (`DOC_TYPE_FACTS`). A **kept** type is the [evidence core](#evidence-core):
-every later release reads it, upgrading it as it is read. A **regenerable** type (analyses, insights, judge
+read from the core baseline on, and deleted by a core baseline reset. A **durable** type is what people author
+(`DURABLE_DOC_TYPES`: templates, rubric dims, judge configs and their tombstones, case sets, test cases, calibration
+ratings): read forever in a version space of its own, changed only additively or through an upgrader, and never
+touched by a core baseline reset. A **regenerable** type (analyses, insights, judge
 profiles, cassettes) is refused after its format changes and made again: an analysis, insight or profile over the
 kept runs, a cassette by capturing it anew. A store can route each lifecycle to its own backend
 (`DocTypeRoute(by="lifecycle")`). See [Stored data: what is kept](adopting-a-host.md#stored-data-what-is-kept).
@@ -475,8 +492,7 @@ lapses before it ends reads `lost` everywhere. See [Operations and jobs](agents-
 
 #### Seam
 A place the engine calls code your host supplies, through a protocol the engine declares: the kind seam
-(`prepare` and `invoke`, under a `KindContract`), the cassette seams a kind wires (`CassetteSeams`), the chart
-renderer behind `ChartRenderer`. See [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating) and
+(`prepare` and `invoke`, under a `KindContract`), the cassette seams a kind wires (`CassetteSeams`). See [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating) and
 [cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools).
 
 #### Sink and reservation

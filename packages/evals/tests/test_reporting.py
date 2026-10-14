@@ -7995,38 +7995,6 @@ class TestSignificanceFormatting:
         assert f"{UNPAIRED_EFFECT_LABEL}=4.02" in unpaired
         assert f"{PAIRED_EFFECT_LABEL}=" not in unpaired
 
-    def test_the_single_renderer_serves_the_compiled_chart_too(self):
-        """The rule had three server-side homes and drifted in two of them.
-
-        Pinned through the ``delta_table`` chart's own read so that reintroducing
-        a private copy there fails here rather than silently answering
-        differently from the compare table about the same row.
-        """
-        from threetears.evals.analysis.significance import format_significance
-        from threetears.evals.vega.compiler import compile_chart
-        from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload
-
-        def effect_reads(row: DeltaRow) -> set[str]:
-            """Every place the compiled chart states the row's effect: its values table, its intent data and its marks."""
-            chart = compile_chart("delta_table", DeltaTablePayload(rows=[row]).model_dump(mode="json"))
-            return {
-                chart.rows[0]["effect"],
-                *(datum["effect"] for datum in chart.intent.data),
-                *(datum["effect"] for datum in chart.spec["data"]["values"]),
-            }
-
-        row = DeltaRow(metric="cost_usd", a=0.011, b=0.019, d_z=1.2, p=0.004, n=24, significant=True, paired=True)
-
-        assert effect_reads(row) == {format_significance(significant=True, paired=True, p=0.004, effect=1.2, n=24)}
-
-        # The row's own pairing, not a constant the compiler supplies: the same
-        # row with the field left unstated must reach the renderer as unpaired.
-        unstated = DeltaRow(metric="cost_usd", a=0.011, b=0.019, d_z=1.2, p=0.004, n=24, significant=True)
-
-        assert effect_reads(unstated) == {
-            format_significance(significant=True, paired=False, p=0.004, effect=1.2, n=24)
-        }
-
     def test_the_disclosure_names_the_paired_test_and_its_threshold(self):
         from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME

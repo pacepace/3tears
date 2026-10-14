@@ -336,7 +336,7 @@ class TestATwoArmSweepFoldsButIsMarkedUnverified:
 
     def test_the_mark_reaches_the_code_only_report(self) -> None:
         bundle = self._sweep()
-        report = build_code_only_report(bundle, measures=_profile().measures, assembled_at="2026-03-15T00:00:00+00:00")
+        report = build_code_only_report(bundle, assembled_at="2026-03-15T00:00:00+00:00")
         disclosures = [
             block.text
             for block in report.blocks
@@ -364,9 +364,7 @@ class TestTwoArmsAtOneLevelVerifyTheFold:
         assert _UNVERIFIED_PARAMS not in bundle.confound_catalog
 
     def test_the_code_only_report_carries_no_caveat(self) -> None:
-        report = build_code_only_report(
-            self._sweep(), measures=_profile().measures, assembled_at="2026-03-15T00:00:00+00:00"
-        )
+        report = build_code_only_report(self._sweep(), assembled_at="2026-03-15T00:00:00+00:00")
         assert not [
             block for block in report.blocks if isinstance(block, DisclosureBlock) and "unverified" in block.text
         ]
@@ -471,9 +469,7 @@ class TestAResidualReaderChecksAFoldWithOneArmPerLevel:
 
     def test_a_verified_fold_carries_no_caveat_in_the_code_only_report(self) -> None:
         bundle = self._sweep(_HIGH)
-        report = build_code_only_report(
-            bundle, measures=_profile(_ReadOverlays).measures, assembled_at="2026-10-11T00:00:00+00:00"
-        )
+        report = build_code_only_report(bundle, assembled_at="2026-10-11T00:00:00+00:00")
         assert not [
             block for block in report.blocks if isinstance(block, DisclosureBlock) and "unverified" in block.text
         ]

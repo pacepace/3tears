@@ -532,7 +532,7 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 
 #: The host contract: every public name a host binds to, by ``root.name``. Each moves only with a
 #: ``MIGRATIONS.toml`` record and a deprecation cycle (the old name keeps working beside the new one for one minor
-#: release), from 0.67.0 on. Every other public name is ``closure``.
+#: release), from 0.68.0 on. Every other public name is ``closure``.
 #:
 #: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/tutorial.md``, the
 #: README and ``examples/`` (every name they import is here, which ``tests/test_api_tiers.py`` holds), and the
@@ -660,16 +660,20 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The version constants a host checks a store or a stored document against, one per version space, and the
         # installed build's own version, which a host records beside what it stores since nothing stored carries it.
         "threetears.evals.__version__",
-        # The public roots a consumer imports from, and which of them need an extra: what its own import gate reads.
+        # The public roots a consumer imports from, and which of them need an extra and its modules: what its own import
+        # gate reads.
         "threetears.evals.PUBLIC_ROOTS",
         "threetears.evals.ROOT_EXTRAS",
+        "threetears.evals.RootExtra",
         "threetears.evals.schema.CORE_SCHEMA_VERSION",
         "threetears.evals.schema.CORE_SCHEMA_MINOR",
         "threetears.evals.schema.CORE_BASELINE_VERSION",
+        "threetears.evals.schema.DURABLE_SCHEMA_VERSION",
+        "threetears.evals.schema.DURABLE_SCHEMA_MINOR",
+        "threetears.evals.schema.DURABLE_BASELINE_VERSION",
         "threetears.evals.schema.REGENERABLE_SCHEMA_VERSION",
         "threetears.evals.schema.CASSETTE_SCHEMA_VERSION",
         "threetears.evals.kernel.IDENTITY_VERSION",
-        "threetears.evals.analysis.REPORT_VERSION",
         "threetears.evals.analysis.CELL_MODEL_VERSION",
         # The closed vocabularies a host writes and passes: each open stored vocabulary's values this build knows.
         "threetears.evals.schema.KnownUsageRole",
@@ -709,6 +713,7 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.quick.CALLABLE_KIND",
         "threetears.evals.quick.Answer",
         "threetears.evals.quick.Judge",
+        "threetears.evals.quick.JudgeExample",
         "threetears.evals.quick.Guardrail",
         "threetears.evals.quick.CandidateTools",
         "threetears.evals.quick.World",
@@ -734,12 +739,13 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.format_signed",
         "threetears.evals.analysis.ChartBlock",
         "threetears.evals.kernel.EvalAnalysis",
-        "threetears.evals.vega.VegaRenderer",
         # The negotiation every completion client shares, the adapter's and a host's own: what a client of its own
         # calls to never fail a request for a setting a model lacks (the host guide's own-client section), the
         # values it reads and passes, the readers it hands a failure to, and the check its suite runs over it.
         "threetears.evals.negotiation.negotiate",
         "threetears.evals.negotiation.Negotiated",
+        # The resend bound a host's wall-clock ceiling around a call is sized from.
+        "threetears.evals.negotiation.MAX_RESENDS",
         "threetears.evals.negotiation.LearnedSettings",
         "threetears.evals.negotiation.WireSettings",
         "threetears.evals.negotiation.SettingFacts",

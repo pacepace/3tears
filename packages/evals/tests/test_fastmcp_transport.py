@@ -11,6 +11,9 @@ own prefix), and the caller resolved per call — sync or async.
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -81,9 +84,8 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         )
         assert not is_error and document is not None and document["format"] == "markdown"
         assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        assert report.startswith(
-            "# chunk width sweep: the wider chunk costs half again as much wall-clock per document."
-        )
+        title = report.splitlines()[0]
+        assert title.startswith("# chunk width sweep · ") and "analysis by" in title
 
 
 async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
@@ -215,3 +217,30 @@ async def test_a_model_calling_actions_refusal_in_the_call_reaches_the_client_as
         )
     assert is_error and structured == {"refusal": {"kind": "not_found", "status": 404}}
     assert "no-such-run" in text
+
+
+def test_importing_the_transport_leaves_fastmcps_server_stack_unloaded() -> None:
+    """``FastMCP`` is an annotation here, so importing the transport does not load the server stack it lives in.
+
+    That stack (its context, sampling, HTTP app and event store) cost about as long again as the tool classes this
+    module subclasses, and an annotation-only import of it ran at every import of the transport. A fresh interpreter,
+    since this test process already loaded it.
+    """
+    probe = (
+        "import sys\n"
+        "import threetears.evals.transports.fastmcp\n"
+        "assert 'fastmcp.tools' in sys.modules, 'non-vacuity: the transport loads the tool classes it subclasses'\n"
+        "print('fastmcp.server.server' in sys.modules)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        # A guard against a hung interpreter, not a speed bound: the transport imports the whole engine.
+        timeout=300,
+        cwd=Path(__file__).resolve().parents[3],
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "False", "importing the transport loaded fastmcp.server.server"

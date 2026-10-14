@@ -22,7 +22,7 @@ anywhere in them. Each prints which way it ran, first:
   `rung_zero.py` calls no model either, and prints no such line.
 
 The examples need the `[models]` extra, which brings in `3tears-models` and the Anthropic SDK through it. Outside a
-checkout that is `pip install "3tears-evals[models]"`, which resolves only once 0.67.0 is on PyPI. Until then, use a
+checkout that is `pip install "3tears-evals[models]"`, which resolves only once 0.68.0 is on PyPI. Until then, use a
 checkout of this repo and `uv sync --extra models` at its root.
 
 **In a checkout of this repo**, from the repo root, after `uv sync --extra models`:
@@ -43,7 +43,7 @@ Git ignores `.env` files, so the key stays out of commits. Then pass the file to
 uv run --env-file packages/evals/examples/.env python packages/evals/examples/llm_judge.py
 ```
 
-**Outside a checkout** (once 0.67.0 is on PyPI and you installed `3tears-evals[models]` with pip): the examples are
+**Outside a checkout** (once 0.68.0 is on PyPI and you installed `3tears-evals[models]` with pip): the examples are
 not part of the installed package, so fetch this whole directory from the repository, at the tag you installed (the
 [README's install step](../README.md#first-result-in-10-minutes) names it). This fetches only the examples:
 
@@ -124,7 +124,7 @@ numbers. `cassettes.py`, `reports.py` and `llm_analysis.py` grade nothing new: t
 | 4 | [`prompt_x_effort.py`](prompt_x_effort.py) | What does changing the prompt do at each effort? | `factors=`, and `Comparison.against` for a second control |
 | 5 | [`cassettes.py`](cassettes.py) | How do I compare candidates fairly when the tool they call answers differently every time? | `tools=`, `cassette_mode=`: capturing and replaying tool results |
 | 6 | [`world.py`](world.py) | Does the model turn the light on when the room is dark? | `world=`, `seed=`, `goal_checks=`: grade what the model did to a world |
-| 7 | [`reports.py`](reports.py) | How do I turn a finished campaign into files people read? | `report_markdown`, `report_html`, Vega-Lite charts, `Comparison.gate` |
+| 7 | [`reports.py`](reports.py) | How do I turn a finished campaign into files people read? | `Comparison.write`, `Comparison.gate` |
 | 8 | [`llm_analysis.py`](llm_analysis.py) | Can a model write the analysis from a frozen copy of the evidence? | `generate_analysis` over a fingerprinted bundle; a canned first draft the check refuses, and the model's repair |
 | 9 | [`guardrails.py`](guardrails.py) | The new prompt answers more questions. Does it still keep the customer's card private? | `guardrails=`: a guardrail with its margin, held / breached / undecided per arm, apart from the contrasts |
 

@@ -1,6 +1,7 @@
 """The code-only report charts only readings a chart can say something about.
 
-Three kinds of chart carried nothing and are not emitted:
+A reading is charted only as a contrast against the control (its interval chart is titled by the reading), and three
+kinds of chart carried nothing and are not emitted:
 
 - **A classifier's per-label statistics.** Precision and recall were a chart per label and statistic, and
   F1, which has no interval in any cell by construction, only ever a disclosure that every cell was left
@@ -11,9 +12,8 @@ Three kinds of chart carried nothing and are not emitted:
   reported spend has no cost reading to chart or test, and the bundle says so in one sentence. A MEASURED
   $0 — a row carrying 0 dollars — is a reading like any other.
 
-Mutations that turn this file red: dropping the per-label or ``match`` filter in ``_chartable``; reading
-``cost_usd`` in ``_lineage_leaves`` whatever ``spend_observed`` says; listing a cell with a measured $0 in
-``_cost_unmeasured``.
+Mutations that turn this file red: contrasting a per-label statistic or ``match``; reading ``cost_usd`` in
+``_lineage_leaves`` whatever ``spend_observed`` says; listing a cell with a measured $0 in ``_cost_unmeasured``.
 """
 
 from __future__ import annotations
@@ -29,11 +29,14 @@ from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "code-only-chart-tests"
 
+#: Six cases, enough for a contrast to be tested and charted.
 CASES = [
     {"text": "a cat", "label": "animal"},
     {"text": "a dog", "label": "animal"},
+    {"text": "an owl", "label": "animal"},
     {"text": "a fir", "label": "plant"},
     {"text": "an oak", "label": "plant"},
+    {"text": "a yew", "label": "plant"},
 ]
 
 
@@ -50,7 +53,9 @@ async def guess(case: Mapping[str, Any]) -> str:
 
 
 async def right_priced(case: Mapping[str, Any]) -> Answer:
-    return Answer(case["label"], model="m-1", input_tokens=10, output_tokens=1, cost_usd=2e-5)
+    """Right, at a spend that varies with the case, so the contrast on spend has an interval to chart."""
+    tokens = len(case["text"]) * 2
+    return Answer(case["label"], model="m-1", input_tokens=tokens, output_tokens=1, cost_usd=tokens * 2e-6)
 
 
 async def guess_priced(case: Mapping[str, Any]) -> Answer:
@@ -68,10 +73,11 @@ async def _compare(candidate: Any, control: Any) -> Comparison:
 
 
 def _chart_titles(comparison: Comparison) -> list[str]:
+    """The reading each interval chart is drawn for: its title up to the colon."""
     return [
-        block.intent.title
+        block.title.partition(":")[0]
         for block in comparison.report.blocks
-        if isinstance(block, ChartBlock) and block.intent is not None
+        if isinstance(block, ChartBlock) and block.chart == "interval_rows"
     ]
 
 
@@ -115,7 +121,7 @@ class TestUnobservedCost:
 
     async def test_reported_spend_is_charted_and_tested_as_the_candidates_spend(self) -> None:
         comparison = await _compare(right_priced, guess_priced)
-        assert [title for title in _chart_titles(comparison) if title.startswith("Measuring spend")]
+        assert "Production cost" in _chart_titles(comparison)
         # Tested as the candidate's spend: cost_usd also sums what a judge spent measuring the arm.
         readings = {row["reading"] for row in comparison.contrasts()}
         assert "Production cost" in readings and "Measuring spend, all roles" not in readings

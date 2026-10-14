@@ -8,7 +8,8 @@ tolerant — construction, payload validation and every authoring surface are as
 
 The rule exists for a mixed fleet: the old side of every rolling upgrade is whatever this build's reader does, so each
 test here is phrased as what a document a NEWER build wrote does when it reaches this one. ``NEWER`` is that build's
-minor; ``NEWER_FIELD`` a field it added.
+core minor and ``DURABLE_NEWER`` its durable one (the durable space reads by the same rule under its own numbers);
+``NEWER_FIELD`` a field it added.
 """
 
 from __future__ import annotations
@@ -39,11 +40,21 @@ from threetears.evals.schema.models import (
     JudgeEvidence,
     fingerprint_judged_output,
 )
-from threetears.evals.schema.versioning import CORE_ADDRESSING_FIELDS, CORE_SCHEMA_MINOR, CORE_SCHEMA_VERSION
+from threetears.evals.schema.versioning import (
+    CORE_ADDRESSING_FIELDS,
+    CORE_SCHEMA_MINOR,
+    CORE_SCHEMA_VERSION,
+    DURABLE_ADDRESSING_FIELDS,
+    DURABLE_DOC_TYPES,
+    DURABLE_SCHEMA_MINOR,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 
-#: The minor a newer build wrote at.
+#: The core minor a newer build wrote at.
 NEWER = CORE_SCHEMA_MINOR + 1
+
+#: The durable minor a newer build wrote at.
+DURABLE_NEWER = DURABLE_SCHEMA_MINOR + 1
 
 #: A field that newer build added, with a value only it knows the meaning of.
 NEWER_FIELD = {"written_by_a_newer_build": {"kept": ["exactly", "as", "written"], "count": 3}}
@@ -53,9 +64,14 @@ def _core_models() -> list[type[CoreDocumentModel]]:
     return [model for model in stored_models() if issubclass(model, CoreDocumentModel)]
 
 
+def _newer_minor_of(document: dict[str, Any]) -> int:
+    """The minor a newer build writes ``document``'s type at: its version space's next one."""
+    return DURABLE_NEWER if document["doc_type"] in DURABLE_DOC_TYPES else NEWER
+
+
 def _at_newer_minor(document: dict[str, Any], **fields: Any) -> dict[str, Any]:
     """``document`` as the newer build would have written it: at its minor, with ``fields`` added."""
-    return {**document, "schema_minor": NEWER, **fields}
+    return {**document, "schema_minor": _newer_minor_of(document), **fields}
 
 
 def _tamper(store: InMemoryDocumentStore, doc_id: str, scope_id: str, **fields: Any) -> None:
@@ -347,7 +363,7 @@ def test_every_partial_write_names_only_addressing_fields() -> None:
 
 
 def _stored_newer(store: InMemoryDocumentStore, document: CoreDocumentModel) -> None:
-    store.upsert({**document.to_dict(), "schema_minor": NEWER, **NEWER_FIELD})
+    store.upsert(_at_newer_minor(document.to_dict(), **NEWER_FIELD))
 
 
 def test_a_rubric_dim_and_a_judge_config_a_newer_build_wrote_stay_editable_and_whole() -> None:
@@ -364,7 +380,7 @@ def test_a_rubric_dim_and_a_judge_config_a_newer_build_wrote_stay_editable_and_w
         stored = store.get(document.id, document.scope_id)
         assert stored is not None
         assert stored["written_by_a_newer_build"] == NEWER_FIELD["written_by_a_newer_build"]
-        assert stored["schema_minor"] == NEWER
+        assert stored["schema_minor"] == DURABLE_NEWER
     assert edited.universal is not dim.universal
     assert reauthored.id != config.id
 
@@ -383,7 +399,7 @@ def test_a_template_a_newer_build_wrote_stays_editable_and_whole() -> None:
     store = InMemoryDocumentStore()
     host = toyhost_host(storage=EvalStorage(store))
     template = EvalTemplate.from_dict(stored_sample(EvalTemplate))
-    store.upsert({**template.to_dict(), "schema_minor": NEWER, **NEWER_FIELD})
+    store.upsert(_at_newer_minor(template.to_dict(), **NEWER_FIELD))
 
     edited = update_template(host, template.id, template.scope_id, {"description": "reworded"}, **_authoring_checks())
 
@@ -392,7 +408,7 @@ def test_a_template_a_newer_build_wrote_stays_editable_and_whole() -> None:
     assert edited.description == "reworded"
 
 
-@pytest.mark.parametrize("stored_minor", [CORE_SCHEMA_MINOR, NEWER])
+@pytest.mark.parametrize("stored_minor", [DURABLE_SCHEMA_MINOR, DURABLE_NEWER])
 def test_a_caller_cannot_send_a_newer_minor_or_a_field_this_build_does_not_declare(stored_minor: int) -> None:
     """An unknown name is refused before the merge, and ``schema_minor`` is a server field, ignored if sent.
 
@@ -413,7 +429,7 @@ def test_a_caller_cannot_send_a_newer_minor_or_a_field_this_build_does_not_decla
     assert stored is not None and stored["schema_minor"] == stored_minor
 
 
-@pytest.mark.parametrize("stored_minor", [CORE_SCHEMA_MINOR, NEWER])
+@pytest.mark.parametrize("stored_minor", [DURABLE_SCHEMA_MINOR, DURABLE_NEWER])
 def test_a_caller_s_value_is_validated_strictly_at_every_depth_whatever_the_stored_minor(stored_minor: int) -> None:
     """A declared field the caller sends, carrying a key this build does not declare inside it, is refused.
 
@@ -433,8 +449,11 @@ def test_a_caller_s_value_is_validated_strictly_at_every_depth_whatever_the_stor
 
 
 def test_each_core_model_names_its_doc_type() -> None:
-    """The control for the parametrised tests above: every core model is a stored model with a doc type."""
-    assert {doc_type_of(model) for model in _core_models()} == set(CORE_ADDRESSING_FIELDS)
+    """The control for the parametrised tests above: every core and durable model is a stored model with a doc
+    type."""
+    assert {doc_type_of(model) for model in _core_models()} == set(CORE_ADDRESSING_FIELDS) | set(
+        DURABLE_ADDRESSING_FIELDS
+    )
 
 
 # --- open vocabularies: a newer minor's value is read and named, never folded ----------------------
@@ -661,6 +680,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "ApparatusProvenance": values(models.ApparatusProvenance),
         "RubricScale": values(models.RubricScale),
         "RubricAxis": values(models.RubricAxis),
+        "JudgeDeclaration": values(models.JudgeDeclaration),
         "nominal": frozenset({"nominal"}),
         "ordinal": frozenset({"ordinal"}),
         "interval": frozenset({"interval"}),

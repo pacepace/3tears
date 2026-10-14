@@ -182,9 +182,7 @@ class TestTheBundleFoldsEachCheckAcrossItsRuns:
         bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
         assert {reading.check for reading in bundle.goal_check_proofs} == checks
         assert all(reading.proof == "unproven" for reading in bundle.goal_check_proofs)
-        report = build_code_only_report(
-            bundle, measures=toyhost_profile().measures, assembled_at="2026-10-09T00:00:00+00:00"
-        )
+        report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         disclosed = [text for text in texts if text.startswith("Goal check ")]
         assert len(disclosed) == len(checks)

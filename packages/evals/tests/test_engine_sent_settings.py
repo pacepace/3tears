@@ -67,11 +67,11 @@ from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.off_loop import off_loop
 
-#: What the engine asks its judge for, and what a client serving a budget-only model might send instead.
+#: What the engine asks its judge for (a reasoning budget), and what a client serving a words-only model sends instead.
 _ASKED = JUDGE_REQUEST_SETTINGS
-_BUDGET = ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192, strict_output=True)
+_WORD = ClientRequestSettings(max_tokens=10240, reasoning_effort="high", strict_output=True)
 #: The same ask, resent without enforcement after a router could not place it.
-_UNENFORCED = ClientRequestSettings(max_tokens=10240, reasoning_effort="high", strict_output=False)
+_UNENFORCED = ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192, strict_output=False)
 _DIM = "answer.helpful"
 _JUDGE = "vendor/judge-2026-04"
 
@@ -148,10 +148,10 @@ async def _judge(client: _FakeJudge) -> dict[str, Any]:
 
 class TestTheJudgeCallRecordsWhatItWasSent:
     async def test_a_reported_send_lands_on_the_reply_and_its_usage(self) -> None:
-        parsed = await _judge(_FakeJudge([_ReportingReply(_scored("d"), sent_settings=_BUDGET)]))
+        parsed = await _judge(_FakeJudge([_ReportingReply(_scored("d"), sent_settings=_WORD)]))
 
-        assert parsed["judge_sent_settings"] == _BUDGET
-        assert parsed["judge_usage"].sent_settings == _BUDGET
+        assert parsed["judge_sent_settings"] == _WORD
+        assert parsed["judge_usage"].sent_settings == _WORD
 
     async def test_a_client_that_says_nothing_is_unverified_never_refused(self) -> None:
         parsed = await _judge(_FakeJudge([_Reply(_scored("d"))]))
@@ -166,12 +166,12 @@ class TestTheJudgeCallRecordsWhatItWasSent:
             _FakeJudge(
                 [
                     _ReportingReply("not json", sent_settings=_ASKED),
-                    _ReportingReply(_scored("d"), sent_settings=_BUDGET),
+                    _ReportingReply(_scored("d"), sent_settings=_WORD),
                 ]
             )
         )
 
-        assert parsed["judge_sent_settings"] == _BUDGET
+        assert parsed["judge_sent_settings"] == _WORD
         assert (parsed["judge_usage"].calls, parsed["judge_usage"].sent_settings) == (2, None)
 
     async def test_a_wrong_typed_member_is_the_hosts_defect_carrying_the_spend(self) -> None:
@@ -186,7 +186,7 @@ class TestTheJudgeCallRecordsWhatItWasSent:
             [{"q": "a"}, {"q": "b"}],
             _answer,
             judge=Judge(
-                client=_FakeJudge([_ReportingReply("<score>", sent_settings=_BUDGET)]),
+                client=_FakeJudge([_ReportingReply("<score>", sent_settings=_WORD)]),
                 model=_JUDGE,
                 rubric={"helpful": "It helps."},
             ),
@@ -196,10 +196,10 @@ class TestTheJudgeCallRecordsWhatItWasSent:
         )
 
         results = off_loop(lambda: host.storage.query_eval_results_by_run(summary.run_id, summary.scope_id))
-        assert [score.judge_sent_settings for result in results for score in result.rubric_scores] == [_BUDGET] * 2
+        assert [score.judge_sent_settings for result in results for score in result.rubric_scores] == [_WORD] * 2
         (judge,) = summary.request_settings
         assert (judge.role, judge.state, judge.n_not_as_asked, judge.n_total) == ("judge", "sent_otherwise", 2, 2)
-        assert judge.sent_display() == request_settings_words(_BUDGET)
+        assert judge.sent_display() == request_settings_words(_WORD)
         assert summary.request_settings_warning is not None
         assert summary.render().count("Request settings not confirmed as asked:") == 1
 
@@ -211,12 +211,12 @@ class TestThePairsCarryTheFirstScoresSend:
     async def test_an_out_of_run_row_stores_what_its_call_reported(self) -> None:
         rows: list[OutOfRunSpend] = []
         budget = OutOfRunBudget(store=_FakeLedger(rows), scope_id="s", cap_usd=None, blocking_executor=None)
-        client = _FakePricedJudge(_ReportingReply("{}", sent_settings=_BUDGET))
+        client = _FakePricedJudge(_ReportingReply("{}", sent_settings=_WORD))
 
         (admitted,) = budget.admit(client, "judge", [PlannedCall(system="s", user="u")])
         await budget.generate(client, admitted)
 
-        assert [(row.sent_settings, row.unreadable) for row in rows] == [(_BUDGET, [])]
+        assert [(row.sent_settings, row.unreadable) for row in rows] == [(_WORD, [])]
 
     async def test_an_out_of_run_row_whose_member_is_mistyped_is_kept_and_names_it_unreadable(self) -> None:
         rows: list[OutOfRunSpend] = []
@@ -295,7 +295,7 @@ def _repeated(first: ClientRequestSettings | None, again: ClientRequestSettings 
 class TestAJudgeSentDifferentlyIsAnotherJudge:
     def test_the_key_carries_the_send(self) -> None:
         verified = judge_key(make_eval_result(rubric_scores=[_score(_ASKED)]), _DIM)
-        budget = judge_key(make_eval_result(rubric_scores=[_score(_BUDGET)]), _DIM)
+        budget = judge_key(make_eval_result(rubric_scores=[_score(_WORD)]), _DIM)
         unverified = judge_key(make_eval_result(rubric_scores=[_score(None)]), _DIM)
 
         assert verified is not None and budget is not None and unverified is not None
@@ -307,7 +307,7 @@ class TestAJudgeSentDifferentlyIsAnotherJudge:
         [
             (_ASKED, _ASKED, True),
             (None, None, True),
-            (_ASKED, _BUDGET, False),
+            (_ASKED, _WORD, False),
             (_ASKED, None, False),
             (None, _ASKED, False),
         ],
@@ -327,7 +327,7 @@ class TestAJudgeSentDifferentlyIsAnotherJudge:
     def test_agreement_with_people_is_read_per_send(self) -> None:
         results = [
             make_eval_result(id="r-1", rubric_scores=[_score(_ASKED)]),
-            make_eval_result(id="r-2", rubric_scores=[_score(_BUDGET)]),
+            make_eval_result(id="r-2", rubric_scores=[_score(_WORD)]),
         ]
         ratings = [
             CalibrationRating(
@@ -340,23 +340,24 @@ class TestAJudgeSentDifferentlyIsAnotherJudge:
                 scale="ordinal",
                 score=4,
                 reason="it helps",
+                rated_withheld="not rebuilt in this test",
             )
             for result in results
         ]
 
         sent = [dimension.judge_sent_settings for dimension in judge_agreement(ratings, results).dimensions]
-        assert len(sent) == 2 and _ASKED in sent and _BUDGET in sent
+        assert len(sent) == 2 and _ASKED in sent and _WORD in sent
 
     def test_a_tier_names_what_its_judge_was_sent_or_that_it_is_unconfirmed(self) -> None:
         empty = judge_agreement([], [])
         alone = judge_self_agreement([])
-        budget_judge = judge_key(make_eval_result(rubric_scores=[_score(_BUDGET)]), _DIM)
+        budget_judge = judge_key(make_eval_result(rubric_scores=[_score(_WORD)]), _DIM)
         silent_judge = judge_key(make_eval_result(rubric_scores=[_score(None)]), _DIM)
         assert budget_judge is not None and silent_judge is not None
         (sent,) = judge_evidence_tiers(empty, alone, [budget_judge])
         (silent,) = judge_evidence_tiers(empty, alone, [silent_judge])
 
-        assert f", sent {request_settings_words(_BUDGET)}" in tier_sentence(sent)
+        assert f", sent {request_settings_words(_WORD)}" in tier_sentence(sent)
         assert ", request settings unconfirmed" in tier_sentence(silent)
 
 
@@ -395,8 +396,8 @@ def _seconded(result_id: str, case: str, pass_id: str, sent: ClientRequestSettin
 _TWO_SECOND_SENDS = [
     _seconded("r-1", "case-1", "pass-asked", _ASKED, 4),
     _seconded("r-2", "case-2", "pass-asked", _ASKED, 3),
-    _seconded("r-3", "case-1", "pass-budget", _BUDGET, 2),
-    _seconded("r-4", "case-2", "pass-budget", _BUDGET, 2),
+    _seconded("r-3", "case-1", "pass-budget", _WORD, 2),
+    _seconded("r-4", "case-2", "pass-budget", _WORD, 2),
     _seconded("r-5", "case-1", "pass-silent", None, 5),
 ]
 
@@ -408,7 +409,7 @@ class TestASecondJudgeSentDifferentlyIsAnotherSecondJudge:
         named = {tuple(d.passes): (d.second_sent_settings, d.n) for d in dimensions}
         assert named == {
             ("pass-asked",): ([_ASKED], 2),
-            ("pass-budget",): ([_BUDGET], 2),
+            ("pass-budget",): ([_WORD], 2),
             ("pass-silent",): (None, 1),
         }
 
@@ -421,7 +422,7 @@ class TestASecondJudgeSentDifferentlyIsAnotherSecondJudge:
         ]
         assert [d.n_pairs for d in dimensions] == [1, 2, 2], "unverified first, then each send in canonical order"
         assert sent[0] is None
-        assert sorted(sent[1:]) == sorted([[request_settings_words(_ASKED)], [request_settings_words(_BUDGET)]])
+        assert sorted(sent[1:]) == sorted([[request_settings_words(_ASKED)], [request_settings_words(_WORD)]])
 
     def test_a_pass_reads_as_the_level_the_bundle_names_it_by(self) -> None:
         """One reading names a pass's send for the bundle and for both readers, so a linked drift groups as its level."""
@@ -464,13 +465,13 @@ def _pools(a: tuple[EvalRun, list[EvalResult]], b: tuple[EvalRun, list[EvalResul
 
 class TestCellsPoolOnlyWhenAskedAndSentMatch:
     def test_asked_alike_and_sent_alike_pool(self) -> None:
-        assert _pools(_judged(_ASKED, _BUDGET), _judged(_ASKED, _BUDGET))
+        assert _pools(_judged(_ASKED, _WORD), _judged(_ASKED, _WORD))
 
     def test_asked_alike_and_sent_differently_do_not(self) -> None:
-        assert not _pools(_judged(_ASKED, _ASKED), _judged(_ASKED, _BUDGET))
+        assert not _pools(_judged(_ASKED, _ASKED), _judged(_ASKED, _WORD))
 
     def test_asked_differently_and_sent_alike_do_not(self) -> None:
-        assert not _pools(_judged(_ASKED, _ASKED), _judged(_BUDGET, _ASKED))
+        assert not _pools(_judged(_ASKED, _ASKED), _judged(_WORD, _ASKED))
 
     def test_asked_alike_and_unverified_on_both_sides_pool_carrying_the_gap(self) -> None:
         run, results = _judged(_ASKED, None)
@@ -483,12 +484,12 @@ class TestCellsPoolOnlyWhenAskedAndSentMatch:
         assert not _pools(_judged(_ASKED, _ASKED, None), _judged(_ASKED, _ASKED))
 
     def test_asked_differently_with_one_unverified_does_not(self) -> None:
-        assert not _pools(_judged(_ASKED, None), _judged(_BUDGET, _ASKED))
+        assert not _pools(_judged(_ASKED, None), _judged(_WORD, _ASKED))
 
     def test_a_mixed_run_pools_only_with_an_identical_mixture(self) -> None:
-        mixed = _judged(_ASKED, _ASKED, _BUDGET)
+        mixed = _judged(_ASKED, _ASKED, _WORD)
 
-        assert _pools(mixed, _judged(_ASKED, _BUDGET, _ASKED, _BUDGET))
+        assert _pools(mixed, _judged(_ASKED, _WORD, _ASKED, _WORD))
         assert not _pools(mixed, _judged(_ASKED, _ASKED))
         assert not _pools(mixed, _judged(_ASKED, _ASKED, _UNENFORCED))
 
@@ -526,12 +527,12 @@ class TestTheDisclosure:
         assert said is None
 
     def test_sent_other_than_asked_names_both(self) -> None:
-        readings, said = _disclosed(*_judged(_ASKED, _BUDGET, _BUDGET))
+        readings, said = _disclosed(*_judged(_ASKED, _WORD, _WORD))
 
         assert readings[0].state == "sent_otherwise"
         assert said == (
             f"Request settings not confirmed as asked: the judge was asked for {request_settings_words(_ASKED)} and "
-            f"sent {request_settings_words(_BUDGET)} on 2 of 2 score(s). A client may send the closest setting a model "
+            f"sent {request_settings_words(_WORD)} on 2 of 2 score(s). A client may send the closest setting a model "
             "accepts, or resend a call without enforcement, and reports what each request carried (sent_settings); "
             "runs sent differently, or one reported and one not, are not pooled as one apparatus."
         )
@@ -559,7 +560,7 @@ class TestTheDisclosure:
         ) in said
 
     def test_a_mixed_run_names_each_way_with_its_count(self) -> None:
-        readings, said = _disclosed(*_judged(_ASKED, _ASKED, _ASKED, _BUDGET))
+        readings, said = _disclosed(*_judged(_ASKED, _ASKED, _ASKED, _WORD))
 
         (reading,) = readings
         assert reading.state == "mixed"
@@ -567,10 +568,10 @@ class TestTheDisclosure:
         assert reading.sent_display().startswith("mixed: ")
         assert said is not None
         assert "the judge's calls were sent two ways: " in said
-        # In canonical order, the unit named once.
+        # In canonical order (the effort word's JSON sorts before the budget's null word), the unit named once.
         assert (
-            f"the judge's calls were sent two ways: 2 score(s) with {request_settings_words(_ASKED)}, 1 with "
-            f"{request_settings_words(_BUDGET)} (asked for {request_settings_words(_ASKED)})"
+            f"the judge's calls were sent two ways: 1 score(s) with {request_settings_words(_WORD)}, 2 with "
+            f"{request_settings_words(_ASKED)} (asked for {request_settings_words(_ASKED)})"
         ) in said
 
     def test_the_simulator_is_read_off_its_usage_rows(self) -> None:
@@ -589,7 +590,7 @@ class TestTheDisclosure:
         """A host builds its candidate's client itself: no sentence may say its settings were checked."""
         result = make_eval_result(
             rubric_scores=[],
-            usage=[RoleUsage(role="candidate", model="sonnet", call_count=1, sent_settings=[_BUDGET])],
+            usage=[RoleUsage(role="candidate", model="sonnet", call_count=1, sent_settings=[_WORD])],
         )
 
         readings, said = _disclosed(make_eval_run(), [result])

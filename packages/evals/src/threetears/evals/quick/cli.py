@@ -8,7 +8,7 @@ then never name the host::
 
     python -m threetears.evals run --host myapp.evals:build_host --scope dev --template T --subject S --model M
     python -m threetears.evals ls --host myapp.evals:build_host --scope dev
-    python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev --format html --out r.html
+    python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev --out eval-report
     python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
     python -m threetears.evals spend --host myapp.evals:build_host --scope dev --purpose variation
     python -m threetears.evals gate CAMPAIGN --host myapp.evals:build_host --scope dev --fail-on regressed,breached
@@ -32,9 +32,10 @@ then never name the host::
 - ``ls`` prints the scope's templates, runs and campaigns.
 - ``report`` prints the campaign's report (:func:`~threetears.evals.analysis.campaign_report`, the same
   report the ``report_read`` action reads): its newest analysis that is not archived, else a code-only report of its
-  evidence — which says, in its first lines, that no analysis was generated. ``--format`` is
-  ``markdown`` (the default), ``html`` (needs no script) or ``json`` (what the published schema
-  validates); ``--out PATH`` writes it to a file instead of stdout. No model is called.
+  evidence — whose verdict, on its first screen, is code's either way. ``--format`` is ``markdown`` (the
+  default), ``html`` (one page that needs no script) or ``json`` (the evidence bundle the report was computed
+  from, as ``bundle`` prints it); ``--out DIR`` writes all three into ``DIR`` instead (``report.html``,
+  ``report.md`` and ``bundle.json``, through :meth:`~threetears.evals.analysis.Report.write`). No model is called.
 - ``bundle`` prints the campaign's analysis bundle as JSON
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
@@ -341,9 +342,14 @@ def build_parser(
         "--format",
         choices=get_args(ReportFormat),
         default="markdown",
-        help="markdown (default), html (needs no script) or json (the published schema's form)",
+        help="markdown (default), html (one page, needs no script) or json (the bundle the report was computed from)",
     )
-    report.add_argument("--out", type=Path, metavar="PATH", help="write the report to PATH instead of stdout")
+    report.add_argument(
+        "--out",
+        type=Path,
+        metavar="DIR",
+        help="write report.html, report.md and bundle.json into DIR instead of printing one form",
+    )
     bundle = command("bundle", "Print a campaign's analysis bundle as JSON — what a generation would read.")
     bundle.add_argument("campaign", help="the campaign, by id")
     spend = command(
@@ -623,23 +629,24 @@ def _gate(host: EvalHost, args: argparse.Namespace) -> int:
 
 
 def _report(host: EvalHost, args: argparse.Namespace) -> None:
-    """Print the campaign's report in the asked-for form, or write it to ``--out``.
+    """Print the campaign's report in the asked-for form, or write the page, its Markdown and its bundle to ``--out``.
 
     Raises:
         _Refused: ``--out`` cannot be written.
     """
     report = campaign_report(host, args.campaign, args.scope)
-    # Markdown and HTML end in a newline already; canonical JSON is the model's own dump, which does not,
-    # and a terminal or a file wants one.
-    body = serialize_report(report, args.format) + ("\n" if args.format == "json" else "")
     if args.out is None:
-        sys.stdout.write(body)
+        # Markdown and HTML end in a newline already; the bundle's JSON does not, and a terminal wants one.
+        sys.stdout.write(serialize_report(report, args.format) + ("\n" if args.format == "json" else ""))
         return
     try:
-        args.out.write_text(body, encoding="utf-8")
+        files = report.write(args.out)
     except OSError as unwritable:
         raise _Refused(f"--out {args.out}: cannot write the report there: {unwritable}") from unwritable
-    _say(f"wrote the {report.basis.replace('_', '-')} report of campaign {args.campaign} ({args.format}) to {args.out}")
+    _say(
+        f"wrote the {report.basis.replace('_', '-')} report of campaign {args.campaign} to {args.out}: "
+        + ", ".join(path.name for path in files.values())
+    )
 
 
 def _list(host: EvalHost, scope_id: str) -> None:

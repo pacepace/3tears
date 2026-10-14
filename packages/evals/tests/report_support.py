@@ -17,30 +17,15 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign
 from threetears.evals.kernel.host import EvalHost
-from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.toyhost_memo import PROMPT, PROMPT_ID, FixturedClient, alias_at, memo_payload
+from packages.evals.tests.toyhost_memo import PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.off_loop import off_loop
 
 __all__ = [
-    "minimal_report",
     "toy_campaign_host",
     "toy_report",
 ]
-
-
-def _with_a_chart(bundle: Any) -> dict[str, Any]:
-    """The toy memo, its finding carrying a delta table over the two widths' wall-clock."""
-    payload = memo_payload(bundle)
-    payload["findings"][0]["chart"] = {
-        "type": "delta_table",
-        "cells": [alias_at(bundle, TOYHOST_NARROW), alias_at(bundle, TOYHOST_WIDE)],
-        "measures": [{"measure_id": "total_ms", "reading": "measure"}],
-        "axis": "",
-        "note": "",
-        "caption": "the wide chunk is the slower one",
-    }
-    return payload
 
 
 def toy_campaign_host(clients: Any = None) -> tuple[EvalHost, EvalCampaign]:
@@ -72,28 +57,6 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
     prepared = await prepare_analysis_generation(
         host, campaign.id, campaign.scope_id, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
     )
-    built[0].completion.content = json.dumps(_with_a_chart(prepared.bundle))
+    built[0].completion.content = json.dumps(memo_payload(prepared.bundle))
     analysis, _ = await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
     return host, analysis, off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
-
-
-def minimal_report(**update: Any) -> Report:
-    """A one-finding report that passes, with ``update`` applied over its fields."""
-    fields: dict[str, Any] = {
-        "basis": "analysis",
-        "headline": "h",
-        "finding_count": 1,
-        "source": {
-            "analysis_id": "a",
-            "campaign_id": "c",
-            "scope_id": "s",
-            "subject_id": "x",
-            "subject_kind": "",
-            "behavior": "b",
-            "generated_at": "2026-10-05T00:00:00+00:00",
-            "generator_model": "m",
-            "bundle_fingerprint": "f",
-        },
-        "blocks": [{"kind": "text", "section": "findings", "role": "finding_title", "finding": 0, "body": "t"}],
-    }
-    return Report.model_validate(fields | update)

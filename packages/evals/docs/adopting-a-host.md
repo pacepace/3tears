@@ -49,12 +49,31 @@ durable sibling, `SqliteDocumentStore`, keeps every document in one SQLite file 
 a host with no database of its own can use it as its store.
 
 Import only from a public root (`threetears.evals.PUBLIC_ROOTS` lists them, including
-`threetears.evals.kernel.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
+`threetears.evals.kernel.host`), and only the names
 its `__all__` declares; never from a module below one. Every engine type a public signature hands you — a protocol you implement, a value you
 receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
 The stored documents and the ports you implement (`DocumentStore`, `CompletionClient`, `TraceSink`) are in
 `threetears.evals.schema`; the behaviour over them (identity, scoring, `EvalStorage`, the candidate kind) is in
 `threetears.evals.kernel`, with the host contract under `threetears.evals.kernel.host`.
+
+Two roots fail to import without an extra, and `threetears.evals.ROOT_EXTRAS` says which and what each needs: a
+`RootExtra` with the extra's name and every module the root imports past the base install (`providers` needs
+`anthropic` as much as `threetears.models`, and may fail on either first). A public-API gate reads it to skip a root
+whose modules are absent, and to name the missing one, without reading the manifest or keeping a list of its own:
+
+```python
+import importlib.util
+
+from threetears.evals import PUBLIC_ROOTS, ROOT_EXTRAS
+
+
+def missing(root: str) -> list[str]:
+    needs = ROOT_EXTRAS.get(root)
+    return [module for module in needs.modules if importlib.util.find_spec(module) is None] if needs else []
+
+
+importable = [root for root in PUBLIC_ROOTS if not missing(root)]
+```
 
 ## The host
 
@@ -70,7 +89,11 @@ pass it to every entrypoint. It holds:
   `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
   `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not
   know and a value of the wrong type rather than ignoring or coercing them, because a misspelt `rationale`
-  dropped silently would register a standard other than the one you wrote;
+  dropped silently would register a standard other than the one you wrote. A bar may stand on a judged dimension
+  rather than a measure you declare: set `judged=True` (`"judged": true` in a declaration) and name the rubric
+  dimension (`<context>.<dim>`) or a reserved axis. Each campaign of the behavior resolves it against its template
+  and is refused when the template does not declare it, exactly as a campaign's own bar on a judged dimension is;
+
 - the `EvalStorage` you read and write through;
 - a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads the
@@ -189,10 +212,10 @@ recording still covers its prompts ([the examples' README](../examples/README.md
 both yourself, or bind to the adapter the package ships over 3tears-models (`threetears.evals.providers`, the
 `[models]` extra), which builds Anthropic, OpenAI and OpenRouter chat models through `create_chat_model`.
 
-**The `[models]` extra installs from PyPI once 0.67.0 ships** (`pip install "3tears-evals[models]"`). Until then
+**The `[models]` extra installs from PyPI once 0.68.0 ships** (`pip install "3tears-evals[models]"`). Until then
 it does not install from a git tag the way the base package does
 ([the README's install step](../README.md#first-result-in-10-minutes)): it needs 3tears-models and the family
-packages models depends on at 0.67.0, and none of them is on PyPI yet. Use a checkout of the repository at the tag,
+packages models depends on at 0.68.0, and none of them is on PyPI yet. Use a checkout of the repository at the tag,
 where `uv sync --extra models` at the root installs it.
 
 ```python
@@ -209,11 +232,13 @@ from `api_keys=` or the provider's own environment variable the first time a cli
 `await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
 (`simulator={"reasoning_effort": "low", "provider": "openrouter"}`); `models_client` builds one client on its own.
 **The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records it asked for, as its
-`judge_asked_settings` (`max_tokens=10240`, `reasoning_effort="high"`, `strict_output=True`): a `judge` role given no
-`max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that effort word, which
-Anthropic, OpenAI and OpenRouter all take, and `strict_output` is the strict structured directive the judge already
-sends. Pass the judge's settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`) and the client asks
-for those instead, which the run's asked settings do not describe. The engine's other roles ask in effort words too:
+`judge_asked_settings` (`max_tokens=10240`, `reasoning_max_tokens=8192`, `strict_output=True`): a `judge` role given no
+`max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that reasoning budget,
+sent as a thinking budget to an Anthropic model that takes one and as the effort word its share of the cap reads as
+(`high`) to every model that takes words only, and `strict_output` is the strict structured directive the judge
+already sends. Pass the judge's settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`) and the
+client asks for those instead, which the run's asked settings do not describe. The engine's other roles ask in effort
+words:
 the simulated user `low` (`SIMULATOR_REQUEST_SETTINGS`, strict, since every simulator call sends a strict reply
 schema) and the analysis generator `medium` (`analysis_gen_request_settings_for`, whose output cap is the answer
 budget plus a reasoning headroom of at least 1024 tokens, 8192 unless you set one; the headroom sizes the cap and is
@@ -236,10 +261,13 @@ OpenRouter's catalogue (once this factory's own `load_prices` read it, and only 
 takes); unknown is sent as asked. A provider's refusal of a setting the
 request carried (an Anthropic model on which `temperature` is deprecated or a thinking budget unsupported, an OpenAI
 model that takes only its default temperature or fewer effort words) is answered by sending the request once more
-with the closest setting the model then takes: the refused request generated nothing and is not billed. What a served
-resend proved the model refuses is learned: every client of the factory sends that way for the rest of its life,
-logged once at WARNING. On OpenRouter, a strict call whose `require_parameters` leaves no endpoint (a 404 naming no
-parameter) is resent without its temperature, keeping enforcement, and only if that still finds none, without
+with the closest setting the model then takes: the refused request generated nothing and is not billed, so the
+price ceiling is one request's; but a refused send can take up to one request timeout, so a call can take up to
+`MAX_RESENDS + 1` of them (`threetears.evals.negotiation.MAX_RESENDS`, 4), and a wall-clock ceiling of your own
+around a call allows for that. What a served resend proved the model refuses is learned: every client of the
+factory sends that way for the rest of its life, logged once at WARNING. On OpenRouter, a strict call whose
+`require_parameters` leaves no endpoint (a 404 naming no parameter) is resent without its temperature, keeping
+enforcement, and only if that still finds none, without
 enforcement, which its `sent_settings` records as `strict_output=False`. Enforcement is never learned: the next call
 asks for it again, since a router's "no endpoint" can be an outage. Any other refusal, and a refusal of a resend for
 a setting already dropped, is raised as before.
@@ -265,12 +293,14 @@ provider is one 3tears-models has no factory for, or when you call Claude throug
 refuses the Claude CLI route, whose completions read as finished whatever stopped them, until models carries the
 CLI's real stop reason. Either way, run `check_completion_conformance` on your client's completions in your suite.
 
-**A client builder of your own sends the effort word.** None of the engine's request settings carries a token budget
-any more: `JUDGE_REQUEST_SETTINGS`, `SIMULATOR_REQUEST_SETTINGS` and `analysis_gen_request_settings_for`'s value each
-ask by `reasoning_effort` and hold `reasoning_max_tokens=None`. A builder that reads only `reasoning_max_tokens` sends
-no reasoning parameter at all, so its role reasons at the provider's default while the run records it asked for an
-effort. Build the request from every field: `wire_settings_for(settings, temperature)` (`threetears.evals.negotiation`)
-turns the engine's value into what `negotiate` sends, so nothing is hand-copied and nothing is dropped.
+**A client builder of your own sends every reasoning field.** The judge asks by a token budget
+(`JUDGE_REQUEST_SETTINGS.reasoning_max_tokens`, with `reasoning_effort=None`), so its reasoning is bounded where a
+model takes a budget; `SIMULATOR_REQUEST_SETTINGS` and `analysis_gen_request_settings_for`'s value ask by
+`reasoning_effort` and hold `reasoning_max_tokens=None`. A builder that reads only one of the two fields sends no
+reasoning parameter to the roles that ask by the other, so they reason at the provider's default while the run
+records what they asked for. Build the request from every field: `wire_settings_for(settings, temperature)`
+(`threetears.evals.negotiation`) turns the engine's value into what `negotiate` sends, so nothing is hand-copied and
+nothing is dropped.
 
 **A client of your own maps its provider's finish reason onto five words** (`StopReason`): `end_turn` for a
 completion that finished, `max_tokens` for one stopped at the output cap (OpenAI's `length`), `content_filter` for a
@@ -341,10 +371,12 @@ never does, and neither should your own client, so the logic is one public root,
 (`threetears.evals.negotiation`, no SDK and no HTTP client): `negotiate` sends the closest settings the model is
 known to take (`closest_settings`), hands any failure to your refusal reader, and on a refusal of a setting the
 request carried learns it and sends again, in a fixed order (a refused temperature first, keeping enforcement, and
-only then enforcement), at most once per setting and four times per call; anything else is raised as your transport
-raised it. It returns what the served request carried, which is what your completion reports. You write the
-request and the parsing; you never write the logic. A minimal OpenRouter client over raw HTTP (OpenRouter's request
-shape is the `router` family; `read_router_refusal` reads its 404 and the 400s it relays from an upstream):
+only then enforcement), at most once per setting and `MAX_RESENDS` (4) times per call; anything else is raised as
+your transport raised it. Each refused send costs nothing but can cost up to your request timeout, so a wall-clock
+ceiling you hold around a call allows `MAX_RESENDS` × that timeout past the served request's. It returns what the
+served request carried, which is what your completion reports. You write the request and the parsing; you never
+write the logic. A minimal OpenRouter client over raw HTTP (OpenRouter's request shape is the `router` family;
+`read_router_refusal` reads its 404 and the 400s it relays from an upstream):
 
 ```python
 from dataclasses import dataclass, replace
@@ -578,27 +610,45 @@ types the engine stores, and says three things about each:
   out-of-run spend ledger, sweeps, analysis attempts, cassettes, generation slots, launches, second judge passes,
   judge temperature comparisons, host action jobs) or `derived` (computed from other stored
   documents: analyses, insights, judge profiles).
-- **lifecycle**: `kept` (read by every later release, below) or `regenerable` (refused after a format change,
-  and made again: an analysis, insight or judge profile is regenerated, a cassette re-captured).
+- **lifecycle**: `kept` (the evidence core: read from the core baseline on, and deleted by a core baseline reset),
+  `durable` (what people author: templates, rubric dims, judge configs and their tombstones, case sets, test cases
+  and calibration ratings; never wiped by a core baseline, read forever from durable v15, changed only additively
+  or through an upgrader) or `regenerable` (refused after a format change, and made again: an analysis, insight or
+  judge profile is regenerated, a cassette re-captured).
 - **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
   slot, `judge_config_tombstone` a `judge_config`'s).
 
-`EVAL_DOC_TYPES` (what the operator wipe sweeps) and `CORE_DOC_TYPES` (what is kept) are derived from it.
+`EVAL_DOC_TYPES` (what the operator wipe sweeps), `CORE_DOC_TYPES` (the evidence core) and `DURABLE_DOC_TYPES`
+(what people author) are derived from it.
 
-**The evidence core is kept.** Every release reads it, from core v15 (the first public release's baseline) on. The core is
-what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
-the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
-tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
-records of how each sweep ended, what each analysis generation spent, and which generation holds a campaign's
-slot (a later build that could not read a slot would block the campaign's generations, or start a second beside
-a live one), and the records of every other job: a launch (the runs it started), a second judge's pass (its report),
-a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
-`CORE_DOC_TYPES` lists them.
+**The evidence core is kept until its baseline moves.** Every release reads it from the core baseline (v15) on.
+The core is what a run produced or binds: runs, results, traces, the out-of-run spend ledger, the campaigns people
+declared and gathered runs into, and the records of how each sweep ended, what each analysis generation spent, and
+which generation holds a campaign's slot (a later build that could not read a slot would block the campaign's
+generations, or start a second beside a live one), and the records of every other job: a launch (the runs it
+started), a second judge's pass (its report), a judge temperature comparison (every answer, stored nowhere else) and
+a host action's job (its result). `CORE_DOC_TYPES` lists them. The core is baseline-resettable: a release may move
+`CORE_BASELINE_VERSION` instead of shipping an upgrader, and every core document below it is then refused by name
+and deleted with `reset_core` (below).
 
-**The first public release is the baseline.** It writes core v15.0 (major `CORE_BASELINE_VERSION`, equal to
-`CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 0), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and
-cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is
-nothing older for it to read.
+**What people author is durable, and no core baseline ever touches it.** Templates, rubric dims, judge configs
+(with their tombstones), case sets, test cases and calibration ratings (`DURABLE_DOC_TYPES`) have a version space
+of their own, forked from core v15 at `.26` (`DURABLE_SCHEMA_VERSION`, `DURABLE_SCHEMA_MINOR`). Its baseline,
+`DURABLE_BASELINE_VERSION`, is 15 forever, and a durable shape changes only additively (a minor) or with an
+upgrader (`DURABLE_UPGRADERS`); a durable major never resets. No durable document needs a core one to be read: a
+rating names the run and result it was given on as provenance, and carries what was rated
+(`CalibrationRating.rated`), so it still calibrates a judge after the result is gone. Budget storage at about one
+judged transcript per rating. **Back the durable store up like source code**: it is what people wrote, and nothing
+can make it again.
+
+**The first public release is the baseline.** It writes core v15.1 (major `CORE_BASELINE_VERSION`, equal to
+`CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 1, which added refused calls to the call ledger and to
+control end states, a judged dimension's judge declaration and a judge reply's cut-short record, and reads every
+v15.0 document), durable v15.1 (`DURABLE_SCHEMA_VERSION` and
+`DURABLE_SCHEMA_MINOR`: a rating carries what was rated), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and
+cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` and `DURABLE_UPGRADERS`
+are empty): there is nothing older for it to read. A durable document `.25` wrote (as core v15.0) reads as durable
+v15.0 with no step.
 
 **A core version is a major and a minor, and your store needs no migration for either.** Every core document
 carries `schema_version`, the major, and `schema_minor`, the minor within it. Every change to a core shape is one
@@ -651,10 +701,11 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.0), regenerable documents (v10), cassettes
-(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 53), the cell model
-(`CELL_MODEL_VERSION`, 13), the report (`REPORT_VERSION`, 10) and the identity keys (`IDENTITY_VERSION`, 24) carry
-separate versions, each at its first public release's value.
+**Each version space moves on its own.** Core documents (v15.1), durable documents (v15.1), regenerable documents
+(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 54), the cell model
+(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions, each at its first
+public release's value. The report has none: it is a page rendered from the bundle, which is the versioned machine
+form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
 `<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
@@ -686,9 +737,29 @@ at a newer minor, read as above. A core document written by a newer major is ref
 two builds share one store across a major, upgrade the older one. Only the stored read is tolerant: a document a
 caller hands an authoring surface is validated strictly, and `schema_minor` is a server field it ignores. A core
 document written before `.25` (`v0.67.0-evaladopt.25`, core below v15) is refused
-too: its read fails validation on `schema_version`, with a message that names it a pre-release document and
-the baseline it is below. A store written before `.25` is never read, so delete its documents (the operator wipe)
-rather than keep them beside ones `.25` or a later build wrote; `.25` wrote the v15 baseline this release reads.
+too: its read fails validation on `schema_version`, with a message that names the baseline it is below. So is a
+core document below a later core baseline.
+
+**On a core baseline, call `reset_core`; do not truncate tables by name.** It is the one operation your deploy
+runbook runs, with the engine stopped, and the store boots the moment it returns:
+
+- **On a `RoutedDocumentStore`**: `RoutedDocumentStore.reset_core(stores, route, scope_ids=..., routing_scope=...,
+  host_doc_types=...)`. It deletes every core and regenerable document (`CORE_RESET_DOC_TYPES`) of the named scopes
+  from every store, wherever it sits, and never a durable document, one of your own types or the router's placement
+  record. Then it relocates: a durable type your route now keeps in a store of its own is moved there once, and
+  every store's placement record is written, so the router starts even if a hand-run TRUNCATE once wiped the
+  records (which is what makes a runbook that names tables fail to boot with `RouteChanged`). It returns a
+  `CoreReset` naming what it deleted and moved.
+- **On any other store**: `EvalStorage.reset_core(scopes)` deletes the same types through the store port.
+
+Never truncate the tables holding durable documents. A store written before `.25` (core and durable below v15) is
+never read; reset it from `.25` or later, and reset the durable tables too only for that pre-release store
+(`nuke_all_eval_data(scopes, include_durable=True)`), since no release reads what it holds.
+
+**`nuke_all_eval_data` requires `include_durable=`.** The full operator wipe takes a keyword with no default, so
+your code states whether the labels and definitions people wrote go too. With `include_durable=False` it is every
+engine type but the durable ones, and your own types; `reset_core` is narrower (core and regenerable only) and is
+the baseline operation.
 A refused run stays as stored, and the boot reclaim (`sweep_abandoned_runs`) counts it `unreadable` rather than
 settling it. `runs_unreadable` (operation and action) names each stored run of the scope the current model refuses,
 of any status, with the fields it refused and why. The ones stored pending or running are marked stranded: they are
@@ -710,8 +781,14 @@ for every value of it, plus one store for the types the registry does not hold (
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.storage import DocTypeRoute, RoutedDocumentStore, SqliteDocumentStore
 
-stores = {"evidence": MyPostgresStore(dsn), "scratch": SqliteDocumentStore("regenerable.sqlite")}
-route = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="evidence")
+stores = {
+    "evidence": MyPostgresStore(dsn),
+    "authored": MyPostgresStore(dsn, table="eval_authored"),  # what people author: back it up like source code
+    "scratch": SqliteDocumentStore("regenerable.sqlite"),
+}
+route = DocTypeRoute(
+    by="lifecycle", to={"kept": "evidence", "durable": "authored", "regenerable": "scratch"}, unregistered="evidence"
+)
 
 ROUTING = "evals-routing.production"  # yours to name; never a scope you keep documents in
 
@@ -748,7 +825,10 @@ two stores are passed under each other's names, and when no store has a record y
 moves every document of the scopes and host types you name to its new store, then writes the records. Run it
 once when you adopt the router and again whenever you change the route, with the engine stopped. If it is
 interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
-somewhere other than your `unregistered` store.
+somewhere other than your `unregistered` store. A release that adds a fact value needs your route to map it: a
+lifecycle route must map `durable` (from `.26`), or it is refused when built. Giving `durable` a store other than
+the one `kept` types were written to moves the eight durable types, so the first start raises `RouteChanged` for
+them until you relocate (or run `RoutedDocumentStore.reset_core`, which relocates).
 
 **Ask whether the stores hold anything before you relocate.** A host's start that adopts tables, rather than
 relocating on every start, asks first: `RoutedDocumentStore.holds_documents(stores, scope_ids, host_doc_types=...)`
@@ -785,7 +865,7 @@ launch (a witnessed session, a run your host assembles) is validated as strictly
 
 ## Stability tiers
 
-**Every public name has a tier, and the tier is what a release promises about it.** From 0.67.0, the first tagged
+**Every public name has a tier, and the tier is what a release promises about it.** From 0.68.0, the first tagged
 release, on:
 
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
@@ -812,14 +892,14 @@ promoted: promoting a name costs nothing, and demoting one is a break.
 When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
 records it under that release: the old name, its new home or `removed`, and why. A `closure` name has no shim at the
 old name; a `host-contract` one keeps working for a minor release first (above). The record starts
-at 0.67.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
+at 0.68.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
 (`https://github.com/pacepace/3tears/blob/<tag>/packages/evals/MIGRATIONS.toml`) or in a checkout. In a checkout,
 the release notes are printed from it, so they hold the full old-to-new map:
 
 ```bash
-uv run python packages/evals/scripts/release_notes.py v0.67.0
+uv run python packages/evals/scripts/release_notes.py v0.68.0
 ```
 
 Each line reads `old → new`, grouped under the reason for the move. Changes that are not a public name, such as
@@ -847,7 +927,7 @@ snapshot:
 - **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
   section to exactly the names that left a root between that tag and this version's. Before the version is
   tagged, it compares against the working tree. `since` is always a final release tag (`v<x>.<y>.<z>`). A tag
-  from before the package existed (`v0.66.0`, for 0.67.0) has an empty surface. A checkout without the tags fails
+  from before the package existed (`v0.67.0`, for 0.68.0) has an empty surface. A checkout without the tags fails
   this check rather than passing it.
 - **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
   it. Two different objects under one name always fail: rename one.
@@ -1281,6 +1361,15 @@ on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSe
 
 ## What the judge reads, and conversations
 
+**Every judged dimension your templates carry declares its judge.** `RubricDim.judge` is `"builtin"` (the engine's
+own prompt) or `"configured"` (the scope's active `JudgeConfig` for that dimension), in your seed corpus and in
+anything you author. `create_template`, `seed_eval_definitions` and an `update_template` that writes `rubric`
+refuse a dimension that declares neither, naming every one at once; a `"configured"` one needs its config active
+(the seed counts a config the same corpus seeds), and a `"builtin"` one must have none. Every launch checks the same
+before any spend, so a template stored before the declaration existed is refused until `update_template` declares
+its dimensions, and a configured dimension whose config was archived since is refused rather than scored by the
+engine's prompt. A quick-path `Judge` declares its own dimensions, so `run_eval` callers state nothing.
+
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
 conversation, the transcript as your kind writes it). The engine places those strings and reads none
@@ -1397,9 +1486,6 @@ so it goes through the deprecation cycle, never straight out in one release's no
   condition (a turn, an event, a person) rather than at the first turn: a case's seed arms it, and a world
   round or your kind fires it. Skip them and your world is set once, before the first turn, and no goal check
   can ask what `fired(...)` ([A world](#a-world-through-the-cells-session)).
-- **`ChartFont`** (`kernel.host`). A brand face for chart text, declared with the per-character advance widths
-  a renderer lays labels out by. Skip it and charts are drawn in the renderer's own face; nothing a chart
-  states changes.
 - **`SeedSection`'s zones** (`primacy`, `reference`, `recency`, in `kernel`). The sectioned prompt template the
   two proposer prompts are declared in, ordered by zone, each section with its own condition, formatter and
   cache class. Without a registry for sectioned templates, you render those sections into the system prompt

@@ -71,7 +71,6 @@ IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
 #: installed without it, and one extra's subpackage naming ANOTHER extra's dependency would tie the two
 #: extras together.
 IMPORT_ROOTS_BY_EXTRA: dict[str, tuple[str, dict[str, tuple[str, ...]]]] = {
-    "vega": ("threetears.evals.vega", {"vl-convert-python": ("vl_convert",)}),
     "fastmcp": ("threetears.evals.transports.fastmcp", {"fastmcp": ("fastmcp",)}),
     # The provider adapter names 3tears-models and the provider layer it is built on, every one of them a runtime
     # dependency of 3tears-models itself (``langchain-core``, ``anthropic`` and ``openrouter`` directly, ``openai``
@@ -230,8 +229,48 @@ def test_root_extras_names_only_public_roots_each_under_the_extra_that_serves_it
     from threetears.evals import PUBLIC_ROOTS, ROOT_EXTRAS
 
     served = {subpackage: extra for extra, (subpackage, _) in IMPORT_ROOTS_BY_EXTRA.items()}
-    assert dict(ROOT_EXTRAS).items() <= served.items(), "a root is listed under an extra that does not serve it"
+    listed = {root: needs.extra for root, needs in ROOT_EXTRAS.items()}
+    assert listed.items() <= served.items(), "a root is listed under an extra that does not serve it"
     assert set(ROOT_EXTRAS) <= set(PUBLIC_ROOTS), "an extra's root that is not public belongs in no consumer's list"
+
+
+def _names_outside_the_base_install(subpackage: str) -> set[str]:
+    """Every module the files under ``subpackage`` name that the base install does not provide, by the name the
+    import gives it: the stdlib, the engine and the base dependencies' roots left out, and a ``threetears`` namespace
+    package kept to its two leading segments, as the extras map names it."""
+    base = ["threetears.evals", *(root for roots in IMPORT_ROOTS_BY_DEPENDENCY.values() for root in roots)]
+    named: set[str] = set()
+    for path in sorted(SOURCE_ROOT.joinpath(*subpackage.split(".")).rglob("*.py")):
+        for _, module in named_modules(path, root=SOURCE_ROOT):
+            if module.split(".")[0] in sys.stdlib_module_names or any(_matches(module, root) for root in base):
+                continue
+            parts = module.split(".")
+            named.add(".".join(parts[:2]) if parts[0] == "threetears" else parts[0])
+    return named
+
+
+def _optional_roots() -> list[str]:
+    from threetears.evals import ROOT_EXTRAS
+
+    return sorted(ROOT_EXTRAS)
+
+
+@pytest.mark.parametrize("root", _optional_roots())
+def test_root_extras_lists_every_module_its_root_names_past_the_base_install(root):
+    """The modules a root's entry lists are exactly the ones its source names that the base install lacks, sorted:
+    a gate that checks them checks everything the root may fail on, and nothing it does not import."""
+    from threetears.evals import ROOT_EXTRAS
+
+    needs = ROOT_EXTRAS[root]
+
+    assert set(needs.modules) == _names_outside_the_base_install(root)
+    assert list(needs.modules) == sorted(set(needs.modules)), "listed out of order, or twice"
+    assert set(needs.modules) <= set(_extra_roots(needs.extra)), "a module its extra does not bring in"
+
+
+def test_the_root_extras_walk_finds_a_module_named_past_the_base_install():
+    """Non-vacuity: the walk behind the equality above sees the providers root's own SDK imports."""
+    assert {"anthropic", "threetears.models"} <= _names_outside_the_base_install("threetears.evals.providers")
 
 
 #: A probe's preamble: makes every import root named in ``sys.argv[1]`` (a JSON list) unimportable, as an install
@@ -282,7 +321,6 @@ print(json.dumps(sorted(root for root in PUBLIC_ROOTS if not importable(root))))
 #: than :data:`IMPORT_ROOTS_BY_EXTRA`'s roots, which also name what a distribution brings in itself (``httpx`` comes with
 #: ``3tears-models`` and with ``fastmcp`` alike), so an install with one extra and not another still has those.
 _DISTRIBUTION_ROOT: dict[str, str] = {
-    "vl-convert-python": "vl_convert",
     "fastmcp": "fastmcp",
     "3tears-models": "threetears.models",
 }
@@ -319,8 +357,7 @@ def _failing_roots(blocked: list[str]) -> set[str]:
 
 def test_on_the_base_install_exactly_the_listed_roots_fail_to_import():
     """With every extra's dependencies unimportable, each root ``ROOT_EXTRAS`` lists fails to import and every other
-    public root imports: the map is what an install without the extras meets, not what each extra serves (``vega``
-    serves ``[vega]`` and imports without it, its rasteriser importing ``vl_convert`` inside the calls)."""
+    public root imports: the map is what an install without the extras meets."""
     from threetears.evals import ROOT_EXTRAS
 
     assert _failing_roots(_extra_roots(*IMPORT_ROOTS_BY_EXTRA)) == set(ROOT_EXTRAS)
@@ -334,7 +371,39 @@ def test_each_extra_alone_missing_fails_exactly_the_roots_listed_under_it(extra)
 
     blocked = sorted(_DISTRIBUTION_ROOT[dist] for dist in IMPORT_ROOTS_BY_EXTRA[extra][1])
 
-    assert _failing_roots(blocked) == {root for root, needs in ROOT_EXTRAS.items() if needs == extra}
+    assert _failing_roots(blocked) == {root for root, needs in ROOT_EXTRAS.items() if needs.extra == extra}
+
+
+#: Imports one root with the blocked roots unimportable and prints whether it imported, as JSON.
+_ROOT_IMPORTS = (
+    _WITHOUT_ROOTS
+    + """
+print(json.dumps(importable(sys.argv[2])))
+"""
+)
+
+
+def _listed_modules() -> list[tuple[str, str]]:
+    from threetears.evals import ROOT_EXTRAS
+
+    return [(root, module) for root, needs in ROOT_EXTRAS.items() for module in needs.modules]
+
+
+@pytest.mark.parametrize(("root", "module"), _listed_modules())
+def test_each_module_root_extras_lists_is_one_its_root_cannot_import_without(root, module):
+    """With any one listed module unimportable and everything else installed, its root fails to import: every module
+    a gate is told to check is one the root needs at import, not only somewhere in a call."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _ROOT_IMPORTS, json.dumps([module]), root],
+        capture_output=True,
+        text=True,
+        # A guard against a hung interpreter, not a speed bound: see ``_probe``.
+        timeout=300,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) is False, f"{root} imported with {module} unimportable"
 
 
 def test_the_probe_reports_a_root_that_fails_without_a_blocked_root():
@@ -404,24 +473,10 @@ def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path, source,
 @pytest.mark.parametrize(
     ("importer", "allowed"),
     [
-        ("threetears.evals.vega.render", True),
-        ("threetears.evals.vega", True),
-        ("threetears.evals.analysis.viz.intent", False),
-        ("threetears.evals.vegan", False),
-    ],
-)
-def test_an_extras_dependency_is_admitted_only_inside_its_subpackage(importer, allowed):
-    """``vl_convert`` is the ``[vega]`` extra's: the renderer may name it and the core may not."""
-    assert _allowed("vl_convert", importer=importer) is allowed
-
-
-@pytest.mark.parametrize(
-    ("importer", "allowed"),
-    [
         ("threetears.evals.transports.fastmcp", True),
         ("threetears.evals.transports", False),
         ("threetears.evals.actions.catalogue", False),
-        ("threetears.evals.vega.render", False),
+        ("threetears.evals.providers.adapter", False),
         ("threetears.evals", False),
     ],
 )
@@ -431,8 +486,8 @@ def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed
 
 
 def test_one_extras_subpackage_may_not_name_another_extras_dependency():
-    """The two extras stay independent: the transport may not name the rasteriser."""
-    assert _allowed("vl_convert", importer="threetears.evals.transports.fastmcp") is False
+    """The extras stay independent: the transport may not name the provider adapter's dependency."""
+    assert _allowed("threetears.models", importer="threetears.evals.transports.fastmcp") is False
 
 
 def test_a_relative_import_is_judged_where_it_lands(tmp_path):

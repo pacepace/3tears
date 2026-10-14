@@ -34,7 +34,7 @@ from threetears.evals.kernel.declaration import Question
 from threetears.evals.run import set_campaign_archived
 from packages.evals.tests.factories import make_campaign, memory_storage
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_QUESTION_ID, toyhost_campaign
-from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
@@ -135,7 +135,10 @@ class TestVerdictOrder:
 
     def test_a_question_lists_the_bars_on_its_axes_and_the_axes_no_bar_answers(self) -> None:
         question = Question(
-            id=TOYHOST_QUESTION_ID, text="is it accurate, and what does it cost?", merit_axes=["cost", "quality"]
+            id=TOYHOST_QUESTION_ID,
+            text="is it accurate, and what does it cost?",
+            merit_axes=["cost", "quality"],
+            asked_at=TOYHOST_INSTANT,  # as the corpus question was: before its runs, so it scopes the order
         )
         order = _bundle(merit_priority=["quality"], questions=[question]).verdict_order
 
@@ -159,7 +162,6 @@ class TestTheDeclaredPriorityReachesTheReport:
     def test_a_declared_priority_is_disclosed_with_each_tiers_bars(self) -> None:
         report = build_code_only_report(
             _bundle(merit_priority=["quality", "latency"]),
-            measures=toyhost_profile().measures,
             assembled_at="2026-10-05T00:00:00+00:00",
         )
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
@@ -169,9 +171,7 @@ class TestTheDeclaredPriorityReachesTheReport:
         assert "which the order does not place: cost_usd." in sentence
 
     def test_no_stated_priority_states_none(self) -> None:
-        report = build_code_only_report(
-            _bundle(merit_priority=[]), measures=toyhost_profile().measures, assembled_at="2026-10-05T00:00:00+00:00"
-        )
+        report = build_code_only_report(_bundle(merit_priority=[]), assembled_at="2026-10-05T00:00:00+00:00")
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         assert not [text for text in texts if text.startswith("The campaign ranks its merit axes")]
 

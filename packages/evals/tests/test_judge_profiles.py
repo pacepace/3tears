@@ -298,11 +298,9 @@ def test_a_second_campaign_scored_by_the_judge_reads_its_tier_from_the_profile_a
     recorded_later = profile.model_copy(update={"recorded_at": "2026-10-11T00:00:00+00:00"})
     assert _second_campaign(recorded_later).fingerprint() != bundle.fingerprint()
 
-    report = build_code_only_report(bundle, measures=toyhost_profile().measures, assembled_at="2026-10-10T00:00:00Z")
+    report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00Z")
     (sentence,) = [
-        block.text
-        for block in report.blocks
-        if isinstance(block, DisclosureBlock) and block.text.startswith("Judged evidence tier:")
+        block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.text.startswith("Judge: ")
     ]
     assert f"calibrated, read from the judge's stored profile {profile.id}" in sentence
     assert f"measured at {profile.measured_at} on 30 frozen cases" in sentence
@@ -362,11 +360,9 @@ def test_a_profile_consulted_that_decides_no_tier_is_said_to_have_been_consulted
     assert tier.tier == "undetermined" and tier.from_profile is None
     assert tier.consulted_profile is not None and tier.consulted_profile.profile_id == thin.id
     assert tier.consulted_profile.cases == thin.cases
-    report = build_code_only_report(bundle, measures=toyhost_profile().measures, assembled_at="2026-10-10T00:00:00Z")
+    report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00Z")
     (sentence,) = [
-        block.text
-        for block in report.blocks
-        if isinstance(block, DisclosureBlock) and block.text.startswith("Judged evidence tier:")
+        block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.text.startswith("Judge: ")
     ]
     assert f"consulted the judge's stored profile {thin.id}" in sentence and "undetermined too" in sentence
 

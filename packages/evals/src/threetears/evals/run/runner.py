@@ -107,6 +107,7 @@ from threetears.evals.schema.models import (
     EvalTestCase,
     EvalTrace,
     GoalStateOutcome,
+    JudgeCutShort,
     JudgedArtifact,
     JudgeEvidence,
     LatencyMetrics,
@@ -527,6 +528,8 @@ class _JudgeRecord(NamedTuple):
     judge_cannot_tell_boundary: list[str]
     #: The judge role's rows, for the calls that returned — what the result's cost reads them from.
     usage: list[RoleUsage]
+    #: dim -> the reply the provider cut short, for each dim ``judge_error`` names for that cause.
+    judge_cut_short: dict[str, JudgeCutShort]
 
 
 def _judge_record(
@@ -584,6 +587,7 @@ def _judge_record(
         judge_cannot_tell=folded.cannot_tell,
         judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
         usage=folded.usage,
+        judge_cut_short=folded.cut_short,
     )
 
 
@@ -2012,6 +2016,7 @@ def _unjudged_record() -> _JudgeRecord:
         judge_cannot_tell={},
         judge_cannot_tell_boundary=[],
         usage=[],
+        judge_cut_short={},
     )
 
 
@@ -2194,6 +2199,7 @@ def assemble_completed_cell(
         judge_error=judged.judge_error,
         judge_cannot_tell=judged.judge_cannot_tell,
         judge_cannot_tell_boundary=judged.judge_cannot_tell_boundary,
+        judge_cut_short=judged.judge_cut_short,
         variant_key=variant.variant_key,
         identity_version=variant.identity_version,
         # Reached the end of the cell. Stated on the success path too, and not only on the
@@ -2312,6 +2318,7 @@ def _cut_short_cell(
             "judge_config_ids": judged.judge_config_ids,
             "judge_error": judged.judge_error,
             "judge_cannot_tell": judged.judge_cannot_tell,
+            "judge_cut_short": judged.judge_cut_short,
         }
         if judged is not None
         else {}
@@ -2805,7 +2812,7 @@ def assert_preconditions(
         seeded: The seeded world, immediately after seeding and before any turn, keyed by declared
             dimension name — read back through the dimensions' ``read`` handles, or named from the
             seed by :meth:`~threetears.evals.kernel.host.world.WorldRegistry.named`. Read with an
-            empty call ledger: at t=0 the candidate has made no call.
+            empty call ledger: at t=0 the candidate has made no call, and no tool has refused one.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.
 
@@ -2818,7 +2825,7 @@ def assert_preconditions(
             held, detail = evaluate_with_detail(
                 precondition.expression,
                 end_state=seeded,
-                ledger=CallLedger(),
+                ledger=CallLedger(refused=[]),
                 world=world,
                 variation=dict(test_case.variation_params),
             )
@@ -2977,7 +2984,8 @@ def grade_goal_checks(
 
     Args:
         expressions: The goal checks, in order.
-        ledger: The calls the candidate made that succeeded — a cell's, or a control's stated calls.
+        ledger: The calls the candidate made that succeeded, and those a tool refused — a cell's, or a control's
+            stated calls.
         end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
             control end state.
         fired: What fired, read by ``fired()`` and ``fired_armed()`` — a cell's

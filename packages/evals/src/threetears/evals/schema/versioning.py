@@ -1,18 +1,39 @@
 """Which stored documents are kept across releases, which are regenerated, and how a kept one is read, old or new.
 
-**The evidence core is kept.** A document the engine cannot regenerate, and that an audit needs, is in the
-core (:data:`CORE_DOC_TYPES`, the ``kept`` entries of :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`):
-the evidence a run produced (its test cases, the run, its results and traces, human calibration ratings, the
-out-of-run spend ledger), the launch inputs those documents name by id (the template, the judge config, the
-rubric dim, their tombstones, and the case set), the campaign a person declared and gathered runs into, and
-the records of what a sweep and each analysis generation came to, which attempt holds a campaign's
-generation slot, and the records of every other job — a launch, a second judge's pass, a judge temperature
-comparison, a host action. A core document is read
-forever from :data:`CORE_BASELINE_VERSION` on: a read of an older core document upgrades it in memory, one
-version at a time, through :data:`CORE_UPGRADERS`, and the result is validated as strictly as a document
-written today. The stored bytes are not touched; the next write of that document (a rescore, an archive
-toggle's read-modify-write) writes the current version, so migration is lazy and a scope may hold documents
-at several core versions at once.
+**The standing rule.** The evidence core is baseline-resettable forever: a version stamp and a refusal of documents
+written by a foreign build, no migration steps. The durable namespace — human labels and ratings, judge configs,
+cases, templates — is the ONLY place a shape change must ship an upgrader; a core baseline reset never touches it.
+
+**The evidence core is kept until its baseline moves.** A document the engine cannot regenerate, that an audit
+needs, and that a run produced or binds is in the core (:data:`CORE_DOC_TYPES`, the ``kept`` entries of
+:data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`): the run, its results and traces, the out-of-run spend
+ledger, the campaign a person declared and gathered runs into, and the records of what a sweep and each analysis
+generation came to, which attempt holds a campaign's generation slot, and the records of every other job — a
+launch, a second judge's pass, a judge temperature comparison, a host action. A core document is read from
+:data:`CORE_BASELINE_VERSION` on: a read of an older core document upgrades it in memory, one version at a time,
+through :data:`CORE_UPGRADERS`, and the result is validated as strictly as a document written today. The stored
+bytes are not touched; the next write of that document (a rescore, an archive toggle's read-modify-write) writes
+the current version, so migration is lazy and a scope may hold documents at several core versions at once. A core
+baseline reset moves :data:`CORE_BASELINE_VERSION` instead, and every core document below it is refused by name and
+deleted (``EvalStorage.reset_core``).
+
+**What people author is durable** (:data:`DURABLE_DOC_TYPES`, the ``durable`` entries of the registry): the
+templates, rubric dims and judge configs (with their tombstones), case sets and test cases, and calibration
+ratings. Its version space is its own, forked from the core at core v15 (:data:`DURABLE_SCHEMA_VERSION`), and it
+obeys every rule below that the core does, with two differences that make it outlive every core baseline:
+
+- **Its baseline never moves.** :data:`DURABLE_BASELINE_VERSION` is 15 forever (``tests/test_durable_schema_pins.py``
+  pins it), so a durable document any release since ``.25`` wrote reads under every later build.
+- **A durable major must ship an upgrader** (:data:`DURABLE_UPGRADERS`); the baseline-reset escape the core has is
+  not available to it. A minor is additive, ending its ledger line with :data:`MINOR_ADDITIVITY_SENTENCE`.
+
+Two rules hold the space together. **An embedded shape takes its document's space**: a ``RubricDim`` in a
+template, a ``JudgeEvidence`` or ``GoalStateOutcome`` in a rating's rated content, is read and pinned under the
+durable version, so a core change to a shape both spaces embed turns the durable pin red too. And **no durable
+document needs a core document to be read, rendered or calibrated**: a durable document's references to core
+documents (a rating's ``run_id`` and ``result_id``) are provenance and may dangle once a reset deletes what they
+name; references the other way (a run's template and judge configs, a result's test case) are fine, because
+durable outlives core.
 
 **Everything else is regenerable.** Analyses, insights and judge profiles are derived from the core, so they keep
 the strict rule they always had: a document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is
@@ -22,10 +43,9 @@ refused on read, and the operator regenerates it.
 ran), refused at any :data:`CASSETTE_SCHEMA_VERSION` but this build's and replaced by a fresh capture under a new
 corpus. Its number moves only when the cassette's own format changes, never with the analysis shapes: an analysis is
 cheap to regenerate from the kept runs, but a corpus is re-captured by calling the third-party tools it exists to
-spare, so a new chart type on a finding must not refuse every corpus a host recorded.
+spare, so a new field on a finding must not refuse every corpus a host recorded.
 
-The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and the identity keys
-(``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
+The bundle (``schema_version``), the cell model and the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
 digest. A kept key is stored beside its pre-image and the identity version that computed
 it — a run's ``variant_levers`` beside the keys its results carry, a campaign control's ``control_levers`` and
 ``control_identity_version`` beside ``control`` — so no upgrader recomputes it. A read under a later
@@ -54,8 +74,10 @@ of its context key, holds the bare config id: the launch writes ``judge.config_i
 the built-in prompt asks. So runs either side of a wording change share their context, and only their results'
 recorded judges tell the two judges apart.
 
-**A core version is a major and a minor.** ``schema_version`` is the major (:data:`CORE_SCHEMA_VERSION`) and
-``schema_minor`` the minor within it (:data:`CORE_SCHEMA_MINOR`); the store addresses documents by the major
+**A core version is a major and a minor**, and so is a durable one; every rule from here to the end of this
+docstring is written for the core and holds for the durable space under its own constants, except that a durable
+major always ships its upgrader. ``schema_version`` is the major (:data:`CORE_SCHEMA_VERSION`) and ``schema_minor``
+the minor within it (:data:`CORE_SCHEMA_MINOR`); the store addresses documents by the major
 alone, so the minor is not one of :data:`CORE_ADDRESSING_FIELDS`. A **minor** is additive and nothing else: a new
 optional field with a default, a new optional sub-object, a new member of an open vocabulary (below), a new doc
 type. It needs no upgrader. A **major** is everything else — a rename, a removal, a type change, a new required
@@ -128,6 +150,8 @@ the document, so extending one is a major. Each, and why:
 - ``RubricScale``, ``RubricAxis``, the scale ``kind`` tags (``nominal``, ``ordinal``, ``interval``) and the
   ``model_default`` temperature — how a score or a level is read; a new scale tag is a new model.
 - ``JudgedArtifact`` — which axes a cell is judged on.
+- ``JudgeDeclaration`` — which judge scores a template dimension; an unknown one would be scored by a judge nobody
+  declared.
 - ``WorldPlacement``, ``WorldEventKind``, ``WorldEventCause`` — what a transcript or a world means to the judge.
 - ``AsyncDeliveryStatus`` — what a delivered count counts.
 - ``CassetteMode`` — replay semantics, and identity.
@@ -175,7 +199,7 @@ downgrader at :meth:`~threetears.evals.schema.base.CoreDocumentModel.to_dict`, w
 per-type minors, which turn :data:`CORE_SCHEMA_MINOR` into a mapping by ``doc_type`` so a change to one embedded
 shape does not restamp every type.
 
-The document field stays ``schema_version`` in all three spaces; ``doc_type`` says which number it is.
+The document field stays ``schema_version`` in all four spaces; ``doc_type`` says which number it is.
 """
 
 from __future__ import annotations
@@ -208,7 +232,23 @@ CORE_SCHEMA_VERSION: int = 15
 #: :data:`MINOR_ADDITIVITY_SENTENCE`; a major resets it to 0.
 #:
 #: - **v15.0** — the baseline minor.
-CORE_SCHEMA_MINOR: int = 0
+#: - **v15.1** — a call ledger keeps the calls a tool refused apart from those that succeeded:
+#:   ``CallLedger.refused``, an optional list of ``RefusedCall`` (tool, action, params, the refusal's reason, and its
+#:   position among the calls), ``None`` by default and read as "no refusal record kept", never as "none refused".
+#:   ``ControlEndState.refused`` (a list of ``RefusedCall``, empty by default) lets a control state refusals, so a
+#:   refusal check is proven against controls as a call check is. Every call builtin keeps reading successes only,
+#:   so no stored verdict moves; ``refused()`` and ``refused_count()`` read the new list and raise on a ledger
+#:   without one, and a re-check keeps a stored outcome of either as stored for such a ledger. A ledger stored at
+#:   v15.0 reads as keeping no refusal record, which is what it is. ``RubricDim.judge`` (``builtin`` |
+#:   ``configured``, default None) declares which judge scores a template dimension; it is left out of the criterion
+#:   fingerprint, and of every digest pre-image while it is None, and None reads as "declared before the field
+#:   existed", which registration and launch refuse rather than guess. ``EvalResult.judge_cut_short`` (default
+#:   ``{}``) records, per dim, a judge reply the provider cut short: its stop reason, the settings the call was sent
+#:   with and its token counts, beside the ``judge_error`` line that already says it in words; it is read only for a
+#:   dim with no score while ``judge_error`` is set, so an older build's re-judge, which scores the dim without
+#:   touching the field, leaves an entry nothing reads.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 1
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -225,7 +265,12 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   includes the request settings its calls were sent with, so a stored judge profile carries
 #:   ``judge_sent_settings`` and its id derives from it, and an analysis's evidence tiers, agreements and bundle carry
 #:   it on every judge they name. Profiles and analyses regenerate from the core; nothing is upgraded.
-REGENERABLE_SCHEMA_VERSION: int = 10
+#: - **v11** — the report is code's (from ``v0.67.0-evaladopt.26``): an analysis stores the evidence bundle it was
+#:   written over (``EvalAnalysis.bundle``); its memo has no headline, summary or chart (``AuthoredAnalysis`` and
+#:   ``FindingResolution`` lose them) and each finding names the trials it is drawn from (``Finding.trials``). A v10
+#:   analysis is refused on read and regenerated. A stored bundle is read at its own ``schema_version``, so a later
+#:   bundle shape bumps this version too.
+REGENERABLE_SCHEMA_VERSION: int = 11
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
 A bump is a drop: regenerable documents written under the old version are refused on read
@@ -257,6 +302,17 @@ CORE_DOC_TYPES: Final[frozenset[str]] = frozenset(
     doc_type for doc_type, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "kept"
 )
 
+#: What people author, by ``doc_type``: the ``durable`` entries of
+#: :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`, derived as :data:`CORE_DOC_TYPES` is. Embedded shapes
+#: (a template's rubric dims, a rating's rated content) are durable through their parent.
+DURABLE_DOC_TYPES: Final[frozenset[str]] = frozenset(
+    doc_type for doc_type, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "durable"
+)
+
+#: Every ``doc_type`` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
+#: What ``EvalStorage.reset_core`` and ``RoutedDocumentStore.reset_core`` sweep, so a host names no table.
+CORE_RESET_DOC_TYPES: Final[frozenset[str]] = frozenset(DOC_TYPE_FACTS) - DURABLE_DOC_TYPES
+
 #: The fields every core document is addressed by in the store.
 _ADDRESSED_EVERYWHERE = frozenset({"id", "doc_type", "schema_version", "scope_id"})
 
@@ -265,20 +321,11 @@ _ADDRESSED_EVERYWHERE = frozenset({"id", "doc_type", "schema_version", "scope_id
 #: an old document's value is what the store matches; renaming one needs a decision and a rewrite of the store.
 CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     {
-        "eval_test_case": _ADDRESSED_EVERYWHERE | {"template_id", "stratum"},
         "eval_run": _ADDRESSED_EVERYWHERE
         | {"status", "archived", "created_at", "cancel_requested_at", "cancel_request_reason"},
         "eval_result": _ADDRESSED_EVERYWHERE | {"eval_run_id", "test_case_id", "model"},
         "eval_trace": _ADDRESSED_EVERYWHERE,
-        "calibration_rating": _ADDRESSED_EVERYWHERE
-        | {"run_id", "result_id", "rated_at", "output_fingerprint", "criterion_fingerprint"},
         "eval_out_of_run_spend": _ADDRESSED_EVERYWHERE | {"purpose", "launch_group_id", "template_id", "created_at"},
-        "eval_template": _ADDRESSED_EVERYWHERE | {"name", "archived", "universal"},
-        "judge_config": _ADDRESSED_EVERYWHERE | {"rubric_dim_id", "archived", "created_at"},
-        "rubric_dim": _ADDRESSED_EVERYWHERE | {"key", "archived", "created_at"},
-        "rubric_dim_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
-        "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
-        "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
         "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
         "eval_sweep": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_analysis_attempt": _ADDRESSED_EVERYWHERE
@@ -291,6 +338,22 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "eval_second_judge_pass": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_judge_temperature_check": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_action_job": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
+    }
+)
+
+#: Per durable type, every field the store reads on the stored bytes, as :data:`CORE_ADDRESSING_FIELDS` is per core
+#: type, and under the same rule: a durable upgrader may not touch one.
+DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {
+        "eval_test_case": _ADDRESSED_EVERYWHERE | {"template_id", "stratum"},
+        "calibration_rating": _ADDRESSED_EVERYWHERE
+        | {"run_id", "result_id", "rated_at", "output_fingerprint", "criterion_fingerprint"},
+        "eval_template": _ADDRESSED_EVERYWHERE | {"name", "archived", "universal"},
+        "judge_config": _ADDRESSED_EVERYWHERE | {"rubric_dim_id", "archived", "created_at"},
+        "rubric_dim": _ADDRESSED_EVERYWHERE | {"key", "archived", "created_at"},
+        "rubric_dim_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
+        "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
+        "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
     }
 )
 
@@ -318,15 +381,110 @@ class CoreUpgrader:
 #: ``range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)``. A constant, so no import registers a step.
 CORE_UPGRADERS: tuple[CoreUpgrader, ...] = ()
 
+#: The first durable version, and the oldest every build reads, forever: it never moves, so a durable document any
+#: release since ``.25`` wrote stays readable (``tests/test_durable_schema_pins.py`` pins it). Below it a document is
+#: pre-release, and is refused by name.
+DURABLE_BASELINE_VERSION: Final[int] = 15
+
+#: The durable version this build writes. Every bump appends one line here and one :class:`CoreUpgrader` to
+#: :data:`DURABLE_UPGRADERS`, which a durable major may never skip.
+#:
+#: The standing rule, the owner's and the consumer's ruling: the evidence core is baseline-resettable forever: a
+#: version stamp and a refusal of documents written by a foreign build, no migration steps. The durable namespace —
+#: human labels and ratings, judge configs, cases, templates — is the ONLY place a shape change must ship an upgrader;
+#: a core baseline reset never touches it.
+#:
+#: - **v15** — the fork from core v15 (``v0.67.0-evaladopt.26``): the eight types people author left the core with
+#:   their shapes and their stored bytes unchanged, so every durable document ``.25`` wrote as core v15 reads here as
+#:   durable v15 with no step, and ``.25`` reads this build's durable documents as core v15 at a newer minor.
+DURABLE_SCHEMA_VERSION: int = 15
+"""The durable major this build writes, and the newest a read of a durable document accepts."""
+
+#: The durable minor this build writes within :data:`DURABLE_SCHEMA_VERSION`, under the core's minor rules. Every
+#: minor appends one line here, ending with :data:`MINOR_ADDITIVITY_SENTENCE`; a major resets it to 0.
+#:
+#: - **v15.0** — the fork: every durable shape exactly as core v15.0 stored it.
+#: - **v15.1** — a calibration rating carries what was rated: ``CalibrationRating.rated`` (a ``RatedOutput``: the
+#:   criterion, the scenario the judge read and the evidence, verified against the rating's own label key), or
+#:   ``rated_withheld``, the stated reason it could not be rebuilt. Both optional; a rating stored without either
+#:   reads as withheld for having been written before labels carried their content. A template's control end state
+#:   may state refusals: ``ControlEndState.refused`` (a list of ``RefusedCall``, empty by default; core v15.1 says
+#:   what it proves), so a template stored at v15.0 reads as its controls stating none. A rubric dimension, on a
+#:   template, in the catalogue or as a rating's criterion, may declare its judge: ``RubricDim.judge`` (default None;
+#:   core v15.1 says what it means), so a dimension stored at v15.0 reads as declared before the field existed.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.2** — a judge test case may be authored rather than frozen from a stored result: the judge case a judge
+#:   template's test case carries in its ``host_payload`` (``JudgeCase``) may name an author in place of a run and
+#:   result (``JudgeCaseSource.authored``, a ``JudgeCaseAuthoring``, default None, left out of the case's content
+#:   digest while None; ``run_id`` and ``result_id`` None only beside it), and its one label is then the author's
+#:   expected verdict, read from no rating (``JudgeCaseLabel.rating_id`` None only there). Every case frozen before
+#:   reads, and digests, as it did. A build at v15.1 refuses an authored case by name when its judge kind reads it,
+#:   and keeps the test case's payload verbatim on every write. An older build that ignores this field reads the
+#:   document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 2
+"""The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
+
+#: The registered durable steps, oldest first: ``[s.from_version for s in DURABLE_UPGRADERS]`` is
+#: ``range(DURABLE_BASELINE_VERSION, DURABLE_SCHEMA_VERSION)``. A constant, so no import registers a step.
+DURABLE_UPGRADERS: tuple[CoreUpgrader, ...] = ()
+
+
+@dataclass(frozen=True)
+class VersionSpace:
+    """One kept version space, as a stored read of a document in it reads: its numbers and its upgrade chain.
+
+    The core and the durable space are read by one mechanism
+    (:meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`), parameterized by the space a model class
+    declares (``version_space``).
+
+    Attributes:
+        name: The space's name, as a refusal states it (``core``, ``durable``).
+        version: The major this build writes, and the newest a read accepts.
+        minor: The minor this build writes within ``version``.
+        baseline: The oldest major a read accepts.
+        upgraders: The chain from ``baseline`` to ``version``.
+    """
+
+    name: str
+    version: int
+    minor: int
+    baseline: int
+    upgraders: tuple[CoreUpgrader, ...]
+
+
+#: The evidence core's space.
+CORE_VERSION_SPACE: Final[VersionSpace] = VersionSpace(
+    name="core",
+    version=CORE_SCHEMA_VERSION,
+    minor=CORE_SCHEMA_MINOR,
+    baseline=CORE_BASELINE_VERSION,
+    upgraders=CORE_UPGRADERS,
+)
+
+#: The durable space.
+DURABLE_VERSION_SPACE: Final[VersionSpace] = VersionSpace(
+    name="durable",
+    version=DURABLE_SCHEMA_VERSION,
+    minor=DURABLE_SCHEMA_MINOR,
+    baseline=DURABLE_BASELINE_VERSION,
+    upgraders=DURABLE_UPGRADERS,
+)
+
 
 class CoreVersionRefused(ValueError):
-    """A stored core document's version is one this build does not read: unreadable, newer, or pre-release."""
+    """A stored core or durable document's version is one this build does not read: unreadable, newer, or below the
+    baseline (pre-release, or from before a core baseline reset)."""
 
 
 def upgrade_document(
-    document: Mapping[str, Any], *, steps: Sequence[CoreUpgrader], current: int, baseline: int
+    document: Mapping[str, Any],
+    *,
+    steps: Sequence[CoreUpgrader],
+    current: int,
+    baseline: int,
+    space: str = "core",
 ) -> dict[str, Any]:
-    """Read a stored core document at its version and return it at ``current``, through ``steps``.
+    """Read a stored core or durable document at its version and return it at ``current``, through ``steps``.
 
     Each step from the stored version up to ``current`` is applied when its ``doc_types`` holds the document's
     ``doc_type``, and the document's ``schema_version`` is then set to the step's ``from_version + 1`` here, so a
@@ -337,6 +495,7 @@ def upgrade_document(
         steps: The upgrade chain (:data:`CORE_UPGRADERS` in production).
         current: The version to read to (:data:`CORE_SCHEMA_VERSION`).
         baseline: The oldest version read (:data:`CORE_BASELINE_VERSION`).
+        space: The version space's name, as a refusal states it.
 
     Returns:
         A new document at ``current``; the input is not modified.
@@ -349,39 +508,42 @@ def upgrade_document(
     doc_type = document.get("doc_type")
     if type(version) is not int:
         raise CoreVersionRefused(
-            f"this {doc_type or 'core'} document's schema_version is {version!r}, not a core version number, so "
+            f"this {doc_type or space} document's schema_version is {version!r}, not a {space} version number, so "
             "this build cannot say which shape it was written in"
         )
     if version > current:
         raise CoreVersionRefused(
-            f"this {doc_type} document was written under core v{version} by a newer build; this build reads core "
-            f"v{baseline} to v{current}, so it refuses rather than guess what the newer fields mean"
+            f"this {doc_type} document was written under {space} v{version} by a newer build; this build reads "
+            f"{space} v{baseline} to v{current}, so it refuses rather than guess what the newer fields mean"
         )
     if version < baseline:
         raise CoreVersionRefused(
-            f"this {doc_type} document was written under core v{version}, before the first public release "
-            f"(core v{baseline}); pre-release documents are not read"
+            f"this {doc_type} document was written under {space} v{version}, below the {space} baseline "
+            f"v{baseline} this build reads from: before the first public release, or before a {space} baseline "
+            "reset; such documents are not read"
         )
     upgraded = dict(document)
     by_version = {step.from_version: step for step in steps}
     for step_from in range(version, current):
         step = by_version.get(step_from)
         if step is None:
-            raise CoreVersionRefused(f"no core upgrader is registered from v{step_from} to v{step_from + 1}")
+            raise CoreVersionRefused(f"no {space} upgrader is registered from v{step_from} to v{step_from + 1}")
         if doc_type in step.doc_types:
             upgraded = step.upgrade(dict(upgraded))
         upgraded["schema_version"] = step_from + 1
     return upgraded
 
 
-def read_core_minor(document: Mapping[str, Any]) -> int:
-    """The minor a stored core document was written at: ``0`` when it carries none, refused when it is not a number.
+def read_core_minor(document: Mapping[str, Any], *, space: str = "core") -> int:
+    """The minor a stored core or durable document was written at: ``0`` when it carries none, refused when it is
+    not a number.
 
     A document stored before a minor existed lacks the key, and reads as its major's first minor, as any optional
     field's absence reads as its default.
 
     Args:
         document: The stored document, as the store returned it.
+        space: The version space's name, as a refusal states it.
 
     Returns:
         Its ``schema_minor``.
@@ -394,7 +556,7 @@ def read_core_minor(document: Mapping[str, Any]) -> int:
     minor = document["schema_minor"]
     if type(minor) is not int or minor < 0:
         raise CoreVersionRefused(
-            f"this {document.get('doc_type') or 'core'} document's schema_minor is {minor!r}, not a core minor "
+            f"this {document.get('doc_type') or space} document's schema_minor is {minor!r}, not a {space} minor "
             "number, so this build cannot say whether it knows every field the document holds"
         )
     return minor
@@ -415,19 +577,51 @@ def upgrade_core_document(document: Mapping[str, Any]) -> dict[str, Any]:
     return upgrade_document(document, steps=CORE_UPGRADERS, current=CORE_SCHEMA_VERSION, baseline=CORE_BASELINE_VERSION)
 
 
+def upgrade_durable_document(document: Mapping[str, Any]) -> dict[str, Any]:
+    """:func:`upgrade_document` with this build's durable chain, version and baseline.
+
+    Args:
+        document: A stored durable document.
+
+    Returns:
+        The document at :data:`DURABLE_SCHEMA_VERSION`.
+
+    Raises:
+        CoreVersionRefused: See :func:`upgrade_document`.
+    """
+    return upgrade_document(
+        document,
+        steps=DURABLE_UPGRADERS,
+        current=DURABLE_SCHEMA_VERSION,
+        baseline=DURABLE_BASELINE_VERSION,
+        space="durable",
+    )
+
+
 __all__ = [
     "CASSETTE_SCHEMA_VERSION",
     "CORE_ADDRESSING_FIELDS",
     "CORE_BASELINE_VERSION",
     "CORE_DOC_TYPES",
+    "CORE_RESET_DOC_TYPES",
     "CORE_SCHEMA_MINOR",
     "CORE_SCHEMA_VERSION",
     "CORE_UPGRADERS",
+    "CORE_VERSION_SPACE",
+    "DURABLE_ADDRESSING_FIELDS",
+    "DURABLE_BASELINE_VERSION",
+    "DURABLE_DOC_TYPES",
+    "DURABLE_SCHEMA_MINOR",
+    "DURABLE_SCHEMA_VERSION",
+    "DURABLE_UPGRADERS",
+    "DURABLE_VERSION_SPACE",
     "MINOR_ADDITIVITY_SENTENCE",
     "REGENERABLE_SCHEMA_VERSION",
     "CoreUpgrader",
     "CoreVersionRefused",
+    "VersionSpace",
     "read_core_minor",
     "upgrade_core_document",
     "upgrade_document",
+    "upgrade_durable_document",
 ]

@@ -41,6 +41,8 @@ from __future__ import annotations
 
 from collections.abc import Collection, Sequence
 from dataclasses import replace
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as distribution_version
 from typing import TYPE_CHECKING, Protocol
 
 from threetears.evals.analysis.agreement import (
@@ -130,6 +132,8 @@ from threetears.evals.analysis.bundle.cell_reads import (
     _cell_strata,
     _judged_measures,
     _results_by_cell,
+    _arm_exclusions,
+    _differential_exclusions,
 )
 from threetears.evals.analysis.bundle.bars import _bar_adjudications, _frontier_bar, _verdict_order
 from threetears.evals.analysis.bundle.cell_notes import (
@@ -144,17 +148,18 @@ from threetears.evals.analysis.bundle.comparisons import (
     _reading_scope,
 )
 from threetears.evals.analysis.bundle.judges import _judge_change
+from threetears.evals.analysis.bundle.trials import trials_and_census
 from threetears.evals.analysis.bundle.time_axis import _time_axis
 from threetears.evals.analysis.bundle.surface import _measure_catalog
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
-    from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate
+    from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, EvalTrace
 
 
 class CampaignReadStore(Protocol):
-    """The eight reads assembling a campaign's context bundle needs.
+    """The nine reads assembling a campaign's context bundle needs.
 
     Cut to what :func:`assemble_context_bundle` calls rather than to what a
     storage layer offers: the bundle reads member runs (in one batch, without the
@@ -162,7 +167,8 @@ class CampaignReadStore(Protocol):
     stratum each of their cases declares, the
     people's calibration ratings of those results, the templates the runs were judged
     against and the scope's stored judge profiles (for the tier of a judge whose own
-    evidence decides none), the subject's prior insights, and — for an insight that names one — whether the
+    evidence decides none), the trace of each trial the bundle keeps (what its case asked and what its judge was
+    handed), the subject's prior insights, and — for an insight that names one — whether the
     analysis that minted it is archived, and writes nothing at all. That flag is read
     because archiving an analysis RETRACTS what it minted (:func:`retracted_insights`),
     and it is a fact about the analysis, not the insight. Only the flag is asked for, so
@@ -231,6 +237,14 @@ class CampaignReadStore(Protocol):
 
     def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
         """Every stored judge profile in a scope — unpaged, since a judge's profile is looked up among them (#628)."""
+        ...
+
+    def load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None:
+        """One result's stored trace, or ``None`` when it has none.
+
+        Read for what each kept trial shows a reader — what its case asked and the tail of what the judge was handed —
+        and only for a result that records a trace (``EvalResult.has_trace``) among the trials the bundle keeps.
+        """
         ...
 
 
@@ -328,6 +342,9 @@ def assemble_context_bundle(
 
     # Deterministic input order → deterministic lens output → stable fingerprint.
     runs = sorted(resolved, key=lambda r: (r.created_at, r.id))
+    # When the campaign's evidence began: its earliest member run, archived ones included (an archived run's results
+    # existed all the same). A question asked after it confirms nothing (`preregistered_questions`).
+    first_run_at = min((run.created_at for run in loaded.values()), default=None)
     # Before any lens reads a descriptor: each host measure is read as its runs were launched to read it, not as
     # whoever reads the campaign now declares it, so every lens below reads one set of declarations.
     profile, launch_declarations = _as_launched(runs, profile)
@@ -635,13 +652,17 @@ def assemble_context_bundle(
         frontier_bar=frontier_bar,
         profile=profile,
     )
-    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design)
+    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design, first_run_at=first_run_at)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
     # the reference, then the arms by name), which the writer reads and the frozen surface keeps.
     control = design.control_arm.variant_key if design.control_arm is not None else None
     names = arm_names(bundle.variant_index)
+    case_strata = {
+        case.id: case.stratum
+        for case in storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
+    }
     bundle.cell_measures = _cell_measures(
         cells,
         results_by_cell,
@@ -650,10 +671,7 @@ def assemble_context_bundle(
         # the cases the results name, and only their strata.
         strata=_cell_strata(
             results_by_cell,
-            {
-                case.id: case.stratum
-                for case in storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
-            },
+            case_strata,
             projection.records,
             campaign.declared_design,
             tiers=bundle.judge_evidence_tiers,
@@ -703,8 +721,39 @@ def assemble_context_bundle(
         contended={
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
+        first_run_at=first_run_at,
     )
-    bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
+    bundle.reading_scope = _reading_scope(
+        campaign.declared_design, bundle.measure_catalog, bundle.judged_measures, first_run_at=first_run_at
+    )
+    # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then
+    # on), and a question asked after that instant confirms nothing (`preregistered_questions`): the same instant.
+    bundle.design_frozen_at = first_run_at
+    # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
+    bundle.exclusions = _arm_exclusions(results_by_cell)
+    bundle.differential_exclusions = _differential_exclusions(bundle.exclusions)
+    # Every trial and each arm's census of them, after the catalog, which names each check and says which scorers
+    # are pass/fail: the countable half of the report, read off the same results every lens above read, each trial
+    # lost or not as `trial_exclusion` (the one classification `exclusions` counts) says.
+    census = trials_and_census(
+        results,
+        arm_order=[
+            *([control] if control is not None else []),
+            *sorted((key for key in names if key != control), key=lambda key: (names[key], key)),
+        ],
+        strata=case_strata,
+        criteria=_criteria(runs, storage, scope_id),
+        rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
+        catalog=bundle.measure_catalog,
+        load_trace=lambda result: storage.load_eval_trace(result.id, scope_id),
+    )
+    bundle.scoreboard = census.scoreboard
+    bundle.trials = census.trials
+    bundle.trials_omitted = census.trials_omitted
+    bundle.case_sets = sorted(
+        {run.case_set for run in runs if run.case_set is not None}, key=lambda ref: (ref.name, ref.version)
+    )
+    bundle.package_version = _package_version()
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
@@ -725,6 +774,35 @@ def assemble_context_bundle(
     # lens reported, and a reader would take that as a claim the campaign made.
     bundle.confound_catalog = _confound_catalog(bundle, profile=profile)
     return bundle
+
+
+def _criteria(runs: Sequence[EvalRun], storage: CampaignReadStore, scope_id: str) -> dict[str, str]:
+    """Each judged dimension's criterion as the member runs' templates word it, by dimension name.
+
+    The words a trial shows beside the judge's score: what the judge was asked. A template that no longer resolves
+    names no criterion, and a dimension two templates word differently keeps the first template's words, by id.
+    """
+    criteria: dict[str, str] = {}
+    for template_id in sorted({run.template_id for run in runs if run.template_id}):
+        template = storage.load_template(template_id, scope_id)
+        if template is None:
+            continue
+        for dimension in template.rubric:
+            criteria.setdefault(dimension.name, dimension.description)
+    return criteria
+
+
+def _package_version() -> str | None:
+    """The installed 3tears-evals version, or None when this build carries no distribution metadata.
+
+    A source tree on the path (the installability check, a vendored checkout) has none; the bundle then says it
+    cannot name its build rather than naming a wrong one.
+    """
+    try:
+        return distribution_version("3tears-evals")
+    except PackageNotFoundError:
+        # NOSILENT: no metadata is a build fact the bundle states as None, and the report prints it as unrecorded
+        return None
 
 
 def _declared_words(declaration: MeasureDeclaration) -> str:

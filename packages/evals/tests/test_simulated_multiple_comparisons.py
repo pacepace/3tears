@@ -381,7 +381,17 @@ def _seeded_campaign(
                 )
         results[run.id] = members
     declaration = minimal_declaration(control=fixture_variant_key(_CONTROL)).model_copy(
-        update={"questions": [Question(id="q-quality", text="is a contrast better?", merit_axes=["quality"])]}
+        # Asked no later than the first run, so it scopes a family (``preregistered_questions``).
+        update={
+            "questions": [
+                Question(
+                    id="q-quality",
+                    text="is a contrast better?",
+                    merit_axes=["quality"],
+                    asked_at=min(run.created_at for run in runs),
+                )
+            ]
+        }
     )
     campaign = EvalCampaign(
         scope_id=runs[0].scope_id,

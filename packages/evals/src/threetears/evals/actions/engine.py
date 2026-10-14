@@ -58,6 +58,7 @@ from threetears.evals.ops import (
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    JudgeCaseAuthor,
     JudgeCasesFreeze,
     JudgeTemplateCreate,
     JudgeProfileListing,
@@ -105,6 +106,7 @@ from threetears.evals.ops import (
     launch_estimate,
     report_read,
     reporter_case_archive,
+    judge_case_author,
     judge_cases_freeze,
     judge_configs_list,
     judge_template_create,
@@ -472,6 +474,10 @@ class JudgeTemplateCreateParams(JudgeTemplateCreate):
 
 class JudgeCasesFreezeParams(JudgeCasesFreeze):
     """``judge_cases_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.JudgeCasesFreeze`."""
+
+
+class JudgeCaseAuthorParams(JudgeCaseAuthor):
+    """``judge_case_author`` — the authoring's own arguments, declared once on :class:`~threetears.evals.ops.JudgeCaseAuthor`."""
 
 
 class JudgeProfilesRecordParams(JudgeProfilesRecord):
@@ -975,6 +981,19 @@ async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesF
     eval_host = host.eval_host
     freeze = JudgeCasesFreeze.model_validate(params.model_dump())
     return await run_blocking(eval_host.blocking_executor, judge_cases_freeze, eval_host, freeze, caller.scope_id)
+
+
+async def _judge_case_author(host: OpsHost, caller: Caller, params: JudgeCaseAuthorParams) -> JudgeCaseFreezeReport:
+    eval_host = host.eval_host
+    case = JudgeCaseAuthor.model_validate(params.model_dump())
+    # The caller authors the case: its verdict is their label, as a rating is its rater's.
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(judge_case_author, author=caller.identity),
+        eval_host,
+        case,
+        caller.scope_id,
+    )
 
 
 async def _judge_profiles_record(
@@ -1611,7 +1630,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="campaign_update",
-            summary="Rename or redescribe a campaign, or declare, amend or withdraw its design.",
+            summary="Rename or redescribe a campaign, or declare, amend or withdraw its design before its first run.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignUpdateParams,
@@ -1642,7 +1661,10 @@ def engine_actions() -> tuple[Action, ...]:
                 "beside a design is refused. control_from_run_id names one of the campaign's runs whose variant "
                 "becomes the control, resolved for you, in the same write as any design sent beside it; null clears "
                 "the control. It needs a declaration — sent here, or already stored — and a design sent here keeps no "
-                "control it does not type or name. Runs join and leave through campaign_runs_add and "
+                "control it does not type or name. Once the campaign holds a run its design is frozen: "
+                "declared_design is refused in any form, and so is re-pointing or clearing the control, which may "
+                "be named once while none is declared; name and description stay editable, and an amended design "
+                "is a new campaign (campaign_create). Runs join and leave through campaign_runs_add and "
                 "campaign_runs_remove."
             ),
         ),
@@ -1964,6 +1986,35 @@ def engine_actions() -> tuple[Action, ...]:
                 "since, is skipped with why. With into_case_set, the next version of that set lists exactly these cases. "
                 "Then run_launch the judge template, one arm per judge (its model, and its overlays config_ids and "
                 "temperature); the trials call only the judge. Calls no model."
+            ),
+        ),
+        Action(
+            name="judge_case_author",
+            summary="Write a judge case by hand: an output, the rubric dimension it is judged on, and its verdict.",
+            workflow=ANALYSE,
+            permission="write",
+            params=JudgeCaseAuthorParams,
+            result=JudgeCaseFreezeReport,
+            handler=_judge_case_author,
+            render=render.render_judge_case_freeze,
+            example={
+                "template_id": "tmpl-judge",
+                "criterion_template_id": "tmpl-extraction",
+                "criterion": "extraction.faithful",
+                "output": '{"invoice_date": "2026-01-03"}',
+                "case_material": "Invoice doc-42\ninvoice_date: 2026-03-01",
+                "expected": "fail",
+                "note": "the date is day-month swapped",
+            },
+            detail=(
+                "Seeds the calibration cases no run stored: a hard negative that must fail a dimension, or an output "
+                "that looks wrong and must pass it. The dimension is named by the subject template whose rubric words "
+                "it, and the judge reads the case as it reads a stored result (that template's intent unless scenario "
+                "is given, the case material, the output). The verdict is 'pass'/'fail' (or 1/0) on a pass/fail "
+                "dimension and 1-5 on an ordinal one; a verdict the scale cannot hold is refused, naming both. The "
+                "verdict is the case's one label and the caller its author, so a judge campaign's agreement and a "
+                "judge profile read it as a labelled case. Authoring the same case again names the stored one. It "
+                "mints no case set: case_set_mint lists the cases a launch runs. Calls no model."
             ),
         ),
         Action(

@@ -119,10 +119,24 @@ def test_the_wipe_reaches_every_tier_and_the_host_s_own_documents() -> None:
     storage.save_eval_run(make_eval_run(scope_id=_ELSEWHERE))
     store.upsert({"id": "note-1", "doc_type": "host_note", "scope_id": _HOME})
 
-    counts = storage.nuke_all_eval_data([_HOME, _ELSEWHERE])
+    counts = storage.nuke_all_eval_data([_HOME, _ELSEWHERE], include_durable=True)
 
     assert store.documents == {}
     assert counts["eval_template"] == 1 and counts["eval_run"] == 1 and counts["host_note"] == 1
+
+
+def test_the_wipe_keeps_what_people_author_unless_asked_by_name() -> None:
+    store = InMemoryDocumentStore()
+    storage = EvalStorage(store, host_doc_types=["host_note"])
+    template = make_template(scope_id=_HOME)
+    storage.save_template(template)
+    storage.save_eval_run(make_eval_run(scope_id=_HOME))
+    store.upsert({"id": "note-1", "doc_type": "host_note", "scope_id": _HOME})
+
+    counts = storage.nuke_all_eval_data([_HOME], include_durable=False)
+
+    assert set(store.documents) == {(_HOME, template.id)}
+    assert "eval_template" not in counts and counts["eval_run"] == 1 and counts["host_note"] == 1
 
 
 def test_the_wipe_touches_only_the_scopes_it_is_named() -> None:
@@ -130,7 +144,7 @@ def test_the_wipe_touches_only_the_scopes_it_is_named() -> None:
     storage.save_template(make_template(scope_id=_HOME))
     storage.save_template(make_template(scope_id=_ELSEWHERE))
 
-    counts = storage.nuke_all_eval_data([_HOME])
+    counts = storage.nuke_all_eval_data([_HOME], include_durable=True)
 
     assert counts["eval_template"] == 1
     assert [key for key in store.documents] == [(_ELSEWHERE, storage.query_templates(_ELSEWHERE)[0].id)]

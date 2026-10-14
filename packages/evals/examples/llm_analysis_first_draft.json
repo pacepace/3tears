@@ -1,14 +1,4 @@
 {
-  "headline": "How the two rule sets compare",
-  "summary": "- One finding, below.",
-  "headline_rests_on": [
-    0
-  ],
-  "summary_rests_on": [
-    [
-      0
-    ]
-  ],
   "findings": [
     {
       "title": "Precision by arm",
@@ -25,19 +15,12 @@
           "reading": "measure"
         }
       ],
-      "chart": {
-        "type": "none",
-        "cells": [],
-        "measures": [],
-        "axis": "",
-        "note": "",
-        "caption": ""
-      },
       "confidence": "low",
       "axes": [],
       "caveats": [],
       "invalidates": [],
-      "durable": ""
+      "durable": "",
+      "trials": []
     }
   ],
   "decisions": [],

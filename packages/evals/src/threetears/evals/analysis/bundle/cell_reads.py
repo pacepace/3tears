@@ -7,6 +7,7 @@ The populations the bars, comparisons and decision surface share — results the
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from threetears.evals.analysis.agreement import (
@@ -37,11 +38,15 @@ from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_rubric_dim
 from threetears.evals.schema.models import SCALES, EvalResult
 from threetears.evals.kernel.result_condition import (
+    DIFFERENTIAL_EXCLUSION_SHARE,
     JUDGE_CANNOT_TELL_OUTCOME,
+    ExclusionCause,
     ResultOutcome,
     classify_result,
     delivered_a_turn,
     harness_faulted,
+    judge_truncated_dims,
+    trial_exclusion,
 )
 from threetears.evals.kernel.surface import (
     CellFacts,
@@ -50,6 +55,8 @@ from threetears.evals.kernel.surface import (
     StratumFacts,
 )
 from threetears.evals.analysis.bundle.schema import (
+    ArmExclusions,
+    DifferentialExclusion,
     JudgedArm,
     JudgedMeasure,
 )
@@ -368,6 +375,89 @@ def _no_turn(members: list[EvalResult]) -> int:
         for result in members
         if classify_result(result) is ResultOutcome.CANDIDATE_FAIL and not delivered_a_turn(result)
     )
+
+
+def _arm_exclusions(results_by_cell: Mapping[_CellKey, list[EvalResult]]) -> list[ArmExclusions]:
+    """Each arm's excluded trials by cause, and the caps the truncated ones' judge calls were sent.
+
+    One entry per cell, in coordinate order, over every result the cell holds, each classified once by
+    :func:`~threetears.evals.kernel.result_condition.trial_exclusion`, the rule pass^k and the composite exclude by,
+    so a count here is the count those measures lost. A ``truncated`` trial's caps are read off its cut-off entries
+    (:func:`~threetears.evals.kernel.result_condition.judge_truncated_dims`), as each call's completion reported what
+    it was sent; one that reported nothing makes the arm's cap unreported rather than guessed.
+
+    Args:
+        results_by_cell: Each cell's results (:func:`_results_by_cell`).
+
+    Returns:
+        The arms' exclusions.
+    """
+    arms: list[ArmExclusions] = []
+    for (variant_key, apparatus_class_id), members in results_by_cell.items():
+        by_cause: Counter[ExclusionCause] = Counter()
+        caps: set[int] = set()
+        unreported = False
+        for result in members:
+            cause = trial_exclusion(result)
+            if cause is None:
+                continue
+            by_cause[cause] += 1
+            if cause == "truncated":
+                for dim in judge_truncated_dims(result):
+                    sent = result.judge_cut_short[dim].sent_settings
+                    if sent is None:
+                        unreported = True
+                    else:
+                        caps.add(sent.max_tokens)
+        arms.append(
+            ArmExclusions(
+                variant_key=variant_key,
+                apparatus_class_id=apparatus_class_id,
+                n_trials=len(members),
+                n_usable=len(members) - sum(by_cause.values()),
+                by_cause=dict(sorted(by_cause.items())),
+                truncated_sent_caps=sorted(caps),
+                truncated_cap_unreported=unreported,
+            )
+        )
+    return arms
+
+
+def _differential_exclusions(arms: Sequence[ArmExclusions]) -> list[DifferentialExclusion]:
+    """Every (arm, cause) where the cause took more than the threshold share of the arm's trials, beside the other arms.
+
+    The threshold is :data:`~threetears.evals.kernel.result_condition.DIFFERENTIAL_EXCLUSION_SHARE`; the other arms
+    named are those under the same rig, the only arms a comparison reads the arm against.
+
+    Args:
+        arms: The arms' exclusions (:func:`_arm_exclusions`).
+
+    Returns:
+        The flags, in the arms' order and then by cause; empty when no cause took more than the threshold anywhere.
+    """
+    flags: list[DifferentialExclusion] = []
+    for arm in arms:
+        for cause, n_excluded in sorted(arm.by_cause.items()):
+            share = n_excluded / arm.n_trials
+            if share <= DIFFERENTIAL_EXCLUSION_SHARE:
+                continue
+            flags.append(
+                DifferentialExclusion(
+                    variant_key=arm.variant_key,
+                    apparatus_class_id=arm.apparatus_class_id,
+                    cause=cause,
+                    n_excluded=n_excluded,
+                    n_trials=arm.n_trials,
+                    share=share,
+                    threshold=DIFFERENTIAL_EXCLUSION_SHARE,
+                    other_arms={
+                        other.variant_key: (other.by_cause.get(cause, 0) / other.n_trials if other.n_trials else 0.0)
+                        for other in arms
+                        if other.apparatus_class_id == arm.apparatus_class_id and other.variant_key != arm.variant_key
+                    },
+                )
+            )
+    return flags
 
 
 def _cannot_tell_on(bar: BarName, counted: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]]) -> int:
