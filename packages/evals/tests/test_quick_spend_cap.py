@@ -1,10 +1,10 @@
-"""``max_cost_usd=`` on ``run_eval`` and ``compare``: a live run capped by the engine's own per-run cost cap.
+"""``max_cost_usd=`` on an ``Eval``: a live run capped by the engine's own per-run cost cap.
 
 With no cap, the run is uncapped as before, and the summary says so in the words the engine's spend-ceiling
 reading uses. With one, ceiling enforcement is on, the launch names the cap (``chosen``), the run's cost cap
 counts every result's reported spend, and a run that passes it stops ``budget_stopped`` between cases, its
-summary saying why. A candidate that reports no spend is invisible to the cap, and the summary says that too.
-``compare`` caps the whole comparison, each arm at an equal share.
+summary saying why. A runner that reports no spend is invisible to the cap, and the summary says that too.
+A comparison's cap is the whole comparison's, each arm at an equal share.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
-from threetears.evals.quick import Answer, callable_host, compare, run_eval
+from threetears.evals import Answer, Eval
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import get_run
 from packages.evals.tests.off_loop import off_loop
 
@@ -36,9 +37,16 @@ async def silent(case: Mapping[str, Any]) -> int:
     return int(case["n"])
 
 
+async def _summary(runner: Any, *, max_cost_usd: float | None = None, **run: Any) -> Any:
+    """The one arm's summary of ``runner`` over the cases graded by ``even``, in memory unless a host is named."""
+    if "host" not in run:
+        run["store"] = ":memory:"
+    return (await Eval(CASES, runner, [even], k=1, max_cost_usd=max_cost_usd).run(scope=SCOPE, **run)).summary
+
+
 async def test_with_no_cap_the_run_is_uncapped_and_the_summary_says_so() -> None:
     host = callable_host([even])
-    summary = await run_eval(CASES, costly, [even], host=host, scope_id=SCOPE, k=1)
+    summary = await _summary(costly, host=host)
     run = off_loop(get_run, host.storage, summary.run_id, SCOPE)
     assert run.max_cost_usd is None and run.max_cost_usd_origin == "uncapped"
     assert summary.status == "completed" and summary.max_cost_usd_origin == "uncapped"
@@ -47,7 +55,7 @@ async def test_with_no_cap_the_run_is_uncapped_and_the_summary_says_so() -> None
 
 async def test_a_cap_stops_the_run_between_cases_once_its_spend_passes_it_and_the_summary_says_why() -> None:
     host = callable_host([even])
-    summary = await run_eval(CASES, costly, [even], host=host, scope_id=SCOPE, k=1, max_cost_usd=0.5)
+    summary = await _summary(costly, host=host, max_cost_usd=0.5)
     run = off_loop(get_run, host.storage, summary.run_id, SCOPE)
     assert (run.max_cost_usd, run.max_cost_usd_origin) == (0.5, "chosen")
     # 30 cents, then 60: the second case passes the cap, so the run stops before the third.
@@ -60,12 +68,12 @@ async def test_a_cap_stops_the_run_between_cases_once_its_spend_passes_it_and_th
 
 
 async def test_a_cap_the_run_stays_under_lets_it_finish() -> None:
-    summary = await run_eval(CASES, costly, [even], scope_id=SCOPE, k=1, max_cost_usd=5.0)
+    summary = await _summary(costly, max_cost_usd=5.0)
     assert summary.status == "completed" and summary.n_results == 4 and summary.max_cost_usd == 5.0
 
 
-async def test_a_cap_over_a_candidate_that_reports_no_spend_says_it_counts_none_of_it() -> None:
-    summary = await run_eval(CASES, silent, [even], scope_id=SCOPE, k=1, max_cost_usd=0.5)
+async def test_a_cap_over_a_runner_that_reports_no_spend_says_it_counts_none_of_it() -> None:
+    summary = await _summary(silent, max_cost_usd=0.5)
     assert summary.status == "completed"
     assert "it counts only spend a result reports, and no result reported any" in summary.render()
 
@@ -74,7 +82,7 @@ async def test_an_unpriced_answer_stops_a_capped_run_rather_than_counting_as_fre
     async def unpriced(case: Mapping[str, Any]) -> Answer:
         return Answer(int(case["n"]), model="paid-model", input_tokens=10, output_tokens=2, cost_usd=None)
 
-    summary = await run_eval(CASES, unpriced, [even], scope_id=SCOPE, k=1, max_cost_usd=5.0)
+    summary = await _summary(unpriced, max_cost_usd=5.0)
     assert summary.status == "budget_stopped" and summary.n_results == 1
     assert summary.stopped_because is not None and "could not be priced" in summary.stopped_because
 
@@ -83,16 +91,16 @@ async def test_an_unpriced_answer_stops_a_capped_run_rather_than_counting_as_fre
 async def test_a_cap_that_is_not_a_positive_number_is_refused_before_anything_runs(cap: Any) -> None:
     host = callable_host([even])
     with pytest.raises(ValueError, match="max_cost_usd= is a spend ceiling in US dollars"):
-        await run_eval(CASES, costly, [even], host=host, scope_id=SCOPE, max_cost_usd=cap)
+        await Eval(CASES, costly, [even], max_cost_usd=cap).run(host=host, scope=SCOPE)
     assert off_loop(host.storage.query_templates, SCOPE) == []
 
 
-async def test_compare_caps_the_whole_comparison_each_arm_at_an_equal_share() -> None:
+async def test_a_comparison_caps_the_whole_comparison_each_arm_at_an_equal_share() -> None:
     async def cheap(case: Mapping[str, Any]) -> Answer:
         return Answer(int(case["n"]), model="cheap-model", input_tokens=10, output_tokens=2, cost_usd=0.01)
 
-    comparison = await compare(
-        CASES, {"cheap": cheap, "costly": costly}, [even], control="cheap", scope_id=SCOPE, k=1, max_cost_usd=1.0
+    comparison = await Eval(CASES, {"cheap": cheap, "costly": costly}, [even], k=1, max_cost_usd=1.0).run(
+        store=":memory:", scope=SCOPE
     )
     cheap_arm, costly_arm = comparison.arms["cheap"], comparison.arms["costly"]
     assert cheap_arm.max_cost_usd == costly_arm.max_cost_usd == 0.5
@@ -103,14 +111,14 @@ async def test_compare_caps_the_whole_comparison_each_arm_at_an_equal_share() ->
     assert "2 paired" in str(row["cases"]) and "2 of the control's left out" in str(row["cases"])
 
 
-async def test_compare_with_no_cap_runs_every_arm_uncapped() -> None:
-    comparison = await compare(CASES, {"a": silent, "b": costly}, [even], control="a", scope_id=SCOPE, k=1)
+async def test_a_comparison_with_no_cap_runs_every_arm_uncapped() -> None:
+    comparison = await Eval(CASES, {"a": silent, "b": costly}, [even], k=1).run(store=":memory:", scope=SCOPE)
     assert all(summary.max_cost_usd_origin == "uncapped" for summary in comparison.arms.values())
 
 
 async def test_a_free_run_with_no_cap_and_no_judge_prints_no_cap_line_and_no_zero_counts() -> None:
     """#700: a newcomer's first run is not handed the cap and rig vocabulary of a setup it does not have."""
-    summary = await run_eval(CASES, silent, [even], k=1)
+    summary = await _summary(silent)
     rendered = summary.render()
     assert summary.max_cost_usd_origin == "uncapped" and "spend cap" not in rendered
     assert f"  {summary.n_results} result(s): {summary.n_results} scored\n" in rendered

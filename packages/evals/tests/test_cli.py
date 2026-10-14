@@ -22,16 +22,17 @@ import pytest
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.analysis import NO_ANALYSIS, AnalysisContextBundle
 from threetears.evals.kernel import CandidateOutput
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact
 from threetears.evals.ops import report_read
+from threetears.evals import Eval
 from threetears.evals.quick import (
     EXIT_FAILED,
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_RUN_DID_NOT_COMPLETE,
-    callable_host,
+    as_host,
     run_cli,
-    run_eval,
 )
 from threetears.evals.quick import cli as quick_cli
 from threetears.evals.run import (
@@ -100,7 +101,7 @@ def test_ls_lists_the_scopes_templates_runs_and_campaigns(capsys: pytest.Capture
 
 
 def test_ls_over_an_empty_store_says_so(capsys: pytest.CaptureFixture[str]) -> None:
-    assert run_cli(["ls", "--scope", "empty"], host_factory=lambda: callable_host([_graded])) == 0
+    assert run_cli(["ls", "--scope", "empty"], host_factory=lambda: _eval_host()) == 0
     assert capsys.readouterr().out.splitlines() == ["templates (0)", "runs (0)", "campaigns (0)"]
 
 
@@ -354,6 +355,16 @@ async def _unused(case: Mapping[str, Any]) -> float:
     return 1.0
 
 
+def _eval() -> Eval:
+    """One case, run by :func:`_unused` and graded by :func:`_graded`."""
+    return Eval([{"q": "a"}], _unused, [_graded])
+
+
+def _eval_host() -> EvalHost:
+    """The host :func:`_eval` runs in, in memory."""
+    return as_host([_eval()], store=":memory:")
+
+
 # --- refusals: each prints its reason to stderr and exits 2 ----------------------------------------
 
 
@@ -421,10 +432,10 @@ def test_report_and_bundle_refuse_a_campaign_the_scope_does_not_hold(
     assert "nope" in capsys.readouterr().err
 
 
-async def test_a_run_eval_host_is_one_the_cli_can_read(capsys: pytest.CaptureFixture[str]) -> None:
-    """``run_eval`` over a host the caller keeps leaves runs ``ls`` lists, so the two batteries meet."""
-    host = callable_host([_graded])
-    summary = await run_eval([{"q": "a"}], _unused, [_graded], scope_id="batteries", host=host)
+async def test_an_eval_host_is_one_the_cli_can_read(capsys: pytest.CaptureFixture[str]) -> None:
+    """An eval run in a host the caller keeps leaves runs ``ls`` lists, so the two batteries meet."""
+    host = _eval_host()
+    summary = (await _eval().run(host=host, scope="batteries")).summary
     capsys.readouterr()
     assert off_loop(run_cli, ["ls", "--scope", "batteries"], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
@@ -434,8 +445,8 @@ async def test_a_run_eval_host_is_one_the_cli_can_read(capsys: pytest.CaptureFix
 async def test_judge_temperature_on_a_host_with_no_clients_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
     """A host that supplies no completion clients cannot run a comparison that calls a model: that is a refusal
     naming the remedy (exit 2), never an unanticipated error with a traceback (exit 3)."""
-    host = callable_host([_graded])
-    summary = await run_eval([{"q": "a"}], _unused, [_graded], scope_id="no-clients", host=host)
+    host = _eval_host()
+    summary = (await _eval().run(host=host, scope="no-clients")).summary
     capsys.readouterr()
     given = ["judge-temperature", summary.run_id, "--scope", "no-clients", "--no-cap", "--estimate"]
     assert off_loop(run_cli, given, host_factory=lambda: host) == EXIT_REFUSED

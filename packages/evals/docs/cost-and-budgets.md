@@ -22,9 +22,9 @@ There, the engine does not spend money it has not priced first:
   can read back.
 
 With enforcement off, runs record themselves as `uncapped` (below) and nothing is refused on price. **The quick
-path (`run_eval`, `compare`) runs with enforcement off:** its candidate is your own function, whose spend the
-engine sees only afterwards and only if you report it (an `Answer`), so no cap could price it first or stop
-it. Bound a quick run's spend inside your candidate or your client.
+path (`Eval`) runs with enforcement off:** its runner is your own function, whose spend the engine sees only
+afterwards and only if it is reported (an `Answer`, or the calls it makes through a `Model`), so no cap could
+price it first or stop it. Bound a quick run's spend inside your runner or your client.
 
 The sections below state each rule exactly.
 
@@ -80,12 +80,12 @@ have spent with it.
 run's ceiling as the level `uncapped`, so two uncapped runs agree and an uncapped run differs from a capped
 one. Only a run that recorded no ceiling and no origin is undecided.
 
-**The quick path's cap.** `run_eval` and `compare` run uncapped unless given `max_cost_usd=`, and the summary
-says which. The cap is the per-run cap above, counting each result's reported spend (the candidate's `Answer`
-and the judge's); `compare` splits it equally across arms. The candidate cannot be priced before it is called, so
+**The quick path's cap.** An `Eval` runs uncapped unless given `max_cost_usd=`, and the summary
+says which. The cap is the per-run cap above, counting each result's reported spend (the runner's, and the
+judge's); an eval of several arms splits it equally across them. The candidate cannot be priced before it is called, so
 the cap is asked before each call, and what its `Answer` reports is counted as soon as it returns; the judge's
 calls are reserved. A run can overshoot by the candidate calls in flight when the cap is reached — one per case
-running. A candidate that returns no `Answer` is invisible to it, and the summary says so.
+running. A runner that returns no `Answer` and calls no `Model` is invisible to it, and the summary says so.
 
 **The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
 the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
@@ -293,11 +293,12 @@ never assumes a provider. Your kind reports its own calls' spend only as usage r
 result's `cost_usd` from those rows and its background work's (`async_deliveries`, see
 [background work](adopting-a-host.md#background-work-payloads-and-spend)).
 
-**A `run_eval` or `compare` candidate reports its spend by returning an `Answer`.** The engine sees only what a
-plain function returns. Return `Answer(value, model=..., input_tokens=..., output_tokens=..., cost_usd=...)`
+**An `Eval`'s runner reports its spend by calling a `Model`, or by returning an `Answer`.** Every call a runner
+makes through `threetears.evals.Model` lands as the cell's `candidate` usage row, priced as the client priced it.
+For any other client the engine sees only what a plain function returns. Return `Answer(value, model=..., input_tokens=..., output_tokens=..., cost_usd=...)`
 and the call becomes the cell's `candidate` usage row: `value` is graded as a plain return would be, the
 result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N call(s)`, and
-`compare` tests the arms' spend against the control. A field left `None` is unreported, not zero.
+an eval of several arms tests their spend against the control. A field left `None` is unreported, not zero.
 Pass `served_model=` too, the model the provider's response named: without it the run records only the model
 asked for, and its summary says which model answered is unconfirmed
 ([Reading reports](reading-reports.md#which-model-answered)).

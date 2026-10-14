@@ -2,8 +2,9 @@
 
 Here the model acts: each case seeds a small world (a room's ``light`` and ``daylight``), the model changes
 it through the world's own tool, and the engine reads the room back after the model's last turn. Goal-state
-checks, code over the end state and the calls made, grade it with no judge. New here: ``world=``, ``seed=``
-and ``goal_checks=``; unlike ``cassettes.py``'s ``tools=``, the tools act on the cell's world. The engine's
+checks, code over the end state and the calls made, grade it with no judge. New here: ``World``, its state a pydantic
+model and its tool a typed function, each case's starting state under ``world``, and goal checks listed among the
+graders as expressions; unlike ``cassettes.py``'s lookups, the tools act on the cell's world. The engine's
 words for this: ``docs/concepts.md`` (World, Goal-state check).
 
 The model acts through the engine's completion protocol, a prompt in and text out, so the loop is the example's
@@ -20,11 +21,12 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from threetears.evals.analysis import EvalSummary
+from pydantic import BaseModel, Field
+
+from threetears.evals import Eval, Result, World
 from threetears.evals.providers import Model
-from threetears.evals.quick import Dimension, World, WorldTool, WorldTools, callable_host, run_eval
 from threetears.evals.run import get_result_trace, list_results, run_blocking
 from threetears.evals.schema import ClientRequestSettings, EvalResult, EvalTrace
 from threetears.evals.testing import RecordedCompletions
@@ -40,32 +42,35 @@ RERECORD = "RECORD=1 python world.py"
 # -----------------------------------------------------------------------------
 
 
-# The model sees this docstring as the tool's description.
-def switch_light(room: dict, to: str) -> str:
+class Room(BaseModel):
+    """The room's state: each field one thing a case seeds and a goal check reads, its description why it matters."""
+
+    light: Literal["on", "off"] = Field(description="The lamp the assistant controls.")
+    daylight: Literal["dark", "bright"] = Field(description="Whether the room needs the lamp at all.")
+
+
+# The model sees this docstring as the tool's description. The world holds each call to the schema of its
+# parameters' types: ``to`` is "on" or "off".
+def switch_light(room: Room, to: Literal["on", "off"]) -> str:
     """Turn the room's light on or off."""
-    room["light"] = to
+    room.light = to
     return f"The light is now {to}."
 
 
-ROOM = World(
-    "room",
-    [
-        Dimension("light", {"enum": ["on", "off"]}, "The lamp the assistant controls."),
-        Dimension("daylight", {"enum": ["dark", "bright"]}, "Whether the room needs the lamp at all."),
-    ],
-    tools=[WorldTool(switch_light, to={"enum": ["on", "off"]})],
-)
+ROOM = World(Room, tools=[switch_light])  # named for its state: ``room``
 
 # -----------------------------------------------------------------------------
-# 2. The cases: each one's starting room, and what the person says.
+# 2. The cases: each one's starting room (``world``), and what the person says. The starting light is stated
+#    beside it too, so a goal check can read it as ``variation.light``.
 # -----------------------------------------------------------------------------
 
-CASES = [
+STARTS = [
     {"light": "off", "daylight": "dark", "ask": "I'm about to read."},
     {"light": "on", "daylight": "dark", "ask": "Make the room comfortable."},
     {"light": "off", "daylight": "bright", "ask": "I'm about to read."},
     {"light": "on", "daylight": "bright", "ask": "Make the room comfortable."},
 ]
+CASES = [{**case, "world": {"light": case["light"], "daylight": case["daylight"]}} for case in STARTS]
 
 # -----------------------------------------------------------------------------
 # 3. The goal-state checks: ``state.*`` reads the room the model left, ``calls(...)`` what it did.
@@ -91,7 +96,19 @@ You act through tools. Answer every turn with one JSON object: to call a tool, p
 arguments, as a JSON object, in "arguments"; when you are done, put "none" in "tool" and what you tell the user in
 "reply". You are told what each call did before your next turn. The tools:
 """
-SYSTEM += "\n".join(f"- {t.name}: {t.description} Arguments: {json.dumps(t.input_schema)}" for t in ROOM.tools.values())
+#: What the model is told each tool takes, as the prompt the recording was made with words it. The world's own schema
+#: of ``to`` (``ROOM.tools["switch_light"].input_schema``) also names its type, which this leaves to the enum.
+ARGUMENTS = {
+    "switch_light": {
+        "type": "object",
+        "properties": {"to": {"enum": ["on", "off"]}},
+        "required": ["to"],
+        "additionalProperties": False,
+    }
+}
+SYSTEM += "\n".join(
+    f"- {t.name}: {t.description} Arguments: {json.dumps(ARGUMENTS[t.name])}" for t in ROOM.tools.values()
+)
 
 #: The shape every turn's reply is held to: a strict JSON schema, sent as each call's ``response_format``.
 TURN = {
@@ -114,7 +131,7 @@ TURN = {
 def assistant(llm: Any) -> Any:
     """A candidate that lets ``llm`` act on the room through its tools, until it calls none."""
 
-    async def act(case: dict, room: WorldTools) -> str:
+    async def act(case: dict, room: Any) -> str:
         user = f"Sensors: {await room.view()}\n\n{case['ask']}"
         for _ in range(4):  # a model that keeps calling tools cannot run up a bill
             turn = json.loads((await llm.generate(system=SYSTEM, user=user, response_format=TURN)).content)
@@ -166,25 +183,20 @@ def how_it_runs(what: str) -> str:
 # -----------------------------------------------------------------------------
 
 
-async def main() -> EvalSummary:
+async def main() -> Result:
     llm = client(MODEL, SETTINGS)
     print(how_it_runs(MODEL) + "\n")
 
-    host = callable_host(world=ROOM)  # kept, so each cell's trace can be read back below
     try:
-        summary = await run_eval(
-            CASES,
-            assistant(llm),
-            host=host,
-            world=ROOM,  # the state each cell seeds and the engine reads back
-            seed=lambda case: {"light": case["light"], "daylight": case["daylight"]},  # each case's starting room
-            goal_checks=GOAL_CHECKS,  # graded against the room the candidate left
-            scope_id="world",
+        ran = await Eval(
+            CASES,  # each case seeds its room from its "world"
+            {MODEL: ROOM(assistant(llm))},  # the candidate, acting on the room; the arm named for its model
+            GOAL_CHECKS,  # graded against the room the candidate left
             k=2,
-            model=MODEL,
-        )
+        ).run(store=":memory:", scope="world")
     finally:
         await llm.aclose()
+    summary, host = ran.summary, ran.host  # the host kept, so each cell's trace can be read back below
     # Each "goal check" line says in how many cells the room ended as the check requires, and how many cases a
     # model that did nothing would pass: a quick run proves no check, so each is marked unproven. The second check
     # passes for doing nothing in every case, so its 8/8 is marked as no measurement at all.
@@ -205,7 +217,7 @@ async def main() -> EvalSummary:
         calls = ", ".join(f"{call.action}(to={call.params['to']})" for call in trace.call_ledger.calls) or "no call"
         failed = ", ".join(FAILED_AS[it.expression] for it in result.goal_state_outcomes if not it.passed) or "ok"
         print(f"  {start:<17} -> {calls:<20} -> {end:<9}  {failed}")
-    return summary
+    return ran
 
 
 if __name__ == "__main__":

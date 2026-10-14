@@ -40,10 +40,22 @@ Import only from these roots, and only the names below: a module under a root is
 
 The eval engine: templates, cases, runs and results; the trial loop, its judge and simulated user; and the analysis over what runs produced.
 
+**Functions**
+
+- **`grader`** · *host contract* · function · Declare what a reading needs beside its grade: `@grader(guard=0.02)`, `grader("total", margin=0.05)`.
+  <br>`grader(target: Callable[[Mapping[str, Any], Any], float | bool] | str | None = None, /, *, margin: float | None = None, guard: float | None = None, range: tuple[float, float] | None = None) -> Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]`
+
 **Classes**
 
+- **`Answer`** · *host contract* · dataclass · What a candidate returns to report its own spend beside its answer.
+- **`Eval`** · *host contract* · class · What is evaluated: the cases, the runner under test, and what counts as right.
+- **`Example`** · *host contract* · dataclass · An answer the judge must grade a known way: one that must fail a dimension, or one that looks wrong and must pass.
+- **`Judge`** · *host contract* · class · A model that grades each answer on a rubric, one call per dimension: a grader in an eval's `grader` list.
+- **`Log`** · *host contract* · class · A runner whose outputs an app pushed to a JSONL file, and the call that pushes one.
 - **`Model`** · *host contract* · class · One model, as the engine's completion client and as three helpers for a runner of your own.
+- **`Result`** · *host contract* · dataclass · What an eval ran — one arm, or every arm of a comparison — and what its campaign's report says.
 - **`RootExtra`** · *host contract* · dataclass · What one optional public root needs installed before it imports: the extra, and the modules it brings.
+- **`World`** · *host contract* · class · A world: state each case seeds and tools the agent changes it with, or a set of lookups the agent calls.
 
 **Constants**
 
@@ -182,7 +194,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`RefusedCall`** · model · One call a candidate made that its tool refused: nothing changed, and the refusal said why.
 - **`RepeatedScore`** · model · One dimension's stored judge score, asked again of the same judge from the same evidence.
 - **`RoleUsage`** · *host contract* · model · Per-role token + cost observation for one `EvalResult`.
-- **`RubricDim`** · model · One judge-scored rubric dimension.
+- **`RubricDim`** · *host contract* · model · One judge-scored rubric dimension.
 - **`RubricDimTombstone`** · model · The record that a rubric dim key was deleted, so a seed never writes it back.
 - **`RubricProposal`** · model · The validated DRAFT the rubric proposer returns for operator review.
 - **`RubricScore`** · model · Outcome of one rubric judge dimension.
@@ -466,6 +478,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`list_metrics(measures: MeasureRegistry, family: MetricFamily | None = None, attribution_scope: AttributionScope | None = None) -> list[MetricDescriptor]`
 - **`materiality`** · function · Whether a difference of `delta` in a measure is large enough to act on.
   <br>`materiality(threshold: float | None, delta: float) -> Materiality`
+- **`note_spend`** · function · Add one completion to the ledger of the runner call in progress; outside a runner call, nothing is kept.
+  <br>`note_spend(completion: CompletionResult) -> None`
 - **`percentile`** · function · Nearest-rank percentile of an already-sorted, non-empty list.
   <br>`percentile(sorted_values: list[float], pct: float) -> float`
 - **`plan_variation_calls`** · function · The one call each of `template`'s `llm` axes makes to generate `n_variations` values, built before any is made.
@@ -1977,80 +1991,37 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 <a id="api-quick"></a>
 ### `threetears.evals.quick`
 
-Batteries: run an eval in one call, and drive the engine from a command line.
+The host bridge: an eval's host, the command line, and a measure declared on the function computing it.
 
 **Functions**
 
+- **`as_host`** · *host contract* · function · A host for these evals: the vocabulary their graders, levers and world need, over one store.
+  <br>`as_host(evals: Sequence[Eval], *, store: DocumentStore | str | os.PathLike[str] | None, clients: CompletionClients | None = None) -> EvalHost`
 - **`build_parser`** · function · The command line's parser.
   <br>`build_parser(prog: str = 'python -m threetears.evals', *, takes_host: bool = True, commands: Sequence[HostCommand] = ()) -> argparse.ArgumentParser`
-- **`callable_host`** · *host contract* · function · The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
-  <br>`callable_host(scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, store: DocumentStore | None = None, clients: CompletionClients | None = None, trace_sink: TraceSink | None = None, guardrails: Mapping[str, Guardrail] | None = None) -> EvalHost`
-- **`callable_kind`** · *host contract* · function · The kind over a plain async candidate and its scorers, for a host of your own to launch.
-  <br>`callable_kind(candidate: Candidate | ToolUsingCandidate, scorers: Sequence[Scorer] = (), *, classifies: bool = False, judge: Judge | None = None, tools: Mapping[str, Tool] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None) -> CandidateKind`
-- **`callable_kind_contracts`** · *host contract* · function · The contracts of both callable kinds, declaring `levers` as each run's levels beside its model.
-  <br>`callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]`
-- **`compare`** · *host contract* · async function · Run each candidate over every case `k` times as one arm, test every arm against `control`, and report.
-  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str | None = None, expected: ExpectedLabel | None = None, stratum_key: str | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None, measure_latency: bool = False) -> Comparison`
 - **`measure`** · *host contract* · function · Declare the measure a function computes, on the function: `@measure(higher_is_better=True, ...)`.
   <br>`measure(*, name: str | None = None, reader_name: str | None = None, description: str | None = None, family: str = 'mechanical', transferability_class: str = 'mechanical', attribution_scope: str = 'end_to_end', data_type: str = 'numeric', **declared: Any) -> Callable[[Callable[..., Any]], Measure]`
 - **`run_cli`** · function · Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
   <br>`run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int`
-- **`run_eval`** · *host contract* · async function · Run `candidate` on every case `k` times, grade each answer with every scorer and the judge, and summarise.
-  <br>`run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str | None = None, expected: ExpectedLabel | None = None, stratum_key: str | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> EvalSummary`
 
 **Classes**
 
-- **`Answer`** · *host contract* · dataclass · What a candidate returns to report its own spend beside its answer.
-- **`Comparison`** · *host contract* · dataclass · What `compare` ran and what its campaign's report says.
-- **`Dimension`** · *host contract* · dataclass · One piece of the world's state.
-- **`Guardrail`** · *host contract* · dataclass · A reading every arm must not get worse on than the control by more than `margin`.
+- **`Grader`** · dataclass · A function or a field with what its reading declares: a margin, a guardrail, or a range.
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
-- **`Judge`** · *host contract* · dataclass · A model that grades each answer on a rubric, one call per dimension.
-- **`JudgeExample`** · *host contract* · dataclass · An answer the judge must grade a known way: one that must fail a dimension, or one that looks wrong and must pass.
+- **`JudgeCalibration`** · dataclass · How a judge's scores on one dimension agree with a person's labels, and the evidence tier that bears.
 - **`Measure`** · class · A function that computes a measure, carrying the measure's declaration.
-- **`ToolRefused`** · exception · A tool call the world did not make: no such tool, or parameters its schema refuses. Nothing changed.
-- **`World`** · *host contract* · class · A small world: named state each case seeds, and tools the candidate changes it with.
-- **`WorldTool`** · *host contract* · class · One action the candidate can take on the world: a function of the state and its parameters.
-- **`WorldTools`** · *host contract* · class · What the candidate holds of its cell's world: the tools, bound to it, and a view of it.
+- **`WorldOutcome`** · model · What a world runner's graders see: the agent's answer, the state it left, and the calls it made.
+- **`WorldRunner`** · dataclass · A runner that hosts an agent on a world: `World(...)(agent)`.
 
 **Types**
 
-- **`ArmKey`** · *host contract* · type alias · An arm's key: its name, which is its model, when `compare` is given no `factors`; with them, its level of each factor, in the order `factors` names them.
-  <br>`str | tuple[str, ...]`
-- **`Candidate`** · type alias · The candidate under test: a callable taking one case and returning its answer — usually `async def`; a plain `def` is called in a worker thread (`run_eval`), and a callable returning an awaitable has it awaited.
-  <br>`Callable[[Mapping[str, Any]], Awaitable[Any] | Any]`
-- **`CandidateTools`** · *host contract* · type alias · What a tool-using candidate is handed beside its case: each declared tool by name, as an async function of keyword arguments returning the tool's JSON answer.
-  <br>`Mapping[str, Callable[..., Awaitable[Any]]]`
-- **`CaseMaterial`** · type alias · Renders the material one case's answer is judged against: takes the case, returns non-blank text.
-  <br>`Callable[[Mapping[str, Any]], str]`
-- **`CaseSeed`** · type alias · A case's starting state: takes the case, returns dimension name to value.
-  <br>`Callable[[Mapping[str, Any]], Mapping[str, Any]]`
-- **`ExpectedLabel`** · type alias · A classifier's expected label for one case: takes the case, returns the label a correct answer gives.
-  <br>`Callable[[Mapping[str, Any]], str]`
-- **`GuardrailDirection`** · literal · Which way is better on a guardrail, in the words a campaign's bar declares its own direction in.
-  <br>`'higher_is_better'` | `'lower_is_better'`
 - **`HostFactory`** · type alias · What names the host the commands work in: called once, with no arguments, per invocation.
   <br>`Callable[[], EvalHost | LaunchHost]`
-- **`Scorer`** · type alias · One grade: takes the case and the candidate's answer, returns a number (`True`/`False` count as 1 and 0).
-  <br>`Callable[[Mapping[str, Any], Any], float | bool]`
-- **`Tool`** · type alias · A tool a candidate calls: a function of keyword arguments returning a JSON value, sync or async.
-  <br>`Callable[..., Any]`
-- **`ToolUsingCandidate`** · type alias · A candidate that calls tools: an async callable taking one case and its tools, returning its answer.
-  <br>`Callable[[Mapping[str, Any], CandidateTools], Awaitable[Any]]`
-- **`WorldCandidate`** · type alias · A world candidate: an async callable taking one case and the tools on its cell's world.
-  <br>`Callable[[Mapping[str, Any], WorldTools], Awaitable[Any]]`
 
 **Constants**
 
-- **`ARM_LEVER`** · constant (str) · The lever a single-factor `compare` names its arms on, declared by `callable_host(arms=True)`: each arm's run states its name as its level, so the report calls the arm `candidate=<name>` rather than calling the name a model.
-  <br>`= 'candidate'`
-- **`CALLABLE_KIND`** · *host contract* · constant (str) · The kind `run_eval` launches, as its template names it.
-  <br>`= 'callable'`
-- **`CALLABLE_KIND_CONTRACT`** · constant (KindContract) · The callable kind's contract: no overlays, no spec, and no rig seat — nothing in a `run_eval` run is graded by a model or talks to a simulated user.
 - **`DEFAULT_PROG`** · constant (str) · The program name the command line prints when it is run as `python -m threetears.evals`.
   <br>`= 'python -m threetears.evals'`
-- **`DEFAULT_QUICK_SCOPE`** · constant (str) · The scope a quick call with no host of its own stores its runs in when it is named none: the call's store is in memory and lives only as long as the call, so no other run can share it by accident.
-  <br>`= 'quick'`
 - **`ENGINE_COMMANDS`** · constant (tuple) · The commands the engine itself carries; a host command may take none of these names.
 - **`EXIT_FAILED`** · constant (int) · Exit code: the command failed on an error nothing anticipated — a host factory, a launcher or a handler raising, or the engine's own fault.
   <br>`= 3`
@@ -2062,10 +2033,6 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`= 2`
 - **`EXIT_RUN_DID_NOT_COMPLETE`** · constant (int) · Exit code: a launched run did not complete.
   <br>`= 1`
-- **`JUDGED_CALLABLE_KIND`** · constant (str) · The kind `run_eval` launches when it is handed a judge: the callable, its answers judged as documents.
-  <br>`= 'callable-judged'`
-- **`UNUSABLE_ANSWER`** · constant (str) · The predicted label a classifier's answer is counted under when it is not a usable label: not a string, or a blank one.
-  <br>`= '(unusable answer)'`
 
 <a id="api-ops"></a>
 ### `threetears.evals.ops`
@@ -3188,6 +3155,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 `python -m threetears.evals <command> --host MODULE:FACTORY --scope SCOPE [options]`
 
 A product mounting the commands under its own CLI (`run_cli(host_factory=...)`) drops `--host`. Every command takes `--scope`.
+
+`python -m threetears.evals FILE.py|FILE.toml [--verbose]` runs every eval the file declares instead: each prints its result, writes its report to `.evals/reports/<name>/` and exits with the codes below.
 
 Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an unanticipated error; 4 the gate failed.
 

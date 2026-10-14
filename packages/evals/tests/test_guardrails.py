@@ -236,7 +236,7 @@ class TestAMeasureDeclaredAGuardrail:
         assert check.interval is not None and check.interval[1] < 1.0, "the t interval would have read held"
         assert (check.decision, check.interval_basis) == ("undecided", "t")
         assert check.undecided_reason == GUARDRAIL_HELD_NEEDS_RANGE
-        assert "declare value_range" in check.undecided_reason and "ranges=" in check.undecided_reason
+        assert "declare value_range" in check.undecided_reason and "range=" in check.undecided_reason
         assert bundle.guardrails.of_arm(check.contrast.variant_key).held == []
 
     def test_with_no_declared_range_a_rise_with_no_spread_names_the_remedy(self):

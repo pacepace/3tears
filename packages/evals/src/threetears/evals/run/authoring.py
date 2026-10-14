@@ -344,7 +344,7 @@ def refuse_undeclared_judges(
     the declaration or a scope that moved since, every launch before any spend. Before it, a dimension with no
     active config was scored by the engine's built-in prompt and a run recorded ``builtin:<sha>`` with nothing
     saying a configured judge had been meant. The quick path declares its own dimensions (a
-    :class:`~threetears.evals.quick.Judge` is the built-in judge by construction), so it meets this without a field
+    :class:`~threetears.evals.quick.judged.Judge` is the built-in judge by construction), so it meets this without a field
     to fill.
 
     Every defective dimension is named in the one error (:func:`judge_declaration_defects`), so an author fixing a

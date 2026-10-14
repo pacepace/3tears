@@ -31,7 +31,7 @@ from threetears.evals.kernel.result_condition import (
     trial_exclusion,
 )
 from threetears.evals.negotiation import SettingFacts, closest_settings, wire_settings_for
-from threetears.evals.quick import Judge, compare
+from threetears.evals import Eval, Judge
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS, list_results
 from threetears.evals.run.judge import (
     JUDGE_ANSWER_BUDGET_TOKENS,
@@ -39,7 +39,7 @@ from threetears.evals.run.judge import (
     JUDGE_REASONING_HEADROOM_TOKENS,
     run_judge_llm,
 )
-from threetears.evals.schema import ClientRequestSettings, JudgeCutShort, StopReason
+from threetears.evals.schema import ClientRequestSettings, JudgeCutShort, RubricDim, StopReason
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
 
@@ -70,6 +70,8 @@ class _Reply:
 # parity-with: threetears.evals.schema.CompletionClient
 class _FakeCuttingJudge:
     """A judge that runs out of room on every answer saying LONG, and scores every other answer 4."""
+
+    model_name = "scripted/judge"
 
     def __init__(self, *, sent: ClientRequestSettings | None = JUDGE_REQUEST_SETTINGS) -> None:
         self.calls: list[str] = []
@@ -185,13 +187,11 @@ async def _control(case: Mapping[str, Any]) -> str:
 
 
 async def _compare(long_cases: int, judge: _FakeCuttingJudge) -> Any:
-    comparison = await compare(
-        _CASES,
-        {"control": _control, "challenger": _challenger(long_cases)},
-        control="control",
-        judge=Judge(client=judge, model="scripted/judge", rubric={"helpful": "It helps."}),
-        k=1,
-    )
+    # Scored 1-5, as the judge answers every answer it can finish.
+    rubric = [RubricDim(name=DIM, description="It helps.", scale="ordinal")]
+    comparison = await Eval(
+        _CASES, {"control": _control, "challenger": _challenger(long_cases)}, [Judge(judge, rubric)], k=1
+    ).run(store=":memory:")
     campaign = off_loop(get_campaign, comparison.host.storage, comparison.campaign_id, comparison.scope_id)
     bundle = off_loop(
         assemble_context_bundle, campaign, storage=comparison.host.storage, profile=comparison.host.profile

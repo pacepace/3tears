@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Final, Self, get_args
 import httpx
 from pydantic import BaseModel
 
-from threetears.evals.kernel import strict_response_format
+from threetears.evals.kernel import note_spend, strict_response_format
 from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.negotiation import (
     ANTHROPIC_MIN_THINKING_BUDGET,
@@ -384,6 +384,10 @@ class Model:
     not exist yet is recorded live. A replay serves only calls recorded under the same model and request settings,
     and refuses any other by name (:class:`~threetears.evals.testing.RecordingRefused`).
 
+    **Spend.** A call made inside an eval's runner call, live or replayed, is added to that call's spend
+    (:func:`~threetears.evals.kernel.note_spend`), so a runner that calls a model reports what it cost with no
+    ``Answer``.
+
     Attributes:
         model_name: The model id, which every completion is attributed to.
         provider: The provider it goes to.
@@ -518,7 +522,10 @@ class Model:
             ValueError: ``response_format`` is not a directive the client sends.
             RecordingRefused: The recording holds no answer for the call.
         """
-        return await self._client.generate(system=system, user=user, response_format=response_format)
+        completion = await self._client.generate(system=system, user=user, response_format=response_format)
+        # Inside an eval's runner call, what the call spent is the runner's, reported with no Answer.
+        note_spend(completion)
+        return completion
 
     async def text(self, user: str, *, system: str | None = None) -> str:
         """The reply to ``user``, as text.

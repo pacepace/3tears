@@ -42,7 +42,10 @@ port, so it may import schema, kernel and itself, ``run`` for the request settin
 the one replay format (``RecordedCompletions``, behind ``recording=``), ``negotiation``, and past the stdlib only
 ``httpx`` and pydantic: no SDK, no LangChain, no other 3tears package. Nothing in the engine, and nothing above it,
 imports it, which keeps the engine provider-neutral (``tests/test_providers_boundary.py`` holds the same from the
-client's side, name by name); the package root re-exports its ``Model``, loaded by name on first read.
+client's side, name by name); the package root re-exports its ``Model``, loaded by name on first read, and ``quick``
+builds one, inside the function that needs it, where an eval names a model by id (a ``Judge(model="...")``, a TOML
+file's ``model``), so importing ``quick`` loads no client. Its spend inside a runner call reaches ``quick`` through
+``kernel`` (``note_spend``), never by ``quick`` importing it.
 
 ``negotiation`` is how a completion client sends the closest request settings a model takes and answers a
 provider's refusal of one: the shipped client uses it, and so does a host's own client, which is why it is a base
@@ -57,11 +60,17 @@ port, but the reader kit derives identities and reads a host profile. And it rea
 the engine, because the jobs conformance kit runs a catalogue's actions and polls their jobs as a transport does;
 nothing reaches ``testing``, so this adds no edge into the engine.
 
-``quick`` is the batteries: ``run_eval`` and the command line. It is the one package that COMPOSES
+``quick`` is the batteries: ``Eval`` and the command line. It is the one package that COMPOSES
 the others -- a launch from ``run``, a report from ``analysis``, the reference store from ``storage``
 -- which is why it is a package of its own rather than a module of ``run``: ``run`` building the
-in-memory store would be the engine reaching an adapter. Nothing imports ``quick``, so composing
-sits above everything it composes. ``python -m threetears.evals`` (``__main__``) is held to its row.
+in-memory store would be the engine reaching an adapter. Nothing in the engine imports ``quick``, so
+composing sits above everything it composes. ``python -m threetears.evals`` (``__main__``) is held to its
+row. It reaches ``providers`` for one thing: a model named by id is built as the shipped client's ``Model``.
+
+**The root** (``threetears.evals``) is held to a row of its own: the schema, the quick path whose names
+(``Eval``, ``Judge``, ...) and ``providers``, whose ``Model``, its module ``__getattr__`` serves on first use, so
+``import threetears.evals`` loads none of the engine. Nothing in the package imports the root: ``testing`` above
+all, which the root's lazy names would otherwise close a cycle through.
 
 No row names a 3tears package: the engine depends on none. Its loggers are stdlib loggers, taken from
 :mod:`threetears.evals.schema.logs`, which every package may import.
@@ -70,8 +79,8 @@ No row names a 3tears package: the engine depends on none. Its loggers are stdli
 directory: ``threetears/evals/schema/``, ``kernel/``, ``run/``, ``analysis/``, ``gen/``, ``storage/``,
 ``testing/`` or ``quick/``. The two markers the path cannot place -- the ``threetears.evals`` root and its
 ``__main__`` -- are placed by name in :data:`~packages.evals.tests.package_placement.TREE_MARKERS`, the root
-held to a row of its own (``root``: the schema, and ``providers``, whose ``Model`` it exports lazily) and ``__main__``
-to quick's. The rule
+held to a row of its own (``root``: the schema, ``quick`` and ``providers``, whose names it exports lazily) and
+``__main__`` to quick's. The rule
 itself lives in :mod:`packages.evals.tests.package_placement`.
 
 **What is checked:**
@@ -126,14 +135,14 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "gen": frozenset({"schema", "kernel", "gen"}),
     "storage": frozenset({"schema", "storage"}),
     "testing": frozenset({"schema", "kernel", "ops", "actions", "testing"}),
-    "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "quick"}),
+    "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "providers", "quick"}),
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
     "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
     "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
     "providers": frozenset({"schema", "kernel", "run", "testing", "negotiation", "providers"}),
     "negotiation": frozenset({"schema", "negotiation"}),
-    # The package root: the schema, and the roots whose names it exports lazily (`providers`' `Model`).
-    "root": frozenset({"schema", "providers"}),
+    # The package root: the schema, and what it exports lazily (the quick path's names, and `providers`' `Model`).
+    "root": frozenset({"schema", "quick", "providers", "root"}),
 }
 
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
@@ -147,6 +156,7 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "storage": frozenset(),
     "testing": frozenset(),
     "quick": frozenset({"pydantic"}),
+    "root": frozenset(),
     "ops": frozenset({"pydantic"}),
     "actions": frozenset({"pydantic"}),
     "transports": frozenset({"pydantic"}),
@@ -154,7 +164,6 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "providers": frozenset({"httpx", "pydantic"}),
     # The stdlib alone: what a host's own client of raw HTTP imports beside its own transport.
     "negotiation": frozenset(),
-    "root": frozenset(),
 }
 
 #: The module-level third-party exceptions, one per extra: the FastMCP transport and nothing else may import
@@ -373,8 +382,9 @@ class RootViolation(NamedTuple):
 
 
 def public_api(root: Path) -> dict[str, frozenset[str]]:
-    """Each public root's ``__all__``, read from its ``__init__.py`` without importing it.
+    """Each public root's ``__all__``, and the package's own, read from its ``__init__.py`` without importing it.
 
+    The package itself declares the quick path's names (``Eval``, ``Judge``, ...), which a consumer imports from it.
     Read statically so the check works on a synthetic tree and on a root whose import would fail,
     which is the state a broken root is in. A root with no literal ``__all__`` declares nothing.
 
@@ -385,8 +395,8 @@ def public_api(root: Path) -> dict[str, frozenset[str]]:
         Absolute root module name -> the names it declares public.
     """
     declared: dict[str, frozenset[str]] = {}
-    for relative in PUBLIC_ROOTS:
-        init = root.joinpath("threetears", "evals", *relative.split("."), "__init__.py")
+    for relative in ("", *PUBLIC_ROOTS):
+        init = root.joinpath("threetears", "evals", *(relative.split(".") if relative else ()), "__init__.py")
         names: frozenset[str] = frozenset()
         if init.is_file():
             for node in ast.parse(init.read_text(encoding="utf-8")).body:
@@ -452,9 +462,9 @@ def public_root_violations(
     Runtime, ``TYPE_CHECKING`` and function-level imports all count, and relative imports are
     resolved. Four shapes are refused: a whole-module import of anything in a package (it grants
     every name the module grows), a ``from`` import out of a module that is not a public root (a
-    submodule reached past its root, or the ``threetears.evals`` marker handing out a package as a
-    module), a name the root does not declare in ``__all__``, and a string literal that is a dotted
-    path below a root (:func:`_string_addressed_imports`).
+    submodule reached past its root), a name the root does not declare in ``__all__`` (the
+    ``threetears.evals`` package declares the quick path's names, and hands out no package as a module), and a
+    string literal that is a dotted path below a root (:func:`_string_addressed_imports`).
 
     Args:
         root: The directory holding the ``threetears`` namespace, for the roots' ``__all__``.
@@ -656,6 +666,8 @@ _BASE_FILES = {
     "threetears/evals/kernel/scoring.py": "",
     "threetears/evals/ops/lenses.py": "",
     "threetears/evals/negotiation/loop.py": "",
+    "threetears/evals/quick/contract.py": "",
+    "threetears/evals/providers/__init__.py": "",
 }
 
 
@@ -732,6 +744,15 @@ _BASE_FILES = {
             "threetears.evals.kernel.scoring",
             "kernel",
         ),
+        # The client never reaches the quick path that builds it: the edge runs one way.
+        (
+            "threetears/evals/providers/model.py",
+            "from threetears.evals.quick.contract import Eval\n",
+            "threetears.evals.quick.contract",
+            "quick",
+        ),
+        # Nothing reaches the root, whose lazy names would close a cycle: the replay format above all.
+        ("threetears/evals/testing/recorded.py", "from threetears.evals import Model\n", "threetears.evals", "root"),
     ],
 )
 def test_the_matrix_refuses_each_forbidden_edge(
@@ -763,6 +784,11 @@ def test_the_matrix_refuses_each_forbidden_edge(
             "from threetears.evals.schema.models import M\nfrom . import loop\n",
         ),
         ("threetears/evals/providers/model.py", "from threetears.evals.negotiation.loop import negotiate\n"),
+        # The root serves the quick path's names, and the client's Model, on first use, from the module defining each.
+        ("threetears/evals/__init__.py", "def f():\n    from threetears.evals.quick.contract import Eval\n"),
+        ("threetears/evals/__init__.py", "def f():\n    from threetears.evals.providers import Model\n"),
+        # quick builds the client's Model where an eval names a model by id.
+        ("threetears/evals/quick/judged.py", "def f():\n    from threetears.evals.providers import Model\n"),
     ],
 )
 def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, source: str) -> None:

@@ -29,8 +29,8 @@ Decided with the fix that made `held` a bounded test's claim (no issue filed yet
 
 `held` is a claim of safety. With no declared range no test of a mean holds its error rate at a few cases, and the
 t interval the engine read it off claimed `held` up to 9.5% of the time against 2.5% at the margin on skewed coarse
-values. Such a guardrail now reads `undecided`, with the reason "declare value_range on this measure (on compare(),
-ranges= beside the scorer)". Fix, on the host's side: declare the reading's range. A pass/fail scorer and a judged
+values. Such a guardrail now reads `undecided`, with the reason "declare value_range on this measure (on an eval,
+grader(..., range=) beside the guard)". Fix, on the host's side: declare the reading's range. A pass/fail scorer and a judged
 scale declare theirs already.
 
 **The breach on such a reading is still the t interval's, and its rate is not guaranteed.** Simulated at 30 cases

@@ -447,6 +447,11 @@ def cli_section() -> Iterator[str]:
         "Every command takes `--scope`."
     )
     yield ""
+    yield (
+        f"`{cli.DEFAULT_PROG} FILE.py|FILE.toml [--verbose]` runs every eval the file declares instead: each prints "
+        "its result, writes its report to `.evals/reports/<name>/` and exits with the codes below."
+    )
+    yield ""
     exit_codes = [p for p in paragraphs(cli.__doc__) if p.startswith("Exit codes")]
     if not exit_codes:
         raise SystemExit(

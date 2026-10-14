@@ -1,9 +1,10 @@
-"""``run_eval`` with a judge: a rubric scored by the engine's judge, its evidence and spend recorded as any judged run's.
+"""``Eval`` with a judge: a rubric scored by the engine's judge, its evidence and spend recorded as any judged run's.
 
 The judge here is scripted: it reads the dimension it was asked for off the system prompt and the
 answer off the user prompt, and scores the answer by what it says, so every score below is a function
 of the evidence the callable kind rendered and the engine's judge service forwarded. The tests that
-count calls pass ``k=1``, so each count is one per case per dimension.
+count calls pass ``k=1``, so each count is one per case per dimension. The rubric is scored 1 to 5,
+stated on each dimension (a rubric given as a mapping is pass/fail).
 """
 
 from __future__ import annotations
@@ -17,16 +18,15 @@ from typing import Any, Self
 
 import pytest
 
+from threetears.evals import Eval, Example, Judge
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
 from threetears.evals.kernel.host import EvalHost, KindContract
-from threetears.evals.quick import (
+from threetears.evals.quick.one_call import (
     CALLABLE_KIND_CONTRACT,
     JUDGED_CALLABLE_KIND,
-    Judge,
+    JUDGED_CALLABLE_KIND_CONTRACT,
     callable_host,
-    run_eval,
 )
-from threetears.evals.quick.one_call import JUDGED_CALLABLE_KIND_CONTRACT
 from threetears.evals.analysis import summarize_run
 from threetears.evals.run import (
     get_result_trace,
@@ -38,12 +38,15 @@ from threetears.evals.run import (
 )
 from packages.evals.tests.off_loop import off_loop
 
-SCOPE = "run-eval-judged-tests"
+SCOPE = "eval-judged-tests"
 CASES = [{"question": "What is two plus two?"}, {"question": "What is the capital of France?"}]
 ANSWERS = {"What is two plus two?": "4", "What is the capital of France?": "I am not sure."}
 RUBRIC = {"helpful": "The answer resolves the question.", "honest": "The answer claims nothing it cannot support."}
 JUDGE_MODEL = "scripted/judge"
 JUDGE_COST_USD = 0.0003
+
+#: Where an eval with no host of its own keeps its runs in these tests: memory, for the test alone.
+MEMORY = ":memory:"
 
 
 async def answer(case: Mapping[str, Any]) -> str:
@@ -76,6 +79,7 @@ class _FakeJudgeClient:
     """A judge that gives a committed answer 5 and a hedge 2, or a reply set up per test."""
 
     def __init__(self, *, priced: bool = True, reply: str | None = None) -> None:
+        self.model_name = JUDGE_MODEL
         self.calls: list[tuple[str, str]] = []
         self.aclose_calls = 0
         self._priced = priced
@@ -106,14 +110,27 @@ class _FakeJudgeClient:
         await self.aclose()
 
 
+def _ordinal(rubric: Mapping[str, str]) -> list[RubricDim]:
+    """A rubric's dimensions scored 1 to 5, each named under ``answer.`` as a Judge names a bare key."""
+    return [RubricDim(name=f"answer.{name}", description=said, scale="ordinal") for name, said in rubric.items()]
+
+
 def _judge(client: _FakeJudgeClient, **overrides: Any) -> Judge:
-    return Judge(client=client, model=JUDGE_MODEL, rubric=overrides.pop("rubric", RUBRIC), **overrides)
+    rubric = overrides.pop("rubric", RUBRIC)
+    return Judge(client, _ordinal(rubric) if isinstance(rubric, Mapping) else rubric, **overrides)
+
+
+async def _summary(cases: Any, runner: Any, graders: list[Any], **run: Any) -> Any:
+    """The one arm's summary of an eval run with ``k=1``, in memory unless a host is named."""
+    if "host" not in run:
+        run["store"] = MEMORY
+    return (await Eval(cases, runner, graders, k=1).run(scope=SCOPE, **run)).summary
 
 
 async def test_each_dimension_is_scored_by_the_engines_judge_and_summarised_beside_the_scorers() -> None:
     client = _FakeJudgeClient()
     host = callable_host([short])
-    summary = await run_eval(CASES, answer, [short], judge=_judge(client), scope_id=SCOPE, host=host, k=1)
+    summary = await _summary(CASES, answer, [short, _judge(client)], host=host)
 
     assert (summary.status, summary.n_scored, summary.n_excluded) == ("completed", 2, 0)
     assert [measure.name for measure in summary.measures] == ["short"]
@@ -148,7 +165,7 @@ async def test_the_judge_reads_the_answer_against_the_case_material_and_the_trac
     client = _FakeJudgeClient()
     host = callable_host()
     judge = _judge(client, case_material=lambda case: f"Reference: arithmetic.\nQuestion: {case['question']}")
-    summary = await run_eval(CASES[:1], answer, judge=judge, scope_id=SCOPE, host=host, k=1)
+    summary = await _summary(CASES[:1], answer, [judge], host=host)
 
     _, user = client.calls[0]
     assert "Reference: arithmetic.\nQuestion: What is two plus two?" in user
@@ -167,7 +184,7 @@ async def test_without_case_material_the_judge_reads_the_case_as_json_and_a_non_
     async def structured(case: Mapping[str, Any]) -> dict[str, Any]:
         return {"answer": 4}
 
-    await run_eval(CASES[:1], structured, judge=_judge(client), scope_id=SCOPE, k=1)
+    await _summary(CASES[:1], structured, [_judge(client)])
     _, user = client.calls[0]
     assert '{\n  "question": "What is two plus two?"\n}' in user
     assert user.endswith('# Output under review\n{\n  "answer": 4\n}')
@@ -182,9 +199,7 @@ async def test_without_case_material_a_classifier_s_judge_never_reads_the_answer
     async def classify(case: Mapping[str, Any]) -> str:
         return "billing"
 
-    summary = await run_eval(
-        cases, classify, judge=_judge(client), expected=lambda case: case["queue"], scope_id=SCOPE, host=host, k=1
-    )
+    summary = await _summary(cases, classify, ["queue", _judge(client)], host=host)
     sent = {user.split("# Output under review\n", 1)[0] for _, user in client.calls}
     assert len(sent) == 1 and len(client.calls) == 2
     (material_sent,) = sent
@@ -205,7 +220,7 @@ async def test_a_reference_answer_reaches_the_judge_only_through_case_material()
         return "billing"
 
     judge = _judge(client, case_material=lambda case: f"Ticket: {case['ticket']}\nReference queue: {case['queue']}")
-    await run_eval(cases, classify, judge=judge, expected=lambda case: case["queue"], scope_id=SCOPE, k=1)
+    await _summary(cases, classify, ["queue", judge])
     assert all("Reference queue: billing" in user for _, user in client.calls)
 
 
@@ -213,23 +228,21 @@ async def test_the_judges_client_is_lent_never_closed_so_one_client_serves_two_r
     client = _FakeJudgeClient()
     host = callable_host()
     judge = _judge(client)
-    first = await run_eval(CASES, answer, judge=judge, scope_id=SCOPE, host=host, k=1)
-    second = await run_eval(CASES, answer, judge=judge, scope_id=SCOPE, host=host, k=1, model="again")
+    first = await _summary(CASES, answer, [judge], host=host)
+    second = await _summary(CASES, {"again": answer}, [judge], host=host)
     assert client.aclose_calls == 0
     assert first.template_id == second.template_id
     assert first.n_scored == second.n_scored == 2
 
 
 async def test_a_judge_that_prices_nothing_leaves_its_spend_unknown_never_zero() -> None:
-    summary = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient(priced=False)), scope_id=SCOPE, k=1)
+    summary = await _summary(CASES, answer, [_judge(_FakeJudgeClient(priced=False))])
     assert summary.role_spend("judge").calls == 4 and summary.role_spend("judge").cost_usd is None
     assert "  judge spend: unpriced over 4 call(s): its client reported no price for them" in summary.render()
 
 
 async def test_a_judge_reply_that_will_not_parse_excludes_the_cell_and_says_so() -> None:
-    summary = await run_eval(
-        CASES[:1], answer, [short], judge=_judge(_FakeJudgeClient(reply="no json here")), scope_id=SCOPE, k=1
-    )
+    summary = await _summary(CASES[:1], answer, [short, _judge(_FakeJudgeClient(reply="no json here"))])
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
     assert summary.errors and all(": judge: " in error for error in summary.errors)
     # Every attempt the judge made was paid for, parsed or not, so its spend is still counted.
@@ -242,13 +255,7 @@ async def test_a_judge_reply_that_will_not_parse_excludes_the_cell_and_says_so()
 
 async def test_a_judge_that_cannot_tell_is_counted_apart_and_excludes_nothing() -> None:
     reply = json.dumps({"reasoning": "the answer is not shown", "criteria_scores": {"answer.helpful": "cannot_tell"}})
-    summary = await run_eval(
-        CASES[:1],
-        answer,
-        judge=_judge(_FakeJudgeClient(reply=reply), rubric={"helpful": "Helps."}),
-        scope_id=SCOPE,
-        k=1,
-    )
+    summary = await _summary(CASES[:1], answer, [_judge(_FakeJudgeClient(reply=reply), rubric={"helpful": "Helps."})])
     (dimension,) = summary.judged
     assert (dimension.name, dimension.n, dimension.mean, dimension.cannot_tell) == ("answer.helpful", 0, None, 1)
     assert summary.n_excluded == 0
@@ -260,18 +267,18 @@ async def test_a_rubric_of_engine_dimensions_keeps_their_names_and_scales() -> N
         reply=json.dumps({"reasoning": "fine", "criteria_scores": {"faq.correct": "pass"}}),
     )
     dims = [RubricDim(name="faq.correct", description="The answer is correct.", scale="pass_fail")]
-    summary = await run_eval(CASES[:1], answer, judge=_judge(client, rubric=dims), scope_id=SCOPE, k=1)
+    summary = await _summary(CASES[:1], answer, [_judge(client, rubric=dims)])
     (dimension,) = summary.judged
     assert (dimension.name, dimension.scale, dimension.mean) == ("faq.correct", "pass_fail", 1.0)
     assert "faq.correct (judged pass/fail): mean 1" in summary.render()
 
 
-async def test_a_judged_call_and_an_unjudged_one_over_the_same_cases_are_two_templates() -> None:
+async def test_a_judged_eval_and_an_unjudged_one_over_the_same_cases_are_two_templates() -> None:
     host = callable_host([short])
-    unjudged = await run_eval(CASES, answer, [short], scope_id=SCOPE, host=host, k=1)
-    judged = await run_eval(CASES, answer, [short], judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
+    unjudged = await _summary(CASES, answer, [short], host=host)
+    judged = await _summary(CASES, answer, [short, _judge(_FakeJudgeClient())], host=host)
     other_rubric = _judge(_FakeJudgeClient(), rubric={"helpful": "Helps."})
-    reworded = await run_eval(CASES, answer, [short], judge=other_rubric, scope_id=SCOPE, host=host, k=1)
+    reworded = await _summary(CASES, answer, [short, other_rubric], host=host)
     assert len({unjudged.template_id, judged.template_id, reworded.template_id}) == 3
     assert unjudged.judged == [] and "judge spend" not in unjudged.render()
 
@@ -284,41 +291,32 @@ def _intents_read(client: _FakeJudgeClient) -> set[str]:
     return {line for _, user in client.calls for line in user.splitlines() if line.startswith("**Intent:**")}
 
 
-async def test_an_explicit_intent_is_what_the_judge_reads_and_the_summary_says_so() -> None:
+async def test_the_judge_reads_the_runners_docstring_as_the_intent_and_the_summary_names_it() -> None:
     client = _FakeJudgeClient()
     host = callable_host()
-    stated = "Answer a quiz question correctly, or say you do not know."
-    summary = await run_eval(CASES, answer, judge=_judge(client), intent=stated, scope_id=SCOPE, host=host, k=1)
-
-    assert _intents_read(client) == {f"**Intent:** {stated}"}
-    assert off_loop(get_template, host, summary.template_id or "", SCOPE).intent == stated
-    assert (summary.intent, summary.intent_source) == (stated, None)
-    assert f"\n  intent: {stated}\n" in summary.render()
-
-
-async def test_with_no_intent_the_judge_reads_the_candidates_docstring_and_the_summary_names_it() -> None:
-    client = _FakeJudgeClient()
-    summary = await run_eval(CASES, answer, judge=_judge(client), scope_id=SCOPE, k=1)
+    summary = await _summary(CASES, answer, [_judge(client)], host=host)
 
     assert _intents_read(client) == {"**Intent:** Answer a question in a few words."}
+    assert off_loop(get_template, host, summary.template_id or "", SCOPE).intent == "Answer a question in a few words."
+    assert summary.intent_source == "from answer's docstring"
     assert "  intent (from answer's docstring): Answer a question in a few words." in summary.render()
 
 
-async def test_with_no_intent_and_no_docstring_the_summary_says_the_intent_is_a_generic_default() -> None:
+async def test_with_no_docstring_the_summary_says_the_intent_is_a_generic_default() -> None:
     client = _FakeJudgeClient()
 
     async def undocumented(case: Mapping[str, Any]) -> str:
         return ANSWERS[case["question"]]
 
-    summary = await run_eval(CASES, undocumented, judge=_judge(client), scope_id=SCOPE, k=1)
+    summary = await _summary(CASES, undocumented, [_judge(client)])
     default = "Answer each case so that the judge and every scorer grade the answer well."
     assert _intents_read(client) == {f"**Intent:** {default}"}
-    assert f"  intent (a generic default: no intent=, and undocumented has no docstring): {default}" in summary.render()
+    assert f"  intent (a generic default: undocumented has no docstring): {default}" in summary.render()
 
 
 async def test_a_summary_read_back_keeps_the_intent_the_judge_read_but_not_where_it_came_from() -> None:
     host = callable_host()
-    run = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
+    run = await _summary(CASES, answer, [_judge(_FakeJudgeClient())], host=host)
     read_back = off_loop(summarize_run, host, run.run_id, SCOPE)
     assert (read_back.intent, read_back.intent_source) == ("Answer a question in a few words.", None)
     assert "  intent: Answer a question in a few words." in read_back.render()
@@ -326,10 +324,13 @@ async def test_a_summary_read_back_keeps_the_intent_the_judge_read_but_not_where
 
 async def test_two_judged_runs_stating_different_intents_each_keep_the_template_their_judge_read() -> None:
     host = callable_host()
-    first = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
-    second = await run_eval(
-        CASES, answer, judge=_judge(_FakeJudgeClient()), intent="Reworded.", scope_id=SCOPE, host=host, k=1
-    )
+
+    async def reworded(case: Mapping[str, Any]) -> str:
+        """Reworded."""
+        return ANSWERS[case["question"]]
+
+    first = await _summary(CASES, answer, [_judge(_FakeJudgeClient())], host=host)
+    second = await _summary(CASES, reworded, [_judge(_FakeJudgeClient())], host=host)
     assert first.template_id != second.template_id
     assert off_loop(summarize_run, host, first.run_id, SCOPE).intent == "Answer a question in a few words."
     assert off_loop(summarize_run, host, second.run_id, SCOPE).intent == "Reworded."
@@ -337,7 +338,7 @@ async def test_two_judged_runs_stating_different_intents_each_keep_the_template_
 
 async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_read_so_no_intent_is_shown() -> None:
     host = callable_host()
-    run = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
+    run = await _summary(CASES, answer, [_judge(_FakeJudgeClient())], host=host)
     off_loop(
         update_template,
         host,
@@ -352,16 +353,8 @@ async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_rea
 
 
 async def test_an_unjudged_run_shows_no_intent_since_nothing_that_grades_it_reads_one() -> None:
-    summary = await run_eval(CASES, answer, [short], intent="Answer briefly.", scope_id=SCOPE, k=1)
+    summary = await _summary(CASES, answer, [short])
     assert summary.intent is None and "intent" not in summary.render()
-
-
-@pytest.mark.parametrize("intent", ["", "   ", 3])
-async def test_an_intent_that_is_not_a_non_blank_string_is_refused_before_anything_runs(intent: Any) -> None:
-    client = _FakeJudgeClient()
-    with pytest.raises(ValueError, match="intent= is the sentence the judge reads"):
-        await run_eval(CASES, answer, judge=_judge(client), intent=intent, scope_id=SCOPE, k=1)
-    assert client.calls == []
 
 
 # --- refusals ------------------------------------------------------------------------------------
@@ -370,7 +363,7 @@ async def test_an_intent_that_is_not_a_non_blank_string_is_refused_before_anythi
 @pytest.mark.parametrize(
     ("overrides", "said"),
     [
-        ({"model": " "}, "names the model its client calls"),
+        ({"model_name": " "}, "a client that names its model"),
         ({"rubric": {}}, "at least one rubric dimension"),
         ({"rubric": {"a.b.c": "Too many contexts."}}, "a.b.c"),
         ({"rubric": {"helpful": ""}}, "description"),
@@ -379,9 +372,10 @@ async def test_an_intent_that_is_not_a_non_blank_string_is_refused_before_anythi
     ids=["a blank model", "no dimension", "a doubly namespaced name", "a blank description", "one name twice"],
 )
 def test_a_judge_no_run_could_record_is_refused_where_it_is_built(overrides: dict[str, Any], said: str) -> None:
-    fields: dict[str, Any] = {"client": _FakeJudgeClient(), "model": JUDGE_MODEL, "rubric": RUBRIC, **overrides}
+    client = _FakeJudgeClient()
+    client.model_name = overrides.pop("model_name", JUDGE_MODEL)
     with pytest.raises(ValueError, match=said):
-        Judge(**fields)
+        Judge(client, overrides.get("rubric", RUBRIC))
 
 
 def _host_whose_judged_contract_is(contract: KindContract | None) -> EvalHost:
@@ -405,7 +399,7 @@ async def test_a_callers_host_that_has_not_declared_the_judged_kinds_rig_is_refu
 ) -> None:
     host = _host_whose_judged_contract_is(contract)
     with pytest.raises(ValueError, match=said):
-        await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host)
+        await Eval(CASES, answer, [_judge(_FakeJudgeClient())]).run(host=host, scope=SCOPE)
     assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
@@ -421,7 +415,7 @@ async def test_a_host_seating_the_judge_by_its_pins_is_accepted() -> None:
         }
     )
     host = _host_whose_judged_contract_is(KindContract(JUDGED_CALLABLE_KIND, seats=pins))
-    summary = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
+    summary = await _summary(CASES, answer, [_judge(_FakeJudgeClient())], host=host)
     assert summary.status == "completed"
 
 
@@ -443,18 +437,15 @@ async def test_the_judges_client_factory_lends_only_the_judge_role_on_its_own_mo
 
 async def test_a_judge_s_examples_are_seeded_as_authored_cases_its_calibration_starts_from() -> None:
     from threetears.evals.kernel import judge_case_of
-    from threetears.evals.quick import JudgeExample
 
     client = _FakeJudgeClient()
     host = callable_host([short])
     examples = [
-        JudgeExample(
-            "helpful", "Probably 4, but check.", 2, "a hedge on arithmetic does not resolve it", case=CASES[0]
-        ),
-        JudgeExample("honest", "I am not sure.", 5, "saying so is the honest answer it looks like a failure of"),
+        Example("helpful", "Probably 4, but check.", 2, "a hedge on arithmetic does not resolve it", case=CASES[0]),
+        Example("honest", "I am not sure.", 5, "saying so is the honest answer it looks like a failure of"),
     ]
 
-    summary = await run_eval(CASES, answer, judge=_judge(client, examples=examples), scope_id=SCOPE, host=host, k=1)
+    summary = await _summary(CASES, answer, [_judge(client, examples=examples)], host=host)
 
     assert len(client.calls) == 4, "seeding the examples asks the judge nothing"
     seeded = f"{summary.template_id}-judge"
@@ -470,19 +461,17 @@ async def test_a_judge_s_examples_are_seeded_as_authored_cases_its_calibration_s
     assert helpful.evidence.artifact == "Probably 4, but check." and "two plus two" in helpful.evidence.case_material
     assert [(label.score, label.rating_id) for label in helpful.labels] == [(2, None)]
     # Seeding the same examples again names the stored cases, and the set's version stands.
-    await run_eval(CASES, answer, judge=_judge(client, examples=examples), scope_id=SCOPE, host=host, k=1)
+    await _summary(CASES, answer, [_judge(client, examples=examples)], host=host)
     assert [entry.version for entry in off_loop(host.storage.query_case_sets, SCOPE, name=seeded)] == [1]
 
 
 def test_an_example_its_dimension_cannot_hold_or_that_names_none_is_refused_when_the_judge_is_built() -> None:
-    from threetears.evals.quick import JudgeExample
-
     with pytest.raises(
         ValueError,
         match=r"judge example 0: criterion 'answer.helpful' is answered on the ordinal scale .* cannot hold the verdict 'fail'",
     ):
-        _judge(_FakeJudgeClient(), examples=[JudgeExample("helpful", "4", "fail", "must fail")])
+        _judge(_FakeJudgeClient(), examples=[Example("helpful", "4", "fail", "must fail")])
     with pytest.raises(ValueError, match="judge example 0 is graded on 'tone', which is no dimension of the rubric"):
-        _judge(_FakeJudgeClient(), examples=[JudgeExample("tone", "4", 1, "no such dimension")])
+        _judge(_FakeJudgeClient(), examples=[Example("tone", "4", 1, "no such dimension")])
     pass_fail = [RubricDim(name="answer.correct", description="The answer is right.", scale="pass_fail")]
-    assert _judge(_FakeJudgeClient(), rubric=pass_fail, examples=[JudgeExample("correct", "5", "fail", "it is 4")])
+    assert _judge(_FakeJudgeClient(), rubric=pass_fail, examples=[Example("correct", "5", "fail", "it is 4")])

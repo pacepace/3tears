@@ -1,8 +1,8 @@
 """A durable :class:`~threetears.evals.schema.store_port.DocumentStore` in one SQLite file.
 
 The store for keeping runs past the process without running a database: the standard library's
-:mod:`sqlite3`, one file, no dependency. Hand it to ``run_eval(..., store=...)`` or
-``compare(..., store=...)``, and every run, result and campaign is in the file the next process opens.
+:mod:`sqlite3`, one file, no dependency. Hand it to ``Eval(...).run(store=...)`` (an eval opens one under
+``.evals/`` by default), and every run, result and campaign is in the file the next process opens.
 
 Every rule the port states holds as the in-memory reference store holds it, and the store conformance
 kit (``threetears.evals.testing``) proves it case by case:

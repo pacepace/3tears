@@ -66,7 +66,7 @@ another scope's job reads not found, on poll and on cancel.
 **In the foreground.** A caller that is not a transport — a script, a test, a host's own batch — may await
 what it started instead of polling: `await_job(host, started, scope_id)` waits for the jobs to end and returns
 each one's final `JobStatus`, result included (cancelling the wait cancels the jobs). Below the operations,
-`run_eval` and the command line await the same work directly (`start_run`, and
+`Eval.run` and the command line await the same work directly (`start_run`, and
 `run_job_work(judge_temperature_work(...))` for `judge-temperature`), so a short-lived consumer loses nothing.
 
 **A sweep** (`sweep_launch`) is for arms that differ in more than the model: each arm names its own model,

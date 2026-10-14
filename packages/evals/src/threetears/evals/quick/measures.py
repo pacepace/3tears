@@ -4,8 +4,8 @@ A host declares each measure it reads (:class:`~threetears.evals.kernel.MetricDe
 computes it somewhere else — in its kind, from what the candidate did. Two places to keep in step. ``@measure(...)``
 puts the declaration on the function: the returned :class:`Measure` is that function, still callable, carrying its
 descriptor, so a host registers ``field_accuracy.descriptor`` and grades with ``field_accuracy(...)``. A
-:class:`Measure` is a scorer too: :func:`~threetears.evals.quick.run_eval`, :func:`~threetears.evals.quick.compare`
-and :func:`~threetears.evals.quick.callable_host` register its own descriptor rather than writing one for it.
+:class:`Measure` is a grader too: :class:`~threetears.evals.quick.contract.Eval` and
+:func:`~threetears.evals.quick.as_host` register its own descriptor rather than writing one for it.
 
 Nothing here is read by the engine: it builds a contract object and hands it over, and a host that writes its
 descriptors by hand is unaffected.

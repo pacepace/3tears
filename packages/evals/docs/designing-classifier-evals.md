@@ -327,9 +327,8 @@ cases is marked "too few cases to read alone": three lookalikes with one right g
 6% to 79%. Add cases to it before acting on it.
 
 For generated cases, mark the variation axis that names the kind with `stratum=True` and each generated case
-takes that axis's value as its stratum. On the quick path, give each case its kind under a key and name the key:
-`run_eval(cases, classify, expected=..., stratum_key="kind")`, or the same on `compare`
-([section 9](#the-quick-path-run_eval)).
+takes that axis's value as its stratum. On the quick path, give each case its kind under its reserved `stratum`
+key, for one arm or a comparison alike ([section 9](#the-quick-path-eval)).
 
 ## 8. Maintaining the set
 
@@ -342,26 +341,27 @@ takes that axis's value as its stratum. On the quick path, give each case its ki
   cannot be retired in place (the `archived` flag on a test case applies only to the analysis writer's frozen
   cases). When a ruling changes, write the set anew under a new template. That way a case id always means one
   input and one label, and results from before and after the ruling are never read as the same measurement.
-  With `run_eval`, changing a case's expected label already makes its runs a different template.
+  With an `Eval`, changing a case's expected label already makes its runs a different template.
 - **Re-check context twins when production changes.** If the classifier's input changes (a longer history, a
   new field), your context-missing twins test something different. Re-read them.
 
 ## 9. Wiring it into 3tears-evals
 
-### The quick path: `run_eval`
+### The quick path: `Eval`
 
-`run_eval` (the [tutorial](tutorial.md)'s first step) runs a classifier function over a
-list of cases in one call. Pass `expected=`, a function that returns the label a case expects, and `run_eval`
-grades the function as a classifier:
+`Eval` (the [tutorial](tutorial.md)'s first step) runs a classifier function over a
+list of cases. Name the field each case carries its expected label in as the first grader (`["expected"]`), and
+the eval grades the function as a classifier:
 
 ```python
-from threetears.evals.quick import run_eval
+from threetears.evals import Eval
 
 async def classify(case: dict) -> str:
     """Call the production classifier on the case and return the label its parser gives."""
     ...
 
-summary = await run_eval(cases, classify, scope_id="dev", expected=lambda case: case["expected"], k=3)
+result = await Eval(cases, classify, ["expected"], k=3).run(scope="dev")
+summary = result.summary
 print(summary.render())
 ```
 
@@ -374,35 +374,35 @@ of it. A call to `classify` that raises fails its result: it is counted in
 the hard cases does not read as more accurate. A provider's rate-limit error counts against the model the same
 way, so retry transient errors inside `classify`.
 
-An answer that is not a non-blank string (`None`, a blank string, a number) is counted under its own predicted
+An answer that is no label (`None`, a blank string, a list) is counted under its own predicted
 label, `UNUSABLE_ANSWER` (printed `(unusable answer)`), and never matches: section 5's unusable label, applied
 for you. Any other string is a label exactly as written, so a label outside your set shows as itself, and
-`"DIRECT "` differs from `"DIRECT"`. Return what your production parser returns and do not clean it up in the
+`"DIRECT "` differs from `"DIRECT"`; a number or a bool is a label as its JSON text (`3`, `true`). Return what your production parser returns and do not clean it up in the
 eval, or the eval stops measuring the parser. To split unusable answers by cause (section 5), return a sentinel
 per cause, such as `"(truncated)"`; each counts as its own predicted label.
 
-`run_eval` refuses an `expected=` that gives a case a blank, non-string or `UNUSABLE_ANSWER` label. Scorers
-still work beside `expected=`, each reported as its own measure. Two runs over the same cases are runs of one
+An eval refuses a case whose expected label is missing, blank, no label, or `UNUSABLE_ANSWER`. Function graders
+still work beside the field, each reported as its own measure. Two runs over the same cases are runs of one
 template, and so comparable, only when they expect the same labels.
 
 To read the results per kind of case ([section 7](#reading-results-by-kind-of-case)), put each case's kind under
-a key of the case and pass that key as `stratum_key=`:
+its reserved `stratum` key:
 
 ```python
 cases = [
-    {"text": "Book me a table in Paris.", "expected": "DIRECT", "kind": "plain"},
-    {"text": "Paris is lovely in spring.", "expected": "NONE", "kind": "lookalike"},
+    {"text": "Book me a table in Paris.", "expected": "DIRECT", "stratum": "plain"},
+    {"text": "Paris is lovely in spring.", "expected": "NONE", "stratum": "lookalike"},
     ...
 ]
-summary = await run_eval(cases, classify, scope_id="dev", expected=lambda case: case["expected"], stratum_key="kind")
+summary = (await Eval(cases, classify, ["expected"]).run(scope="dev")).summary
 ```
 
-The key is taken out of every case before `classify`, a scorer, `expected=` or a judge is handed it, so the
+The key is taken out of every case before `classify`, a grader or a judge is handed it, so the
 model is never told it faces a lookalike, and it is stored as each test case's stratum. `summary.strata` reads
 every measure again per kind (`match` is that kind's accuracy) and `render()` prints them under `by stratum:`,
 a kind with fewer than 10 cases marked too few to read alone. A case without the key declares none and is read
-under `(no stratum)`. `compare` takes the same key, and its report gains the **By stratum** table, which
-`comparison.strata()` reads row by row. The stratum is not part of what makes two runs runs of one template: change
+under `(no stratum)`. A comparison reads the same key, and its report gains the **By stratum** table, which
+`result.strata()` reads row by row. The stratum is not part of what makes two runs runs of one template: change
 a case's kind and the next run stores it on the same case, so every run over that case, earlier ones included, is
 then read under the new kind.
 

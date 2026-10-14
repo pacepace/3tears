@@ -1,9 +1,9 @@
 """``Answer``: a candidate's answer, with what producing it spent.
 
-A :func:`~threetears.evals.quick.run_eval` candidate is an opaque async callable, so the engine sees what it
+An :class:`~threetears.evals.quick.contract.Eval`'s runner is an opaque callable, so the engine sees what it
 returns and nothing of what it spent: a candidate that calls a paid model reports a ``cost_usd`` of 0 unless
-it says otherwise. Returning an :class:`Answer` is how it says so. Its ``value`` is what the scorers, the
-classifier's ``expected=`` and the judge grade, exactly as a plain return value would be; its spend becomes
+it says otherwise. Returning an :class:`Answer` is how it says so. Its ``value`` is what the graders, the
+classifier's label field and the judge grade, exactly as a plain return value would be; its spend becomes
 the cell's ``candidate`` usage row, which the engine derives the result's ``cost_usd`` from as it does for
 any kind (:attr:`~threetears.evals.kernel.CandidateTelemetry.usage`). A candidate that returns anything
 else reports no spend, as before.

@@ -17,7 +17,7 @@ import pytest
 
 from threetears.evals.kernel import Question
 from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
-from threetears.evals.quick import compare, run_eval
+from threetears.evals import Eval
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS
 from packages.evals.tests.factories import minimal_declaration
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -97,35 +97,30 @@ class _Clock:
 _CASES = [{"text": f"case {index}", "label": "yes" if index % 2 else "no"} for index in range(8)]
 
 
-def _expected(case: Mapping[str, Any]) -> str:
-    return str(case["label"])
-
-
-async def test_run_eval_runs_its_cases_concurrently_unless_latency_is_declared() -> None:
+async def test_an_eval_runs_its_cases_concurrently_unless_latency_is_declared() -> None:
     concurrent, serial = _Clock(), _Clock()
 
-    fast = await run_eval(_CASES, concurrent.candidate(), expected=_expected, scope_id="latency-quick", model="a")
-    slow = await run_eval(
-        _CASES, serial.candidate(), expected=_expected, scope_id="latency-quick", model="b", measure_latency=True
-    )
+    fast = (
+        await Eval(_CASES, {"a": concurrent.candidate()}, ["label"]).run(store=":memory:", scope="latency-quick")
+    ).summary
+    slow = (
+        await Eval(_CASES, {"b": serial.candidate()}, ["label"], measure_latency=True).run(
+            store=":memory:", scope="latency-quick"
+        )
+    ).summary
 
     assert concurrent.peak == DEFAULT_MAX_CONCURRENT_CELLS
     assert serial.peak == 1, "a run declaring latency under test ran two cases at once"
     assert fast.status == slow.status == "completed"
 
 
-async def test_compare_declaring_latency_runs_every_arm_serially_and_its_campaign_records_it() -> None:
+async def test_a_comparison_declaring_latency_runs_every_arm_serially_and_its_campaign_records_it() -> None:
     # One clock for both arms: what is under test is that nothing of the comparison ran beside anything else.
     clock = _Clock()
 
-    comparison = await compare(
-        _CASES,
-        {"a": clock.candidate(), "b": clock.candidate()},
-        expected=_expected,
-        control="a",
-        scope_id="latency-compare",
-        measure_latency=True,
-    )
+    comparison = await Eval(
+        _CASES, {"a": clock.candidate(), "b": clock.candidate()}, ["label"], measure_latency=True
+    ).run(store=":memory:", scope="latency-compare")
 
     assert clock.peak == 1, "an arm or a case of a latency comparison ran beside another"
     storage = comparison.host.storage

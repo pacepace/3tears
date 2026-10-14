@@ -1,14 +1,14 @@
-"""``compare(guardrails=...)``: the quick path declares a guardrail, and every arm reads held, breached or undecided.
+"""``grader(fn, guard=...)``: a guardrail, and every arm of a comparison reads held, breached or undecided.
 
-Before it, a quick guardrail could only be a judged boundary dimension, held at zero change, which an arm alike
-with the control never reads ``held``; and :class:`~threetears.evals.quick.Comparison` had no reader for the
-guardrails table. A guardrail is declared with its margin and direction, never assumed; it joins no contrast; an
-arm that breached one is named above the contrasts as not adopted, and the analysis writer cannot adopt it.
+A guardrail is declared with its margin, never assumed, and every grade is higher-is-better, so its direction is
+never stated; it joins no contrast; an arm that breached one is named above the contrasts as not adopted, and the
+analysis writer cannot adopt it. A judged dimension is guarded on the :class:`~threetears.evals.Judge`
+(``guard={"dimension": margin}``), its margin declared on the campaign.
 
-Mutations that turn this file red: declaring a scorer guardrail on a merit axis, or dropping its margin or its
-direction; reading a judged guardrail's margin from anywhere but the campaign's ``guardrail_margins``; dropping
-the breach line above the contrasts; reading ``undecided`` as safe; accepting a guardrail with no margin, on a
-name nothing reports, on a core measure, beside a margin or a host of the caller's own.
+Mutations that turn this file red: declaring a guardrail grader on a merit axis, or dropping its margin; reading a
+judged guardrail's margin from anywhere but the campaign's ``guardrail_margins``; dropping the breach line above the
+contrasts; reading ``undecided`` as safe; accepting a guardrail with no positive margin, on a core measure, beside a
+margin, or on a host of the caller's own that does not declare it.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from threetears.evals.analysis import (
     generate_analysis,
     get_campaign,
     inspect_campaign_bundle,
+    report_markdown,
 )
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.kernel import CampaignDesign, GuardrailMargin, refuse_an_undeclarable_design
@@ -37,7 +38,10 @@ from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.analysis.summary import CaseResult
-from threetears.evals.quick import Comparison, Guardrail, Judge, callable_host, compare, run_eval
+from threetears.evals import Eval, Judge, Result, grader
+from threetears.evals.quick import as_host
+from threetears.evals.quick.guardrails import Guardrail
+from threetears.evals.quick.one_call import callable_host
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
 
@@ -45,7 +49,8 @@ from packages.evals.tests.off_loop import off_loop
 #: at n=50 is ±0.081; at 40 it is ±0.1002, which does not), and twenty leaks in fifty are shown worse by more.
 CASES = [{"n": index} for index in range(50)]
 
-NO_LEAK = Guardrail(margin=0.1, direction="higher_is_better")
+#: The margin ``no_leak`` is guarded on.
+NO_LEAK = 0.1
 
 
 def correct(case: Mapping[str, Any], answer: str) -> bool:
@@ -86,18 +91,16 @@ ARMS = {
 }
 
 
-async def _compare(**overrides: Any) -> Comparison:
-    arguments: dict[str, Any] = {
-        "control": "current",
-        "scope_id": "quick-guardrails",
-        "k": 1,
-        "guardrails": {"no_leak": NO_LEAK},
-    }
-    arguments.update(overrides)
-    return await compare(CASES, arguments.pop("arms", ARMS), arguments.pop("scorers", [correct, no_leak]), **arguments)
+async def _compare(arms: Mapping[str, Any] | None = None, graders: list[Any] | None = None, **run: Any) -> Result:
+    """Compare the arms (``current``, the control, first), graded by ``correct`` and the ``no_leak`` guardrail."""
+    graded = [correct, grader(no_leak, guard=NO_LEAK)] if graders is None else graders
+    ev = Eval(CASES, ARMS if arms is None else arms, graded, k=1)
+    if "host" not in run:
+        run["store"] = ":memory:"
+    return await ev.run(scope="quick-guardrails", **run)
 
 
-def _standing(comparison: Comparison) -> list[str]:
+def _standing(comparison: Result) -> list[str]:
     """The lines naming an arm a guardrail leaves not shown safe."""
     return [
         block.text
@@ -129,7 +132,7 @@ class TestAScorerGuardrail:
         assert comparison.guardrail_standing("slip").undecided == ["no_leak"]
         assert comparison.guardrail_standing("same").held == ["no_leak"]
         assert comparison.guardrail_standing("current") == ([], [], []), "no guardrail is checked against itself"
-        with pytest.raises(ValueError, match="arm 'nope' names no arm"):
+        with pytest.raises(ValueError, match="'nope' names no arm"):
             comparison.guardrail_standing("nope")
 
     async def test_it_is_declared_a_guardrail_off_every_merit_axis_with_its_margin_and_direction(self) -> None:
@@ -142,7 +145,7 @@ class TestAScorerGuardrail:
 
     async def test_the_printed_report_shows_the_table_and_names_the_breach_above_the_contrasts(self) -> None:
         comparison = await _compare()
-        markdown = comparison.render()
+        markdown = report_markdown(comparison.report)
         assert "**Guardrails against the control**" in markdown
         for outcome in ("held", "breached", "undecided"):
             assert f"| {outcome}: " in markdown
@@ -161,7 +164,7 @@ class TestAScorerGuardrail:
         assert gain["verdict"] == "improved on the control", "the breached arm gained, and is still not adopted"
 
     async def test_with_every_scorer_a_guardrail_the_breach_is_named_once_above_the_guardrails_table(self) -> None:
-        comparison = await _compare(scorers=[no_leak])
+        comparison = await _compare(graders=[grader(no_leak, guard=NO_LEAK)])
         blocks = comparison.report.blocks
         assert comparison.contrasts() == [], "nothing but the guardrail is graded"
         named = [
@@ -179,39 +182,27 @@ class TestAScorerGuardrail:
         again = await comparison.against("same")
         assert {row["arm"]: row["outcome"] for row in again.guardrails()}["leaky"] == "breached"
 
-    async def test_lower_is_better_runs_the_other_way(self) -> None:
-        comparison = await _compare(
-            scorers=[correct, leaked], guardrails={"leaked": Guardrail(margin=0.1, direction="lower_is_better")}
-        )
-        outcomes = {row["arm"]: row["outcome"] for row in comparison.guardrails()}
-        assert outcomes == {"same": "held", "leaky": "breached", "slip": "undecided"}
-        assert comparison.host.profile.measures.get("leaked").higher_is_better is False  # type: ignore[union-attr]
-        reasons = [reason for miss in comparison.misses("leaky") for reason in miss.missed_because]
-        assert reasons == ["leaked gave 1"] * 20, "a leak is the miss on a lower-is-better guardrail, and none is not"
-
     async def test_a_bounded_scorer_holds_on_its_declared_range_and_a_value_outside_it_is_the_scorer_s_fault(
         self,
     ) -> None:
         arms = {"current": _answers(misses=0, leaks=0), "same": _answers(misses=0, leaks=0)}
-        polite = {"politeness": Guardrail(margin=0.2, direction="higher_is_better")}
-        ranged = {"politeness": (0.0, 1.0)}
-        comparison = await _compare(arms=arms, scorers=[politeness], guardrails=polite, ranges=ranged)
+        polite = [grader(politeness, guard=0.2, range=(0.0, 1.0))]
+        comparison = await _compare(arms, polite)
         assert comparison.host.profile.measures.get("politeness").value_range == (0.0, 1.0)  # type: ignore[union-attr]
         assert comparison.arms["same"].n_excluded == 0
         (held,) = comparison.guardrails()
         assert held["outcome"] == "held" and "(t: no declared range)" not in held["interval"]
 
         rude = {"current": _answers(misses=0, leaks=0), "please": _answers(misses=0, leaks=0, tail=" please")}
-        comparison = await _compare(arms=rude, scorers=[politeness], guardrails=polite, ranges=ranged)
+        comparison = await _compare(rude, polite)
         summary = comparison.arms["please"]
         assert summary.n_excluded == len(CASES) and summary.n_scored == 0
         assert "outside the range 0 to 1" in summary.errors[0]
 
     async def test_with_no_range_a_reading_is_never_held_and_the_reason_names_ranges(self) -> None:
         arms = {"current": _answers(misses=0, leaks=0), "same": _answers(misses=0, leaks=0)}
-        polite = {"politeness": Guardrail(margin=0.2, direction="higher_is_better")}
-        (row,) = (await _compare(arms=arms, scorers=[politeness], guardrails=polite)).guardrails()
-        assert row["outcome"] == "undecided" and "ranges= beside the scorer" in row["decision"]
+        (row,) = (await _compare(arms, [grader(politeness, guard=0.2)])).guardrails()
+        assert row["outcome"] == "undecided" and "grader(..., range=) beside the guard" in row["decision"]
         assert "held is never read off it" in row["decision"]
 
     async def test_with_no_range_a_spread_inside_the_margin_is_still_not_held(self) -> None:
@@ -222,12 +213,11 @@ class TestAScorerGuardrail:
             return 1.0 + (0.1 if answer.endswith("please") and case["n"] % 2 else 0.0)
 
         arms = {"current": _answers(misses=0, leaks=0), "warmer": _answers(misses=0, leaks=0, tail=" please")}
-        kindness = {"kind": Guardrail(margin=0.2, direction="higher_is_better")}
-        comparison = await _compare(arms=arms, scorers=[kind], guardrails=kindness)
+        comparison = await _compare(arms, [grader(kind, guard=0.2)])
         (check,) = comparison.guardrail_readings.checks
         assert check.interval_basis == "t" and check.interval is not None and check.interval[0] > -0.2
         assert check.decision == "undecided" and check.undecided_reason is not None
-        assert "ranges= beside the scorer" in check.undecided_reason
+        assert "grader(..., range=) beside the guard" in check.undecided_reason
 
 
 class TestABreachedArmIsNeverRecommended:
@@ -294,57 +284,46 @@ def _adopting_writer() -> Any:
 
 
 class TestARefusedGuardrail:
+    @pytest.mark.parametrize("margin", [0, -0.1, float("nan"), True])
+    def test_one_no_arm_could_be_decided_against(self, margin: Any) -> None:
+        with pytest.raises(ValueError, match=re.escape("a positive number in the reading's own units")):
+            grader(no_leak, guard=margin)
+
     @pytest.mark.parametrize(
         ("arguments", "said"),
         [
             ({"margin": None, "direction": "higher_is_better"}, "no margin is assumed"),
             ({"margin": 0, "direction": "higher_is_better"}, "a positive number in the reading's own units"),
-            ({"margin": float("nan"), "direction": "higher_is_better"}, "a positive number"),
-            ({"margin": True, "direction": "higher_is_better"}, "a positive number"),
             ({"margin": 0.1, "direction": "up"}, "which way is better on it"),
         ],
     )
-    def test_one_no_arm_could_be_decided_against(self, arguments: dict[str, Any], said: str) -> None:
+    def test_the_guardrail_a_guard_declares_refuses_what_no_arm_could_be_decided_against(
+        self, arguments: dict[str, Any], said: str
+    ) -> None:
         with pytest.raises(ValueError, match=re.escape(said)):
             Guardrail(**arguments)
 
-    def test_with_no_margin_or_direction_at_all(self) -> None:
-        with pytest.raises(TypeError, match="margin"):
-            Guardrail(direction="higher_is_better")  # type: ignore[call-arg]
-        with pytest.raises(TypeError, match="direction"):
-            Guardrail(margin=0.1)  # type: ignore[call-arg]
-
-    async def test_a_bare_margin_teaches_the_guardrail(self) -> None:
-        with pytest.raises(ValueError, match=r"maps a name to a Guardrail, its margin and direction both declared"):
-            await _compare(guardrails={"no_leak": 0.1})
-
-    async def test_on_a_name_nothing_reports_it_names_what_does(self) -> None:
-        with pytest.raises(ValueError, match=r"names 'no_leek', which no scorer reports.*'correct', 'no_leak'"):
-            await _compare(guardrails={"no_leek": NO_LEAK})
-
     @pytest.mark.parametrize("name", ["accuracy", "match"])
-    async def test_on_a_core_measure_it_teaches_the_scorer_route(self, name: str) -> None:
-        with pytest.raises(ValueError, match=r"engine core measure.*declare the guardrail on that"):
-            await _compare(guardrails={name: NO_LEAK})
+    def test_on_a_core_measure_it_teaches_the_function_route(self, name: str) -> None:
+        with pytest.raises(ValueError, match=r"engine core measure's name; grade it with a function"):
+            Eval(CASES, ARMS, [correct, grader(name, guard=NO_LEAK)])
 
-    async def test_beside_a_margin_on_the_same_scorer(self) -> None:
-        with pytest.raises(ValueError, match=r"'no_leak' is declared a guardrail and given a margin in margins= too"):
-            await _compare(margins={"no_leak": 0.05})
+    def test_beside_a_margin_on_the_same_grader(self) -> None:
+        with pytest.raises(ValueError, match=r"a guardrail is never contrasted, so a margin for equivalence"):
+            grader(no_leak, guard=NO_LEAK, margin=0.05)
 
-    async def test_beside_a_host_of_your_own(self) -> None:
-        with pytest.raises(ValueError, match=r"MetricDescriptor\(guardrail=True\).*pass one or the other"):
+    async def test_on_a_host_of_your_own_that_does_not_declare_it(self) -> None:
+        with pytest.raises(ValueError, match=r"declares the measure 'no_leak' without the .* its grader declares"):
             await _compare(host=callable_host([correct, no_leak]))
 
     @pytest.mark.parametrize(
-        ("scorers", "guardrail", "ranges"),
-        [([no_leak], "no_leak", None), ([politeness], "politeness", {"politeness": (0.0, 1.0)})],
+        "guarded",
+        [grader(no_leak, guard=1.0), grader(politeness, guard=1.0, range=(0.0, 1.0))],
+        ids=["pass/fail", "ranged"],
     )
-    async def test_as_wide_as_every_value_the_scorer_can_return(
-        self, scorers: list[Any], guardrail: str, ranges: dict[str, tuple[float, float]] | None
-    ) -> None:
-        wide = {guardrail: Guardrail(margin=1.0, direction="higher_is_better")}
+    async def test_as_wide_as_every_value_the_grader_can_return(self, guarded: Any) -> None:
         with pytest.raises(ValueError, match="is as wide as every value it can return"):
-            await _compare(scorers=scorers, guardrails=wide, ranges=ranges)
+            await _compare(graders=[guarded])
 
 
 class TestAMissIsTheWrongSideOfZeroForEveryDirection:
@@ -380,15 +359,16 @@ class TestAMissIsTheWrongSideOfZeroForEveryDirection:
             if descriptor is not None
         ]
         host = replace(host, profile=replace(host.profile, measures=MeasureRegistry(own, families=measures.families)))
-        summary = await run_eval(CASES, ARMS["leaky"], [correct, leaked], scope_id="own-measure", host=host, k=1)
+        result = await Eval(CASES, ARMS["leaky"], [correct, leaked], k=1).run(host=host, scope="own-measure")
+        summary = result.summary
         reasons = [reason for miss in summary.misses() for reason in miss.missed_because]
         assert reasons == ["leaked gave 1"] * 20, "a leak is the miss, and a clean answer is not"
 
 
 class TestTheSingleRunSummary:
     async def test_names_a_guardrail_and_says_a_run_alone_decides_nothing(self) -> None:
-        host = callable_host([correct, no_leak], guardrails={"no_leak": NO_LEAK})
-        summary = await run_eval(CASES, ARMS["leaky"], [correct, no_leak], scope_id="one-guardrail", host=host, k=1)
+        ev = Eval(CASES, ARMS["leaky"], [correct, grader(no_leak, guard=NO_LEAK)], k=1)
+        summary = (await ev.run(host=as_host([ev], store=":memory:"), scope="one-guardrail")).summary
         (measure,) = [m for m in summary.measures if m.name == "no_leak"]
         assert measure.guardrail and not next(m for m in summary.measures if m.name == "correct").guardrail
         assert (
@@ -422,6 +402,8 @@ class _Reply:
 class _FakeLeakJudge:
     """Passes an answer on every dimension unless it gives the secret away."""
 
+    model_name = JUDGE_MODEL
+
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
         match = re.search(r'single key "([^"]+)"', system)
         assert match is not None, "the judge's system prompt names no dimension"
@@ -441,19 +423,18 @@ class _FakeLeakJudge:
         await self.aclose()
 
 
-def _judge() -> Judge:
-    return Judge(
-        client=_FakeLeakJudge(),
-        model=JUDGE_MODEL,
-        rubric={"private": "The answer gives away no customer's secret.", "clear": "The answer is clear."},
-        scale="pass_fail",
-    )
+#: The judged rubric, each dimension a pass/fail.
+RUBRIC = {"private": "The answer gives away no customer's secret.", "clear": "The answer is clear."}
+
+
+def _judge(guard: Mapping[str, float] | None = None) -> Judge:
+    return Judge(_FakeLeakJudge(), RUBRIC, guard=guard)
 
 
 class TestAJudgedGuardrail:
     async def test_it_is_scored_on_the_boundary_axis_and_held_to_the_campaign_s_margin(self) -> None:
         arms = {"current": ARMS["current"], "same": ARMS["same"], "leaky": ARMS["leaky"]}
-        comparison = await _compare(arms=arms, scorers=[correct], judge=_judge(), guardrails={"private": NO_LEAK})
+        comparison = await _compare(arms, [correct, _judge(guard={"private": NO_LEAK})])
         outcomes = {row["arm"]: (row["measure_id"], row["outcome"], row["margin"]) for row in comparison.guardrails()}
         assert outcomes == {"same": ("answer.private", "held", "0.1"), "leaky": ("answer.private", "breached", "0.1")}
         assert {row["measure_id"] for row in comparison.contrasts()} == {"correct", "answer.clear"}
@@ -471,22 +452,23 @@ class TestAJudgedGuardrail:
         dims = [
             RubricDim(name="answer.private", description="No secret given away.", scale="pass_fail", axis="boundary"),
         ]
-        judge = Judge(client=_FakeLeakJudge(), model=JUDGE_MODEL, rubric=dims)
+        judge = Judge(_FakeLeakJudge(), dims)
         arms = {"current": ARMS["current"], "same": ARMS["same"]}
-        comparison = await _compare(arms=arms, scorers=[correct], judge=judge, guardrails=None)
+        comparison = await _compare(arms, [correct, judge])
         (row,) = comparison.guardrails()
         assert (row["outcome"], row["margin"]) == ("undecided", "0 (none declared)")
 
     @pytest.mark.parametrize(
-        ("guardrail", "said"),
+        ("guard", "said"),
         [
-            (Guardrail(margin=0.1, direction="lower_is_better"), "judged with higher better"),
-            (Guardrail(margin=1.0, direction="higher_is_better"), "is as wide as its scale"),
+            ({"private": 1.0}, "narrower than its scale (0 to 1)"),
+            ({"private": 0}, "narrower than its scale (0 to 1)"),
+            ({"nope": 0.1}, "names 'nope', which is no dimension of the rubric"),
         ],
     )
-    async def test_refused_where_a_judged_scale_cannot_carry_it(self, guardrail: Guardrail, said: str) -> None:
+    def test_refused_where_a_judged_scale_cannot_carry_it(self, guard: dict[str, float], said: str) -> None:
         with pytest.raises(ValueError, match=re.escape(said)):
-            await _compare(scorers=[correct], judge=_judge(), guardrails={"private": guardrail})
+            _judge(guard=guard)
 
 
 class TestTheDeclarationGate:

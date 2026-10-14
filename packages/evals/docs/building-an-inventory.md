@@ -43,7 +43,7 @@ outranks its own memory. The engine's judge does the last three for you: it asks
   The engine reports both, but it does not yet let you declare which reading a case is held to; that is coming.
   Record the choice beside the case today, so that declaring it later is a copy, not a decision.
 - **Add hard negatives for every judge.** One output that looks right but must fail, and one that looks wrong but must
-  pass. They are your first calibration items. Hand a quick-path `Judge` its `examples=[JudgeExample(...)]`, or write
+  pass. They are your first calibration items. Hand a quick-path `Judge` its `examples=[Example(...)]`, or write
   them on a host with the `judge_case_author` action
   ([seeding hard negatives](judges-and-calibration.md#seeding-hard-negatives)).
 

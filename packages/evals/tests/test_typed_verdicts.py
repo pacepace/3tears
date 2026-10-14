@@ -5,7 +5,7 @@ A report's ``verdicts`` carry each contrast against the control, guardrail and b
 guardrail flag — and the table cells a person reads are each one's ``words``, rendered from it. A program branches
 on the outcome, never on the prose (the examples used to parse it with ``startswith``).
 
-The gate (:func:`~threetears.evals.analysis.gate_verdicts`, :meth:`~threetears.evals.quick.Comparison.gate`) fails on
+The gate (:func:`~threetears.evals.analysis.gate_verdicts`, :meth:`~threetears.evals.Result.gate`) fails on
 the outcomes a caller names, by default a regression, a breached guardrail and an undecided guardrail, and never
 passes an undecided verdict.
 
@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from threetears.evals import Eval, Result, grader
 from threetears.evals.storage import InMemoryDocumentStore
 
 from threetears.evals.analysis import (
@@ -34,15 +35,10 @@ from threetears.evals.analysis import (
     verdict_token,
 )
 from threetears.evals.quick import (
-    DEFAULT_QUICK_SCOPE,
-    callable_host,
-    run_eval,
     EXIT_GATE_FAILED,
     EXIT_OK,
     EXIT_REFUSED,
-    Comparison,
-    Guardrail,
-    compare,
+    as_host,
     run_cli,
 )
 from packages.evals.tests.off_loop import off_loop
@@ -62,10 +58,16 @@ def _answers(wrong_below: int) -> Any:
     return candidate
 
 
-async def _compare(arms: Mapping[str, int], **overrides: Any) -> Comparison:
-    arguments: dict[str, Any] = {"control": "current", "scope_id": "typed", "k": 1}
-    arguments.update(overrides)
-    return await compare(CASES, {name: _answers(wrong) for name, wrong in arms.items()}, [correct], **arguments)
+async def _compare(arms: Mapping[str, int], *, scope: str = "typed") -> Result:
+    """Compare the arms, each wrong on its first cases, the first named the control."""
+    runners = {name: _answers(wrong) for name, wrong in arms.items()}
+    return await Eval(CASES, runners, [correct], k=1).run(store=":memory:", scope=scope)
+
+
+async def _guarded(cases: list[dict[str, Any]], arms: Mapping[str, Any], scope: str) -> Result:
+    """Compare the arms graded by ``correct`` and the ``no_leak`` guardrail, held to a 0.1 margin."""
+    ev = Eval(cases, arms, [correct, grader(no_leak, guard=0.1)], k=1)
+    return await ev.run(store=":memory:", scope=scope)
 
 
 def _verdict(kind: str, outcome: str, **fields: Any) -> Verdict:
@@ -172,7 +174,7 @@ class TestTheGate:
         result = comparison.gate()
         assert result.outcome == "failed" and [verdict.arm for verdict in result.failures] == ["candidate=worse"]
         assert "gate FAILED" in result.render() and "regressed from the control" in result.render()
-        better = await _compare({"current": 30, "better": 0}, scope_id="typed-better")
+        better = await _compare({"current": 30, "better": 0}, scope="typed-better")
         assert better.gate().outcome == "passed"
 
 
@@ -193,14 +195,10 @@ class TestAQuickGuardrailIsATypedVerdictTheGateReads:
 
     async def test_held_breached_and_undecided_each_typed_and_gated(self) -> None:
         # All 48 cases: the bounded test shows a 0.1 margin held only from about 41 agreeing cases.
-        comparison = await compare(
+        comparison = await _guarded(
             CASES,
             {"current": _leaks(0), "same": _leaks(0), "leaky": _leaks(12), "slip": _leaks(3)},
-            [correct, no_leak],
-            control="current",
-            scope_id="typed-guardrails",
-            k=1,
-            guardrails={"no_leak": Guardrail(margin=0.1, direction="higher_is_better")},
+            "typed-guardrails",
         )
         typed = {verdict.arm: verdict for verdict in comparison.verdicts("no_leak", kind="guardrail")}
         assert {arm: verdict.outcome for arm, verdict in typed.items()} == {
@@ -227,29 +225,21 @@ class TestTheCommandLineGate:
     """``python -m threetears.evals gate``: exit 4 on a regressed contrast and on a breached guardrail."""
 
     @staticmethod
-    def _gate(comparison: Comparison, *extra: str) -> int:
+    def _gate(comparison: Result, *extra: str) -> int:
         return run_cli(
             ["gate", comparison.campaign_id, "--scope", comparison.scope_id, *extra],
             host_factory=lambda: comparison.host,
         )
 
     async def test_a_regressed_contrast_exits_4_and_names_it(self, capsys: pytest.CaptureFixture[str]) -> None:
-        comparison = await _compare({"current": 0, "worse": 30}, scope_id="cli-regressed")
+        comparison = await _compare({"current": 0, "worse": 30}, scope="cli-regressed")
         assert off_loop(self._gate, comparison) == EXIT_GATE_FAILED == 4
         out = capsys.readouterr().out
         assert out.startswith("gate FAILED: 1 of 1 verdict(s)")
         assert "failed: Correct score, candidate=worse vs candidate=current: regressed from the control" in out
 
     async def test_a_breached_guardrail_exits_4(self, capsys: pytest.CaptureFixture[str]) -> None:
-        comparison = await compare(
-            CASES[:40],
-            {"current": _leaks(0), "leaky": _leaks(12)},
-            [correct, no_leak],
-            control="current",
-            scope_id="cli-breached",
-            k=1,
-            guardrails={"no_leak": Guardrail(margin=0.1, direction="higher_is_better")},
-        )
+        comparison = await _guarded(CASES[:40], {"current": _leaks(0), "leaky": _leaks(12)}, "cli-breached")
         assert off_loop(self._gate, comparison, "--fail-on", "breached") == EXIT_GATE_FAILED
         assert "failed: guardrail Correct" not in capsys.readouterr().out
         assert off_loop(self._gate, comparison, "--fail-on", "breached", "--reading", "correct") == EXIT_OK
@@ -257,10 +247,10 @@ class TestTheCommandLineGate:
     async def test_a_better_arm_passes_and_an_undecided_one_exits_0_saying_it_is_no_pass(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        better = await _compare({"current": 30, "better": 0}, scope_id="cli-better")
+        better = await _compare({"current": 30, "better": 0}, scope="cli-better")
         assert off_loop(self._gate, better) == EXIT_OK
         assert capsys.readouterr().out.startswith("gate passed: all 1 verdict(s) decided")
-        alike = await _compare({"current": 0, "alike": 0}, scope_id="cli-alike")
+        alike = await _compare({"current": 0, "alike": 0}, scope="cli-alike")
         assert off_loop(self._gate, alike) == EXIT_OK
         assert "which is not a pass" in capsys.readouterr().out
         assert off_loop(self._gate, alike, "--fail-on", "regressed,untested,not-separated") == EXIT_GATE_FAILED
@@ -268,7 +258,7 @@ class TestTheCommandLineGate:
     async def test_an_unknown_outcome_and_a_campaign_with_no_verdict_are_refused(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        comparison = await _compare({"current": 0, "worse": 30}, scope_id="cli-refused")
+        comparison = await _compare({"current": 0, "worse": 30}, scope="cli-refused")
         with pytest.raises(SystemExit) as exited:
             self._gate(comparison, "--fail-on", "regresed")
         assert exited.value.code == EXIT_REFUSED
@@ -293,18 +283,20 @@ class TestTheCommandLineGate:
 
 
 class TestANewcomerNeedsNoScope:
-    """#700: ``run_eval`` and ``compare`` with no host need no ``scope_id``; a host of your own still does."""
+    """An eval needs no scope: it defaults to the eval's name, whatever the store or host, and every result says it."""
 
-    async def test_run_eval_and_compare_default_it_with_no_host(self) -> None:
-        summary = await run_eval(CASES[:4], _answers(0), [correct], k=1)
-        assert summary.scope_id == DEFAULT_QUICK_SCOPE == "quick" and summary.status == "completed"
-        comparison = await compare(
-            CASES[:4], {"current": _answers(0), "other": _answers(1)}, [correct], control="current", k=1
+    async def test_one_arm_and_a_comparison_default_it_to_the_eval_s_name(self) -> None:
+        one = await Eval(CASES[:4], _answers(0), [correct], k=1).run(store=":memory:")
+        assert one.scope_id == one.summary.scope_id == "candidate" and one.summary.status == "completed"
+        assert "scope 'candidate'" in one.render()
+        compared = await Eval(CASES[:4], {"current": _answers(0), "other": _answers(1)}, [correct], k=1).run(
+            store=":memory:"
         )
-        assert comparison.scope_id == DEFAULT_QUICK_SCOPE
+        assert compared.scope_id == "current vs other"
 
-    async def test_a_host_or_a_store_of_your_own_names_its_scope(self) -> None:
-        with pytest.raises(ValueError, match="scope_id= is required with a host of your own"):
-            await run_eval(CASES[:4], _answers(0), [correct], host=callable_host([correct]), k=1)
-        with pytest.raises(ValueError, match="scope_id= is required with a store of your own"):
-            await run_eval(CASES[:4], _answers(0), [correct], store=InMemoryDocumentStore(), k=1)
+    async def test_a_host_or_a_store_of_your_own_takes_the_same_default_or_the_scope_named(self) -> None:
+        ev = Eval(CASES[:4], _answers(0), [correct], k=1, name="triage")
+        hosted = await ev.run(host=as_host([ev], store=":memory:"))
+        assert hosted.scope_id == "triage"
+        stored = await ev.run(store=InMemoryDocumentStore(), scope="mine")
+        assert stored.scope_id == stored.summary.scope_id == "mine"

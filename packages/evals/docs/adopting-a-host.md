@@ -2,7 +2,7 @@
 
 **For** the developer wiring 3tears-evals into an app for real: your own storage, your own launch path, runs
 you can compare over weeks. **Answers:** what you write (a host, a store, a kind, a launcher) and what the engine
-does with each. If you only want to grade a function, and keep its runs in a file, `run_eval` (as in the
+does with each. If you only want to grade a function, and keep its runs in a file, an `Eval` (as in the
 [tutorial](tutorial.md#8-keep-your-runs)) builds all of this for you. Read
 [Concepts](concepts.md) first: this guide uses its terms (host, kind, lever, apparatus, scope, cell)
 without stopping to define them.
@@ -24,10 +24,10 @@ Everything past those — the trial loop, the stored documents, judging, pricing
 engine's. The sections after "Launching" cover what you need only if your subject has a stateful world,
 converses, does background work, or calls tools you want to record and replay.
 
-Quick's pieces build some of these as ordinary contract objects you mix with your own (all in
-`threetears.evals.quick`): `@measure(...)` declares a `MetricDescriptor` on the function that computes it, so you
-register its `.descriptor` and grade with the function; `callable_kind(candidate, scorers)` is the kind over a
-plain async function, declared under `callable_kind_contracts()`; and a quick `World`'s `registry` and
+Quick's pieces build some of these as ordinary contract objects you mix with your own: `@measure(...)`
+(`threetears.evals.quick`) declares a `MetricDescriptor` on the function that computes it, so you register its
+`.descriptor` and grade with the function; `as_host([evals], store=...)` (`threetears.evals.quick`) is the host an
+`Eval` runs on, its kind over a plain function; and a `World`'s (`threetears.evals.World`) `registry` and
 `bindings(state)` are a simple world's declaration and its handles. The toy host's kind computes its measures
 this way.
 
@@ -489,8 +489,8 @@ await check_refusal_negotiation(
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
 engine never interprets it, defaults it or branches on it: it is your tenant, project or environment,
-whatever you partition by. (The one default is the quick path's `"quick"`, used only in the in-memory store a
-`run_eval` or `compare` call builds and drops; pass a `host=` or `store=` and `scope_id=` is required.) All of it goes through one `DocumentStore` you implement, keyed by
+whatever you partition by. (The one default is the quick path's: an `Eval` runs under a scope named after
+itself unless `run(scope=...)` names one.) All of it goes through one `DocumentStore` you implement, keyed by
 `(scope_id, doc_type, id)`. Every port call names its scope (an upsert takes it from the document it
 writes), and there is no scope-free read: a caller that
 needs several scopes is told which by you and asks each. A campaign and the runs it compares live in one
@@ -1271,8 +1271,8 @@ Skip this section if your subject is stateless (a classifier, an extractor). A w
 acts on something — a ticket queue it can close tickets in, a game table — whose state you want seeded
 before each cell and checked after it.
 
-Before building a host for one, try the quick path: `run_eval(..., world=World(...), seed=..., goal_checks=[...])`
-declares a small world, seeds each case's starting state through this same session, hands the candidate
+Before building a host for one, try the quick path: `Eval(cases, World(State, tools=[...])(agent), [goal checks])`
+declares a small world, seeds each case's starting state (its `world` key) through this same session, hands the candidate
 tools that act on it and grades the end state with the engine's goal-state checks (`examples/world.py`).
 What follows is the host-side contract that path is built on.
 
@@ -1309,7 +1309,8 @@ refuse a dimension that declares neither, naming every one at once; a `"configur
 (the seed counts a config the same corpus seeds), and a `"builtin"` one must have none. Every launch checks the same
 before any spend, so a template stored before the declaration existed is refused until `update_template` declares
 its dimensions, and a configured dimension whose config was archived since is refused rather than scored by the
-engine's prompt. A quick-path `Judge` declares its own dimensions, so `run_eval` callers state nothing.
+engine's prompt. A quick-path `Judge` declares its own dimensions, so an `Eval` that grades with one states
+nothing.
 
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
@@ -1355,8 +1356,8 @@ in [Cost and budgets: how a result's cost is counted](cost-and-budgets.md#how-a-
 
 ## Cassettes: recording and replaying tools
 
-A [cassette](concepts.md#cassette) lets two arms face exactly the same tool answers. `run_eval` and `compare`
-do the wiring below for you (`tools=`, `cassette_mode=`; `examples/cassettes.py`); this section is for a kind of
+A [cassette](concepts.md#cassette) lets two arms face exactly the same tool answers. An `Eval` does the wiring
+below for you (`World(tools=[...], recording=path)`; `examples/cassettes.py`); this section is for a kind of
 your own.
 
 **Cassettes record and replay through seams the kind supplies.** Launch a run with

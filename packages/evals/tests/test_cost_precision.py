@@ -24,7 +24,7 @@ from threetears.evals.kernel import RoleUsageLedger
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.kernel.spend import ExternalRateTable
 from threetears.evals.kernel.usage_capture import blended_cost, production_replicating_cost
-from threetears.evals.quick import Answer, compare
+from threetears.evals import Answer, Eval
 from threetears.evals.ops import dollars_text
 from threetears.evals.run import list_results
 from packages.evals.tests.off_loop import off_loop
@@ -42,10 +42,6 @@ CASES = [
     {"text": "a fir", "label": "plant"},
     {"text": "an oak", "label": "plant"},
 ]
-
-
-def _expected(case: Mapping[str, Any]) -> str:
-    return str(case["label"])
 
 
 async def cheap(case: Mapping[str, Any]) -> Answer:
@@ -88,8 +84,8 @@ def test_a_rate_priced_external_call_keeps_its_full_price() -> None:
 
 
 async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() -> None:
-    comparison = await compare(
-        CASES, {"cheap": cheap, "dearer": dearer}, expected=_expected, control="cheap", scope_id=SCOPE, k=1
+    comparison = await Eval(CASES, {"cheap": cheap, "dearer": dearer}, ["label"], k=1).run(
+        store=":memory:", scope=SCOPE
     )
     summary = comparison.arms["cheap"]
 

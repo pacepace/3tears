@@ -179,18 +179,18 @@ one line (`latency_contended`) names the arms. Launch with `measure_latency=True
 
 Every report lists, under Not tested, each tested measure that declares no margin: "No margin is declared on …, so
 no contrast on it can read equivalent", with how to declare one for each kind of measure: a scorer's by its name
-(`compare(margins={"correct": 0.05})`), accuracy's the same way (`compare(margins={"accuracy": 0.05})`), and for an
+(`grader(correct, margin=0.05)`), accuracy's on the label's field grader (`grader("label", margin=0.05)`), and for an
 engine measure such as cost, that none can be declared.
 
-Every verdict here is also a typed value (`report.verdicts`, `Comparison.verdicts()`, the `outcome` key of
-`Comparison.contrasts()`): its outcome, a reason code, the margin it read and where that came from
+Every verdict here is also a typed value (`report.verdicts`, `Result.verdicts()`, the `outcome` key of
+`Result.contrasts()`): its outcome, a reason code, the margin it read and where that came from
 (`margin_source`: `measure`, `run` or, for a judged guardrail, `campaign`), its materiality, and whether it is a
 guardrail. The printed verdict is rendered from it, so code branches on the outcome, never on the words. The
 same values drive the CI gate ([The command line](command-line.md#gate)).
 
 `equivalent` needs a margin and a paired test. A host declares a measure's margin
 (`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on
-the runs at launch (`compare(margins={"accuracy": ...})`, `start_run(margins=...)`), read only when every run of
+the runs at launch (`grader("label", margin=...)`, `start_run(margins=...)`), read only when every run of
 the campaign declares the same one, and its verdict says "declared on the runs". A host's own measures are read
 as their runs were launched to read them: each run records its host's direction, guardrail, margin and range for
 every measure (`EvalRun.declared_measures`), so a stored campaign read later through a host that declares them
@@ -203,7 +203,7 @@ once used, called such samples equivalent up to three times in four. The price i
 takes many cases, whatever the test. Arms that give the same answer on every case and repeat show a pass rate
 within 0.25 from 12 shared cases and within 0.1 from 33, and a 1–5 score within 0.5 from 26, when it is the
 only reading the family tests (no valid test could do it in fewer than 11, 29 and 23). Each further reading
-in the family raises that: with a second (accuracy from `expected=`, or a cost from `Answer`), a pass rate
+in the family raises that: with a second (accuracy from a label's field grader, or a cost from `Answer`), a pass rate
 takes 15 and 41. Arms that disagree on some cases need more: in a seeded simulation at k=2 where about one
 answer in twelve departed from its case's usual one, a pass rate read `equivalent` within 0.25 in 18 of 20
 runs at 24 cases, and within 0.1 in 16 of 20 runs at 100. Below that the row reads `not_separated`, which
@@ -211,8 +211,8 @@ claims nothing. A measure with a margin and no declared range
 is not tested for equivalence at all, since no test of a mean holds 5% without one: its rows never read
 `equivalent`, and the report names the measure once with the remedy, declare `value_range`. On the quick
 path a scorer annotated `-> bool` is on 0 to 1 already, and one returning a number takes its range beside its
-margin (`compare(margins={"rating": 0.5}, ranges={"rating": (1, 5)})`); a margin on it without one is refused
-at the call. The p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
+margin (`grader(rating, margin=0.5, range=(1, 5))`); a margin on it without one is refused
+when the eval is built. The p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
 
@@ -221,9 +221,10 @@ No report states a change as a percent of the control: a Δ is in the reading's 
 ## Reading the guardrails
 
 A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
-measure the host declared `guardrail`. On the quick path, `compare(guardrails=...)` declares either, each with
-its margin and direction ([tutorial](tutorial.md#7-hold-a-guardrail)). The "Guardrails against the control" table
-(`guardrails` in the bundle, under the contrasts on every report, `Comparison.guardrails()` in code) decides each one
+measure the host declared `guardrail`. On the quick path, `grader(fn, guard=margin)` declares one on a grader and
+`Judge(guard={dimension: margin})` one on a judged dimension, every grade higher-is-better
+([tutorial](tutorial.md#7-hold-a-guardrail)). The "Guardrails against the control" table
+(`guardrails` in the bundle, under the contrasts on every report, `Result.guardrails()` in code) decides each one
 for each arm, on its own 95% interval on `arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
 cannot hide a loss here.
 
@@ -238,7 +239,7 @@ The margin is the measure's `materiality_threshold`, and a judged dimension's is
 needs the arm shown no worse at all, which a few cases rarely show.
 
 **`held` is a claim of safety, so it is read only off a test that holds its error rate.** On a declared range
-(`value_range` on a measure, `ranges=` beside a quick scorer; a pass/fail and a judged scale have one already)
+(`value_range` on a measure, `grader(..., range=)` on the quick path; a pass/fail and a judged scale have one already)
 the interval is the bounded test by betting (Waudby-Smith & Ramdas), each end a one-sided 2.5% bound that holds
 for any values on the range at any number of cases. The t interval it replaced read `held` up to 9.5% of the time
 at the margin on coarse, skewed scores (a rare four-point drop on 1-5, pass/fail flips), against 2.5%. The price
@@ -385,7 +386,7 @@ A measure is headed by its reader-facing name (`MetricDescriptor.reader_name`, f
 `MeasureFacts.reader_name`) in every table header and chart title, every evidence, contrast, guardrail and strata
 row, and the memo. A judged dimension is printed under its rubric name with `(judged)` after it, and a reserved judge
 axis as `transcript` or `outcome`. The key is still there to cite: on each `EvidenceRow`, and as `measure_id` on
-each row `Comparison.contrasts()` returns (which filters on either the key or the heading).
+each row `Result.contrasts()` returns (which filters on either the key or the heading).
 A measure the surface froze no reader name for prints an engine measure by the engine's name, and a host
 measure nothing describes by its key.
 
@@ -556,15 +557,14 @@ generated before the axis was nominated keeps the stratum it was written with, w
 cell's pooled figure: a reference names a cell and a measure, and there is no reference to one stratum of
 a cell yet.
 
-**On the quick path**, `run_eval` and `compare` take `stratum_key=`, the key each case carries its kind under
-(`stratum_key="kind"`). The key is taken out of the case before the candidate, a scorer or the judge is handed
-it, and stored as the test case's stratum. A `compare` report then carries the table above, which
-`Comparison.strata()` reads row by row, and every run's summary (`EvalSummary.strata`) reads each measure per
+**On the quick path**, each case carries its kind under the reserved key `stratum`. The key is taken out of the
+case before the runner, a grader or the judge is handed it, and stored as the test case's stratum. A report
+comparing arms then carries the table above, which `Result.strata()` reads row by row, and every run's summary (`EvalSummary.strata`) reads each measure per
 stratum, under `by stratum:` in `render()`, with the same too-few-cases warning.
 
 **Identity.** A stratum enters no identity key, and two arms run over the same cases share their strata. It is
 not part of `content_hash` either, which digests what the candidate is given. So re-labelling a case keeps the
-case: `run_eval` and `compare` store a changed stratum on the same test case, and every run over it, earlier
+case: an `Eval` stores a changed stratum on the same test case, and every run over it, earlier
 ones included, is then read under the new one.
 
 ## How far a judged score can be leaned on: evidence tiers

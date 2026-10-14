@@ -6,13 +6,13 @@ launch it hands on — not by the literal in its signature, since a surface can 
 drop the value on the way to the launch.
 
 Surfaces: the ``run_launch`` and ``launch_estimate`` actions, ops ``run_launch`` (``LaunchArguments``) and
-ops ``launch_estimate``, the command line's ``run``, and ``run_eval``. Each was written against a constant
+ops ``launch_estimate``, the command line's ``run``, and ``Eval``. Each was written against a constant
 of 3; a test asserting ``k_runs == 3`` would pass for a surface hard-coding 3, so every assertion here
 reads the constant.
 
 Mutations that turn this file red (each applied to a saved copy and restored from it): the literal ``1``
 in place of the constant in ``ops.runs.LaunchArguments.k_runs`` (which ops ``launch_estimate`` takes too),
-``quick.cli``'s ``--k``, ``quick.one_call.run_eval``, and ``actions.engine``'s ``RunLaunchParams`` and
+``quick.cli``'s ``--k``, ``quick.contract.Eval``'s ``k``, and ``actions.engine``'s ``RunLaunchParams`` and
 ``LaunchEstimateParams``; and ``quick.cli._launch`` handing on ``k_runs=1`` in place of ``args.k``.
 """
 
@@ -26,7 +26,8 @@ import pytest
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
 from threetears.evals.ops import JobsStarted, LaunchArguments, LaunchEstimate, launch_estimate, run_launch
-from threetears.evals.quick import run_cli, run_eval
+from threetears.evals import Eval
+from threetears.evals.quick import run_cli
 from threetears.evals.quick import cli as quick_cli
 from threetears.evals.run import start_run
 from packages.evals.tests.fixtures.courierhost import (
@@ -157,8 +158,8 @@ def _graded(case: Mapping[str, Any], answer: Any) -> float:
     return 1.0
 
 
-async def test_run_eval_repeats_each_case_the_default_number_of_times_when_given_no_k() -> None:
-    summary = await run_eval([{"q": 1}, {"q": 2}], _answer, [_graded], scope_id="k-default")
+async def test_an_eval_repeats_each_case_the_default_number_of_times_when_given_no_k() -> None:
+    summary = (await Eval([{"q": 1}, {"q": 2}], _answer, [_graded]).run(store=":memory:", scope="k-default")).summary
 
     assert summary.k_runs == DEFAULT_LAUNCH_K_RUNS
     assert summary.n_results == 2 * DEFAULT_LAUNCH_K_RUNS

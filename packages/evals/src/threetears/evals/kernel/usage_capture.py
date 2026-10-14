@@ -656,7 +656,7 @@ def spend_observed(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) ->
     """Whether a row in ``cost_roles`` carries dollars — whether :func:`blended_cost` summed anything at all.
 
     :func:`blended_cost` sums an empty list to 0.0, so a result whose candidate reported nothing — a quick
-    ``run_eval`` candidate that returns a plain value rather than an ``Answer``, a kind whose calls no client
+    runner that returns a plain value rather than an ``Answer`` and calls no ``Model``, a kind whose calls no client
     priced into a row — stores ``cost_usd`` 0.0 exactly as a result that spent a reported $0 does. The two are
     not one fact. A row carrying a cost, ``0.0`` included, is a measurement; no such row means the engine never
     saw the spend, and the stored zero says only that nothing was reported. A reader that pools ``cost_usd``

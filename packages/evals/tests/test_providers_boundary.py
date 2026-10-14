@@ -5,8 +5,9 @@ properties keep it a client the engine never depends on:
 
 * **The engine never imports it.** No module of the package outside ``providers/`` names it, by an import
   statement or by a string a dynamic import could use, except the package root's declarations (``PUBLIC_ROOTS``, and
-  ``_LAZY_EXPORTS``, which loads ``Model`` by name on first read); and importing every other public root in a fresh
-  interpreter does not load it. A host that brings its own client never loads this one.
+  ``_LAZY_EXPORTS``, which loads ``Model`` by name on first read) and ``quick``'s imports inside a function body (the
+  batteries build the client's ``Model`` where an eval names a model by id, and only then); and importing every other
+  public root in a fresh interpreter does not load it. A host that brings its own client never loads this one.
 * **It imports only public names of the engine.** Every reach into ``threetears.evals`` from it goes through a public
   root's ``__all__`` (:func:`nonpublic_engine_reaches`), so the client is held to exactly what a host is.
 * **It depends on nothing but ``httpx`` and pydantic.** No provider SDK, no LangChain, and no other 3tears package:
@@ -79,10 +80,21 @@ def _under_type_checking(tree: ast.Module) -> set[int]:
     return guarded
 
 
+def _inside_functions(tree: ast.Module) -> set[int]:
+    """The ids of the import nodes inside a function body: run when the function is called, never on import."""
+    nested: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            nested |= {id(inner) for inner in ast.walk(node) if isinstance(inner, ast.Import | ast.ImportFrom)}
+    return nested
+
+
 def engine_reaches(source_root: Path) -> Iterator[str]:
     """Every place a module outside ``providers/`` names the client: an import, or a string naming its module.
 
-    The package root's declarations are not reaches, nor is an import the root makes for the type checker alone.
+    The package root's declarations are not reaches, nor is an import the root makes for the type checker alone, nor
+    one ``quick`` makes inside a function body: the batteries build the client's ``Model`` where an eval names a model
+    by id, so importing ``quick`` loads no client (:func:`test_importing_every_other_root_loads_no_client`).
 
     Args:
         source_root: The directory holding the ``threetears`` namespace; ``threetears/evals`` below it is walked.
@@ -99,8 +111,9 @@ def engine_reaches(source_root: Path) -> Iterator[str]:
         is_root = relative == Path("__init__.py")
         declaration = _root_declarations(tree) if is_root else set()
         checker_only = _under_type_checking(tree) if is_root else set()
+        on_call = _inside_functions(tree) if relative.parts[0] == "quick" else set()
         for node in ast.walk(tree):
-            if id(node) in checker_only:
+            if id(node) in checker_only or id(node) in on_call:
                 continue
             if isinstance(node, ast.Import):
                 yield from (
@@ -287,6 +300,9 @@ def test_importing_every_other_root_loads_no_client() -> None:
             False,
         ),
         ("__init__.py", "from threetears.evals.providers import Model\n", True),
+        ("quick/planted.py", "def build():\n    from threetears.evals.providers import Model\n", False),
+        ("quick/planted.py", "from threetears.evals.providers import Model\n", True),
+        ("run/planted.py", "def build():\n    from threetears.evals.providers import Model\n", True),
         ("__init__.py", "OTHER = 'threetears.evals.providers'\n", True),
     ],
 )

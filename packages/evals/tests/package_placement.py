@@ -50,10 +50,10 @@ PACKAGE_DIRS: dict[str, str] = {
     "providers": "providers",
 }
 
-#: The tree markers a path cannot place. The root is the namespace over the packages and is held to a row of its
-#: own, ``root``: the schema, and the roots whose names it exports by loading them on first read (``providers``'
-#: ``Model``). ``__main__`` is ``python -m threetears.evals``, which only hands over to the command line in ``quick``,
-#: and is held to that package's row.
+#: The tree markers a path cannot place. The root is the namespace over the packages, held to a row of its own, ``root``:
+#: it may import the schema, and the quick path and ``providers``, whose names (``Eval``, ``Model``, ...) it serves on
+#: first use (its module ``__getattr__``), and nothing else. ``__main__`` is ``python -m threetears.evals``, which only
+#: hands over to an eval file or the command line in ``quick``, and is held to that package's row.
 TREE_MARKERS: dict[str, str] = {
     "": "root",
     "__main__": "quick",

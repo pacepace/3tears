@@ -2390,8 +2390,8 @@ class EvalTestCase(DurableDocumentModel):
             "engine puts it in no prompt — not the candidate's variation, the simulated user's or the judge's — "
             "and a kind, which is handed the whole case, must leave it out of what it renders, so naming a case a "
             "lookalike never tells the candidate what to look out for. Not part of `content_hash` or of any identity key: "
-            "two arms over the same cases share their strata, and a case re-labelled in place (as `run_eval` and "
-            "`compare` store a changed `stratum_key=` value on the same case) keeps its id and its history, every "
+            "two arms over the same cases share their strata, and a case re-labelled in place (as an `Eval` stores a "
+            "changed `stratum` value on the same case) keeps its id and its history, every "
             "run over it then read under the new stratum. None when the case declares none; a run none of whose cases declares one reads "
             "exactly as an unstratified run. A generated case takes it from the template's nominated axis "
             "(`VariationAxis.stratum`)."
@@ -3145,7 +3145,7 @@ class MeasureDeclaration(EvalBaseModel, CoreShapeModel):
 
     The reading-side half of a :class:`~threetears.evals.kernel.metrics.MetricDescriptor`: which way is better,
     the merit axis it serves, whether it is a guardrail, its margin and its range. A host builds these in code, and
-    the quick path builds them from ``compare(margins=, ranges=, guardrails=)``, so a later reader's host may declare
+    the quick path builds them from ``grader(..., margin=, range=, guard=)``, so a later reader's host may declare
     them differently, or not at all. A comparison of stored runs is read on what the runs were launched under
     (:attr:`EvalRun.declared_measures`), never on whoever reads it.
     """

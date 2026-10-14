@@ -14,13 +14,24 @@ from typing import Any
 
 import pytest
 
+from threetears.evals import Eval
 from threetears.evals.kernel.errors import NotFoundError
-from threetears.evals.quick import ENGINE_COMMANDS, HostCommand, callable_host, run_cli
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.quick import ENGINE_COMMANDS, HostCommand, as_host, run_cli
 from threetears.evals.quick.cli import build_parser
 
 
 def _graded(case: Mapping[str, Any], answer: Any) -> float:
     return 1.0
+
+
+async def _answer(case: Mapping[str, Any]) -> float:
+    return 1.0
+
+
+def _host() -> EvalHost:
+    """A fresh host for one eval, in memory."""
+    return as_host([Eval([{"q": "a"}], _answer, [_graded])], store=":memory:")
 
 
 class _Capture:
@@ -47,7 +58,7 @@ def test_a_host_command_runs_with_the_host_the_factory_built() -> None:
 
     def factory() -> Any:
         # A fresh host per call, so "the host the factory built" is one object and not merely an equal one.
-        built.append(callable_host([_graded]))
+        built.append(_host())
         return built[-1]
 
     capture = _Capture(exit_code=7)
@@ -68,9 +79,7 @@ def test_a_coroutine_handler_is_run_to_completion() -> None:
         return 0
 
     command = HostCommand(name="capture", help="capture", configure=lambda _parser: None, handler=handle)
-    assert (
-        run_cli(["capture", "--scope", "dev"], host_factory=lambda: callable_host([_graded]), commands=[command]) == 0
-    )
+    assert run_cli(["capture", "--scope", "dev"], host_factory=_host, commands=[command]) == 0
     assert seen == ["dev"]
 
 
@@ -86,18 +95,14 @@ def test_a_refusal_a_host_command_raises_exits_two(capsys: pytest.CaptureFixture
         raise NotFoundError("session", "s-404", remedy="list them first")
 
     command = HostCommand(name="capture", help="capture", configure=lambda _parser: None, handler=handle)
-    assert (
-        run_cli(["capture", "--scope", "dev"], host_factory=lambda: callable_host([_graded]), commands=[command]) == 2
-    )
+    assert run_cli(["capture", "--scope", "dev"], host_factory=_host, commands=[command]) == 2
     assert "capture: " in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("name", ENGINE_COMMANDS)
 def test_a_host_command_taking_an_engine_commands_name_is_refused(name: str) -> None:
     with pytest.raises(ValueError, match=f"host command '{name}' collides with the engine's own"):
-        run_cli(
-            [name, "--scope", "dev"], host_factory=lambda: callable_host([_graded]), commands=[_Capture().command(name)]
-        )
+        run_cli([name, "--scope", "dev"], host_factory=_host, commands=[_Capture().command(name)])
 
 
 def test_two_host_commands_sharing_a_name_are_refused() -> None:
@@ -107,10 +112,7 @@ def test_two_host_commands_sharing_a_name_are_refused() -> None:
 
 def test_the_engine_commands_still_work_beside_a_host_command(capsys: pytest.CaptureFixture[str]) -> None:
     capture = _Capture()
-    assert (
-        run_cli(["ls", "--scope", "empty"], host_factory=lambda: callable_host([_graded]), commands=[capture.command()])
-        == 0
-    )
+    assert run_cli(["ls", "--scope", "empty"], host_factory=_host, commands=[capture.command()]) == 0
     assert capsys.readouterr().out.splitlines() == ["templates (0)", "runs (0)", "campaigns (0)"]
     assert capture.seen == []
 

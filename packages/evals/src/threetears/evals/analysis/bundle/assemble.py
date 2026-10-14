@@ -821,7 +821,7 @@ def _declared_words(declaration: MeasureDeclaration) -> str:
 def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostProfile, list[str]]:
     """The reading host's profile with each of its measures read as the member runs were launched to read it.
 
-    A host's declarations — and on the quick path ``compare(margins=, ranges=, guardrails=)`` — can differ between
+    A host's declarations — and on the quick path ``grader(..., margin=, range=, guard=)`` — can differ between
     the process that launched a campaign and one that reads it later. Each run freezes how its launching host
     declared every measure to be read (``EvalRun.declared_measures``), and a measure every run that recorded a
     declaration declared alike is read on that declaration, whatever the reading host says; a difference from the

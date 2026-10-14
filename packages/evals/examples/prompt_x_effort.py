@@ -1,10 +1,10 @@
 """What does changing the prompt do at each effort?
 
 Two things vary at once, the prompt and the reasoning effort the model is asked for: four arms, one per
-combination. New here: ``factors=``, which keys each arm by its level of each factor (``("medium", "v2", MODEL)``;
-every run is at some model, so the model is a factor too, at its one level), and ``Comparison.against``. Every arm
-is tested against one control, (low, v1), so the prompt's effect at medium effort is read against a second control
-over the same runs, with nothing run again. Levers and arms: ``docs/concepts.md``.
+combination. New here: arms named by their level of each factor (``"effort=medium, prompt=v2, model=..."``; every
+run is at some model, so the model is named too, at its one level), and ``Result.against``. Every arm is tested
+against one control, the first named (low, v1), so the prompt's effect at medium effort is read against a second
+control over the same runs, with nothing run again. Levers and arms: ``docs/concepts.md``.
 
 Run it with ``python prompt_x_effort.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set it
 calls Claude 112 times (14 tickets x 2 repeats x 4 arms) for about two US cents; without it, it replays
@@ -21,8 +21,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from threetears.evals import Eval, Result
 from threetears.evals.providers import Model
-from threetears.evals.quick import Comparison, compare
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions
 
@@ -124,40 +124,42 @@ def how_it_runs(what: str) -> str:
 # -----------------------------------------------------------------------------
 
 
-async def main() -> Comparison:
+def arm(effort: str, prompt: str) -> str:
+    """An arm's name: its level of each factor, as ``k=v`` pairs."""
+    return f"effort={effort}, prompt={prompt}, model={MODEL}"
+
+
+async def main() -> Result:
     clients = {effort: client(MODEL, settings) for effort, settings in EFFORTS.items()}
     low, medium = EFFORTS
     print(how_it_runs(f"{MODEL} at {low} and at {medium} effort") + "\n")
 
     try:
-        comparison = await compare(
+        comparison = await Eval(
             CASES,
-            {(effort, prompt, MODEL): classifier(llm, prompt) for effort, llm in clients.items() for prompt in PROMPTS},
-            # Each arm is keyed by its level of each factor, in this order. Every run is at some model, so the model
-            # is a factor too, at one level: the arms share it.
-            factors=("effort", "prompt", "model"),
-            control=(low, "v1", MODEL),
-            expected=lambda case: case["queue"],
+            # Each arm is named by its level of each factor; the first, (low, v1), is the control. Every run is at
+            # some model, so the model is named too, at one level: the arms share it.
+            {arm(effort, prompt): classifier(llm, prompt) for effort, llm in clients.items() for prompt in PROMPTS},
+            ["queue"],
             name="prompt x effort",
-            scope_id="prompt-x-effort",
             k=2,
-        )
+        ).run(store=":memory:", scope="prompt-x-effort")
     finally:
         for llm in clients.values():
             await llm.aclose()
 
     # Against (low, v1), v2 at low effort is the prompt's effect there. Its effect at medium effort needs v1 at
     # medium as the control: against() reads the same runs that way, running nothing again.
-    for effort, read in ((low, comparison), (medium, await comparison.against((medium, "v1", MODEL)))):
-        (row,) = [row for row in read.contrasts("accuracy") if row["arm"] == (effort, "v2", MODEL)]  # arms by key
+    for effort, read in ((low, comparison), (medium, await comparison.against(arm(medium, "v1")))):
+        (row,) = [row for row in read.contrasts("accuracy") if row["arm"] == arm(effort, "v2")]  # arms by name
         p = "" if row["p_adjusted"] is None else f", Holm-adjusted p {row['p_adjusted']:.2g}"  # none if nothing varied
         print(f"At {effort} effort, v2 vs v1 on {row['reading']}: {row['control_mean']:.2f} -> ", end="")
         print(f"{row['arm_mean']:.2f}, delta {row['delta']:+.2f}, interval {row['interval']}{p}: {row['verdict']}")
         for index, case in enumerate(CASES):  # where the two prompts disagree at this effort
-            said = [[r.answer for r in comparison.results((effort, v, MODEL)) if r.case == str(index)] for v in PROMPTS]
+            said = [[r.answer for r in comparison.results(arm(effort, v)) if r.case == str(index)] for v in PROMPTS]
             if said[0] != said[1]:
                 print(f"  {case['ticket']!r} ({case['queue']}): v1 said {', '.join(said[0])}; v2 {', '.join(said[1])}")
-    print("\nThe full report: print(comparison.render()), or reports.py to write it to files.")
+    print("\nThe full report: print(comparison.render(full=True)), or reports.py to write it to files.")
     return comparison
 
 

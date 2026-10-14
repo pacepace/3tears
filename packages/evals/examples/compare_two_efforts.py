@@ -10,8 +10,9 @@ spend, and a margin.
   their accuracy. How spend is counted: ``docs/cost-and-budgets.md``.
 - **A margin.** "Good enough" means "no more than ``MARGIN`` less accurate". Only the verdict ``equivalent``
   supports that: an equivalence test shows the difference inside a margin declared on the measure.
-  "Not separated" never does: it means these cases could not tell the two settings apart. ``margins=`` declares the
-  margin on accuracy, recorded on both runs; with none declared, no contrast can read ``equivalent``.
+  "Not separated" never does: it means these cases could not tell the two settings apart. ``grader("label",
+  margin=...)`` declares the margin on accuracy, recorded on both runs; with none declared, no contrast can read
+  ``equivalent``.
 - **Typed verdicts.** The decision branches on ``comparison.verdicts("accuracy")``, whose ``outcome`` is a value
   (``"equivalent"``, ``"not_separated"``, ...), never on the printed words.
 
@@ -33,8 +34,8 @@ from pathlib import Path
 from typing import Any
 
 from threetears.evals.analysis import format_number, format_signed
+from threetears.evals import Answer, Eval, Result, grader
 from threetears.evals.providers import Model
-from threetears.evals.quick import Answer, Comparison, compare
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions
 
@@ -50,7 +51,7 @@ RECORDING = Path(__file__).with_name("recordings") / "compare_two_efforts.jsonl"
 RERECORD = "RECORD=1 python compare_two_efforts.py"
 
 # -----------------------------------------------------------------------------
-# 1. The cases: each email, and the label a person gave it, which grades each answer (expected=).
+# 1. The cases: each email, and the label a person gave it, which grades each answer (the field grader "label").
 # -----------------------------------------------------------------------------
 
 CASES = [
@@ -148,20 +149,20 @@ WHAT_TO_DO = {
 }
 
 
-async def main() -> Comparison:
+async def main() -> Result:
     clients = {arm: client(MODEL, settings) for arm, settings in EFFORTS.items()}
     today, cheaper = EFFORTS
     print(how_it_runs(f"{MODEL} at {today} and at {cheaper} effort") + "\n")
 
     try:
-        comparison = await compare(
+        comparison = await Eval(
             CASES,
-            {arm: classifier(llm) for arm, llm in clients.items()},  # each arm by its effort
-            expected=lambda case: case["label"],  # grades each answer against its label: the report reads Accuracy
-            margins={"accuracy": MARGIN},  # recorded on both runs, so a contrast on accuracy can read "equivalent"
-            control=today,
+            {arm: classifier(llm) for arm, llm in clients.items()},  # each arm by its effort; the first is the control
+            # Grades each answer against its label (the report reads Accuracy), with the margin recorded on both runs,
+            # so a contrast on accuracy can read "equivalent".
+            [grader("label", margin=MARGIN)],
             k=2,
-        )
+        ).run(store=":memory:")
     finally:
         for llm in clients.values():
             await llm.aclose()

@@ -1,4 +1,4 @@
-"""Levers a ``run_eval`` run states beside its model: the second factor of a factorial comparison.
+"""Levers an ``Eval``'s run states beside its model: the second factor of a factorial comparison.
 
 A run's model is one coordinate of its variant; a comparison over two prompts AND two models needs a
 second. The engine's way to carry one is a kind contract's overlay model
@@ -26,7 +26,7 @@ class CallableLevers(BaseModel):
     """The base of every overlay model :func:`levers_model` builds: one named level per lever.
 
     A host of the caller's own may declare a callable kind's overlays only with a model built here, since
-    the callable kind turns nothing else; :func:`~threetears.evals.quick.run_eval` refuses any other.
+    the callable kind turns nothing else; :class:`~threetears.evals.quick.contract.Eval` refuses any other.
     """
 
     model_config = ConfigDict(protected_namespaces=())

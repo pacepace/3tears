@@ -110,9 +110,8 @@ def test_the_example_imports_nothing_but_the_engine_and_the_standard_library() -
     source = RUNG_ZERO.read_text(encoding="utf-8")
     assert _foreign_imports(source) == []
     assert any(
-        isinstance(node, ast.ImportFrom) and node.module == "threetears.evals.quick"
-        for node in ast.walk(ast.parse(source))
-    ), "the example no longer imports run_eval from its root, so the checks above say nothing about it"
+        isinstance(node, ast.ImportFrom) and node.module == "threetears.evals" for node in ast.walk(ast.parse(source))
+    ), "the example no longer imports Eval from the package root, so the checks above say nothing about it"
     assert _foreign_imports(source + "\nimport pytest\n") == ["pytest"]
     assert _foreign_imports(source + "\nfrom packages.evals.tests import factories\n") == ["packages.evals.tests"]
 

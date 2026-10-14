@@ -1,6 +1,6 @@
 """A finished run as a short summary: how it ended, how its cells came out, and each measure's mean.
 
-What :func:`~threetears.evals.quick.run_eval` returns, what the CLI prints after a launch and what the
+What an eval's result carries for each arm (:class:`~threetears.evals.quick.result.Result`), what the CLI prints after a launch and what the
 ``run_get`` action reads. It is read from the store, never from the job that ran, so a summary of a run finished in another process
 says the same thing as one made the moment it ended.
 
@@ -227,7 +227,7 @@ class GoalCheckSummary(BaseModel):
             what a candidate that did nothing would score, and :meth:`render` says so beside it.
         did_nothing_passed: Of ``did_nothing_cases``, how many cases a candidate that did nothing passes — the
             check graded against each case's untouched starting state with no calls made. Set where each case's
-            seed is in hand (:func:`~threetears.evals.quick.run_eval`'s world path); ``None`` elsewhere.
+            seed is in hand (an eval's world with state); ``None`` elsewhere.
         did_nothing_cases: The cases that baseline was graded over; ``None`` with it.
         stale_proof: The run recorded the check ``proven`` under an older proof rule
             (:func:`~threetears.evals.schema.models.goal_check_proofs_as_read`), so ``proof`` reads
@@ -683,7 +683,7 @@ class EvalSummary(BaseModel):
         template_id: The template it ran; ``None`` for an ad-hoc run of explicit cases.
         candidate_model: The arm's candidate model.
         arm: The arm's name, where a comparison named its arms apart from their model
-            (:func:`~threetears.evals.quick.compare`, every arm at one shared model); ``None`` elsewhere, and for a
+            (an eval comparing plainly named arms, every arm at one shared model); ``None`` elsewhere, and for a
             summary read back from the store.
         status: How the run ended, as stored (``completed``, ``failed``, ``cancelled``, ...).
         k_runs: Repeats per case.
@@ -709,7 +709,7 @@ class EvalSummary(BaseModel):
             unjudged run, and for a template edited since the run launched, whose intent is no longer the one
             the judge read.
         intent_source: Where the intent came from, as the caller that wrote the template says it
-            (:func:`~threetears.evals.quick.run_eval`: ``"from <candidate>'s docstring"`` or a generic
+            (an eval: ``"from <runner>'s docstring"`` or a generic
             default); ``None`` for an intent stated outright, and for a summary read back from the store,
             which keeps the intent but not its source.
         second_judge_calls: How many calls second judges asked about this run made, as the out-of-run ledger records
@@ -722,7 +722,7 @@ class EvalSummary(BaseModel):
             the counted roles' priced dollars and their unpriced calls), and for a run whose results reported no
             spend.
         errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
-            as the caller that summarised the run named it (:func:`~threetears.evals.quick.run_eval`: its own
+            as the caller that summarised the run named it (an eval: its own
             ``id``, else its position), else by its stored test case id.
         max_cost_usd: The spend ceiling the run was held to, in US dollars; ``None`` when none bound it.
         max_cost_usd_origin: Where that ceiling came from, as the run records it: ``chosen`` (the launch named

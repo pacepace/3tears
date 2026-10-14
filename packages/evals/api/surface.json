@@ -6,6 +6,36 @@
       "signature": "",
       "tier": "host-contract"
     },
+    "threetears.evals.Answer": {
+      "kind": "dataclass",
+      "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None, served_model: str | None = None)",
+      "tier": "host-contract"
+    },
+    "threetears.evals.Eval": {
+      "kind": "class",
+      "signature": "Eval(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str], runner: Any, grader: Any, *, k: int = 3, name: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.Example": {
+      "kind": "dataclass",
+      "signature": "Example(dimension: str, answer: Any, expected: AuthoredVerdict, note: str, case: Mapping[str, Any] = dict(), author: str = 'an Example')",
+      "tier": "host-contract"
+    },
+    "threetears.evals.grader": {
+      "kind": "function",
+      "signature": "grader(target: Callable[[Mapping[str, Any], Any], float | bool] | str | None = None, /, *, margin: float | None = None, guard: float | None = None, range: tuple[float, float] | None = None) -> Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]",
+      "tier": "host-contract"
+    },
+    "threetears.evals.Judge": {
+      "kind": "class",
+      "signature": "Judge(model: str | CompletionClient, rubric: Mapping[str, str] | Sequence[RubricDim], *, examples: Sequence[Example] = (), labels: str | os.PathLike[str] | None = None, case_material: Callable[[Mapping[str, Any]], str] | None = None, guard: Mapping[str, float] | None = None) -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.Log": {
+      "kind": "class",
+      "signature": "Log(path: str | os.PathLike[str]) -> None",
+      "tier": "host-contract"
+    },
     "threetears.evals.Model": {
       "kind": "class",
       "signature": "Model(id: str, *, provider: Provider | None = None, api_key: str | None = None, base_url: str | None = None, max_tokens: int | None = None, effort: str | int | None = None, temperature: float | None = None, recording: str | os.PathLike[str] | None = None, catalogue: Catalogue | None = None, http: httpx.AsyncClient | None = None) -> None",
@@ -16,6 +46,11 @@
       "signature": "",
       "tier": "host-contract"
     },
+    "threetears.evals.Result": {
+      "kind": "dataclass",
+      "signature": "Result(name: str, scope_id: str, control: str, arms: dict[str, EvalSummary], report: Report, host: EvalHost, campaign_id: str, factors: tuple[str, ...] = ('model',), store: str = '', fields: tuple[str, ...] = (), judge: Judge | None = None, disclosures: tuple[str, ...] = (), calibrations: tuple[JudgeCalibration, ...] = (), to_label: tuple[dict[str, str], ...] = (), contrast_arms: tuple[str | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[str, str] = dict(), labelled_arms: dict[str, str | None] = dict())",
+      "tier": "host-contract"
+    },
     "threetears.evals.ROOT_EXTRAS": {
       "kind": "constant (mappingproxy)",
       "signature": "",
@@ -24,6 +59,11 @@
     "threetears.evals.RootExtra": {
       "kind": "dataclass",
       "signature": "RootExtra(extra: str, modules: tuple[str, ...])",
+      "tier": "host-contract"
+    },
+    "threetears.evals.World": {
+      "kind": "class",
+      "signature": "World(state: type[BaseModel] | None = None, /, *, tools: Sequence[Callable[..., Any]] = (), recording: str | os.PathLike[str] | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.schema.ActorPolicy": {
@@ -944,7 +984,7 @@
     "threetears.evals.schema.RubricDim": {
       "kind": "model",
       "signature": "RubricDim(name: DimName, description: str, scale: RubricScale, scoring_guide: dict[str, str] = dict(), axis: RubricAxis = 'capability', judge: JudgeDeclaration | None = None)",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.RubricDimTombstone": {
       "kind": "model",
@@ -2239,6 +2279,11 @@
     "threetears.evals.kernel.NOT_ESTABLISHED": {
       "kind": "constant (str)",
       "signature": "",
+      "tier": "closure"
+    },
+    "threetears.evals.kernel.note_spend": {
+      "kind": "function",
+      "signature": "note_spend(completion: CompletionResult) -> None",
       "tier": "closure"
     },
     "threetears.evals.kernel.NotFoundError": {
@@ -6091,19 +6136,9 @@
       "signature": "",
       "tier": "closure"
     },
-    "threetears.evals.quick.Answer": {
-      "kind": "dataclass",
-      "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None, served_model: str | None = None)",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.ARM_LEVER": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.ArmKey": {
-      "kind": "type alias",
-      "signature": "str | tuple[str, ...]",
+    "threetears.evals.quick.as_host": {
+      "kind": "function",
+      "signature": "as_host(evals: Sequence[Eval], *, store: DocumentStore | str | os.PathLike[str] | None, clients: CompletionClients | None = None) -> EvalHost",
       "tier": "host-contract"
     },
     "threetears.evals.quick.build_parser": {
@@ -6111,75 +6146,10 @@
       "signature": "build_parser(prog: str = 'python -m threetears.evals', *, takes_host: bool = True, commands: Sequence[HostCommand] = ()) -> argparse.ArgumentParser",
       "tier": "closure"
     },
-    "threetears.evals.quick.callable_host": {
-      "kind": "function",
-      "signature": "callable_host(scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, store: DocumentStore | None = None, clients: CompletionClients | None = None, trace_sink: TraceSink | None = None, guardrails: Mapping[str, Guardrail] | None = None) -> EvalHost",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.CALLABLE_KIND": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.callable_kind": {
-      "kind": "function",
-      "signature": "callable_kind(candidate: Candidate | ToolUsingCandidate, scorers: Sequence[Scorer] = (), *, classifies: bool = False, judge: Judge | None = None, tools: Mapping[str, Tool] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None) -> CandidateKind",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.CALLABLE_KIND_CONTRACT": {
-      "kind": "constant (KindContract)",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.callable_kind_contracts": {
-      "kind": "function",
-      "signature": "callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.Candidate": {
-      "kind": "type alias",
-      "signature": "Callable[[Mapping[str, Any]], Awaitable[Any] | Any]",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.CandidateTools": {
-      "kind": "type alias",
-      "signature": "Mapping[str, Callable[..., Awaitable[Any]]]",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.CaseMaterial": {
-      "kind": "type alias",
-      "signature": "Callable[[Mapping[str, Any]], str]",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.CaseSeed": {
-      "kind": "type alias",
-      "signature": "Callable[[Mapping[str, Any]], Mapping[str, Any]]",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.compare": {
-      "kind": "async function",
-      "signature": "compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str | None = None, expected: ExpectedLabel | None = None, stratum_key: str | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None, measure_latency: bool = False) -> Comparison",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.Comparison": {
-      "kind": "dataclass",
-      "signature": "Comparison(campaign_id: str, scope_id: str, name: str, control: ArmKey, arms: dict[ArmKey, EvalSummary], report: Report, host: EvalHost, factors: tuple[str, ...] = ('model',), contrast_arms: tuple[ArmKey | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[ArmKey, str] = dict(), labelled_arms: dict[str, ArmKey | None] = dict())",
-      "tier": "host-contract"
-    },
     "threetears.evals.quick.DEFAULT_PROG": {
       "kind": "constant (str)",
       "signature": "",
       "tier": "closure"
-    },
-    "threetears.evals.quick.DEFAULT_QUICK_SCOPE": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.Dimension": {
-      "kind": "dataclass",
-      "signature": "Dimension(name: str, schema: Mapping[str, Any], matters: str)",
-      "tier": "host-contract"
     },
     "threetears.evals.quick.ENGINE_COMMANDS": {
       "kind": "constant (tuple)",
@@ -6211,19 +6181,9 @@
       "signature": "",
       "tier": "closure"
     },
-    "threetears.evals.quick.ExpectedLabel": {
-      "kind": "type alias",
-      "signature": "Callable[[Mapping[str, Any]], str]",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.Guardrail": {
+    "threetears.evals.quick.Grader": {
       "kind": "dataclass",
-      "signature": "Guardrail(margin: float, direction: GuardrailDirection)",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.GuardrailDirection": {
-      "kind": "literal",
-      "signature": "'higher_is_better'` | `'lower_is_better'",
+      "signature": "Grader(target: Callable[[Mapping[str, Any], Any], float | bool] | str, margin: float | None = None, guard: float | None = None, range: tuple[float, float] | None = None)",
       "tier": "closure"
     },
     "threetears.evals.quick.HostCommand": {
@@ -6236,20 +6196,10 @@
       "signature": "Callable[[], EvalHost | LaunchHost]",
       "tier": "closure"
     },
-    "threetears.evals.quick.Judge": {
+    "threetears.evals.quick.JudgeCalibration": {
       "kind": "dataclass",
-      "signature": "Judge(client: CompletionClient, model: str, rubric: Mapping[str, str] | Sequence[RubricDim], scale: RubricScale = 'ordinal', context: str = 'answer', case_material: CaseMaterial | None = None, examples: Sequence[JudgeExample] = (), _dims: tuple[RubricDim, ...] (derived))",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.JUDGED_CALLABLE_KIND": {
-      "kind": "constant (str)",
-      "signature": "",
+      "signature": "JudgeCalibration(dimension: str, labels: int, kappa: float | None, lower: float | None, upper: float | None, calibration: str, tier: str)",
       "tier": "closure"
-    },
-    "threetears.evals.quick.JudgeExample": {
-      "kind": "dataclass",
-      "signature": "JudgeExample(dimension: str, answer: Any, expected: AuthoredVerdict, note: str, case: Mapping[str, Any] = dict(), author: str = 'run_eval example')",
-      "tier": "host-contract"
     },
     "threetears.evals.quick.Measure": {
       "kind": "class",
@@ -6266,55 +6216,15 @@
       "signature": "run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int",
       "tier": "closure"
     },
-    "threetears.evals.quick.run_eval": {
-      "kind": "async function",
-      "signature": "run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str | None = None, expected: ExpectedLabel | None = None, stratum_key: str | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> EvalSummary",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.Scorer": {
-      "kind": "type alias",
-      "signature": "Callable[[Mapping[str, Any], Any], float | bool]",
+    "threetears.evals.quick.WorldOutcome": {
+      "kind": "model",
+      "signature": "WorldOutcome(answer: Any, state: Any = None, calls: list[RecordedCall] = [])",
       "tier": "closure"
     },
-    "threetears.evals.quick.Tool": {
-      "kind": "type alias",
-      "signature": "Callable[..., Any]",
+    "threetears.evals.quick.WorldRunner": {
+      "kind": "dataclass",
+      "signature": "WorldRunner(world: World, agent: Callable[[Mapping[str, Any], Any], Awaitable[Any]])",
       "tier": "closure"
-    },
-    "threetears.evals.quick.ToolRefused": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.ToolUsingCandidate": {
-      "kind": "type alias",
-      "signature": "Callable[[Mapping[str, Any], CandidateTools], Awaitable[Any]]",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.UNUSABLE_ANSWER": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.World": {
-      "kind": "class",
-      "signature": "World(name: str, dimensions: Sequence[Dimension], *, tools: Sequence[WorldTool] = ()) -> None",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.WorldCandidate": {
-      "kind": "type alias",
-      "signature": "Callable[[Mapping[str, Any], WorldTools], Awaitable[Any]]",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.WorldTool": {
-      "kind": "class",
-      "signature": "WorldTool(act: Callable[..., Any], /, **params: Mapping[str, Any]) -> None",
-      "tier": "host-contract"
-    },
-    "threetears.evals.quick.WorldTools": {
-      "kind": "class",
-      "signature": "WorldTools(world: World, session: WorldSession, state: dict[str, Any]) -> None",
-      "tier": "host-contract"
     },
     "threetears.evals.ops.action_job_id": {
       "kind": "function",

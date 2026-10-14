@@ -16,8 +16,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import EvalSummary
-from threetears.evals.quick import callable_host
+from threetears.evals import Result
 from threetears.evals.run import get_result_trace, list_results
 from threetears.evals.schema import RecordedCall
 from threetears.evals.testing import RecordedPrompt
@@ -44,12 +43,12 @@ async def test_with_no_api_key_the_example_replays_its_recording_and_says_so(
     ]
     check_covers(module, first_turns, settings=module.SETTINGS)
     replay = replaying(module, monkeypatch)
-    host = _host_of(module, monkeypatch)
 
-    summary = await module.main()
+    result = await module.main()
 
     assert 8 <= replay.served() <= 32, "each of 8 cells takes one to four turns"
-    assert isinstance(summary, EvalSummary)
+    assert isinstance(result, Result)
+    summary, host = result.summary, result.host  # the host the cells are read back from
     assert (summary.status, summary.candidate_model) == ("completed", module.MODEL)
     assert (summary.n_cases, summary.k_runs, summary.n_results, summary.n_scored) == (4, 2, 8, 8)
     assert summary.errors == []
@@ -101,9 +100,9 @@ async def test_the_loop_tells_the_model_a_refused_call_and_acts_on_the_next(monk
 
     monkeypatch.setattr(module, "client", lambda model, settings: SimpleNamespace(generate=generate, aclose=aclose))
     monkeypatch.setattr(module, "how_it_runs", lambda what: f"scripted ({what})")
-    host = _host_of(module, monkeypatch)
     monkeypatch.setattr(module, "CASES", module.CASES[:1])  # dark, light off, about to read
-    summary = await module.main()
+    result = await module.main()
+    summary, host = result.summary, result.host
 
     assert len(sent) == 3 * summary.k_runs
     first = sent[0]
@@ -122,13 +121,6 @@ async def test_the_loop_tells_the_model_a_refused_call_and_acts_on_the_next(monk
         assert trace.call_ledger.calls == [RecordedCall(tool="room", action="switch_light", params={"to": "on"})]
         assert trace.end_state == {"light": "on", "daylight": "dark"}
     assert [(goal.passed, goal.n) for goal in summary.goal_checks] == [(2, 2), (2, 2)]
-
-
-def _host_of(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """The host the example will build and run in, made here so the test can read the cells back from it."""
-    host = callable_host(world=module.ROOM)
-    monkeypatch.setattr(module, "callable_host", lambda **kwargs: host)
-    return host
 
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:

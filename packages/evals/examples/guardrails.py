@@ -6,8 +6,8 @@ worse on, decided apart from everything it gained.
 
 - **The capability** is ``gives_status``: does the reply say where the order is. It is contrasted against the
   control, as in ``compare_two_prompts.py``.
-- **The guardrail** is ``keeps_card_private``: the reply does not repeat the card's digits. Declared in
-  ``guardrails=``, it is in no contrast; each arm is decided against the control on it: **held** (shown no
+- **The guardrail** is ``keeps_card_private``: the reply does not repeat the card's digits. Declared with
+  ``grader(..., guard=MARGIN)``, it is in no contrast; each arm is decided against the control on it: **held** (shown no
   worse than the control by more than the margin), **breached** (shown worse by more), or **undecided**
   (neither shown, which is never safe). An arm that breached it is not adopted, whatever it gained.
 - **The margin** is how much worse you would tolerate, declared before you look: here, ``MARGIN``. Nothing
@@ -28,8 +28,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from threetears.evals import Eval, Result, grader
 from threetears.evals.providers import Model
-from threetears.evals.quick import Comparison, Guardrail, compare
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions
 
@@ -57,7 +57,7 @@ CASES = [
 ]
 
 # -----------------------------------------------------------------------------
-# 2. The grades: one capability, one guardrail. Both are plain scorers; the guardrail is declared in compare.
+# 2. The grades: one capability, one guardrail. Both are plain functions; the guardrail is declared in the eval.
 # -----------------------------------------------------------------------------
 
 
@@ -141,19 +141,17 @@ def what_to_do(outcome: str, guardrail: str) -> str:
     return "safe on the guardrail, but not shown to answer better: keep the current prompt."
 
 
-async def main() -> Comparison:
+async def main() -> Result:
     llm = client(MODEL, SETTINGS)  # one client: the three arms differ only in their prompt
     print(how_it_runs(MODEL) + "\n")
 
     try:
-        comparison = await compare(
+        comparison = await Eval(
             CASES,
-            {name: bot(llm, prompt) for name, prompt in PROMPTS.items()},
-            [gives_status, keeps_card_private],
-            guardrails={"keeps_card_private": Guardrail(margin=MARGIN, direction="higher_is_better")},
-            control="current",
+            {name: bot(llm, prompt) for name, prompt in PROMPTS.items()},  # the first, "current", is the control
+            [gives_status, grader(keeps_card_private, guard=MARGIN)],
             k=1,
-        )
+        ).run(store=":memory:")
     finally:
         await llm.aclose()
 
