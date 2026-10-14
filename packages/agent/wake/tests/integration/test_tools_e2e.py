@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -22,21 +23,29 @@ import pytest
 from uuid_utils import uuid7
 
 from threetears.agent.wake.collections import (
+    WakeFireCollection,
     WakeScheduleCollection,
     WebhookSubscriptionCollection,
 )
+from threetears.agent.wake.manual import claim_manual_fire
 from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tools import (
     WakeRegistryClient,
+    load_wake_fires_tool,
     load_wake_schedule_create_tool,
     load_wake_schedule_delete_tool,
+    load_wake_schedule_get_tool,
     load_wake_schedule_list_tool,
     load_wake_schedule_pause_tool,
     load_wake_schedule_resume_tool,
     load_wake_schedule_update_tool,
     load_webhook_subscription_create_tool,
     load_webhook_subscription_delete_tool,
+    load_webhook_subscription_get_tool,
     load_webhook_subscription_list_tool,
+    load_webhook_subscription_pause_tool,
+    load_webhook_subscription_resume_tool,
+    next_fires,
     load_webhook_subscription_rotate_secret_tool,
     load_webhook_subscription_update_tool,
 )
@@ -788,5 +797,383 @@ async def test_a_listing_that_cannot_be_read_does_not_cost_the_create(
         )[0]
         made = await tool.ainvoke({"schedule_type": "interval", "schedule_config": {"seconds": 600}, "name": "n"})
         assert made.startswith("[schedule:"), made
+    finally:
+        await pool.close()
+
+
+# ---------------------------------------------------------------------------
+# What a result states: the schedule, its fires, what changed
+# ---------------------------------------------------------------------------
+
+_LA = "America/Los_Angeles"
+
+
+def _fires(pool: asyncpg.Pool) -> WakeFireCollection:
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    return WakeFireCollection(
+        registry=registry, config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    )
+
+
+async def _made_schedule(pool: asyncpg.Pool, schedules: WakeScheduleCollection, agent_id: UUID, **create: Any) -> UUID:
+    tool = load_wake_schedule_create_tool(
+        conversation_id=_new_uuid(),
+        user_id=_new_uuid(),
+        agent_id=agent_id,
+        schedules_collection=schedules,
+        registry=_PermissiveRegistry(),
+    )[0]
+    result = await tool.ainvoke(create)
+    assert result.startswith("[schedule:"), result
+    return UUID(result.split("]")[0].removeprefix("[schedule:"))
+
+
+@pytest.mark.asyncio
+async def test_the_listing_and_the_get_state_the_schedule_and_its_fires_in_the_callers_zone(
+    pg_schema: tuple[str, str],
+) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        sid = await _made_schedule(
+            pool,
+            schedules,
+            agent_id,
+            schedule_type="interval",
+            schedule_config={"seconds": 5400},
+            name="every ninety",
+            task_prompt="look at the queue " + "and again " * 300,
+        )
+        due = datetime(2026, 10, 10, 20, 0, tzinfo=UTC)
+        await pool.execute(
+            "UPDATE agent_wake_schedules SET next_fire_at = $2, last_fired_at = $3 WHERE schedule_id = $1",
+            sid,
+            due,
+            due - timedelta(minutes=90),
+        )
+        listed = await load_wake_schedule_list_tool(
+            user_id=user_id, agent_id=agent_id, schedules_collection=schedules, registry=_PermissiveRegistry(), tz=_LA
+        )[0].ainvoke({})
+        assert (
+            " · interval · every 90 minutes · next: Oct 10, 2026 at 1:00 PM PDT · last: Oct 10, 2026 at 11:30 AM PDT · "
+            in listed
+        ), listed
+
+        got = await load_wake_schedule_get_tool(
+            user_id=user_id, agent_id=agent_id, schedules_collection=schedules, registry=_PermissiveRegistry(), tz=_LA
+        )[0].ainvoke({"schedule_id": f"[schedule:{sid}]"})
+        assert "fires: every 90 minutes" in got
+        assert (
+            "next fires: Oct 10, 2026 at 1:00 PM PDT, Oct 10, 2026 at 2:30 PM PDT, Oct 10, 2026 at 4:00 PM PDT" in got
+        ), got
+        assert "last fire: Oct 10, 2026 at 11:30 AM PDT" in got
+        assert 'schedule_config: {"seconds": 5400}' in got
+        # the text is whole: nothing a later edit would shorten by being written back
+        assert got.endswith("look at the queue " + "and again " * 300)
+
+        missing = await load_wake_schedule_get_tool(
+            user_id=user_id,
+            agent_id=_new_uuid(),
+            schedules_collection=schedules,
+            registry=_PermissiveRegistry(),
+        )[0].ainvoke({"schedule_id": str(sid)})
+        assert missing.startswith("[TOOL ERROR] wake_schedule_get: schedule not found"), "another agent's wake"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_next_fires_steps_as_the_tick_will_for_each_repeating_type(pg_schema: tuple[str, str]) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+        agent_id = _new_uuid()
+        daily = await _made_schedule(
+            pool, schedules, agent_id, schedule_type="daily_at", schedule_config={"hour": 3, "minute": 0}, name="d"
+        )
+        once = await _made_schedule(
+            pool, schedules, agent_id, schedule_type="relative_delay", schedule_config={"delay": "30m"}, name="o"
+        )
+        entity = await schedules.find_for_agent(agent_id, daily)
+        assert entity is not None and entity.next_fire_at is not None
+        three = next_fires(entity, 3)
+        assert three == [entity.next_fire_at + timedelta(days=n) for n in range(3)]
+        one_shot = await schedules.find_for_agent(agent_id, once)
+        assert one_shot is not None
+        assert next_fires(one_shot, 3) == [one_shot.next_fire_at], "a one-shot has one fire"
+        await schedules.pause(entity.conversation_id, daily)
+        paused = await schedules.find_for_agent(agent_id, daily)
+        assert paused is not None and next_fires(paused, 3) == []
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_an_update_says_what_changed_and_the_same_values_change_nothing(pg_schema: tuple[str, str]) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        sid = await _made_schedule(
+            pool, schedules, agent_id, schedule_type="interval", schedule_config={"seconds": 3600}, name="hourly"
+        )
+        update = load_wake_schedule_update_tool(
+            user_id=user_id, agent_id=agent_id, schedules_collection=schedules, registry=_PermissiveRegistry(), tz=_LA
+        )[0]
+        before = await pool.fetchrow(
+            "SELECT next_fire_at, date_updated FROM agent_wake_schedules WHERE schedule_id = $1", sid
+        )
+
+        same = await update.ainvoke({"schedule_id": str(sid), "schedule_config": {"seconds": 3600}, "name": "hourly"})
+        assert same.startswith("[NO CHANGE] wake_schedule_update: every value given is the one"), same
+        assert "every hour" in same
+        after = await pool.fetchrow(
+            "SELECT next_fire_at, date_updated FROM agent_wake_schedules WHERE schedule_id = $1", sid
+        )
+        assert dict(after) == dict(before), "the same values write nothing and move no fire"
+
+        changed = await update.ainvoke(
+            {"schedule_id": str(sid), "schedule_config": {"seconds": 7200}, "name": "two-hourly"}
+        )
+        assert "\nChanged: name: hourly -> two-hourly; schedule: every hour -> every 2 hours; next fire: " in changed
+        assert " · every 2 hours · " in changed.splitlines()[0]
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_pause_resume_and_delete_state_what_the_wake_was(pg_schema: tuple[str, str]) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+        agent_id = _new_uuid()
+        sid = await _made_schedule(
+            pool, schedules, agent_id, schedule_type="interval", schedule_config={"seconds": 600}, name="ten"
+        )
+        pause = load_wake_schedule_pause_tool(agent_id=agent_id, schedules_collection=schedules, tz=_LA)[0]
+        resume = load_wake_schedule_resume_tool(agent_id=agent_id, schedules_collection=schedules, tz=_LA)[0]
+        delete = load_wake_schedule_delete_tool(agent_id=agent_id, schedules_collection=schedules, tz=_LA)[0]
+
+        paused = await pause.ainvoke({"schedule_id": str(sid)})
+        assert paused.startswith(f"Paused [schedule:{sid}] (ten). It was every 10 minutes; next fire "), paused
+        assert "PDT; last fire never." in paused or "PST; last fire never." in paused
+        again = await pause.ainvoke({"schedule_id": str(sid)})
+        assert again.startswith("[NO CHANGE] wake_schedule_pause:"), again
+
+        resumed = await resume.ainvoke({"schedule_id": str(sid)})
+        assert resumed.startswith(f"Resumed [schedule:{sid}] (ten). It was paused. It is every 10 minutes. "), resumed
+
+        deleted = await delete.ainvoke({"schedule_id": str(sid)})
+        assert deleted.startswith(f"Deleted [schedule:{sid}] (ten). It was active: every 10 minutes; next fire "), (
+            deleted
+        )
+        assert deleted.endswith("Its history went with it, and it cannot be brought back.")
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_wake_fires_shows_each_fire_how_it_started_and_how_it_ended(pg_schema: tuple[str, str]) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, subs = _build_collections(pool)
+        fires = _fires(pool)
+        agent_id = _new_uuid()
+        sid = await _made_schedule(
+            pool, schedules, agent_id, schedule_type="interval", schedule_config={"seconds": 3600}, name="hourly"
+        )
+        entity = await schedules.find_for_agent(agent_id, sid)
+        assert entity is not None
+        conv = entity.conversation_id
+        tool = load_wake_fires_tool(
+            agent_id=agent_id,
+            schedules_collection=schedules,
+            fires_collection=fires,
+            subscriptions_collection=subs,
+            tz=_LA,
+        )[0]
+        assert (await tool.ainvoke({"schedule_id": str(sid)})).endswith("It has not fired yet.")
+
+        late, started = _new_uuid(), _new_uuid()
+        due = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
+        await fires.create_dispatching(
+            fire_id=late,
+            schedule_id=sid,
+            webhook_subscription_id=None,
+            conversation_id=conv,
+            scheduled_fire_at=due,
+            actual_fired_at=due + timedelta(minutes=52),
+            fire_source="scheduled_tick",
+            execution_mode="spawn",
+        )
+        await pool.execute("UPDATE wake_fires SET started_conversation_id = $2 WHERE fire_id = $1", late, started)
+        await fires.finalize_failed(conv, late, error="the model\n timed out", latency_ms=41000)
+        claim = await claim_manual_fire(
+            pool, entity, requested_by="user:abc", min_gap=timedelta(minutes=10), now=due + timedelta(hours=2)
+        )
+        await fires.finalize_success(conv, claim.fire_id, status="fired_silent", latency_ms=2000)
+
+        shown = (await tool.ainvoke({"schedule_id": str(sid)})).splitlines()
+        assert shown[0].startswith(f"[schedule:{sid}] hourly: every hour; next fire ")
+        assert shown[1] == "Its newest 2 fire(s), newest first:"
+        assert (
+            shown[2] == "- Oct 10, 2026 at 4:00 AM PDT · run by hand, asked by user:abc · ran, and stayed silent · 2s"
+        )
+        assert shown[3] == (
+            "- Oct 10, 2026 at 2:52 AM PDT · on schedule · due Oct 10, 2026 at 2:00 AM PDT, 52 min late · "
+            f"failed: the model timed out · 41s · in [conversation:{started}]"
+        )
+        assert (await tool.ainvoke({})).startswith("[TOOL ERROR] wake_fires: give a schedule_id or a subscription_id")
+        other = load_wake_fires_tool(agent_id=_new_uuid(), schedules_collection=schedules, fires_collection=fires)[0]
+        assert (await other.ainvoke({"schedule_id": str(sid)})).startswith(
+            "[TOOL ERROR] wake_fires: schedule not found"
+        )
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_webhook_is_read_in_full_its_changes_are_said_and_its_refusals_are_shown(
+    pg_schema: tuple[str, str],
+) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, subs = _build_collections(pool)
+        fires = _fires(pool)
+        conv_id, user_id, agent_id = _new_uuid(), _new_uuid(), _new_uuid()
+        base = "https://example.test/api/v1/webhooks/"
+        common: dict[str, Any] = {"user_id": user_id, "agent_id": agent_id, "subscriptions_collection": subs}
+        create = load_webhook_subscription_create_tool(
+            conversation_id=conv_id,
+            encryption_service=_IdentityEncryption(),
+            registry=_PermissiveRegistry(),
+            endpoint_base_url=base,
+            **common,
+        )[0]
+        template = "a push to {{event.repo}}: " + "read it carefully. " * 150
+        made = await create.ainvoke(
+            {
+                "task_prompt_template": template,
+                "name": "pushes",
+                "allowed_source_pattern": "^10\\.",
+                "rate_limit_per_minute": 5,
+            }
+        )
+        sub_id = UUID(made.split("[webhook:")[1].split("]")[0])
+        secret = [line for line in made.splitlines() if "secret (copy now" in line][0].split(":")[-1].strip()
+        assert made.endswith(f"endpoint: https://example.test/api/v1/webhooks/{sub_id}")
+
+        # the same subscription again is refused and names the one that stands
+        twice = await create.ainvoke(
+            {
+                "task_prompt_template": template,
+                "name": "pushes",
+                "allowed_source_pattern": "^10\\.",
+                "rate_limit_per_minute": 5,
+            }
+        )
+        assert twice.startswith(
+            f"[NO CHANGE] webhook_subscription_create: you already have this subscription, [webhook:{sub_id}] (active)"
+        ), twice
+        assert f"https://example.test/api/v1/webhooks/{sub_id}" in twice
+        assert await pool.fetchval("SELECT count(*) FROM webhook_subscriptions WHERE agent_id = $1", agent_id) == 1
+        # good traffic: one that differs in any part is made
+        other = await create.ainvoke({"task_prompt_template": template, "name": "pushes to another repo"})
+        assert other.startswith("[webhook:") and "secret (copy now" in other
+
+        get = load_webhook_subscription_get_tool(
+            registry=_PermissiveRegistry(), endpoint_base_url=base, tz=_LA, **common
+        )[0]
+        got = await get.ainvoke({"subscription_id": f"[webhook:{sub_id}]"})
+        assert f"address: https://example.test/api/v1/webhooks/{sub_id}" in got
+        assert "only from senders matching: ^10\\." in got
+        assert "limit: 5 a minute" in got
+        assert "refused deliveries kept: 0" in got
+        assert got.endswith(template), "the template is whole"
+        assert secret not in got, "the secret is never shown again"
+
+        update = load_webhook_subscription_update_tool(registry=_PermissiveRegistry(), tz=_LA, **common)[0]
+        changed = await update.ainvoke(
+            {"subscription_id": str(sub_id), "name": "all pushes", "clear_rate_limit_per_minute": True}
+        )
+        assert changed.endswith("Changed: name: pushes -> all pushes; rate limit per minute: 5 -> the default"), changed
+        same = await update.ainvoke({"subscription_id": str(sub_id), "name": "all pushes"})
+        assert same.startswith("[NO CHANGE] webhook_subscription_update: every value given is the one"), same
+        both = await update.ainvoke(
+            {"subscription_id": str(sub_id), "rate_limit_per_minute": 3, "clear_rate_limit_per_minute": True}
+        )
+        assert both.startswith("[TOOL ERROR] webhook_subscription_update: rate_limit_per_minute and clear_"), both
+        assert "limit: the default, 60 a minute" in await get.ainvoke({"subscription_id": str(sub_id)})
+
+        entity = await subs.find_for_agent(agent_id, sub_id)
+        assert entity is not None
+        at = datetime(2026, 10, 10, 19, 0, 30, tzinfo=UTC)
+        for _ in range(3):
+            await subs.record_refusal(entity.conversation_id, sub_id, reason="bad_signature", status_code=403, at=at)
+        delivered = _new_uuid()
+        await fires.create_dispatching(
+            fire_id=delivered,
+            schedule_id=None,
+            webhook_subscription_id=sub_id,
+            conversation_id=entity.conversation_id,
+            scheduled_fire_at=None,
+            actual_fired_at=at - timedelta(hours=1),
+            fire_source="webhook",
+            execution_mode="spawn",
+        )
+        await fires.finalize_success(entity.conversation_id, delivered, status="fired", latency_ms=9000)
+        history = await load_wake_fires_tool(
+            agent_id=agent_id,
+            schedules_collection=schedules,
+            fires_collection=fires,
+            subscriptions_collection=subs,
+            tz=_LA,
+        )[0].ainvoke({"subscription_id": str(sub_id)})
+        assert "- Oct 10, 2026 at 11:00 AM PDT · a delivery · ran · 9s" in history
+        assert (
+            "- Oct 10, 2026 at 12:00 PM PDT · 3 refused · the signature did not match the secret · answered 403"
+            in history
+        ), history
+        assert "refused deliveries kept: 3 (wake_fires with this subscription_id shows them)" in await get.ainvoke(
+            {"subscription_id": str(sub_id)}
+        )
+
+        listed = await load_webhook_subscription_list_tool(
+            registry=_PermissiveRegistry(), endpoint_base_url=base, **common
+        )[0].ainvoke({})
+        assert listed.endswith("Each one's address is https://example.test/api/v1/webhooks/<its id>.")
+        nowhere = await load_webhook_subscription_list_tool(registry=_PermissiveRegistry(), **common)[0].ainvoke({})
+        assert nowhere.endswith("Address: no public address is configured here, so no sender can reach it yet.")
+
+        pause = load_webhook_subscription_pause_tool(agent_id=agent_id, subscriptions_collection=subs)[0]
+        resume = load_webhook_subscription_resume_tool(agent_id=agent_id, subscriptions_collection=subs)[0]
+        assert (await pause.ainvoke({"subscription_id": str(sub_id)})).startswith(
+            f"Paused [webhook:{sub_id}] (all pushes). It was active."
+        )
+        assert (await pause.ainvoke({"subscription_id": str(sub_id)})).startswith(
+            "[NO CHANGE] webhook_subscription_pause"
+        )
+        assert (await resume.ainvoke({"subscription_id": str(sub_id)})).startswith(
+            f"Resumed [webhook:{sub_id}] (all pushes). It was paused."
+        )
+        rotated = await load_webhook_subscription_rotate_secret_tool(
+            agent_id=agent_id,
+            subscriptions_collection=subs,
+            encryption_service=_IdentityEncryption(),
+            endpoint_base_url=base,
+        )[0].ainvoke({"subscription_id": str(sub_id)})
+        assert rotated.endswith(f"endpoint: https://example.test/api/v1/webhooks/{sub_id}")
+        gone = await load_webhook_subscription_delete_tool(agent_id=agent_id, subscriptions_collection=subs)[0].ainvoke(
+            {"subscription_id": str(sub_id)}
+        )
+        assert gone.startswith(f"Deleted [webhook:{sub_id}] (all pushes). It was active.")
     finally:
         await pool.close()

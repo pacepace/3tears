@@ -1934,7 +1934,11 @@ async def test_schedule_update_and_resume_answer_in_the_callers_zone(actor: tupl
 
     resume = load_wake_schedule_resume_tool(agent_id=agent_id, schedules_collection=coll, tz=_LA)  # type: ignore[arg-type]
     resumed = await resume[0].ainvoke({"schedule_id": str(schedule_id)})
-    assert re.fullmatch(rf"Resumed \[schedule:{schedule_id}\]\. Next fires at {said_in_zone}\.", resumed), resumed
+    assert re.fullmatch(
+        rf"Resumed \[schedule:{schedule_id}\] \(untitled\)\. It was paused\. It is every 10 minutes\. "
+        rf"Next fires at {said_in_zone}; last fire never\.",
+        resumed,
+    ), resumed
 
     update = load_wake_schedule_update_tool(
         user_id=user_id,
