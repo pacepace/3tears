@@ -8,6 +8,91 @@ packages (bumped in lock-step).
 
 ## v0.67.0 -- 2026-10-13
 
+### Todo tools: a todo is named by its id or by a title that fits only it, and every result says what changed
+
+A todo named by part of its title was the first row the database returned: `remove_todo("call mom")`
+with "Call mom" and "Call mom's doctor" on the list could delete either, and `%` matched anything.
+
+**Breaking, `TodoStorage`:**
+
+- **Removed, `find_by_title`.** Replaced by **`match_title(conversation_id, title, list_name)`**,
+  which returns every todo the title names, ordered by list then position: those whose whole title is
+  `title` in any case, or when none is, those whose title holds it in any case. `title` is taken
+  literally (`%` and `_` match only themselves). `list_name=None` searches every list.
+- **Added, `get(conversation_id, todo_id)`:** the todo with that id in that conversation, or `None`.
+  An id of another conversation's todo is `None`.
+- **Changed, `update(...)`** takes `new_list_name: str | None = None`: a move goes to the end of the
+  new list.
+- `list_all` rows may carry `date_created` and `date_updated` (a `datetime` or an ISO string); a
+  listing shows them when present.
+
+**The tools:**
+
+- **Changed, `complete_todo`, `update_todo` and `remove_todo`** take `todo_id` (bare, `todo:<id>` or
+  `[todo:<id>]`) or `title`. A title that fits more than one todo changes nothing and returns
+  `[NO CHANGE] ...: "<title>" matches N todos, so nothing was changed.` with each candidate's
+  `[todo:<id>]`, title, list and state. `list_name` now defaults to `None` (every list); a title
+  not on the named list but on another changes nothing and names where it is. `CompleteTodoInput`,
+  `UpdateTodoInput` and `RemoveTodoInput` gain `todo_id`; their `title` and `list_name` are optional.
+- **Changed, the results** name the todo's `[todo:<id>]`, its list and the state it had:
+  `Completed [todo:<id>] "<title>" in "<list>"; it was open.`; `Updated [todo:<id>] in "<list>":
+  title "<old>" -> "<new>"; open -> done; moved from "<a>" to "<b>".`; `Removed ... it was open. It
+  cannot be brought back. That list now has N todos, N open, N done.`; `Todo added: ... [todo:<id>]
+  ... That list now has ...`. Completing a done todo, and an update to what a todo already is, return
+  `[NO CHANGE]`.
+- **Changed, `update_todo`** refuses a blank `new_title` or `new_list_name` (`[TOOL ERROR]`), and a
+  rename or move onto a title the target list already has (`[NO CHANGE]`, naming that todo). It
+  gains `new_list_name`.
+- **Changed, `list_todos`** takes `list_name` (one list; a list that is not there is `[NO CHANGE]`
+  naming the lists) and opens `N todos, N open, N done, in N lists:`; each list's heading carries
+  its counts, and each line its `[todo:<id>]` and when it was added and last changed.
+- **Added, `load_todo_tools(tz=)`**, keyword-only, default `None` (UTC): the zone those times are
+  said in.
+- **Added, `TODO_HANDLE`, `todo_handle()`, `ListTodosInput`** in `threetears.agent.tools.todo`.
+
+### Workflow tools: `variable_list` and `variable_delete`, and a save says what it replaced and what it cut
+
+- **Added, `variable_list`:** every saved variable, by name: its kind, its size, and its first 200
+  characters, under `N of <cap> variables this conversation may hold:`.
+- **Added, `variable_delete(key)`:** `Deleted '<key>' (<kind>, N chars). It cannot be brought back.
+  It held: <value>. N of <cap> variables are saved now.` A name not saved is `[NO CHANGE]` naming the
+  saved ones.
+- **Changed, `variable_set`'s result:** `Saved '<key>' (<kind>, N chars).` then, when the value was
+  over the cap, `It was cut: only the first N of M chars were kept, and the last K are not saved.`,
+  then `Nothing was saved under that name before.`, `It already held this value.`, or `It replaced
+  the earlier value, which is gone (<kind>, N chars): <value>`. The context id is no longer in it.
+- **Changed, `variable_set` checks `value_type`:** one of `string`, `number`, `json`; a `number`
+  must parse as one and a `json` value must parse. Otherwise `[TOOL ERROR] variable_set: ... Nothing
+  was saved.` **Added, `VALUE_TYPES`, `ListVariablesInput`, `DeleteVariableInput`** in
+  `threetears.agent.tools.workflow`.
+- **Added, `ToolContextManager.var_limit`** (read-only). **Changed, the cap's message:** `Delete one
+  you no longer need with variable_delete, or save over one by reusing its name.`
+
+### Intention tools: a listing honours its limit and says how many of how many, a want is read by id, and a near-duplicate is kept as written
+
+- **Fixed, `intention_list` honours `limit` up to 100.** It was clamped to `max_results` (20), so a
+  call for 50 returned 20 and said "20 open want(s)". `max_results` is now the default when the call
+  names no limit. The first line is `N of M <status> wants, strongest first.`, with how many open
+  wants the cooldown held back and, when there are more, how to see them.
+- **Added, `intention_list(status=)`:** `open` (the default, the deliberation set as before),
+  `asked`, `granted`, `dropped` or `all`. Each line carries the want's status and when it was
+  written down. An empty listing is `You have no <status> wants.`
+- **Added, `load_intention_get_tool`** and `IntentionGetInput`: `intention_get(intention_id)` reads
+  one want in full (status, when written and last set, strength, the memory and conversation it came
+  from, the text). Another user's want is not found.
+- **Added, `WantNotes`** and keyword-only `tz=` and `notes=` on `load_intention_list_tool` and
+  `load_intention_get_tool`: the zone times are said in, and a consumer's own words about each want
+  shown (a project carrying it, say), put at the end of its line. A failing `notes` leaves the
+  listing without them.
+- **Fixed, a near-duplicate `intention_log`** answered with the new text, which was not saved, and
+  replaced the stored embedding with the new text's. It now answers with the want as stored and keeps
+  its embedding: `Refreshed existing want [intention:<id>] (it was N% the same), so nothing new was
+  written down. It is now stronger, and it stays as first written: <text>`.
+- **Changed, `intention_mark_surfaced`'s result** says the status it moved from and the want:
+  `Marked [intention:<id>] granted; it was asked. The want: <text>`. A mark to the status a want
+  already has is `[NO CHANGE]` and stamps nothing. Its description says what granted and dropped
+  mean and where a marked want is listed.
+
 ### Models: which request settings a model accepts
 
 - **Added, request-settings facts on `threetears.models.ModelCapabilities` and `CapabilityOverride`:**
