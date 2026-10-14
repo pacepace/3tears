@@ -660,9 +660,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The version constants a host checks a store or a stored document against, one per version space, and the
         # installed build's own version, which a host records beside what it stores since nothing stored carries it.
         "threetears.evals.__version__",
-        # The public roots a consumer imports from, and which of them need an extra: what its own import gate reads.
+        # The public roots a consumer imports from, and which of them need an extra and its modules: what its own import
+        # gate reads.
         "threetears.evals.PUBLIC_ROOTS",
         "threetears.evals.ROOT_EXTRAS",
+        "threetears.evals.RootExtra",
         "threetears.evals.schema.CORE_SCHEMA_VERSION",
         "threetears.evals.schema.CORE_SCHEMA_MINOR",
         "threetears.evals.schema.CORE_BASELINE_VERSION",
@@ -743,6 +745,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # values it reads and passes, the readers it hands a failure to, and the check its suite runs over it.
         "threetears.evals.negotiation.negotiate",
         "threetears.evals.negotiation.Negotiated",
+        # The resend bound a host's wall-clock ceiling around a call is sized from.
+        "threetears.evals.negotiation.MAX_RESENDS",
         "threetears.evals.negotiation.LearnedSettings",
         "threetears.evals.negotiation.WireSettings",
         "threetears.evals.negotiation.SettingFacts",

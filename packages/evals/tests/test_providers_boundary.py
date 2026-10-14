@@ -257,7 +257,7 @@ def test_importing_every_other_root_loads_neither_the_adapter_nor_models() -> No
         ("run/planted.py", "NOTE = 'the providers root is optional'\n", False),
         ("providers/planted.py", "from threetears.evals.providers.adapter import models_client\n", False),
         ("__init__.py", "PUBLIC_ROOTS: tuple[str, ...] = ('threetears.evals.providers',)\n", False),
-        ("__init__.py", "ROOT_EXTRAS = {'threetears.evals.providers': 'models'}\n", False),
+        ("__init__.py", "ROOT_EXTRAS = {'threetears.evals.providers': RootExtra('models', ('anthropic',))}\n", False),
         ("__init__.py", "OTHER = 'threetears.evals.providers'\n", True),
     ],
 )

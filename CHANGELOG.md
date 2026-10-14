@@ -24,9 +24,11 @@ v<version>` prints a release's notes).
   `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`,
   `negotiation`, `providers`. A consumer
   imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
-  itself exports the roots, which of them fail to import without an extra (`ROOT_EXTRAS`: `transports.fastmcp` needs
-  `[fastmcp]` and `providers` `[models]`; `vega` imports on the base install and needs `[vega]` only to rasterise),
-  both host-contract so a host's import gate reads them rather than keep its own list, and `__version__`, the
+  itself exports the roots, which of them fail to import without an extra and what each needs (`ROOT_EXTRAS`, each
+  root's `RootExtra`: the extra and the modules the root imports past the base install, so `transports.fastmcp` needs
+  `[fastmcp]` for `fastmcp`, and `providers` `[models]` for `threetears.models`, `anthropic`, `openai`, `openrouter`,
+  `langchain_core` and `httpx`; `vega` imports on the base install and needs `[vega]` only to rasterise), all
+  host-contract so a host's import gate reads them rather than keep its own list, and `__version__`, the
   installed version, which a host records beside what it stores since no stored document or analysis bundle carries
   it.
 - **The quick path** (`threetears.evals.quick`). `run_eval(cases, candidate, expected=..., k=...)` grades any async

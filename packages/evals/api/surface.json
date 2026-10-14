@@ -16,6 +16,11 @@
       "signature": "",
       "tier": "host-contract"
     },
+    "threetears.evals.RootExtra": {
+      "kind": "dataclass",
+      "signature": "RootExtra(extra: str, modules: tuple[str, ...])",
+      "tier": "host-contract"
+    },
     "threetears.evals.schema.ActorPolicy": {
       "kind": "model",
       "signature": "ActorPolicy(id: str, name: str | None = None, policy: str, intent: str, initial_utterance_template: str | None = None)",
@@ -7754,6 +7759,11 @@
     "threetears.evals.negotiation.LearnedSettings": {
       "kind": "class",
       "signature": "LearnedSettings(*, client: str = 'eval.negotiation', declared_by: str = 'declared', contradiction: str = 'a declared fact the provider contradicts; correct where it was declared') -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.MAX_RESENDS": {
+      "kind": "constant (int)",
+      "signature": "",
       "tier": "host-contract"
     },
     "threetears.evals.negotiation.negotiate": {

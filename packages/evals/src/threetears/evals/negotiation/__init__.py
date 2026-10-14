@@ -12,10 +12,12 @@ alike, so the next "this model can't be a judge" bug is fixed once:
   (:class:`SettingFacts`), as :class:`WireSettings`; pure, and table-tested per family (:data:`ProviderFamily`).
 * :func:`negotiate` sends through the caller's own ``send``, reads a failure through the caller's ``read_refusal``,
   and on a :class:`SettingRefusal` of a setting the request carried resends in a fixed order: the refused setting, a
-  temperature first and keeping enforcement, and only then enforcement, for that call alone. What a served request
-  proved is learned (:class:`LearnedSettings`, shared as the caller chooses, and kept for its life: the process, or
-  the factory that keeps it); enforcement never is. It returns :class:`Negotiated`, whose ``sent_settings`` and
-  ``temperature`` are what the served request carried, for the caller's completion.
+  temperature first and keeping enforcement, and only then enforcement, for that call alone, at most
+  :data:`MAX_RESENDS` times per call: no more in price than one request, since a refused one is not billed, but up to
+  that many more request timeouts in time. What a served request proved is learned (:class:`LearnedSettings`, shared
+  as the caller chooses, and kept for its life: the process, or the factory that keeps it); enforcement never is. It
+  returns :class:`Negotiated`, whose ``sent_settings`` and ``temperature`` are what the served request carried, for
+  the caller's completion.
 * :func:`read_router_refusal`, :func:`read_anthropic_refusal` and :func:`read_openai_refusal` read a refusal off
   the status and JSON body each wire answers with, so a client of raw HTTP and an SDK wrapper read the same.
 * :func:`facts_from_router_catalogue` reads a router catalogue's ``supported_parameters`` into the facts it states
@@ -34,7 +36,7 @@ and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.negotiation.catalogue import facts_from_router_catalogue
-from threetears.evals.negotiation.loop import LearnedSettings, Negotiated, negotiate
+from threetears.evals.negotiation.loop import MAX_RESENDS, LearnedSettings, Negotiated, negotiate
 from threetears.evals.negotiation.readers import read_anthropic_refusal, read_openai_refusal, read_router_refusal
 from threetears.evals.negotiation.refusals import RefusedSetting, SettingRefusal
 from threetears.evals.negotiation.settings import (
@@ -53,6 +55,7 @@ __all__ = [
     "ANTHROPIC_MIN_THINKING_BUDGET",
     "BUDGET_SHARES",
     "EFFORT_LADDER",
+    "MAX_RESENDS",
     "LearnedSettings",
     "Negotiated",
     "ProviderFamily",

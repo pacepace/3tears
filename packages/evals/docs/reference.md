@@ -17,7 +17,7 @@
 <a id="public-api"></a>
 ## Public API
 
-Import only from these roots, and only the names below: a module under a root is internal and may move. The package itself, `threetears.evals`, exports only the list of roots and the installed version. Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements. A name marked *host contract* is one a host writes against: it moves only with a deprecation cycle. Every other name may move in any release, recorded in `MIGRATIONS.toml` ([stability tiers](adopting-a-host.md#stability-tiers)).
+Import only from these roots, and only the names below: a module under a root is internal and may move. The package itself, `threetears.evals`, exports only the list of roots, what each optional root needs installed, and the installed version. Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements. A name marked *host contract* is one a host writes against: it moves only with a deprecation cycle. Every other name may move in any release, recorded in `MIGRATIONS.toml` ([stability tiers](adopting-a-host.md#stability-tiers)).
 
 - [`threetears.evals`](#api-threetears-evals)
 - [`threetears.evals.schema`](#api-schema)
@@ -42,11 +42,15 @@ Import only from these roots, and only the names below: a module under a root is
 
 The eval engine: templates, cases, runs and results; the trial loop, its judge and simulated user; and the analysis over what runs produced.
 
+**Classes**
+
+- **`RootExtra`** · *host contract* · dataclass · What one optional public root needs installed before it imports: the extra, and the modules it brings.
+
 **Constants**
 
 - **`__version__`** · *host contract* · constant (str) · The installed distribution's version, as its metadata states it (`importlib.metadata`): the build a host records beside what it stores, since no stored document or analysis bundle carries it.
 - **`PUBLIC_ROOTS`** · *host contract* · constant (tuple) · The public roots, as absolute module names.
-- **`ROOT_EXTRAS`** · *host contract* · constant (mappingproxy) · Each public root that fails to import without an extra installed, mapped to that extra's name: what a consumer's import gate reads to import every root its install can, rather than keep its own list.
+- **`ROOT_EXTRAS`** · *host contract* · constant (mappingproxy) · Each public root that fails to import without an extra installed, mapped to what it needs (`RootExtra`): the extra's name, and the modules that extra provides which the root imports.
 
 <a id="api-schema"></a>
 ### `threetears.evals.schema`
@@ -2483,7 +2487,7 @@ The action catalogue: every eval action, declared once, for any transport to mou
 <a id="api-transports-fastmcp"></a>
 ### `threetears.evals.transports.fastmcp`
 
-*Fails to import without the `[fastmcp]` extra (`pip install "3tears-evals[fastmcp]"`); see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
+*Fails to import without the `[fastmcp]` extra (`pip install "3tears-evals[fastmcp]"`), which brings in `fastmcp`; see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
 
 The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
@@ -2614,11 +2618,13 @@ Request negotiation: a client that never fails a request because a model lacks a
   <br>`= 1024`
 - **`BUDGET_SHARES`** · constant (dict) · The share of the output cap each effort word stands for: the `router` family's documented ratios for turning an effort into a reasoning budget on a model that takes budgets, so a budget sent to a router as its word comes back as about the budget asked (the judge's 8192 of 10240 is 0.80, `high`, and `high` is 0.80 of the cap again).
 - **`EFFORT_LADDER`** · constant (tuple) · The engine's seven reasoning words (`REASONING_EFFORTS`) as a ladder, lowest first: what "closest" is measured on.
+- **`MAX_RESENDS`** · *host contract* · constant (int) · The most times one call is resent for a refused setting: one per setting a client can drop or move (the temperature, the reasoning parameter, the reply format, enforcement).
+  <br>`= 4`
 
 <a id="api-providers"></a>
 ### `threetears.evals.providers`
 
-*Fails to import without the `[models]` extra (`pip install "3tears-evals[models]"`); see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
+*Fails to import without the `[models]` extra (`pip install "3tears-evals[models]"`), which brings in `anthropic`, `httpx`, `langchain_core`, `openai`, `openrouter`, `threetears.models`; see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
 
 The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
 

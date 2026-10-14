@@ -27,13 +27,17 @@ from threetears.evals.negotiation.settings import (
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.schema.logs import get_logger
 
-__all__ = ["LearnedSettings", "Negotiated", "negotiate"]
+__all__ = ["MAX_RESENDS", "LearnedSettings", "Negotiated", "negotiate"]
 
 log = get_logger(__name__)
 
 #: The most times one call is resent for a refused setting: one per setting a client can drop or move (the
-#: temperature, the reasoning parameter, the reply format, enforcement).
-_MAX_RESENDS: Final = 4
+#: temperature, the reasoning parameter, the reply format, enforcement). A refused send is not billed, so a call's
+#: price ceiling is one request's, but it is not free in time: each refused send can take as long as the caller's own
+#: timeout for one request before it is refused, so one :func:`negotiate` can take up to ``MAX_RESENDS + 1`` request
+#: timeouts, and a wall-clock ceiling a caller holds around it allows ``MAX_RESENDS`` × that timeout past the one
+#: served request's.
+MAX_RESENDS: Final = 4
 
 #: The refusals of a reasoning effort: at most two are answered in one call (a word, then any word or the parameter),
 #: and the second always as the parameter, so a call never walks the effort ladder into a failure.
@@ -224,8 +228,10 @@ async def negotiate[R](
 
     **What is answered.** When ``send`` raises, ``read_refusal`` reads the exception. A refusal is answered only
     when it is of a setting the refused request carried, and not one this call already answered, with a resend at
-    the closest settings the model then takes, at most once per setting and four times per call. A request the
-    provider refused generated nothing, so a resend is not a hidden retry. In particular:
+    the closest settings the model then takes, at most once per setting and :data:`MAX_RESENDS` times per call. A
+    request the provider refused generated nothing, so a resend is not a hidden retry, and the call's price is one
+    request's; its time is not: each refused send can take up to ``send``'s own timeout, so a wall-clock ceiling
+    around this call allows ``MAX_RESENDS`` × that timeout past the served request's. In particular:
 
     * **A router's 404 under enforcement** (``enforcement``, naming nothing) is answered in a fixed order, whatever
       the facts say: a temperature the request carried goes first, keeping enforcement (a catalogue listing
@@ -247,8 +253,8 @@ async def negotiate[R](
     served.
 
     **What propagates.** Anything ``read_refusal`` does not read as a refusal, a refusal of a setting the request
-    did not carry or the call already answered, one that would teach nothing new, and the one after the fourth
-    resend, is raised as ``send`` raised it, and nothing is learned from the call.
+    did not carry or the call already answered, one that would teach nothing new, and the one after the
+    :data:`MAX_RESENDS`-th resend, is raised as ``send`` raised it, and nothing is learned from the call.
 
     Args:
         asked: What the client was asked for, ``strict_output`` being this call's own enforcement.
@@ -285,7 +291,7 @@ async def negotiate[R](
             reply = await send(wire, facts)
         except Exception as exc:
             read = read_refusal(exc)
-            answer = None if resends >= _MAX_RESENDS else _answerable(read, wire, facts, provider_family, refusals)
+            answer = None if resends >= MAX_RESENDS else _answerable(read, wire, facts, provider_family, refusals)
             if answer is None:
                 raise
             resends += 1

@@ -119,7 +119,8 @@ def api_section() -> Iterator[str]:
     yield ""
     yield (
         "Import only from these roots, and only the names below: a module under a root is internal and may move. "
-        "The package itself, `threetears.evals`, exports only the list of roots and the installed version. "
+        "The package itself, `threetears.evals`, exports only the list of roots, what each optional root needs "
+        "installed, and the installed version. "
         "Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A "
         "class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements. "
         "A name marked *host contract* is one a host writes against: it moves only with a deprecation cycle. Every "
@@ -131,7 +132,7 @@ def api_section() -> Iterator[str]:
 
     for root in walked_modules():
         extra = ROOT_EXTRAS.get(root)
-        needs = f" (fails to import without the `[{extra}]` extra)" if extra else ""
+        needs = f" (fails to import without the `[{extra.extra}]` extra)" if extra else ""
         yield f"- [`{root}`](#{root_slug(root)}){needs}"
     yield ""
     first_root: dict[int, str] = {}
@@ -142,10 +143,11 @@ def api_section() -> Iterator[str]:
         yield f"### `{root}`"
         yield ""
         if root in ROOT_EXTRAS:
+            extra, modules = ROOT_EXTRAS[root].extra, ROOT_EXTRAS[root].modules
             yield (
-                f"*Fails to import without the `[{ROOT_EXTRAS[root]}]` extra "
-                f'(`pip install "3tears-evals[{ROOT_EXTRAS[root]}]"`); see `threetears.evals.ROOT_EXTRAS`. Every root '
-                "not so marked imports on the base install.*"
+                f"*Fails to import without the `[{extra}]` extra "
+                f'(`pip install "3tears-evals[{extra}]"`), which brings in {", ".join(f"`{m}`" for m in modules)}; '
+                "see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*"
             )
             yield ""
         intro = paragraphs(module.__doc__)

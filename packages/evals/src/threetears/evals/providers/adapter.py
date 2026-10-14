@@ -53,8 +53,10 @@ catalogue lists: the temperature first, keeping enforcement, and only if that st
 itself (sent ``strict_output=False``, with the temperature put back), for that call alone: enforcement is never
 learned, since a 404 can be an outage, and the temperature is learned only when dropping it alone was served. That
 is not a hidden retry: a refused request was rejected before anything was generated and is not billed (an
-assumption no provider documents, which the price ceiling rests on). At most one resend per setting and four per
-call; any other refusal, and a refusal of the resend for a setting already dropped, propagates as it was raised.
+assumption no provider documents, which the price ceiling rests on). At most one resend per setting and
+:data:`~threetears.evals.negotiation.MAX_RESENDS` (4) per call, each of which can take up to the request timeout
+before it is refused, so the call's time is bounded by that many more timeouts though its price is not; any other
+refusal, and a refusal of the resend for a setting already dropped, propagates as it was raised.
 
 **Built per call.** The messages, what to send (:func:`closest_settings` over the facts as they stand, since another
 client of the factory may have learned one since), and the bind that carries a ``response_format`` (and, on
