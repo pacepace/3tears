@@ -246,9 +246,16 @@ CEILINGS: dict[str, dict[str, int]] = {
     # host noun everywhere else (the shared-contract canary's _PROVIDER_NAMES says the same). These counts are
     # exact, so a doc edit that adds or drops a mention moves them; no other host term is allowed in the tree.
     "providers/__init__.py": {"openrouter": 2},
-    "providers/adapter.py": {"openrouter": 26},
+    "providers/adapter.py": {"openrouter": 37},
     "providers/factory.py": {"openrouter": 1},
     "providers/failures.py": {"openrouter": 16},
+    # The negotiation every completion client shares names no provider in its mapping, loop or store: OpenRouter's
+    # request shape is the `router` family there. Only its readers name the provider whose answers they read.
+    "negotiation/__init__.py": {},
+    "negotiation/loop.py": {},
+    "negotiation/readers.py": {"openrouter": 1},
+    "negotiation/refusals.py": {},
+    "negotiation/settings.py": {},
     "quick/__init__.py": {},
     "quick/answer.py": {},
     "quick/cli.py": {},
@@ -282,6 +289,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "testing/completion_conformance.py": {},
     "testing/import_boundary.py": {},
     "testing/jobs_conformance.py": {},
+    "testing/negotiation_conformance.py": {},
     "testing/reader_conformance.py": {},
     "testing/recorded_completions.py": {},
     "testing/store_conformance.py": {},

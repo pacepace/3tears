@@ -34,6 +34,7 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (needs the `[fastmcp]` extra)
 - [`threetears.evals.vega`](#api-vega) (needs the `[vega]` extra)
+- [`threetears.evals.negotiation`](#api-negotiation)
 - [`threetears.evals.providers`](#api-providers) (needs the `[models]` extra)
 
 <a id="api-threetears-evals"></a>
@@ -1967,6 +1968,8 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 - **`check_completion_conformance`** · *host contract* · function · Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
   <br>`check_completion_conformance(completion: object, *, require_sent_settings: bool = False) -> None`
+- **`check_refusal_negotiation`** · *host contract* · async function · Fail, naming each mistake, unless the client answers the router's refusals in order and reports what was served.
+  <br>`check_refusal_negotiation(build_client: Callable[[RouterTransport], CompletionClient]) -> None`
 - **`jobs_conformance_cases`** · *host contract* · function · Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
   <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0, call_return_timeout_s: float = 10.0) -> tuple[JobsConformanceCase, ...]`
 - **`nonpublic_evals_imports`** · function · Every reach into `threetears.evals` under `sources` that goes below a public root's declared names.
@@ -1982,6 +1985,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`JobsConformanceCase`** · dataclass · One action held to one rule.
 - **`JobsConformanceFailure`** · exception · An action broke the job rule, or its happy path proved nothing. The message names the action and the rule.
 - **`JobsConformanceHost`** · *host contract* · dataclass · What a host hands the kit for one case: its operations host, who calls, and its sample launch.
+- **`NegotiationConformanceFailure`** · *host contract* · exception · A host's client mishandled the router's refusals: each mistake it made, named.
 - **`ReaderConformanceCase`** · dataclass · One promise a reader makes, as a check over a sample.
 - **`ReaderConformanceFailure`** · exception · A host's reader broke a promise the engine relies on; the message names the case, the reader and the run.
 - **`ReaderSample`** · dataclass · What the kit checks a host's readers over: the host's profile and runs it produced.
@@ -1998,6 +2002,8 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
   <br>`'static_import'` | `'dynamic_import'` | `'attribute_reach'` | `'private_reach'` | `'patch'`
 - **`BuildConformanceHost`** · type alias · Builds a fresh host for one case, its completion clients wrapped by the guard it is handed.
   <br>`Callable[[CompletionGuard], JobsConformanceHost]`
+- **`RouterTransport`** · *host contract* · type alias · A scripted router: the JSON body a client would POST in, the status and JSON body the router answers with out.
+  <br>`Callable[[Mapping[str, object]], Awaitable[tuple[int, Mapping[str, object]]]]`
 
 **Constants**
 
@@ -2532,6 +2538,48 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 
 - **`Theme`** · literal · The colour theme a chart is drawn for.
   <br>`'light'` | `'dark'`
+
+<a id="api-negotiation"></a>
+### `threetears.evals.negotiation`
+
+Request negotiation: a client that never fails a request because a model lacks a setting.
+
+**Functions**
+
+- **`anthropic_thinking`** · function · The `thinking` an Anthropic request carries for `sent`, or `None` for none.
+  <br>`anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str | int] | None`
+- **`closest_settings`** · *host contract* · function · What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved.
+  <br>`closest_settings(asked: WireSettings, facts: SettingFacts, provider_family: ProviderFamily) -> tuple[WireSettings, tuple[str, ...]]`
+- **`negotiate`** · *host contract* · async function · Send the closest settings the model is known to take; on a recognised refusal, learn it and send again.
+  <br>`negotiate(asked: WireSettings, *, provider_family: ProviderFamily, model: str, provider: str | None = None, send: Callable[[WireSettings, SettingFacts], Awaitable[R]], read_refusal: Callable[[Exception], SettingRefusal | None], learned: LearnedSettings, declared: SettingFacts | None = None) -> Negotiated[R]`
+- **`read_anthropic_refusal`** · *host contract* · function · Whether Anthropic's answer refuses a request for a setting it carried, which, and in what words.
+  <br>`read_anthropic_refusal(status: int, body: object) -> SettingRefusal | None`
+- **`read_openai_refusal`** · *host contract* · function · Whether OpenAI's answer refuses a request for a setting it carried, which, and in what words.
+  <br>`read_openai_refusal(status: int, body: object) -> SettingRefusal | None`
+- **`read_router_refusal`** · *host contract* · function · Whether OpenRouter's answer refuses a request for a setting it carried, which, and in what words.
+  <br>`read_router_refusal(status: int, body: object) -> SettingRefusal | None`
+
+**Classes**
+
+- **`LearnedSettings`** · *host contract* · class · What providers refused, per provider and model, kept for as long as the callers that share it live.
+- **`Negotiated`** · *host contract* · dataclass · A served request: the caller's reply, and what the request that produced it carried.
+- **`SettingFacts`** · *host contract* · dataclass · What is known of the request settings one model accepts: each fact `None` while nothing says.
+- **`SettingRefusal`** · *host contract* · dataclass · A provider refusing a request for one setting it carried, in the provider's own words.
+- **`WireSettings`** · *host contract* · dataclass · Request settings as a client is asked for them, or as one request carries them.
+
+**Types**
+
+- **`ProviderFamily`** · *host contract* · literal · The request shape a client speaks, which decides how a setting goes on the wire: `anthropic` (Anthropic's Messages API: thinking budgets, adaptive thinking with effort words, no temperature beside thinking), `openai` (OpenAI's `reasoning_effort`, no budget) and `router` (a router's chat completions: `reasoning.effort` with all seven words, no budget, and enforcement as `provider.require_parameters`, under which a router that finds no endpoint taking every parameter refuses the request).
+  <br>`'anthropic'` | `'openai'` | `'router'`
+- **`RefusedSetting`** · literal · What a provider refused:
+  <br>`'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'enforcement'`
+
+**Constants**
+
+- **`ANTHROPIC_MIN_THINKING_BUDGET`** · constant (int) · Anthropic's floor on a thinking budget, in tokens: a budget below it is the caller's error, and a word sent as a budget is never below it.
+  <br>`= 1024`
+- **`BUDGET_SHARES`** · constant (dict) · The share of the output cap each effort word stands for: the `router` family's documented ratios for turning an effort into a reasoning budget on a model that takes budgets, so a budget sent to a router as its word comes back as about the budget asked (the judge's 8192 of 10240 is 0.80, `high`, and `high` is 0.80 of the cap again).
+- **`EFFORT_LADDER`** · constant (tuple) · The engine's seven reasoning words (`REASONING_EFFORTS`) as a ladder, lowest first: what "closest" is measured on.
 
 <a id="api-providers"></a>
 ### `threetears.evals.providers`

@@ -1,13 +1,15 @@
-"""``closest_settings``: what the shipped adapter sends for what it was asked, per provider, table-tested.
+"""``closest_settings``: what a client sends for what it was asked, per provider family, table-tested.
 
-The adapter never refuses a setting a model merely does not take (owner ruling, 2026-10-13): it sends the closest
-one the model accepts and reports it. This holds the pure choice, row by row of the per-provider mapping table in the
+The shared negotiation (``threetears.evals.negotiation``, which the shipped adapter and a host's own client both use)
+never refuses a setting a model merely does not take (owner ruling, 2026-10-13): it sends the closest one the model
+accepts and reports it. This holds the pure choice, row by row of the per-provider mapping table in the
 design of record (``design-sent-settings.md`` §3): word to closest word, on the same side of the on/off line with
 ties going lower; a budget to the word its share of the cap maps to on a model that takes words only, and a word to
 that share of the cap on a model that takes budgets only; Anthropic's effort words over adaptive thinking with no
 temperature beside any thinking; ``max`` and ``none`` per provider; the strict reply format sent unenforced where it
 cannot be enforced; the output cap clamped to the model's own. Facts left unknown are sent as asked. The shares are
-one constant, pinned here. What reaches the wire, and what is learned from a refusal, is ``test_models_adapter*.py``.
+one constant, pinned here. What reaches the wire is ``test_models_adapter*.py``; what is learned from a refusal,
+``test_negotiation_loop.py``.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.providers.adapter import (
+from threetears.evals.negotiation import (
     BUDGET_SHARES,
     EFFORT_LADDER,
     SettingFacts,
@@ -52,7 +54,7 @@ ROWS: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = [
     # --- unknown facts: everything as asked -------------------------------------------------------------------------
     ("anthropic-unknown-judge", "anthropic", JUDGE, {}, {**JUDGE, "temperature": None}),
     ("openai-unknown-judge", "openai", JUDGE, {}, JUDGE),
-    ("openrouter-unknown-judge", "openrouter", JUDGE, {}, JUDGE),
+    ("openrouter-unknown-judge", "router", JUDGE, {}, JUDGE),
     # --- temperature ------------------------------------------------------------------------------------------------
     ("anthropic-temperature-alone", "anthropic", {"temperature": 0.2}, {}, {"temperature": 0.2}),
     ("anthropic-temperature-refused", "anthropic", {"temperature": 0.2}, {"accepts_temperature": False}, {}),
@@ -85,7 +87,7 @@ ROWS: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = [
         {"temperature": 0.2, "reasoning_effort": "none"},
     ),
     ("openai-temperature-refused", "openai", {"temperature": 0.2}, {"accepts_temperature": False}, {}),
-    ("openrouter-temperature-not-catalogued", "openrouter", {"temperature": 0.2}, {"accepts_temperature": False}, {}),
+    ("openrouter-temperature-not-catalogued", "router", {"temperature": 0.2}, {"accepts_temperature": False}, {}),
     # --- Anthropic effort words -------------------------------------------------------------------------------------
     ("anthropic-judge-on-sonnet-5", "anthropic", JUDGE, SONNET_5, {**JUDGE, "temperature": None}),
     ("anthropic-minimal-is-low", "anthropic", {"reasoning_effort": "minimal"}, {}, {"reasoning_effort": "low"}),
@@ -235,19 +237,19 @@ ROWS: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = [
     ),
     # --- OpenRouter -------------------------------------------------------------------------------------------------
     *[
-        (f"openrouter-{word}-as-asked", "openrouter", {"reasoning_effort": word}, {}, {"reasoning_effort": word})
+        (f"openrouter-{word}-as-asked", "router", {"reasoning_effort": word}, {}, {"reasoning_effort": word})
         for word in EFFORT_LADDER
     ],
     (
         "openrouter-budget-is-a-word",
-        "openrouter",
+        "router",
         {"max_tokens": 10240, "reasoning_max_tokens": 8192},
         {},
         {"max_tokens": 10240, "reasoning_effort": "high"},
     ),
     (
         "openrouter-no-reasoning-catalogued",
-        "openrouter",
+        "router",
         JUDGE,
         {"reasoning_efforts": ()},
         {**JUDGE, "reasoning_effort": None},
@@ -255,10 +257,10 @@ ROWS: list[tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = [
     # --- strict output ----------------------------------------------------------------------------------------------
     ("anthropic-no-structured-output", "anthropic", {"strict_output": True}, {"structured_output": False}, {}),
     ("openai-no-structured-output", "openai", {"strict_output": True}, {"structured_output": False}, {}),
-    ("openrouter-no-structured-output", "openrouter", {"strict_output": True}, {"structured_output": False}, {}),
+    ("openrouter-no-structured-output", "router", {"strict_output": True}, {"structured_output": False}, {}),
     (
         "openrouter-no-endpoint-under-enforcement",
-        "openrouter",
+        "router",
         JUDGE,
         {"enforcement": False},
         {**JUDGE, "strict_output": False},
@@ -284,9 +286,9 @@ def test_closest_settings_sends_the_closest_setting_the_model_takes(
 
 
 def test_the_rows_are_unique_and_cover_every_provider() -> None:
-    """Non-vacuity: the table names each row once and exercises all three providers."""
+    """Non-vacuity: the table names each row once and exercises all three families."""
     assert len({row[0] for row in ROWS}) == len(ROWS)
-    assert {row[1] for row in ROWS} == {"anthropic", "openai", "openrouter"}
+    assert {row[1] for row in ROWS} == {"anthropic", "openai", "router"}
 
 
 def test_the_ladder_is_the_engine_s_seven_words_lowest_first() -> None:
@@ -329,9 +331,7 @@ def test_a_budget_s_share_maps_to_the_nearest_word_and_a_tie_goes_lower(budget: 
 
 def test_a_word_sent_back_as_a_budget_is_the_budget_asked() -> None:
     """The judge's 8192 of 10240 goes to OpenRouter as ``high``; ``high`` on a budget model is 8192 again."""
-    to_word, _ = closest_settings(
-        WireSettings(max_tokens=10240, reasoning_max_tokens=8192), SettingFacts(), "openrouter"
-    )
+    to_word, _ = closest_settings(WireSettings(max_tokens=10240, reasoning_max_tokens=8192), SettingFacts(), "router")
     back, _ = closest_settings(to_word, SettingFacts(**HAIKU_4_5), "anthropic")
     assert to_word.reasoning_effort == "high" and back.reasoning_max_tokens == 8192
 

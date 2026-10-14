@@ -1,6 +1,6 @@
 """What the engine ships for an adopter's own test suite: conformance kits a host runs against itself.
 
-It holds three kits and two checks. The store conformance kit: every rule of the
+It holds three kits and three checks. The store conformance kit: every rule of the
 :class:`~threetears.evals.schema.DocumentStore` port as a :class:`StoreConformanceCase`, collected
 in :data:`STORE_CONFORMANCE_CASES`. An adapter's test suite hands each case a fresh, empty store and
 parametrises over the tuple; a broken rule raises :class:`StoreConformanceFailure` naming the case and
@@ -19,7 +19,10 @@ path returns ``JobsStarted`` and its job makes at least one — watched through 
 wraps its client factory in (:mod:`threetears.evals.testing.jobs_conformance`). Beside the kits, one client: the
 recorded completions, :class:`RecordedCompletions`, which records the calls a host's real completion client answers
 into a JSONL file once and replays them exactly with no network, refusing by name a prompt the recording does not hold
-(:mod:`threetears.evals.testing.recorded_completions`). All of it is plain Python and imports no test runner. See
+(:mod:`threetears.evals.testing.recorded_completions`). The negotiation check: :func:`check_refusal_negotiation` scripts
+a router that refuses a host's own client for its temperature and then its enforcement, and raises
+:class:`NegotiationConformanceFailure` naming each mistake unless the client resends in that order, reports what the
+served request carried and remembers it (:mod:`threetears.evals.testing.negotiation_conformance`). All of it is plain Python and imports no test runner. See
 :mod:`threetears.evals.testing.store_conformance` and :mod:`threetears.evals.testing.reader_conformance` for
 an example under pytest.
 
@@ -51,6 +54,11 @@ from threetears.evals.testing.jobs_conformance import (
     JobsConformanceHost,
     jobs_conformance_cases,
 )
+from threetears.evals.testing.negotiation_conformance import (
+    NegotiationConformanceFailure,
+    RouterTransport,
+    check_refusal_negotiation,
+)
 from threetears.evals.testing.reader_conformance import (
     READER_CONFORMANCE_CASES,
     ReaderConformanceCase,
@@ -81,6 +89,9 @@ __all__ = [
     "JobsConformanceFailure",
     "JobsConformanceHost",
     "jobs_conformance_cases",
+    "NegotiationConformanceFailure",
+    "RouterTransport",
+    "check_refusal_negotiation",
     "READER_CONFORMANCE_CASES",
     "STORE_CONFORMANCE_CASES",
     "BoundaryFinding",

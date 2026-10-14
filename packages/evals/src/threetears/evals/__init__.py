@@ -12,8 +12,11 @@ agent drives it through: :mod:`~threetears.evals.ops` (typed operations, and one
 work), :mod:`~threetears.evals.actions` (the action catalogue every transport mounts) and
 :mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). One more is an
 optional adapter: :mod:`~threetears.evals.vega`, the Vega-Lite chart renderer (install
-``3tears-evals[vega]``), which reads the core's chart intent and which nothing in the core imports. Runs
-are launched on demand; there is no scheduled-run surface.
+``3tears-evals[vega]``), which reads the core's chart intent and which nothing in the core imports. And two
+are for a completion client: :mod:`~threetears.evals.negotiation` (sending the closest request settings a model
+takes, and answering a provider's refusal of one, on the base install) and :mod:`~threetears.evals.providers` (the
+shipped adapter over 3tears-models, ``3tears-evals[models]``, which uses it); nothing in the engine imports
+either. Runs are launched on demand; there is no scheduled-run surface.
 
 **Import only from a public root**, and only the names its ``__all__`` declares. The roots are
 :data:`PUBLIC_ROOTS`, which a consumer can read to check its own imports rather than keep a copy;
@@ -87,6 +90,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.actions",
     "threetears.evals.transports.fastmcp",
     "threetears.evals.vega",
+    "threetears.evals.negotiation",
     "threetears.evals.providers",
 )
 

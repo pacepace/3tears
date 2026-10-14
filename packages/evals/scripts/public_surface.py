@@ -723,6 +723,23 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.ChartBlock",
         "threetears.evals.kernel.EvalAnalysis",
         "threetears.evals.vega.VegaRenderer",
+        # The negotiation every completion client shares, the adapter's and a host's own: what a client of its own
+        # calls to never fail a request for a setting a model lacks (the host guide's own-client section), the
+        # values it reads and passes, the readers it hands a failure to, and the check its suite runs over it.
+        "threetears.evals.negotiation.negotiate",
+        "threetears.evals.negotiation.Negotiated",
+        "threetears.evals.negotiation.LearnedSettings",
+        "threetears.evals.negotiation.WireSettings",
+        "threetears.evals.negotiation.SettingFacts",
+        "threetears.evals.negotiation.ProviderFamily",
+        "threetears.evals.negotiation.SettingRefusal",
+        "threetears.evals.negotiation.closest_settings",
+        "threetears.evals.negotiation.read_router_refusal",
+        "threetears.evals.negotiation.read_anthropic_refusal",
+        "threetears.evals.negotiation.read_openai_refusal",
+        "threetears.evals.testing.check_refusal_negotiation",
+        "threetears.evals.testing.NegotiationConformanceFailure",
+        "threetears.evals.testing.RouterTransport",
         # The shipped provider adapter: a host that brings no client of its own binds to these.
         "threetears.evals.providers.models_client",
         "threetears.evals.providers.models_clients",
