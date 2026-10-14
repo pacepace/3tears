@@ -8,6 +8,57 @@ packages (bumped in lock-step).
 
 ## v0.67.0 -- 2026-10-13
 
+### Skills: the whole skill, what a change changed, an outcome counted once with its note kept, and each use listed
+
+`skill_invoke` named every tool a skill adds, held or not, so the agent called tools it did not have;
+`skill_report_outcome` logged its note and dropped it, and a second report counted twice; nothing showed
+a skill's uses.
+
+**Schema, agent-skills v005:** `agent_skill_invocations.outcome_notes TEXT NULL` -- the agent's line on
+how a use went, apart from `notes` (the reason given when the skill was invoked). `ADD COLUMN IF NOT
+EXISTS`; existing rows get `NULL`. The table factory, the entity (`outcome_notes`), every invocation read
+and the upsert carry it; `SkillInvocationResponse` gains `outcome_notes: str | None = None`.
+
+**Added:**
+
+- **`AgentSkillInvocationCollection.record_outcome(agent_id, invocation_id, *, skill_id, outcome,
+  source, notes=None) -> OutcomeRecorded`.** Sets the use's outcome and notes and moves the skill's
+  counts in one statement, the use's row locked as it is read: a use counts once however often it is
+  reported, a report of the other outcome moves one count to the other side, and two reports at once
+  count once. `notes=None` keeps the note there. `OutcomeRecorded` says whether the use was found, what
+  it carried before and whether the counts moved. The skill row's cache entry is the caller's to drop.
+  `set_outcome` and `increment_outcome_counts` are unchanged.
+- **`load_skill_history_tool(*, agent_id, user_id, skills_collection, invocations_collection, tz=None)`**
+  builds `skill_history(skill_id, limit=20, offset=0)` (`SkillHistoryInput`): a skill's uses, newest
+  first, each with when (in `tz`), whether a wake ran it or it was invoked, its outcome and note, the
+  reason it was invoked, and its `[conversation:<id>]` and `[message:<id>]`. The head says how many uses
+  there are in all and how the skill has gone; a page says which uses it holds and the offset for the next.
+- **`BindableTools`**, a probe the consumer passes `load_skill_invoke_tool(..., bindable_tools=...)`:
+  the tools the turn can bind.
+- **`SkillShape`**, the Protocol `compose_turn_context` and `render_skill_body_block` now take: an
+  `AgentSkillEntity` is one, and so is a consumer's own record of the skill a turn started with.
+
+**Changed:**
+
+- **`skill_invoke`'s result** opens `[ACTIVE SKILL: <name>] in use for the rest of this turn.`, keeps
+  `prompt_mode`, then names only the tools the turn can bind: `Tools it adds, yours from your next
+  step: ...`, `N more tool(s) it names cannot be used on this turn.` (counted, never named) and `Tools it
+  puts away until the turn ends: ...`. With no probe no tool is named. The steps follow whole, rendered
+  as a wake renders them (`Follow the skill "<name>" for this task:`). The raw `tool_additions: [...]` /
+  `tool_restrictions: [...]` lines are gone.
+- **`skill_get`** (`load_skill_get_tool(..., tz=None)`) shows the skill whole and then how it has gone:
+  `used: N times, last <time>` (or `used: never`), `reported: worked N, failed N (last failure <time>)`,
+  when it was written and last changed, times in `tz`. `skill_introspect` is unchanged.
+- **`skill_update`** returns `Changed [skill:<id>] <name>, was -> now:` and one line per field that
+  changed; a text over 200 characters is shown by its length and the first line that differs. A change
+  to nothing writes nothing and returns `[NO CHANGE] skill_update: ... already reads that way; nothing
+  was written.`
+- **`skill_report_outcome`** stores its note in `outcome_notes` and counts through `record_outcome`:
+  `Recorded <outcome> for this use of [skill:<id>] <name> ("<note>"). It has worked N and failed N
+  time(s).`, `Changed this use of ... from <a> to <b> ...`, `Kept <outcome> for this use ..., counted once.
+  Its note now reads: ...`, or `[NO CHANGE] skill_report_outcome: this use of ... was already recorded as
+  <outcome>; it is counted once.`
+
 ### Todo tools: a todo is named by its id or by a title that fits only it, and every result says what changed
 
 A todo named by part of its title was the first row the database returned: `remove_todo("call mom")`
