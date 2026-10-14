@@ -33,7 +33,12 @@ Each call resolves a versioned :class:`JudgeConfig` (pre-resolved per dim at run
 start, keyed by ``rubric_dim_id``); when one exists its ``prompt_template`` is
 used as the judging instructions and its ``model`` / ``temperature`` select the
 client. With no config, a built-in default prompt + the default judge client
-are used, at :data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE` —
+are used. **Which of the two a rubric dim gets is its author's declaration, not
+this service's finding** (``RubricDim.judge``): the launch refuses a dim declared
+``"configured"`` that resolves no config, or ``"builtin"`` beside one
+(:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`), so the configs
+this service is built with are exactly the declared ones. The built-in prompt is sent
+at :data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE` —
 the same temperature a config defaults to, so configuring a dim's prompt never
 changes how it is sampled (#633). Every score records the temperature its call
 was actually sent at. **The built-in prompt has an identity, as a config does**: each

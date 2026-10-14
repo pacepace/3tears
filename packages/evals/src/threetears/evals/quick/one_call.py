@@ -134,7 +134,7 @@ from threetears.evals.run import (
     list_results,
     start_run,
 )
-from threetears.evals.run.authoring import refuse_unsupplied_world
+from threetears.evals.run.authoring import active_judge_config_in, refuse_undeclared_judges, refuse_unsupplied_world
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.quick.answer import unwrap_answer
@@ -1242,7 +1242,10 @@ def _template_id(
         if labels is not None:
             addressed["expected"] = labels
         if judge is not None:
-            addressed["rubric"] = [dim.model_dump(mode="json") for dim in judge.dims]
+            # Less each dimension's judge declaration, which a Judge states for itself (``"builtin"`` unless a
+            # dimension given says otherwise): it says who scores the rubric, not what the rubric is, so a case set's
+            # id stays the one it was before dimensions declared their judge.
+            addressed["rubric"] = [dim.model_dump(mode="json", exclude={"judge"}) for dim in judge.dims]
             addressed["intent"] = intent
         if seeds is not None:
             addressed["seeds"] = seeds
@@ -1875,6 +1878,18 @@ async def run_arms(
         # firings the world cannot produce. A quick run is authored here, so it is held to what authoring holds.
         try:
             refuse_unsupplied_world(template, profile=host.profile)
+        except ValidationFailedError as refused:
+            raise ValueError(str(refused)) from refused
+    if judge is not None:
+        # The judge declaration's gate, as authoring holds a host's template to it: a dimension a Judge built is
+        # declared built-in, and one handed in declaring "configured" needs its config in the store this call uses.
+        try:
+            await run_blocking(
+                host.blocking_executor,
+                refuse_undeclared_judges,
+                template,
+                active_judge_config_in(host.storage, scope_id),
+            )
         except ValidationFailedError as refused:
             raise ValueError(str(refused)) from refused
     await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)

@@ -10,6 +10,12 @@ scorers' measures. Nothing here judges: it declares what the engine's judge read
   :attr:`Judge.context` (``helpful`` becomes ``answer.helpful``), because a judge config binds to a
   dimension by name across every template and a bare one would bind to every product's ``helpful``.
   The rubric is the template's, so it is part of what the case set's id is a digest of.
+- **The judge is declared by the Judge itself.** A dimension registered apart from its judge (a host's template)
+  must say which judge scores it (:attr:`~threetears.evals.schema.RubricDim.judge`); a :class:`Judge` IS that
+  declaration, so every dimension it builds, or is handed without one, is declared ``"builtin"``: scored by the
+  engine's own prompt on :attr:`Judge.client`. Nothing more to state, and nothing found in its place. A
+  :class:`~threetears.evals.schema.RubricDim` handed in declaring ``"configured"`` keeps it, and the run is held to
+  it: refused unless the store it runs on holds an active judge config for that dimension.
 - **The judge** is :class:`~threetears.evals.run.JudgeService`, built by
   :func:`~threetears.evals.run.build_judge_service` as for any judged run, over a client factory that
   hands it :attr:`Judge.client` for the judge role and nothing else. It scores the answer as a document
@@ -60,7 +66,8 @@ class Judge:
         model: The model ``client`` calls, as the run records it: the run's judge pin, and the arm's
             judge in every comparison of two runs.
         rubric: The dimensions, each a name and what it measures, or :class:`RubricDim` values for a
-            scoring guide or a pass/fail scale.
+            scoring guide or a pass/fail scale. Each is declared ``judge="builtin"`` (:attr:`dims`) unless a
+            :class:`RubricDim` given declares its judge itself.
         scale: How a dimension given as a name and a description is answered: ``"ordinal"`` (1 to 5)
             or ``"pass_fail"``. A :class:`RubricDim` states its own.
         context: The namespace a bare dimension name is given: what the dimensions are scored against.
@@ -98,12 +105,14 @@ class Judge:
         object.__setattr__(self, "_dims", dims)
 
     def _build_dims(self) -> list[RubricDim]:
+        # The Judge is the declaration: the engine's built-in prompt, on this judge's client, for every dimension that
+        # states no judge of its own — so the quick path asks nothing of a caller that a host's template must state.
         if isinstance(self.rubric, Mapping):
             return [
-                RubricDim(name=self.dim_name(name), description=description, scale=self.scale)
+                RubricDim(name=self.dim_name(name), description=description, scale=self.scale, judge="builtin")
                 for name, description in self.rubric.items()
             ]
-        return list(self.rubric)
+        return [dim if dim.judge is not None else dim.model_copy(update={"judge": "builtin"}) for dim in self.rubric]
 
     def dim_name(self, name: str) -> str:
         """``name`` as a stored dimension name: as given when it carries a context, under :attr:`context` when bare.
@@ -118,7 +127,7 @@ class Judge:
 
     @property
     def dims(self) -> tuple[RubricDim, ...]:
-        """The rubric as the template stores it, in the order given."""
+        """The rubric as the template stores it, in the order given, each dimension's judge declared."""
         return self._dims
 
     def clients(self) -> CompletionClients:

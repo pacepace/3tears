@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.schema import EvalRun, JudgedArtifact, RubricDim
+from threetears.evals.schema import EvalRun, JudgeDeclaration, JudgedArtifact, RubricDim
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model
 from threetears.evals.schema.models import EvalTemplate
@@ -412,9 +412,11 @@ async def test_a_battery_refuses_a_stored_case_template_over_its_cap_before_laun
 _DIM = "toy.fidelity"
 
 
-def _judged_template() -> EvalTemplate:
+def _judged_template(judge: JudgeDeclaration = "builtin") -> EvalTemplate:
     return toyhost_template().model_copy(
-        update={"rubric": [RubricDim(name=_DIM, description="the extraction is faithful", scale="ordinal")]}
+        update={
+            "rubric": [RubricDim(name=_DIM, description="the extraction is faithful", scale="ordinal", judge=judge)]
+        }
     )
 
 
@@ -430,9 +432,10 @@ class _Judged:
         role_default: str = "judge-default",
         alternate: str | None = None,
         launcher_steps: bool = True,
+        judge: JudgeDeclaration = "builtin",
     ) -> None:
         self.storage = EvalStorage(InMemoryDocumentStore())
-        self.template = _judged_template()
+        self.template = _judged_template(judge)
         self.storage.save_template(self.template)
         settings = TOYHOST_LAUNCH_SETTINGS.model_copy(update={"judge_alternate_model": alternate})
         toy, _client = toyhost_launch_host(
@@ -511,7 +514,7 @@ class _Judged:
 
 def test_plan_judge_resolves_the_model_each_dim_is_scored_by_as_the_judge_service_does():
     """A dim whose config names its own model is scored by that model, whatever the run-level pin."""
-    judged = _Judged()
+    judged = _Judged(judge="configured")
     config = make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=_DIM, model="judge-dear")
     judged.storage.save_judge_config(config)
     eval_host = judged.host.eval_host
@@ -534,7 +537,7 @@ def test_plan_judge_resolves_the_model_each_dim_is_scored_by_as_the_judge_servic
 
 
 async def test_an_arm_is_quoted_with_the_judges_its_plan_resolved():
-    judged = off_loop(_Judged)
+    judged = off_loop(_Judged, judge="configured")
     config = make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=_DIM, model="judge-dear")
     off_loop(judged.storage.save_judge_config, config)
 

@@ -121,7 +121,7 @@ def _setup(judge: _ScriptedJudge) -> tuple[EvalHost, EvalTemplate, EvalRun, Eval
         name="fair table",
         intent="Rule what the dice say, at a table of real players.",
         candidate_kind=_KIND,
-        rubric=[RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
+        rubric=[RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal", judge="builtin")],
         created_at=_TEMPLATE_EDITED,
         updated_at=_TEMPLATE_EDITED,
     )

@@ -70,7 +70,11 @@ def _template(**fields: Any) -> EvalTemplate:
         "name": "Memo reporter",
         "intent": "Judge the analysis memo against the evidence its writer read.",
         "candidate_kind": REPORTER_KIND,
-        "rubric": [RubricDim(name=GROUNDED, description="Every claim traces to the evidence.", scale="ordinal")],
+        "rubric": [
+            RubricDim(
+                name=GROUNDED, description="Every claim traces to the evidence.", scale="ordinal", judge="builtin"
+            )
+        ],
         "created_at": TOYHOST_INSTANT,
         "updated_at": TOYHOST_INSTANT,
     }

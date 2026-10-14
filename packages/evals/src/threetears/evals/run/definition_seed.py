@@ -65,14 +65,17 @@ fields (``id``, ``doc_type``, ``schema_version``, ``scope_id``, ``created_at``,
 **Every template meets the gates ``create_template`` applies, before anything is written.** The
 seeder admits each one through :func:`~threetears.evals.run.authoring.admit_template` — the same
 function ``create_template`` calls — so the kind's spec model, the rubric's names, the host's tool
-catalog, the world gate, the goal checks' discrimination proof, the host's seed walk and its kind
-capabilities all apply, and a gate added to authoring reaches a corpus without anyone mirroring it.
+catalog, the world gate, the goal checks' discrimination proof, the host's seed walk, its kind
+capabilities and the judge declaration (every judged dimension says ``judge: "builtin"`` or
+``"configured"``, a configured one honoured by a config the corpus seeds or the store holds) all
+apply, and a gate added to authoring reaches a corpus without anyone mirroring it.
 That is why the seeder takes the host and the same three host checks ``create_template`` takes. A
 refusal of any template refuses the whole seed, naming every refused template, and nothing is
 written: a corpus is the host's committed code, and one the host's own gates refuse is a defect to
 fix, not a partial catalogue to boot with. The whole corpus is admitted, written or not, so the
 verdict depends on the corpus and the host alone and a host's CI seeding an empty store reaches the
-answer its production boot would.
+answer its production boot would (the one store read, a configured dimension's config, finds in an
+empty store only what the corpus itself seeds).
 
 Two authoring refusals that read the store become something else here. A taken template name, or
 rubric dim key, is an occupied slot. And ``create_judge_config``'s one-active-config-per-dim rule
@@ -94,7 +97,7 @@ from pydantic import BaseModel
 from threetears.evals.kernel.errors import StorageError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.models import CatalogRubricDim, EvalTemplate, JudgeConfig
-from threetears.evals.run.authoring import admit_template
+from threetears.evals.run.authoring import active_judge_config_in, admit_template
 
 
 @dataclass(frozen=True)
@@ -363,6 +366,14 @@ def seed_eval_definitions(
     """
     templates: list[EvalTemplate] = []
     refusals: list[str] = []
+    # A dimension the corpus declares "configured" is honoured by a config the same seed writes, or by one the store
+    # already holds: the corpus's own active configs first (it holds at most one per dim), then the store's.
+    seeded_configs = {config.rubric_dim_id: config.id for config in corpus.judge_configs if not config.archived}
+    stored_config = active_judge_config_in(host.storage, corpus.scope_id)
+
+    def active_judge_config(dim: str) -> str | None:
+        return seeded_configs.get(dim) or stored_config(dim)
+
     for template in corpus.templates:
         try:
             templates.append(
@@ -372,6 +383,7 @@ def seed_eval_definitions(
                     require_known_tools_allowed=require_known_tools_allowed,
                     refuse_undeclared_world_seed=refuse_undeclared_world_seed,
                     refuse_undeliverable_template=refuse_undeliverable_template,
+                    active_judge_config=active_judge_config,
                 )
             )
         except ValidationFailedError as refused:

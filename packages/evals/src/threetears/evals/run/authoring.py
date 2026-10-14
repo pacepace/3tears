@@ -36,7 +36,7 @@ the two gates that read the world alone take its profile.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Container, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
@@ -139,7 +139,8 @@ def create_template(
     The checks run in a fixed order, so a template failing several meets the same refusal on
     every surface: the kind's spec model, the rubric's names, the host's tool catalog, the world its
     expressions name, whether each goal check is proven to discriminate, the host's seed walk, the
-    host's kind capabilities, then the name's uniqueness. The template is stored with its
+    host's kind capabilities, whether each judged dimension declares its judge as the scope can honour
+    (:func:`refuse_undeclared_judges`), then the name's uniqueness. The template is stored with its
     ``kind_spec`` as the spec model resolved it — every field, defaults included.
 
     Args:
@@ -167,7 +168,8 @@ def create_template(
             carries no control or does not discriminate between its controls
             (:func:`~threetears.evals.run.check_controls.refuse_non_discriminating_checks`), its
             ``world_seed`` names a dimension no run of this host can seed, or
-            it declares apparatus its candidate kind cannot honour.
+            it declares apparatus its candidate kind cannot honour, or a judged dimension declares no
+            judge, or one the scope contradicts (:func:`refuse_undeclared_judges`).
         ConflictError: a template with the same name already exists.
     """
     reject_unknown_authoring_fields("create_template", definition, EvalTemplate, TEMPLATE_SERVER_FIELDS)
@@ -183,6 +185,7 @@ def create_template(
         require_known_tools_allowed=require_known_tools_allowed,
         refuse_undeclared_world_seed=refuse_undeclared_world_seed,
         refuse_undeliverable_template=refuse_undeliverable_template,
+        active_judge_config=active_judge_config_in(host.storage, scope_id),
     )
 
     if host.storage.load_template_by_name(template.name, scope_id) is not None:
@@ -202,6 +205,7 @@ def admit_template(
     require_known_tools_allowed: Callable[[Sequence[str] | None], None],
     refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
     refuse_undeliverable_template: Callable[[EvalTemplate], None],
+    active_judge_config: Callable[[str], str | None],
 ) -> EvalTemplate:
     """Every refusal a template meets before it is first written, in :func:`create_template`'s order.
 
@@ -218,6 +222,9 @@ def admit_template(
         require_known_tools_allowed: The host's tool-catalog check, as for :func:`create_template`.
         refuse_undeclared_world_seed: The host's seed walk, as for :func:`create_template`.
         refuse_undeliverable_template: The host's kind-capability check, as for :func:`create_template`.
+        active_judge_config: The id of the judge config that would score a dimension, by its name, or ``None``
+            when none would: the store's active one for authoring (:func:`active_judge_config_in`), and for a
+            seed the corpus's own beside the store's, since a seed writes both.
 
     Returns:
         The template with its ``kind_spec`` as the kind's spec model resolves it — every field,
@@ -232,7 +239,134 @@ def admit_template(
     refuse_non_discriminating_checks(template, profile=profile)
     refuse_undeclared_world_seed(template)
     refuse_undeliverable_template(template)
+    refuse_undeclared_judges(template, active_judge_config)
     return template
+
+
+def active_judge_config_in(storage: DefinitionStore, scope_id: str) -> Callable[[str], str | None]:
+    """The lookup :func:`refuse_undeclared_judges` reads a scope's judge configs through: a dim's active config id.
+
+    Args:
+        storage: Where the judge configs are read.
+        scope_id: The scope the template lives in, and its configs with it.
+
+    Returns:
+        A function from a dimension's name to the id of its active judge config, or ``None`` when it has none.
+    """
+
+    def active(dim: str) -> str | None:
+        config = storage.load_active_judge_config(dim, scope_id)
+        return None if config is None else config.id
+
+    return active
+
+
+def judge_declaration_defects(
+    template: EvalTemplate,
+    active_judge_config: Callable[[str], str | None],
+    *,
+    selected: Mapping[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    """Every judged dimension of ``template`` whose declared judge the scope cannot honour, with the remedy for each.
+
+    The one rule registration (:func:`refuse_undeclared_judges`) and every launch
+    (:func:`~threetears.evals.run.launch.build_judge_service`, :func:`~threetears.evals.run.launch.plan_judge`) hold
+    a template to, so a template admitted can be refused at launch only because the scope moved under it (its config
+    archived, or one authored for a dim declared built-in) and never because the two ask different things. Three
+    defects, each a dimension that would otherwise be scored by a judge its author did not name:
+
+    * **undeclared** (``judge`` is None, a dimension stored before the declaration existed): the engine would pick
+      the judge, which is the defect this exists to close;
+    * **configured, with no config**: the built-in prompt would score it in the config's place;
+    * **builtin, with a config active** (or one the launch selected): the config would be silently ignored.
+
+    The two reserved axes are not a rubric's, so they are not asked here: their kind declares them, and a config
+    scores one when it is active and the built-in prompt otherwise, as before.
+
+    Args:
+        template: The template, in its scope.
+        active_judge_config: A dimension's active judge config id, or ``None`` (:func:`active_judge_config_in`).
+        selected: ``{dim: config_id}`` a launch named (``judge_config_ids``), which scores a dim in place of its
+            active config; ``None`` at registration, which names none.
+
+    Returns:
+        ``(fault, remedy)`` per defective dimension, in rubric order; empty when every dimension is declared as
+        the scope can honour.
+    """
+    chosen = dict(selected or {})
+    defects: list[tuple[str, str]] = []
+    for dim in template.rubric:
+        name = dim.name
+        create = f'run.create_judge_config, rubric_dim_id "{name}"'
+        if dim.judge is None:
+            defects.append(
+                (
+                    f"rubric dimension {name!r} is judged but declares no judge, so a run would score it with "
+                    "whatever judge it found",
+                    f'declare it on the dimension: judge: "builtin" for the engine\'s built-in prompt, or judge: '
+                    f'"configured" after creating its config ({create})',
+                )
+            )
+            continue
+        config_id = chosen.get(name) or active_judge_config(name)
+        if dim.judge == "configured" and config_id is None:
+            defects.append(
+                (
+                    f'rubric dimension {name!r} declares judge: "configured", and scope {template.scope_id!r} holds '
+                    "no active judge config for it",
+                    f'create one ({create}), or declare judge: "builtin"',
+                )
+            )
+        elif dim.judge == "builtin" and config_id is not None:
+            how = "was selected for it by this launch" if name in chosen else "is active for it"
+            defects.append(
+                (
+                    f'rubric dimension {name!r} declares judge: "builtin", but judge config {config_id!r} {how}, so '
+                    "one of the two is not what was meant",
+                    'declare judge: "configured" to be scored by it, or archive it (run.update_judge_config, archived)'
+                    + (" (or leave it out of judge_config_ids)" if name in chosen else ""),
+                )
+            )
+    return defects
+
+
+def refuse_undeclared_judges(
+    template: EvalTemplate,
+    active_judge_config: Callable[[str], str | None],
+    *,
+    selected: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse a template with a judged dimension whose judge is undeclared, or declared as the scope cannot honour.
+
+    **A judged dimension says who judges it** (:attr:`~threetears.evals.schema.models.RubricDim.judge`), wherever
+    it is registered apart from its judge: authoring (:func:`create_template`, :func:`update_template` when it
+    writes the rubric), a host's seed (:func:`admit_template`), and, as the backstop for a template stored before
+    the declaration or a scope that moved since, every launch before any spend. Before it, a dimension with no
+    active config was scored by the engine's built-in prompt and a run recorded ``builtin:<sha>`` with nothing
+    saying a configured judge had been meant. The quick path declares its own dimensions (a
+    :class:`~threetears.evals.quick.Judge` is the built-in judge by construction), so it meets this without a field
+    to fill.
+
+    Every defective dimension is named in the one error (:func:`judge_declaration_defects`), so an author fixing a
+    seed of fourteen dimensions sees every one that needs a declaration at once.
+
+    Args:
+        template: The template, in its scope.
+        active_judge_config: A dimension's active judge config id, or ``None``.
+        selected: The configs a launch named per dim, or ``None``.
+
+    Raises:
+        ValidationFailedError: A judged dimension declares no judge, declares ``"configured"`` with no config to
+            score it, or declares ``"builtin"`` while a config is active (or selected) for it.
+    """
+    defects = judge_declaration_defects(template, active_judge_config, selected=selected)
+    if not defects:
+        return
+    remedies = list(dict.fromkeys(remedy for _, remedy in defects))
+    raise ValidationFailedError(
+        f"template {template.name!r}: " + "; ".join(fault for fault, _ in defects),
+        remedy="; ".join(remedies),
+    )
 
 
 def refuse_stale_presumptions(template: EvalTemplate, *, profile: HostProfile) -> None:
@@ -495,7 +629,9 @@ def update_template(
             invalid, an update writing ``kind_spec`` or ``candidate_kind`` leaves a spec the
             kind's spec model refuses, or an authored ``rubric`` / ``tools_allowed`` /
             ``preconditions`` / ``goal_state_checks`` / ``goal_check_controls`` /
-            ``world_seed`` fails the authoring guard that field carries.
+            ``world_seed`` fails the authoring guard that field carries — an authored ``rubric``'s
+            being that every judged dimension declares its judge as the scope can honour
+            (:func:`refuse_undeclared_judges`).
     """
     existing = host.storage.load_template(template_id, scope_id)
     if existing is None:
@@ -539,6 +675,11 @@ def update_template(
     # in its other fields and, through this field, into one that resolves.
     if "world_seed" in fields:
         refuse_undeclared_world_seed(template)
+    # Scoped like the world seed, to an update that WRITES the rubric: a stored template whose dimensions predate the
+    # judge declaration stays archivable and editable in its other fields (its launch refuses it), and the write that
+    # declares its dimensions is the one held to the rule.
+    if "rubric" in fields:
+        refuse_undeclared_judges(template, active_judge_config_in(host.storage, scope_id))
     # Unscoped, unlike its neighbours above, and the asymmetry is the point: those check the
     # names an update WRITES so a stored template stays editable around a name the catalog has
     # since dropped, whereas this one is checked against the MERGED template because the
@@ -989,6 +1130,7 @@ __all__ = [
     "JUDGE_CONFIG_SERVER_FIELDS",
     "RUBRIC_DIM_SERVER_FIELDS",
     "TEMPLATE_SERVER_FIELDS",
+    "active_judge_config_in",
     "admit_template",
     "create_judge_config",
     "create_rubric_dim",
@@ -998,10 +1140,12 @@ __all__ = [
     "get_judge_config",
     "get_rubric_dim",
     "get_template",
+    "judge_declaration_defects",
     "list_judge_configs",
     "list_rubric_dims",
     "list_templates",
     "refuse_stale_presumptions",
+    "refuse_undeclared_judges",
     "refuse_unsupplied_world",
     "update_judge_config",
     "update_rubric_dim",
