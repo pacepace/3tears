@@ -12,7 +12,9 @@ The snapshot is every public root's ``__all__`` (the roots are ``threetears.eval
 ``root.name`` with its kind, signature and stability tier, read by the same walk that renders ``docs/reference.md``
 (``public_surface.py``). ``tests/test_api_surface.py`` holds the installed package to it, so a change to the
 surface is a diff in review rather than a surprise in an adopter's import. A name's tier is ``host-contract`` when
-``public_surface.HOST_CONTRACT`` lists it and ``closure`` otherwise; that list is the one place it is declared.
+``public_surface.HOST_CONTRACT`` lists it, ``stable`` when ``public_surface.STABLE`` does and ``provisional``
+otherwise; those two lists are the one place it is declared. A provisional entry records no signature, since it
+promises none.
 
 **What regenerating records, and what it refuses to.** A name added, or a kind, signature or tier changed, is
 recorded by regenerating: the diff is the record. A name that left a root (moved, renamed or removed) is not, when the

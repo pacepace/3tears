@@ -16,8 +16,9 @@ Everything on the page is read from code: the package's own ``__all__`` and each
 descriptions, the goal-check language's module docstring and builtins, the action catalogue, the command line's
 argparse definition and ``METRIC_DESCRIPTORS``. Nothing on it is written here except headings and the intro, so a
 change to the package moves the page and ``tests/test_reference_doc.py`` fails until it is regenerated. The one
-thing not read from the package is each name's stability tier: a name ``HOST_CONTRACT`` in ``public_surface.py``
-lists is marked *host contract*, so a reader sees what is promised without opening ``api/surface.json``.
+thing not read from the package is each name's stability tier: the API section lists the declared surface alone
+(``HOST_CONTRACT`` and ``STABLE`` in ``public_surface.py``), and marks a host-contract name *host contract*, so a
+reader sees what is promised without opening ``api/surface.json``. A ``provisional`` name is exported but not listed.
 
 The walk over the public roots is ``public_surface.py``'s, shared with the API snapshot
 (``generate_api_snapshot.py``), so the page and the snapshot never disagree about a name's kind or signature. The
@@ -51,6 +52,7 @@ from public_surface import (
     one_line,
     own_doc,
     paragraphs,
+    declared,
     public_names,
     stable_repr,
     tier_of,
@@ -118,13 +120,14 @@ def api_section() -> Iterator[str]:
     yield "## Public API"
     yield ""
     yield (
-        "Import only from these roots, and only the names below: a module under a root is internal and may move. "
-        "The package itself, `threetears.evals`, exports only the list of roots, what each optional root needs "
-        "installed, and the installed version. "
+        "Import only from these roots: a module under a root is internal and may move. The names below are the "
+        "declared surface, mapped by rung in [the surface](surface.md). "
         "Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A "
         "class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements. "
         "A name marked *host contract* is one a host writes against: it moves only with a deprecation cycle. Every "
-        "other name may move in any release, recorded in `MIGRATIONS.toml` "
+        "other name listed may move in any release, recorded in `MIGRATIONS.toml`. A root also exports "
+        "*provisional* names, not listed here: most are types a signature below names, importable so your code can "
+        "annotate them, and none is promised; `packages/evals/api/surface.json` lists them "
         "([stability tiers](adopting-a-host.md#stability-tiers))."
     )
     yield ""
@@ -157,7 +160,7 @@ def api_section() -> Iterator[str]:
         items: dict[str, list[Item]] = {}
         promised: dict[str, bool] = {}
         again: list[tuple[str, str]] = []
-        for name, obj in ((n, o) for r, n, o in names if r == root):
+        for name, obj in ((n, o) for r, n, o in names if r == root and declared(tier_of(f"{r}.{n}"))):
             # A class or function exported under its own name is one object however many roots export it, and is
             # described once. One bound to another name (``UsageRole = str``) is an alias of it, which says what
             # the name means, so it is described where it is exported rather than collapsed into the first alias
