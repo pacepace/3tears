@@ -623,6 +623,132 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
         assert [label.rating_id for label in case.labels] == [later.id]
 
 
+class _ServedJudge(_ArmAwareJudge):
+    """The arm-aware toy judge, whose replies name the model that served them, as a profile needs to match a judge."""
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, str] | None = None
+    ) -> ToyJudgeCompletion:
+        """Answer as the toy judge does, naming :data:`TOY_JUDGE_MODEL` as the served model."""
+        completion = await super().generate(system=system, user=user, response_format=response_format)
+        return ToyJudgeCompletion(**{**completion.__dict__, "served_model": TOY_JUDGE_MODEL})
+
+
+async def test_a_label_outlives_its_evidence_and_still_calibrates_a_judge_after_a_core_reset() -> None:
+    """Rate, delete every run and reset the core, then freeze from the labels alone and profile a judge on them.
+
+    The labels are the one irreplaceable input to calibration and are durable; everything else is core. So after
+    a reset the freeze reads no run, result or trace, and the judge campaign over its cases still measures the
+    judge against what people said, on the very evidence they read.
+    """
+    from threetears.evals.analysis import judge_profiles_of
+    from threetears.evals.run import delete_run
+
+    judge = _ServedJudge()
+    host = toyhost_host(clients=lambda role, model, *, temperature=None: judge)
+    source = await _judged_source(host)
+    ratings = off_loop(host.storage.query_calibration_ratings, TOYHOST_SCOPE)
+    assert ratings and all(rating.rated is not None for rating in ratings), "every label carries what was read"
+    read = {}
+    for result in source:
+        trace = off_loop(host.storage.load_eval_trace, result.id, TOYHOST_SCOPE)
+        assert trace is not None and trace.judge_evidence is not None
+        read[result.id] = trace.judge_evidence
+    for run_id in sorted({result.eval_run_id for result in source}):
+        run = off_loop(host.storage.load_eval_run, run_id, TOYHOST_SCOPE)
+        assert run is not None
+        off_loop(delete_run, host.storage, run, TOYHOST_SCOPE, confirm=run.id)
+    off_loop(host.storage.reset_core, [TOYHOST_SCOPE])
+    assert not off_loop(host.storage.query_eval_runs, TOYHOST_SCOPE)
+    assert all(off_loop(host.storage.load_eval_trace, result_id, TOYHOST_SCOPE) is None for result_id in read)
+    template = _judge_template()
+    off_loop(host.storage.save_template, template)
+
+    report = off_loop(
+        freeze_judge_cases,
+        host.storage,
+        template=template,
+        scope_id=TOYHOST_SCOPE,
+        from_labels=True,
+        case_set="faithfulness",
+    )
+
+    assert not report.skipped
+    assert len(report.cases) == len({rating.label_key for rating in ratings})
+    for frozen in report.cases:
+        stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
+        assert stored is not None
+        case = judge_case_of(stored)
+        assert case is not None and case.labels
+        assert case.evidence == read[case.source.result_id], "the case is the evidence the rater read"
+        assert case.source.first_score is None and case.source.test_case_id is None
+    run = await _judge_arm(
+        host,
+        template,
+        [case.test_case_id for case in report.cases],
+        run_id="judge-arm-after-reset",
+        overlays=JudgeKindOverlays(),
+    )
+    results = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+
+    drafts = judge_profiles_of(judge_kind_readings(results), scope_id=TOYHOST_SCOPE)
+
+    (profile,) = drafts.profiles
+    assert profile.judge_model == TOY_JUDGE_MODEL
+    assert profile.label_agreement is not None and profile.label_agreement.results == len(report.cases)
+
+
+async def test_a_rating_of_a_result_whose_template_was_edited_since_is_stored_saying_why_it_carries_nothing() -> None:
+    host = toyhost_host()
+    source = await _judged_source(host)
+    template = off_loop(host.storage.load_template, toyhost_judged_template().id, TOYHOST_SCOPE)
+    assert template is not None
+    off_loop(host.storage.save_template, template.model_copy(update={"updated_at": "2099-01-01T00:00:00+00:00"}))
+    score = source[0].judge_score(FAITHFULNESS_DIM)
+    assert score is not None
+
+    rating = off_loop(
+        rate_result,
+        host.storage,
+        result_id=source[0].id,
+        scope_id=TOYHOST_SCOPE,
+        rubric_dim=FAITHFULNESS_DIM,
+        rater="bo@example.com",
+        rater_kind="person",
+        score=score.score,
+        reason="read it after the template changed",
+    )
+
+    assert rating.rated is None and rating.rated_withheld is not None
+    assert rating.rated_withheld.startswith("what the judge read cannot be rebuilt from the run")
+    assert "edited" in rating.rated_withheld
+
+
+async def test_a_freeze_from_labels_skips_by_name_a_label_that_carries_no_content() -> None:
+    """A label written before ratings carried their content cannot be frozen, and the receipt names it."""
+    host = toyhost_host()
+    source = await _judged_source(host)
+    ratings = off_loop(host.storage.query_calibration_ratings, TOYHOST_SCOPE)
+    withheld = ratings[0].model_copy(update={"rated": None, "rated_withheld": "written before labels carried it"})
+    off_loop(host.storage.save_calibration_rating, withheld)
+    alone = [rating for rating in ratings if rating.label_key == withheld.label_key]
+    template = _judge_template()
+    off_loop(host.storage.save_template, template)
+
+    report = off_loop(freeze_judge_cases, host.storage, template=template, scope_id=TOYHOST_SCOPE, from_labels=True)
+
+    if len(alone) == 1:
+        (skip,) = report.skipped
+        assert skip.rating_id == withheld.id and skip.result_id == withheld.result_id
+        assert "carries no rated content: written before labels carried it" in skip.reason
+    assert len(report.cases) == len({rating.label_key for rating in ratings}) - (len(alone) == 1)
+    assert source
+    with pytest.raises(ValidationFailedError, match="reads no run or result"):
+        freeze_judge_cases(
+            host.storage, template=template, run_ids=["x"], scope_id=TOYHOST_SCOPE, from_labels=True
+        )
+
+
 def test_a_result_whose_trial_this_build_cannot_read_is_left_out_saying_why() -> None:
     """An unreadable trial read as "carries no judge trial": the validation error behind it was swallowed."""
     unreadable = make_eval_result(id="res-unreadable", kind_payload={"test_case_id": "c-1", "dim": FAITHFULNESS_DIM})

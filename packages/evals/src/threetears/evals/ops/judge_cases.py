@@ -11,9 +11,9 @@ judge kind and an intent, which is all a judge template is.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
@@ -28,14 +28,27 @@ from threetears.evals.schema.models import EvalTemplate
 
 
 class JudgeCasesFreeze(EvalBaseModel):
-    """What freezing judge cases names: the judge template, the judged runs, and optionally which dims and results.
+    """What freezing judge cases names: the judge template, the judged runs (or the scope's labels), and optionally
+    which dims and results.
 
     The one declaration of a freeze's arguments; the ``judge_cases_freeze`` action's parameters derive from it.
     """
 
     template_id: Annotated[str, LaunchArguments.model_fields["template_id"]]
     judged_run_ids: list[str] = Field(
-        min_length=1, description="The judged runs whose stored results to freeze, as runs_list names them."
+        default_factory=list,
+        description=(
+            "The judged runs whose stored results to freeze, as runs_list names them; omitted with from_labels, and "
+            "required without it."
+        ),
+    )
+    from_labels: bool = Field(
+        default=False,
+        description=(
+            "Freeze from the scope's person labels instead of from runs: one case per output and criterion, from the "
+            "content each label carries, reading no run or result, so it works after the runs are gone. A label "
+            "that carries no content is skipped by name."
+        ),
     )
     criteria: list[str] | None = Field(
         default=None, description="The criteria to freeze; omitted freezes every dim each result was judged on."
@@ -48,6 +61,15 @@ class JudgeCasesFreeze(EvalBaseModel):
         min_length=1,
         description="A case set to mint the next version of, listing exactly the frozen cases — what a launch targets.",
     )
+
+    @model_validator(mode="after")
+    def _runs_or_labels(self) -> Self:
+        """Refuse a freeze naming both runs and labels as its source, or neither."""
+        if self.from_labels and (self.judged_run_ids or self.judged_result_ids is not None):
+            raise ValueError("a freeze from labels names no judged_run_ids or judged_result_ids")
+        if not self.from_labels and not self.judged_run_ids:
+            raise ValueError("a freeze names at least one judged run in judged_run_ids, or freezes from_labels")
+        return self
 
 
 def judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport:
@@ -78,6 +100,7 @@ def judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) 
         dims=freeze.criteria,
         result_ids=freeze.judged_result_ids,
         case_set=freeze.into_case_set,
+        from_labels=freeze.from_labels,
     )
 
 

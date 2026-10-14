@@ -15,7 +15,9 @@ What a judge case is, what a trial records and the kind's contract are declared 
 - :func:`freeze_judge_cases` — freezes (output, criterion, labels) cases from a host's stored judged results into a
   judge template, and mints a case set over them. What each case freezes is what the result's judge read, rebuilt
   under the one check a re-judge and a second judge rebuild it under
-  (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`).
+  (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`). With ``from_labels=True`` it freezes from the
+  durable labels alone, reading no result: each label carries what its rater read, so a judge is calibrated on
+  people's labels after a core baseline reset has deleted every run they were given on.
 - :func:`judge_case_labels` — the labels a frozen case carries: the person ratings keyed to the result, and those
   keyed to what was read (output-bound labels, #628), so a label follows a byte-identical output into its case.
 - :func:`launchable_judge_kind` — the kind's launch-registry entry, for a host that launches judge campaigns
@@ -190,10 +192,13 @@ class FrozenJudgeCase(EvalBaseModel):
 
 
 class JudgeCaseSkip(EvalBaseModel):
-    """A stored result the freeze could not make a case of, and why."""
+    """A stored result, or a label, the freeze could not make a case of, and why."""
 
     result_id: str
+    """The result skipped; for a skipped label, the result it was given on (provenance, which may be gone)."""
     reason: str
+    rating_id: str | None = None
+    """The label skipped by a freeze from labels; ``None`` when a result was skipped."""
 
 
 class JudgeCaseFreezeReport(EvalBaseModel):
@@ -279,15 +284,115 @@ def _cases_of_result(
     return frozen
 
 
+def _store_case(
+    storage: EvalStorage,
+    template: EvalTemplate,
+    scope_id: str,
+    source_result_id: str,
+    dim: str,
+    case: JudgeCase,
+    seen: set[str],
+) -> FrozenJudgeCase | None:
+    """Write one frozen case as a test case of ``template`` unless it is stored already; ``None`` for a repeat.
+
+    The id is derived from the template, the source result, the dim and the case's content, so freezing the same
+    thing twice names the stored case.
+    """
+    digest = case.content_digest()
+    case_id = str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source_result_id}|{dim}|{digest}"))
+    if case_id in seen:
+        return None
+    seen.add(case_id)
+    stored = storage.load_test_case(case_id, scope_id)
+    if stored is None:
+        storage.save_test_case(
+            EvalTestCase(
+                id=case_id,
+                scope_id=scope_id,
+                template_id=template.id,
+                host_payload=judge_case_payload(case),
+                # The criterion is what a judge campaign's readings split by, so every measure of a cell is
+                # summarised per criterion beside the pooled figure.
+                stratum=dim,
+                content_hash=digest,
+            )
+        )
+    return FrozenJudgeCase(
+        test_case_id=case_id,
+        source_run_id=case.source.run_id,
+        source_result_id=source_result_id,
+        dim=dim,
+        labels=len(case.labels),
+        created=stored is None,
+    )
+
+
+def _cases_of_labels(
+    storage: EvalStorage, scope_id: str, dims: Collection[str] | None
+) -> tuple[list[tuple[str, JudgeCase]], list[JudgeCaseSkip]]:
+    """One case per label key the scope's person labels carry content for, and every label that carries none.
+
+    The person ratings of the scope (on ``dims``) are grouped by their label key — an output on a criterion —
+    and each group is one case: its content the oldest rated content in the group (every rating on one key read
+    byte-identical evidence on one criterion, which the key proves), its labels every person rating on the key,
+    one per rater, the later standing, as :func:`judge_case_labels` reads them. A group in which no rating carries
+    content, and a rating with no label key, cannot be frozen, and each such rating is skipped by name with the
+    reason its rating states.
+
+    Returns:
+        ``(source result id, case)`` per case, and the skipped labels.
+    """
+    skipped: list[JudgeCaseSkip] = []
+    by_key: dict[LabelKey, list[CalibrationRating]] = {}
+    for rating in storage.query_calibration_ratings(scope_id):
+        if rating.rater_kind != "person" or (dims is not None and rating.rubric_dim not in dims):
+            continue
+        key = rating.label_key
+        if key is None:
+            skipped.append(_label_skip(rating, "it carries no label key, so no output and criterion to freeze"))
+            continue
+        by_key.setdefault(key, []).append(rating)
+    frozen: list[tuple[str, JudgeCase]] = []
+    for group in by_key.values():
+        ordered = sorted(group, key=lambda r: (r.rated_at, r.id))
+        carrier = next((rating for rating in ordered if rating.rated is not None), None)
+        if carrier is None or carrier.rated is None:
+            skipped.extend(_label_skip(rating, "it carries no rated content") for rating in ordered)
+            continue
+        by_rater = {rating.rater: rating for rating in ordered if rating.scale == carrier.scale}
+        labels = sorted(by_rater.values(), key=lambda r: (r.rated_at, r.id))
+        case = JudgeCase.from_rated(
+            carrier.rated,
+            labels=[
+                JudgeCaseLabel(rater=rating.rater, score=rating.score, reason=rating.reason, rating_id=rating.id)
+                for rating in labels
+            ],
+            source=JudgeCaseSource(run_id=carrier.run_id, result_id=carrier.result_id),
+        )
+        frozen.append((carrier.result_id, case))
+    return frozen, skipped
+
+
+def _label_skip(rating: CalibrationRating, why: str) -> JudgeCaseSkip:
+    """A label the freeze from labels could not make a case of, named, with its own stated reason beside ``why``."""
+    stated = f": {rating.rated_withheld}" if rating.rated_withheld is not None else ""
+    return JudgeCaseSkip(
+        result_id=rating.result_id,
+        rating_id=rating.id,
+        reason=f"label {rating.id!r} by {rating.rater!r} on {rating.rubric_dim!r}: {why}{stated}",
+    )
+
+
 def freeze_judge_cases(
     storage: EvalStorage,
     *,
     template: EvalTemplate,
-    run_ids: Sequence[str],
+    run_ids: Sequence[str] = (),
     scope_id: str,
     dims: Collection[str] | None = None,
     result_ids: Collection[str] | None = None,
     case_set: str | None = None,
+    from_labels: bool = False,
 ) -> JudgeCaseFreezeReport:
     """Freeze (output, criterion, labels) cases from stored judged results into a judge template.
 
@@ -298,6 +403,12 @@ def freeze_judge_cases(
     the template, the result, the dim and everything the case freezes, so freezing the same thing twice names the
     stored case, and a re-freeze after a label changed mints a new case beside the old one.
 
+    **From labels** (``from_labels=True``, and no runs or results named): the cases are the scope's durable person
+    labels, one per output and criterion (:func:`_cases_of_labels`), each frozen from the content its labels carry
+    (``CalibrationRating.rated``) with no run, result or trace read, so it works after a core baseline reset has
+    deleted them all. A label whose content was withheld (written before ratings carried it, or rated when its run
+    could not be reproduced) is skipped by name with its stated reason.
+
     With ``case_set``, the freeze then mints the next version of that case set listing exactly this freeze's cases,
     in order — the set a launch targets, so cases a later freeze superseded are not run by it. A freeze whose cases
     the latest version already lists exactly is answered with that version.
@@ -305,32 +416,44 @@ def freeze_judge_cases(
     Args:
         storage: The store the runs, their results and ratings live in, and the cases are written to.
         template: The judge template the cases belong to, loaded.
-        run_ids: The judged runs whose results to freeze.
+        run_ids: The judged runs whose results to freeze; empty with ``from_labels``.
         scope_id: The scope the runs live in, and the cases are stored in.
         dims: The criteria to freeze; ``None`` for every dim each result was judged on.
         result_ids: The results to freeze; ``None`` for every result of the runs.
         case_set: The case set to mint over the frozen cases, or ``None`` for none.
+        from_labels: Freeze from the scope's durable person labels instead of from runs.
 
     Returns:
         The cases, the set, and every result skipped with why.
 
     Raises:
-        ValidationFailedError: The template is not of the judge kind; no run is named; ``result_ids`` names a result
-            outside the runs; or nothing could be frozen.
+        ValidationFailedError: The template is not of the judge kind; no run is named (or, from labels, a run or a
+            result is); ``result_ids`` names a result outside the runs; or nothing could be frozen.
         NotFoundError: A run does not load.
         StorageError: A case or the set could not be persisted.
     """
     _judge_template(template)
-    if not run_ids:
+    if from_labels and (run_ids or result_ids is not None):
+        raise ValidationFailedError(
+            "a freeze from labels reads no run or result, and this one names some",
+            remedy="freeze from labels alone, or from the named runs without from_labels",
+        )
+    if not run_ids and not from_labels:
         raise ValidationFailedError(
             "a freeze was named no judged run",
-            remedy=f"name at least one judged run whose results to freeze ({FIND_RUN})",
+            remedy=f"name at least one judged run whose results to freeze ({FIND_RUN}), or freeze from labels",
         )
     cases: list[FrozenJudgeCase] = []
     skipped: list[JudgeCaseSkip] = []
     seen: set[str] = set()
     wanted = None if result_ids is None else set(result_ids)
     found: set[str] = set()
+    if from_labels:
+        labelled, skipped = _cases_of_labels(storage, scope_id, dims)
+        for source_result_id, case in labelled:
+            minted_case = _store_case(storage, template, scope_id, source_result_id, case.dim, case, seen)
+            if minted_case is not None:
+                cases.append(minted_case)
     for run_id in run_ids:
         run = storage.load_eval_run(run_id, scope_id)
         if run is None:
@@ -347,45 +470,25 @@ def freeze_judge_cases(
             if not frozen:
                 skipped.append(JudgeCaseSkip(result_id=result.id, reason="none of the dims asked for was judged on it"))
             for dim, case in frozen:
-                digest = case.content_digest()
-                case_id = str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{result.id}|{dim}|{digest}"))
-                if case_id in seen:
-                    continue
-                seen.add(case_id)
-                stored = storage.load_test_case(case_id, scope_id)
-                if stored is None:
-                    storage.save_test_case(
-                        EvalTestCase(
-                            id=case_id,
-                            scope_id=scope_id,
-                            template_id=template.id,
-                            host_payload=judge_case_payload(case),
-                            # The criterion is what a judge campaign's readings split by, so every measure of a cell is
-                            # summarised per criterion beside the pooled figure.
-                            stratum=dim,
-                            content_hash=digest,
-                        )
-                    )
-                cases.append(
-                    FrozenJudgeCase(
-                        test_case_id=case_id,
-                        source_run_id=run.id,
-                        source_result_id=result.id,
-                        dim=dim,
-                        labels=len(case.labels),
-                        created=stored is None,
-                    )
-                )
+                minted_case = _store_case(storage, template, scope_id, result.id, dim, case, seen)
+                if minted_case is not None:
+                    cases.append(minted_case)
     if wanted is not None and (stray := sorted(wanted - found)):
         raise ValidationFailedError(
             f"result(s) {stray} are not results of the named runs in this scope",
             remedy=f"name results of those runs ({FIND_RESULT})",
         )
     if not cases:
-        why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "the runs have no results"
+        empty = "the scope holds no person label" if from_labels else "the runs have no results"
+        why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or empty
         raise ValidationFailedError(
             f"no judge case could be frozen — {why}",
-            remedy="freeze from judged runs whose results recorded their judging, or launch the template again for one",
+            remedy=(
+                "rate judged results on this build (rate_result), which stores what each label rated, and freeze again"
+                if from_labels
+                else "freeze from judged runs whose results recorded their judging, or launch the template again for "
+                "one"
+            ),
         )
     minted: CaseSetRef | None = None
     if case_set is not None:
@@ -399,8 +502,9 @@ def freeze_judge_cases(
                 storage, scope_id=scope_id, name=case_set, template_id=template.id, test_case_ids=ids
             ).ref
     log.info(
-        "eval.judge_cases_freeze template=%s runs=%d cases=%d created=%d skipped=%d case_set=%s",
+        "eval.judge_cases_freeze template=%s from_labels=%s runs=%d cases=%d created=%d skipped=%d case_set=%s",
         template.id,
+        from_labels,
         len(run_ids),
         len(cases),
         sum(1 for case in cases if case.created),
