@@ -93,7 +93,7 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
         text, structured, is_error = await _text(
             client, "evals", {"action": "job_poll", "job_id": "run:r", "analysis_id": "a"}
         )
-    assert is_error and structured == {"refusal": {"kind": "validation_failed", "status": 422}}
+    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "validation_failed", "status": 422}}
     assert text.startswith(
         "refused: job_poll does not take analysis_id.\njob_poll accepts:\n- job_id (string, required)"
     )
@@ -103,7 +103,7 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
 async def test_an_engine_refusal_reaches_the_client_with_its_kind_and_status() -> None:
     async with Client(_served(off_loop(ops_fixture))) as client:
         text, structured, is_error = await _text(client, "evals", {"action": "run_get", "run_id": "no-such-run"})
-    assert is_error and structured == {"refusal": {"kind": "not_found", "status": 404}}
+    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "not_found", "status": 404}}
     assert text.startswith("refused: run_get:") and "no-such-run" in text, "the teaching text is unchanged"
 
 
@@ -217,7 +217,7 @@ async def test_a_model_calling_actions_refusal_in_the_call_reaches_the_client_as
         text, structured, is_error = await _text(
             client, "evals", {"action": "judge_second", "run_id": "no-such-run", "second_judge_model": "judge/other"}
         )
-    assert is_error and structured == {"refusal": {"kind": "not_found", "status": 404}}
+    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "not_found", "status": 404}}
     assert "no-such-run" in text
 
 

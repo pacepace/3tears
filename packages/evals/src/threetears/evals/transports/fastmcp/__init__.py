@@ -40,7 +40,8 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
   launch was priced against is stale, say.
 - **A refusal as data.** A refused call is an MCP error result (``isError``) carrying the refusal's
   teaching text, and its :class:`~threetears.evals.actions.Refusal` as structured content —
-  ``{"refusal": {"kind": ..., "status": ...}}`` — so a client branches on the kind, never on the text. A
+  ``{"ending": "refused", "refusal": {"kind": ..., "status": ...}}``, ``"raised"`` where the engine or host failed
+  the call (a 5xx status) — so a client branches on the kind, never on the text. A
   result carries its text and the result model's JSON as structured content.
 
 **One call timeout, never one computed from the call.** No action's call waits on a model — work that calls one
@@ -688,8 +689,8 @@ class CatalogueTool(Tool):
 
         Returns:
             The result: text always; as structured content, the result model's JSON when the call
-            succeeded, or ``{"refusal": {"kind": ..., "status": ...}}`` with the error flag when it was
-            refused; and the error flag alone, with text saying so and to read what it may have done before calling it
+            succeeded, or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}`` with the
+            error flag when it was refused or raised (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the error flag alone, with text saying so and to read what it may have done before calling it
             again, when it outlived the call timeout. A note the
             ``annotate`` hook answered follows the outcome's text as a text block of its own, and changes nothing
             else (:data:`CallAnnotator`).
@@ -708,7 +709,11 @@ class CatalogueTool(Tool):
                 ),
                 is_error=True,
             )
-        structured = {"refusal": asdict(outcome.refusal)} if outcome.refusal is not None else outcome.structured
+        structured = (
+            {"ending": outcome.ending, "refusal": asdict(outcome.refusal)}
+            if outcome.refusal is not None
+            else outcome.structured
+        )
         note = (
             await _note(binding.annotate, call, outcome) if binding.annotate is not None and call is not None else None
         )

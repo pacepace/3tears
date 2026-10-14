@@ -6,7 +6,9 @@ Every string a mounted tool returns is made here, so the conventions hold in one
   one's class and summary; a page is one action's parameters, what it returns and an example call —
   all read off the :class:`~threetears.evals.actions.catalogue.Action` and its models.
 - **A refusal names what was wrong and what would be right**: the valid actions, the parameters the
-  action accepts with what each means, and an example call that validates.
+  action accepts with what each means, and an example call that validates. A call the engine or host
+  failed to carry out (a store that failed, a provider that refused the account: a 5xx status,
+  :func:`raised`) reads ``raised:``, never ``refused:``, since the call itself was not turned away.
 - **A result reads as every fact it carries.** One generic renderer prints any result model field by field
   (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
   what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
@@ -21,7 +23,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import BaseModel, ValidationError
 
@@ -188,9 +190,36 @@ def refuse_by_resolver(tool: MountedTool, action: Action | None, refused: EvalSe
     return _refused_with_remedy(tool, action.name if action is not None else tool.name, refused)
 
 
+#: The lowest status at which an error is the engine or host failing to carry a call out rather than turning the
+#: call away: :class:`~threetears.evals.kernel.StorageError` (503), :class:`~threetears.evals.kernel.ProviderRefusedError`
+#: (502), a host's own :class:`~threetears.evals.kernel.EvalServiceError` raised with a 5xx status.
+_RAISED_FROM: Final = 500
+
+
+def raised(status: int) -> bool:
+    """Whether an error at ``status`` means the call RAISED (the engine or host failed it) rather than was REFUSED.
+
+    The one rule both the text (``raised:`` or ``refused:``) and the outcome's data
+    (:attr:`~threetears.evals.actions.ActionOutcome.ending`) read: a 5xx status is a failure to carry the call out,
+    which a host recording its candidate's refused calls (``CallLedger.record_refusal``) must not record as one;
+    every other status is the call turned away.
+
+    Args:
+        status: The error's HTTP-style status (``status_code``).
+
+    Returns:
+        Whether it raised.
+    """
+    return status >= _RAISED_FROM
+
+
 def _refused_with_remedy(tool: MountedTool, subject: str, refused: EvalServiceError) -> str:
-    """A refusal's reason under ``subject``, then its remedy, then where any action the remedy names is carried."""
-    lines = [f"refused: {subject}: {refused.message}"]
+    """A refusal's reason under ``subject``, then its remedy, then where any action the remedy names is carried.
+
+    Headed ``raised:`` when the error is the engine or host failing the call (:func:`raised`), ``refused:`` otherwise.
+    """
+    head = "raised" if raised(refused.status_code) else "refused"
+    lines = [f"{head}: {subject}: {refused.message}"]
     if refused.remedy is not None:
         lines.append(f"remedy: {refused.remedy}")
         named = sorted(set(_ACTION_TOKEN.findall(refused.remedy)))
@@ -504,6 +533,7 @@ def _render_result(status: JobStatus) -> str:
 __all__ = [
     "example_call",
     "parameter_lines",
+    "raised",
     "refuse_by_engine",
     "refuse_by_resolver",
     "refuse_help_parameters",
