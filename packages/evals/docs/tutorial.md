@@ -325,7 +325,7 @@ quality you care about, each scored 1 to 5 by default.
 
 Give `run_eval` a `Judge`: a completion client, the model it calls, the rubric, and the material each answer is
 judged against. The client below is an offline stand-in that looks for an apology. A real one calls your model
-provider: `models_client` from `threetears.evals.providers` (the `[models]` extra) is the shipped one, which
+provider: `Model` from `threetears.evals.providers` (on the base install) is the shipped one, which
 [`llm_judge.py`](../examples/llm_judge.py) hands to its judge, replaying a recording of it when no key is set. A
 stand-in of your own returns what a model would:
 a JSON reply with a string `reasoning` and `criteria_scores`, an object whose one key is the dimension asked
@@ -394,7 +394,7 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
 - **Request settings** are what the judge was asked for: an output cap, `high` reasoning effort and a strict reply
   format. A real client reports what each request actually carried (`sent_settings`), since it may send a model the
   closest setting it accepts. The stand-in reports nothing, so the summary says it cannot confirm the asked settings
-  were applied. `models_client` reports it.
+  were applied. `Model` reports it.
 - **The judge reads every field of the case** beside the material, `queue` included. Keep out of the case
   anything the judge should not see.
 - **Read the low scores the way you read misses.** The stand-in marked down `hours`, and a model reading this

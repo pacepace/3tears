@@ -9,8 +9,8 @@ ratings that takes, and how the ratings correct the judge's mean. Grade with cod
 The snippets run top to bottom as one script, in one async context (`python -m asyncio`, or inside
 `async def main()`). A store call blocks, so a snippet makes it off the event loop with
 `await run_blocking(host.blocking_executor, fn, ...)`. `client` is any `CompletionClient` (an async
-`generate(system=, user=, response_format=)` and an `aclose()`); `models_client` from `threetears.evals.providers`
-(the `[models]` extra) is the shipped one, which `examples/llm_judge.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
+`generate(system=, user=, response_format=)` and an `aclose()`); `Model` from `threetears.evals.providers` is the
+shipped one, which `examples/llm_judge.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
 directive (the criterion's answers, "can't tell" among them); pass it to a provider that enforces structured output,
 or send the nearest mode yours has. The reply is read and refused on return either way. Every enum in it is a string
 enum, the one form every provider's strict mode enforces (a Gemini model accepted an integer one and left the score
@@ -142,7 +142,7 @@ to think on reasoned past the cap and was cut off with no answer written. A mode
 `thinking.budget_tokens`) is held to it; a model that takes effort words only is sent the word the budget's share of
 the cap reads as, `high` (0.80, `BUDGET_SHARES`), which is exactly what it was sent before, and there the cap stays
 the only hard stop. Reasoning stays on for every scale, pass/fail included: it is part of the instrument. Your client
-builder applies the settings to the judge's client (the shipped `models_clients` does for its `judge` role), and a
+builder applies the settings to the judge's client (the shipped `Clients` does for a `judge` role given by id), and a
 judged run records them as its `judge_asked_settings`. What a call was actually sent with is the client's to say, as
 the optional `sent_settings` on its completion: a client may send a model the closest setting it accepts (an effort
 word in place of a budget, a lower effort word, no enforcement where a router could not place the call). Each score records it

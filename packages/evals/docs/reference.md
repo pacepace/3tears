@@ -33,7 +33,7 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (fails to import without the `[fastmcp]` extra)
 - [`threetears.evals.negotiation`](#api-negotiation)
-- [`threetears.evals.providers`](#api-providers) (fails to import without the `[models]` extra)
+- [`threetears.evals.providers`](#api-providers)
 
 <a id="api-threetears-evals"></a>
 ### `threetears.evals`
@@ -42,6 +42,7 @@ The eval engine: templates, cases, runs and results; the trial loop, its judge a
 
 **Classes**
 
+- **`Model`** · *host contract* · class · One model, as the engine's completion client and as three helpers for a runner of your own.
 - **`RootExtra`** · *host contract* · dataclass · What one optional public root needs installed before it imports: the extra, and the modules it brings.
 
 **Constants**
@@ -2514,34 +2515,28 @@ Request negotiation: a client that never fails a request because a model lacks a
 <a id="api-providers"></a>
 ### `threetears.evals.providers`
 
-*Fails to import without the `[models]` extra (`pip install "3tears-evals[models]"`), which brings in `anthropic`, `httpx`, `langchain_core`, `openai`, `openrouter`, `threetears.models`; see `threetears.evals.ROOT_EXTRAS`. Every root not so marked imports on the base install.*
-
-The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
+The completion client: a model id in, the engine's completion port out, over each provider's own HTTP API.
 
 **Functions**
 
-- **`models_client`** · *host contract* · function · Build the completion client for one model: `create_chat_model` with retries off, wrapped in the port.
-  <br>`models_client(model_id: str, *, api_key: str, provider: str | None = None, temperature: float | None = None, reasoning_effort: KnownReasoningEffort | None = None, reasoning_max_tokens: int | None = None, max_tokens: int | None = None, prices: HttpClient | None = None, **provider_kwargs: Any) -> ModelsCompletionClient`
-- **`models_clients`** · *host contract* · function · The host-profile factory: every role the engine calls, on models 3tears-models builds.
-  <br>`models_clients(*, api_keys: Mapping[str, str] | None = None, defaults: Mapping[CompletionRole, str], prices: HttpClient | None = None, **per_role_kwargs: Mapping[str, Any]) -> ModelsClients`
+- **`describe_failure`** · *host contract* · function · What the engine may know of a call through the client that raised: the host's `failure_describer`.
+  <br>`describe_failure(exc: BaseException) -> ProviderFailure`
 
 **Classes**
 
-- **`ModelsClientRefused`** · *host contract* · exception · A setting the adapter refuses by name before anything is sent: the caller's error, never a model's lack.
-- **`ModelsClients`** · *host contract* · class · The engine's role factory over `models_client`: `models_clients` builds one.
-- **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's members, and three of its own.
-- **`ModelsCompletionClient`** · class · The completion port over one chat model 3tears-models built: `models_client` returns one.
-- **`ModelsFailureDescriber`** · *host contract* · class · A `ProviderFailureDescriber` for the adapter's providers, total over `BaseException`.
+- **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, fetched at most once, and what providers refused, for every model that reads it.
+- **`Clients`** · *host contract* · class · A host's role factory (`EvalHost.clients`): one `Model` per role, model id and temperature.
+- **`Completion`** · dataclass · One reply: the completion port's ten members, and four of the client's own.
+- **`ProviderError`** · *host contract* · exception · A request the provider refused or failed: who, the HTTP status, and the provider's own message.
 
 **Types**
 
-- **`SupportedProvider`** · literal · The providers the adapter builds a client for, as models' registry names them.
-  <br>`'anthropic'` | `'openai'` | `'openrouter'`
+- **`Provider`** · literal · The providers the client speaks to: OpenRouter, Anthropic's Messages API, and any OpenAI-compatible chat endpoint.
+  <br>`'openrouter'` | `'anthropic'` | `'openai'`
 
-**Constants**
+**Also exported here**
 
-- **`PROVIDER_KEY_VARIABLES`** · constant (dict) · The environment variable each provider's own SDK reads its key from, which `models_clients` reads when its `api_keys` mapping names no key for a provider.
-- **`SUPPORTED_PROVIDERS`** · constant (tuple) · Every `SupportedProvider`, in the order the docs list them.
+`Model` ([`threetears.evals`](#api-threetears-evals))
 
 <a id="configuration"></a>
 ## Configuration

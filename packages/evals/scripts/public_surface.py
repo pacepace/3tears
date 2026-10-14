@@ -765,14 +765,15 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.negotiation.anthropic_thinking",
         "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET",
         "threetears.evals.negotiation.RefusedSetting",
-        # The shipped provider adapter: a host that brings no client of its own binds to these.
-        "threetears.evals.providers.models_client",
-        "threetears.evals.providers.models_clients",
-        "threetears.evals.providers.ModelsFailureDescriber",
-        # The factory's own type, whose `aclose_all()` a host calls at shutdown, and the adapter's refusal of a
-        # setting it cannot carry, a role with no model or a provider with no key, which a host catches.
-        "threetears.evals.providers.ModelsClients",
-        "threetears.evals.providers.ModelsClientRefused",
+        # The shipped completion client: a host that brings no client of its own binds to these. `Model` is the
+        # client (also exported from the package root), `Clients` the role factory, `describe_failure` its
+        # failure describer, and `ProviderError` the one error a host catches; `Catalogue` is what models share.
+        "threetears.evals.Model",
+        "threetears.evals.providers.Model",
+        "threetears.evals.providers.Clients",
+        "threetears.evals.providers.Catalogue",
+        "threetears.evals.providers.describe_failure",
+        "threetears.evals.providers.ProviderError",
     }
 )
 

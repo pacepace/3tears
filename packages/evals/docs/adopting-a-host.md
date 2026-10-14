@@ -56,9 +56,9 @@ The stored documents and the ports you implement (`DocumentStore`, `CompletionCl
 `threetears.evals.schema`; the behaviour over them (identity, scoring, `EvalStorage`, the candidate kind) is in
 `threetears.evals.kernel`, with the host contract under `threetears.evals.kernel.host`.
 
-Two roots fail to import without an extra, and `threetears.evals.ROOT_EXTRAS` says which and what each needs: a
-`RootExtra` with the extra's name and every module the root imports past the base install (`providers` needs
-`anthropic` as much as `threetears.models`, and may fail on either first). A public-API gate reads it to skip a root
+One root fails to import without an extra, and `threetears.evals.ROOT_EXTRAS` says which and what it needs: a
+`RootExtra` with the extra's name and every module the root imports past the base install (`transports.fastmcp`
+needs `fastmcp`). A public-API gate reads it to skip a root
 whose modules are absent, and to name the missing one, without reading the manifest or keeping a list of its own:
 
 ```python
@@ -199,7 +199,7 @@ Recording onto a file that exists appends to it, and only `replace=True` starts 
 attribute your completion type declares beyond the ten and `sent_settings` is kept under the replayed completion's
 `extra`, and one JSON cannot hold is refused when it is recorded.
 
-The package's own examples run this way: each that calls a model calls Claude through `models_client` when
+The package's own examples run this way: each that calls a model calls Claude through `Model` when
 `ANTHROPIC_API_KEY` is set, records the run when `RECORD=1` is set too, and otherwise replays the recording kept
 beside it, so it runs offline on what Claude said rather than on a stand-in's text, and its test checks the
 recording still covers its prompts ([the examples' README](../examples/README.md#recording)).
@@ -209,89 +209,58 @@ recording still covers its prompts ([the examples' README](../examples/README.md
 **The engine calls models through one port, and names no provider.** A client is anything with
 `async generate(*, system, user, response_format=None)` returning a `CompletionResult`, plus `aclose`
 (`CompletionClient`, in `threetears.evals.schema`); the failure half is your `failure_describer`. You can write
-both yourself, or bind to the adapter the package ships over 3tears-models (`threetears.evals.providers`, the
-`[models]` extra), which builds Anthropic, OpenAI and OpenRouter chat models through `create_chat_model`.
-
-**The `[models]` extra installs from PyPI once 0.68.0 ships** (`pip install "3tears-evals[models]"`). Until then
-it does not install from a git tag the way the base package does
-([the README's install step](../README.md#first-result-in-10-minutes)): it needs 3tears-models and the family
-packages models depends on at 0.68.0, and none of them is on PyPI yet. Use a checkout of the repository at the tag,
-where `uv sync --extra models` at the root installs it.
+both yourself, or use the client the package ships (`threetears.evals.providers`, on the base install), which speaks
+OpenRouter's, Anthropic's and any OpenAI-compatible chat API over `httpx`, with no SDK and no other 3tears package:
 
 ```python
-from threetears.evals.providers import ModelsFailureDescriber, models_clients
+from threetears.evals.providers import Clients, describe_failure
 
 async def build_host() -> EvalHost:
-    clients = models_clients(defaults={"judge": "claude-sonnet-4-6", "analysis": "claude-sonnet-4-6"})
+    clients = Clients(default="deepseek/deepseek-v4-flash", judge="google/gemini-3.5-flash-lite")
     unpriced = await clients.load_prices()  # once, at boot: {model: why} for any model left unpriced
-    return EvalHost(..., clients=clients, failure_describer=ModelsFailureDescriber())
+    return EvalHost(..., clients=clients, failure_describer=describe_failure)
 ```
 
-`models_clients` keeps one client per role, model, temperature and reasoning setting, reads each provider's key
-from `api_keys=` or the provider's own environment variable the first time a client for it is asked for, and
-`await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
-(`simulator={"reasoning_effort": "low", "provider": "openrouter"}`); `models_client` builds one client on its own.
-**The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records it asked for, as its
-`judge_asked_settings` (`max_tokens=10240`, `reasoning_max_tokens=8192`, `strict_output=True`): a `judge` role given no
-`max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that reasoning budget,
-sent as a thinking budget to an Anthropic model that takes one and as the effort word its share of the cap reads as
-(`high`) to every model that takes words only, and `strict_output` is the strict structured directive the judge
-already sends. Pass the judge's settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`) and the
-client asks for those instead, which the run's asked settings do not describe. The engine's other roles ask in effort
-words:
-the simulated user `low` (`SIMULATOR_REQUEST_SETTINGS`, strict, since every simulator call sends a strict reply
-schema) and the analysis generator `medium` (`analysis_gen_request_settings_for`, whose output cap is the answer
-budget plus a reasoning headroom of at least 1024 tokens, 8192 unless you set one; the headroom sizes the cap and is
-never sent, so a `*_reasoning_budget_tokens` setting your configuration kept is that headroom now). The adapter sends every request once (retries off; the only resends answer a
-provider's refusal of a setting, below), keeps a circuit breaker of its own that never opens, and prices Anthropic
-and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced is `None`
-with the reason, never `0`). Only the caller's own errors are refused: a reasoning word and a budget together, a
-budget below Anthropic's 1024 floor or not below the output cap, a budget off Anthropic with no `max_tokens`, a role
-with no model, a provider with no key; each raises `ModelsClientRefused` (a `ValueError`), naming the setting and
-what to pass instead.
+`Clients` builds one `Model` per role, model and temperature, all sharing one `Catalogue` (OpenRouter's public model
+list, fetched once: the rates and the parameters each model takes) and what any of them learned from a refusal, and
+`await clients.aclose()` closes them at shutdown. A role is a model id or a `Model` whose settings that role's models
+are built with: an id with a `/` goes to OpenRouter on `OPENROUTER_API_KEY`; a bare id needs
+`Model(id, provider="anthropic")` (`ANTHROPIC_API_KEY`) or `provider="openai"` (`OPENAI_API_KEY`), never guessed;
+`base_url=` takes any OpenAI-compatible endpoint. A missing key is refused when the model is built, naming the
+variable. **The judge is built from `JUDGE_REQUEST_SETTINGS`** when given as an id, the request settings a judged run
+records it asked for (`max_tokens=10240`, a reasoning budget of 8192, `strict_output=True`): sent as a thinking budget
+to an Anthropic model and as the effort word its share of the cap reads as (`high`) to every model that takes words;
+the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Nothing is retried: the only resends answer a
+provider's refusal of a setting, below. `describe_failure` reads the client's one error type, `ProviderError` (the
+provider, the status and its own message, never the body, and `account` for a refused key or spent credit, which
+stops a run), and an `httpx` transport error by the host it was sending to.
 
-**A model that lacks a setting still answers, sent the closest one it takes.** Each completion's `sent_settings`
-says what its request carried. A word the model lacks goes as its closest word, never more than asked (`max` on
-OpenAI is `xhigh`; `minimal` on Anthropic is `low`); a budget goes as the effort word its share of `max_tokens` maps
-to where a model takes words only (OpenAI, OpenRouter, Anthropic's adaptive-only models: the judge's 8192 of 10240
-is `high`), and a word as that share of the cap where a model takes budgets only; an Anthropic effort word rides
-adaptive thinking, with no temperature beside it; a strict reply format a model cannot take goes unenforced. What is
-known of a model comes from what a provider refused in the factory's life, then 3tears-models' capabilities, then
-OpenRouter's catalogue (once this factory's own `load_prices` read it, and only to leave out a parameter no endpoint
-takes); unknown is sent as asked. A provider's refusal of a setting the
-request carried (an Anthropic model on which `temperature` is deprecated or a thinking budget unsupported, an OpenAI
-model that takes only its default temperature or fewer effort words) is answered by sending the request once more
-with the closest setting the model then takes: the refused request generated nothing and is not billed, so the
-price ceiling is one request's; but a refused send can take up to one request timeout, so a call can take up to
-`MAX_RESENDS + 1` of them (`threetears.evals.negotiation.MAX_RESENDS`, 4), and a wall-clock ceiling of your own
-around a call allows for that. What a served resend proved the model refuses is learned: every client of the
-factory sends that way for the rest of its life, logged once at WARNING. On OpenRouter, a strict call whose
-`require_parameters` leaves no endpoint (a 404 naming no parameter) is resent without its temperature, keeping
-enforcement, and only if that still finds none, without
-enforcement, which its `sent_settings` records as `strict_output=False`. Enforcement is never learned: the next call
-asks for it again, since a router's "no endpoint" can be an outage. Any other refusal, and a refusal of a resend for
-a setting already dropped, is raised as before.
+**A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
+the resending are `threetears.evals.negotiation`'s, the same a client of your own uses (below), and each completion's
+`sent_settings` says what its request carried. What is known of a model before any request: a Claude 5.5 takes no
+temperature, and on OpenRouter the catalogue says which parameters no endpoint takes and the model's output cap;
+unknown is sent as asked. A refusal of a setting the request carried is answered by sending it once more with the
+closest setting the model then takes, learned for every model sharing the catalogue and logged once at WARNING; on
+OpenRouter a strict call no endpoint takes under `require_parameters` (a 404 naming nothing) is resent without its
+temperature, and only then without enforcement, for that call alone. The refused request generated nothing and is not
+billed, so the price ceiling is one request's, but each refused send can take up to a request timeout
+(`MAX_RESENDS`, 4).
 
-**Load prices once at boot.** `await clients.load_prices()` reads the price catalogue for every default model and
-returns, for each one left unpriced, why (`{}` when all are priced); a model the engine names beyond your defaults
-loads with `await clients(role, model).load_prices()`, and a client built alone with `await client.load_prices()`.
-Until a client's prices are loaded its `price_ceiling` is `None`, and the engine refuses every out-of-run call
-(analysis, case generation, a second judge, a rejudge) under an enforced `out_of_run_cap_usd` rather than send one
-it cannot bound. On Anthropic and OpenAI the first priced call also loads them; on OpenRouter only `load_prices`
-does, and its ceiling comes from the same catalogue while the stored cost stays OpenRouter's own figure. A failed
-fetch is logged and retried on the next call or load, never cached; an exception from a price source of your own
-propagates from `load_prices`, so a defect in it shows at boot.
+**Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
+figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
+without the upstream figure is unpriced. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
+for the matching `vendor/model` row, its `price_source` ending `;cache-approximate` when a prompt cache was read or
+written (the catalogue carries no cache rates). Unpriced is `None` with `pricing_failure` saying why, never `0`. A
+model's `price_ceiling` answers once its catalogue is loaded: `await clients.load_prices()` at boot, or
+`await catalogue.load()` on one you hand your models, and until then the engine refuses an out-of-run call under an
+enforced `out_of_run_cap_usd` rather than send one it cannot bound.
 
-**A cost that read the provider's prompt cache is approximate.** Providers bill cached input at their own rates,
-cheaper to read and, on Anthropic, dearer to write, and models' price catalogue carries neither, so the adapter
-prices those tokens at the full input rate: a cache read is overstated and an Anthropic cache write understated.
-Such a call's `price_source` ends `;cache-approximate`, so a stored cost is never read as exact. What the adapter
-reads off each provider's reply is in `threetears.evals.providers`' own docstring, member by member.
-
-**Keep a client of your own** when you price from a catalogue of your own or route through a gateway, when your
-provider is one 3tears-models has no factory for, or when you call Claude through a subscription: the adapter
-refuses the Claude CLI route, whose completions read as finished whatever stopped them, until models carries the
-CLI's real stop reason. Either way, run `check_completion_conformance` on your client's completions in your suite.
+**An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
+class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`
+members (and `sent_settings`, when it can say what the request carried), whose `aclose` releases what it owns, and a
+`failure_describer` over that SDK's errors. The package ships no adapter to any of them, so evals depends on no other
+3tears package; `check_completion_conformance` on your client's completions, and `check_refusal_negotiation` on the
+client, in your suite, hold the wrapper to what the engine reads.
 
 **A client builder of your own sends every reasoning field.** The judge asks by a token budget
 (`JUDGE_REQUEST_SETTINGS.reasoning_max_tokens`, with `reasoning_effort=None`), so its reasoning is bounded where a
@@ -348,7 +317,7 @@ calls were sent with, the simulator's included) and on each out-of-run spend row
   A client built with no output cap cannot report one, since `max_tokens` is required, and reports `None`.
 
 **Never fail a call for a setting, and drop enforcement last.** A client of your own keeps the rule the shipped
-adapter keeps: a model that lacks a setting still answers. When a provider refuses a request for a setting it
+client keeps: a model that lacks a setting still answers. When a provider refuses a request for a setting it
 carried, send it once more with the closest setting the model takes, or without it, and report what the resend
 carried. On a router that enforces parameters (OpenRouter's `require_parameters`, whose "no endpoint" answer names
 no parameter), drop the refused settings first, the temperature before any other, keeping enforcement; only when
@@ -366,7 +335,7 @@ reporting from the first `.25` deploy keeps your campaigns from splitting at a l
 ### A client of your own that never fails a request
 
 **No model may fail a request because it lacks a setting**: a judge model with no temperature, an effort word it
-does not have, a router that finds no endpoint for a strict call under `require_parameters`. The shipped adapter
+does not have, a router that finds no endpoint for a strict call under `require_parameters`. The shipped client
 never does, and neither should your own client, so the logic is one public root, on the base install
 (`threetears.evals.negotiation`, no SDK and no HTTP client): `negotiate` sends the closest settings the model is
 known to take (`closest_settings`), hands any failure to your refusal reader, and on a refusal of a setting the
@@ -485,7 +454,7 @@ never from constants copied by hand.
 
 **What a refusal teaches lasts for the process; enforcement is decided per call.** `LearnedSettings` holds what a
 served request proved the model refuses, keyed by your provider name and the model, and every client sharing it
-sends without that setting from then on: keep one per process, or per client factory as the shipped adapter does,
+sends without that setting from then on: keep one per process, or per client factory as the shipped client does,
 never one per call, or every call pays the refusal again. Only what was proved is learned: a temperature dropped on
 the way to a request that was served only once enforcement went too taught nothing, and is sent again. Enforcement
 itself is never learned. Every call that asks for it starts enforced and drops it for that call alone, because a

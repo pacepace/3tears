@@ -1138,9 +1138,9 @@ def test_every_provider_name_exemption_is_still_needed() -> None:
 
 def test_a_provider_name_is_exempt_only_alone_and_only_in_its_tree() -> None:
     """``openrouter`` in the provider tree passes; beside another host noun, or in any other tree, it fails."""
-    provider = Violation("providers/adapter.py", "literal-member", "openrouter", 1, ("openrouter",))
-    mixed = Violation("providers/adapter.py", "name", "openrouter_persona", 1, ("openrouter", "persona"))
-    other_noun = Violation("providers/adapter.py", "name", "persona_id", 1, ("persona",))
+    provider = Violation("providers/model.py", "literal-member", "openrouter", 1, ("openrouter",))
+    mixed = Violation("providers/model.py", "name", "openrouter_persona", 1, ("openrouter", "persona"))
+    other_noun = Violation("providers/model.py", "name", "persona_id", 1, ("persona",))
     elsewhere = Violation("analysis/reporting.py", "literal-member", "openrouter", 1, ("openrouter",))
     assert _names_a_provider(provider)
     assert not _names_a_provider(mixed)
