@@ -49,7 +49,7 @@ durable sibling, `SqliteDocumentStore`, keeps every document in one SQLite file 
 a host with no database of its own can use it as its store.
 
 Import only from a public root (`threetears.evals.PUBLIC_ROOTS` lists them, including
-`threetears.evals.kernel.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
+`threetears.evals.kernel.host` and `threetears.evals.analysis.viz`), and only the names
 its `__all__` declares; never from a module below one. Every engine type a public signature hands you — a protocol you implement, a value you
 receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
 The stored documents and the ports you implement (`DocumentStore`, `CompletionClient`, `TraceSink`) are in
@@ -1397,9 +1397,6 @@ so it goes through the deprecation cycle, never straight out in one release's no
   condition (a turn, an event, a person) rather than at the first turn: a case's seed arms it, and a world
   round or your kind fires it. Skip them and your world is set once, before the first turn, and no goal check
   can ask what `fired(...)` ([A world](#a-world-through-the-cells-session)).
-- **`ChartFont`** (`kernel.host`). A brand face for chart text, declared with the per-character advance widths
-  a renderer lays labels out by. Skip it and charts are drawn in the renderer's own face; nothing a chart
-  states changes.
 - **`SeedSection`'s zones** (`primacy`, `reference`, `recency`, in `kernel`). The sectioned prompt template the
   two proposer prompts are declared in, ordered by zone, each section with its own condition, formatter and
   cache class. Without a registry for sectioned templates, you render those sections into the system prompt

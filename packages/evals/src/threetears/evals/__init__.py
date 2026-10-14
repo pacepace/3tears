@@ -10,10 +10,8 @@ cases), plus three that sit beside the engine rather than inside it: :mod:`~thre
 :mod:`~threetears.evals.quick` (``run_eval`` and the command line). Above the engine sit the surfaces an
 agent drives it through: :mod:`~threetears.evals.ops` (typed operations, and one job contract for long
 work), :mod:`~threetears.evals.actions` (the action catalogue every transport mounts) and
-:mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). One more is an
-optional adapter: :mod:`~threetears.evals.vega`, the Vega-Lite chart renderer (install
-``3tears-evals[vega]``), which reads the core's chart intent and which nothing in the core imports. And two
-are for a completion client: :mod:`~threetears.evals.negotiation` (sending the closest request settings a model
+:mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). Two more are for a
+completion client: :mod:`~threetears.evals.negotiation` (sending the closest request settings a model
 takes, and answering a provider's refusal of one, on the base install) and :mod:`~threetears.evals.providers` (the
 shipped adapter over 3tears-models, ``3tears-evals[models]``, which uses it); nothing in the engine imports
 either. Runs are launched on demand; there is no scheduled-run surface.
@@ -73,8 +71,7 @@ def __getattr__(name: str) -> str:
 #: ``analysis.viz`` are roots of their own inside a package: the contract a host implements, and
 #: the chart intent with the seam a renderer sits behind. Two roots fail to import without an extra
 #: (:data:`ROOT_EXTRAS`): ``transports.fastmcp``, which needs ``[fastmcp]``, and ``providers``, the shipped provider
-#: adapter over 3tears-models, which needs ``[models]``. ``vega``, the optional Vega-Lite renderer, imports on the base
-#: install: only its rasterising calls need ``[vega]``.
+#: adapter over 3tears-models, which needs ``[models]``.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.schema",
     "threetears.evals.kernel",
@@ -89,16 +86,13 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.ops",
     "threetears.evals.actions",
     "threetears.evals.transports.fastmcp",
-    "threetears.evals.vega",
     "threetears.evals.negotiation",
     "threetears.evals.providers",
 )
 
 #: Each public root that fails to import without an extra installed, mapped to that extra's name: what a consumer's
 #: import gate reads to import every root its install can, rather than keep its own list. Every root not here imports
-#: on the base install, whose only dependency is pydantic, though some of what one does may still need an extra:
-#: ``vega`` imports without ``[vega]``, and only its rasterising calls (``VegaRenderer.png``, ``.svg``) need it, raising
-#: ``ModuleNotFoundError`` for ``vl_convert`` without it.
+#: on the base install, whose only dependency is pydantic.
 #: ``tests/test_extraction_import_boundary.py`` proves the map in fresh interpreters: with every extra's dependencies
 #: unimportable, exactly these roots fail; with one extra's missing, exactly the roots listed under it fail.
 ROOT_EXTRAS: Mapping[str, str] = MappingProxyType(

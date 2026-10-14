@@ -1,9 +1,9 @@
 """Which engine package a module belongs to: its path, and nothing else.
 
-``threetears.evals`` is fourteen subpackages -- ``schema``, ``kernel``, ``run``, ``analysis``, ``gen``, ``storage``,
-``testing``, ``quick``, ``ops``, ``actions``, ``transports``, ``negotiation`` and the optional ``vega`` and ``providers`` adapters -- and the gates over it agree on one rule: **a module is in a package because it
-lives in that package's directory.** ``test_package_matrix.py`` holds each package to its row of the allowed-dependency
-matrix and ``test_schema_installable.py`` probes the schema package standalone, and with the kernel. Both need the
+``threetears.evals`` is thirteen subpackages -- ``schema``, ``kernel``, ``run``, ``analysis``, ``gen``, ``storage``,
+``testing``, ``quick``, ``ops``, ``actions``, ``transports``, ``negotiation`` and the optional ``providers`` adapter --
+and the gates over it agree on one rule: **a module is in a package because it lives in that package's directory.**
+``test_package_matrix.py`` holds each package to its row of the allowed-dependency matrix and ``test_schema_installable.py`` probes the schema package standalone, and with the kernel. Both need the
 same answer to "where does this module live", so the answer lives here once rather than in one of
 those files for the other to import.
 
@@ -46,7 +46,6 @@ PACKAGE_DIRS: dict[str, str] = {
     "ops": "ops",
     "actions": "actions",
     "transports": "transports",
-    "vega": "vega",
     "negotiation": "negotiation",
     "providers": "providers",
 }

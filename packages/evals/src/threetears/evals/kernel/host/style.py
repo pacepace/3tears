@@ -1,44 +1,20 @@
-"""How a host's output looks — a bounded contract, deliberately with no prose in it.
+"""How a host's output reads — a bounded contract, deliberately with no prose in it.
 
 **The hard rule: no free-text style prose ever reaches the generator prompt.** This repo has
 proven that prose becomes instruction — a "tone" sentence handed to a model is an instruction it
 follows, and a host that can write one can steer the analysis rather than style it.
 
-That is enforced structurally rather than promised:
+That is enforced structurally rather than promised: :attr:`StyleProfile.tone_register` is an
+**enum**, and the words it maps to are engine-owned prompt fragments. The host picks from a list; it
+never writes the instruction. :func:`prompt_fragment` is the only function that turns any of this
+into prompt text, and it reads exactly that one enum.
 
-1. :attr:`StyleProfile.tone_register` is an **enum**, and the words it maps to are engine-owned
-   prompt fragments. The host picks from a list; it never writes the instruction.
-2. **Neither non-enum field can carry an instruction to a model.** ``chart_palette`` holds colours
-   and nothing else: every value is checked to be resolved sRGB hex (:func:`require_resolved_colour`)
-   when the palette is built, so it has no room for a word. ``chart_font`` names a typeface, so its
-   family list is shape-checked (:data:`_FONT_FAMILY_RE`) and bounded in length, as is each font file
-   name it records (:data:`_FONT_FILE_RE`); the rest of it is numbers and hex digests. And it is
-   structural besides:
-   :func:`prompt_fragment` is the only function in this module that returns prompt text, it takes
-   no argument but the register, and :func:`assert_no_style_text` proves no value from either
-   field reaches a given prompt.
-3. **No field here is read by the prompt builder.** :func:`prompt_fragment` is the single
-   function that turns any of this into prompt text, and it reads exactly one enum.
-4. :func:`assert_no_style_text` asserts a prompt carries no token traceable to a host free-text
-   field, with **descriptor prose and case text** the deliberate exceptions — those are
-   *substance*, the domain words riding in the data, not style. ``tests/test_host_contract.py``
-   holds the narrow half (the one function turning style into prompt text reads an engine-owned
-   table); no test in this repository yet runs it over an assembled generator prompt. It is a
-   TEST and not a production gate on purpose: point 3 is what production actually rests on, and a
-   substring scan gating a billed generation would discard a real analysis for a colour that
-   happens to appear in a case's own text.
-
-**Every field changes what a report shows, and nothing else is declared.** A locale, units, a date
-format and a length budget are not slots here: no renderer and no number formatter reads one, and a
-field that claims to change formatting while changing nothing is worse than no field — a host that
-declared ``de-DE`` would get reports formatted exactly as ``en-US`` with nothing telling it so. Each
-comes back only with the code that honours it.
-
-**The palette is renderer-neutral.** The core names chart INTENT — which colour slot a series takes
-(:data:`VALIDATED_SLOTS`, :data:`SERIES_SLOTS`), which ink a label is drawn in — and a renderer is an
-adapter that turns a :class:`ChartPalette` into its own theme. Nothing here is any renderer's config
-shape: a Vega-Lite config is built from a palette inside the ``vega`` adapter, and a host never writes
-one.
+**Nothing about how a report looks is declared here.** The report is one page the package draws itself
+(:mod:`threetears.evals.analysis.report`), legible in light and dark through its own stylesheet, with no
+chart library and no host palette or font; a host that wants its own pictures reads the evidence bundle the
+page was computed from. A locale, units, a date format and a length budget are not slots here either: no
+renderer and no number formatter reads one, and a field that claims to change formatting while changing
+nothing is worse than no field.
 
 **Style never touches substance.** The memo shape, ordering, gating semantics, truth gates,
 posture model, caveat attachment and the materiality mechanism are engine-owned and identical for
@@ -47,10 +23,7 @@ every consumer.
 
 from __future__ import annotations
 
-import math
-import re
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 #: The registers a host may pick from. Engine-owned and closed — the point of the enum is that a
@@ -58,285 +31,14 @@ from typing import Literal
 ToneRegister = Literal["neutral", "executive", "technical"]
 
 
-class StyleError(ValueError):
-    """A style profile contradicts the bounded contract this module promises."""
-
-
 #: How many categorical colour slots a chart may assign with validated separation.
 #:
-#: Part of eval's chart vocabulary, not of any palette: a chart intent names colour SLOTS, never colours,
-#: and a palette supplies the hues. Slots 1-4 are the ones a palette must separate for colourblind
-#: readers and against its background; 5-8 are a second tier that need not; past
-#: :data:`SERIES_SLOTS` a renderer recycles from slot 1. The core decides what a slot promises and the
-#: palette keeps the promise.
+#: Part of eval's chart vocabulary: a chart intent names colour SLOTS, never colours. Slots 1-4 are the ones a
+#: chart may rely on to tell levels apart; past :data:`SERIES_SLOTS` a chart recycles from slot 1.
 VALIDATED_SLOTS = 4
 
-#: How many categorical colour slots a palette supplies before it recycles — the width of the vocabulary,
-#: and so exactly how many :attr:`ChartPalette.series` colours a palette declares.
+#: How many categorical colour slots a chart has before it recycles — the width of the vocabulary.
 SERIES_SLOTS = 8
-
-#: Resolved sRGB hex, the one colour notation every renderer this package knows can draw. A notation a
-#: rasteriser cannot parse (``oklch(...)`` through resvg) does not raise; it draws BLACK, with a valid
-#: image and no warning — so the notation is held here, where a palette is built, rather than found in a
-#: picture.
-_RESOLVED_COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}$")
-
-
-def require_resolved_colour(where: str, value: object) -> str:
-    """The palette's one colour check: ``value`` is resolved sRGB hex (``#rrggbb``), or a refusal.
-
-    Every palette — a host's :class:`ChartPalette` and the ``vega`` adapter's packaged one — is checked
-    by this function, so "what a palette may hold" has one answer.
-
-    Args:
-        where: What the value is, for the refusal (``chart_palette.series[2]``).
-        value: The colour.
-
-    Returns:
-        The colour, unchanged.
-
-    Raises:
-        StyleError: ``value`` is not a ``#rrggbb`` string — another notation (``oklch(...)``, a named
-            colour, three-digit hex) included, since a renderer may draw it black without raising.
-    """
-    if not isinstance(value, str) or not _RESOLVED_COLOUR.match(value):
-        raise StyleError(
-            f"{where} is {value!r}, not resolved sRGB hex (#rrggbb) — a palette carries resolved colours only, "
-            "because a rasteriser handed another notation (oklch(...) through resvg) draws it black without raising"
-        )
-    return value
-
-
-@dataclass(frozen=True)
-class ChartPalette:
-    """A host's chart colours, by role — what a renderer themes every chart it draws with.
-
-    Renderer-neutral: each field is a role a chart intent already speaks in (a numbered series slot, the
-    ink a label is drawn in, the neutral a receded mark takes), never a renderer's config key. Every
-    colour is resolved sRGB hex (:func:`require_resolved_colour`). The renderer's own type scale, font
-    and geometry are not here: they are the renderer's, not the host's palette.
-
-    What is checked is the SHAPE — the notation of every colour, and that :attr:`series` is exactly the
-    :data:`SERIES_SLOTS` the chart vocabulary assigns. Whether slots 1-:data:`VALIDATED_SLOTS` actually
-    separate for colourblind readers against :attr:`background` is the palette author's measurement to
-    make; nothing here measures colour.
-
-    Attributes:
-        series: The categorical slots, slot 1 first — exactly :data:`SERIES_SLOTS`. Slot 1 is also the
-            single-series mark colour.
-        sequential: An ordered ramp's stops, lightest first — at least two. A renderer samples it as a
-            path, so the stop count is no ceiling on how many levels a dimension may have.
-        background: The chart's surface.
-        ink: Every label, value and title.
-        muted: A subtitle, and a legend's neutral symbols.
-        grid: Gridlines.
-        rule: Axis domains, ticks and a zero rule.
-        context: A mark drawn as context rather than as the answer — a dominated contestant, a recycled row.
-        on_fill: A value drawn ON slot 1's fill (the knockout), where :attr:`ink` would not clear contrast.
-    """
-
-    series: tuple[str, ...]
-    sequential: tuple[str, ...]
-    background: str
-    ink: str
-    muted: str
-    grid: str
-    rule: str
-    context: str
-    on_fill: str
-
-    def __post_init__(self) -> None:
-        """Refuse a palette a renderer could not draw every chart with.
-
-        Raises:
-            StyleError: A colour is not resolved sRGB hex, :attr:`series` is not exactly
-                :data:`SERIES_SLOTS` colours, or :attr:`sequential` has fewer than two stops.
-        """
-        object.__setattr__(self, "series", tuple(self.series))
-        object.__setattr__(self, "sequential", tuple(self.sequential))
-        if len(self.series) != SERIES_SLOTS:
-            raise StyleError(
-                f"chart_palette.series holds {len(self.series)} colour(s); a palette supplies exactly the "
-                f"{SERIES_SLOTS} slots a chart assigns (1-{VALIDATED_SLOTS} validated, the rest a second tier), so "
-                "a renderer never recycles before the vocabulary says it does"
-            )
-        if len(self.sequential) < 2:
-            raise StyleError(
-                f"chart_palette.sequential holds {len(self.sequential)} stop(s); an ordered ramp is a path between "
-                "at least two"
-            )
-        for at, colour in enumerate(self.series):
-            require_resolved_colour(f"chart_palette.series[{at}]", colour)
-        for at, colour in enumerate(self.sequential):
-            require_resolved_colour(f"chart_palette.sequential[{at}]", colour)
-        for role in ("background", "ink", "muted", "grid", "rule", "context", "on_fill"):
-            require_resolved_colour(f"chart_palette.{role}", getattr(self, role))
-
-    def colours(self) -> list[str]:
-        """Every colour the palette holds, slots first then each role — what a purity check walks."""
-        return [
-            *self.series,
-            *self.sequential,
-            self.background,
-            self.ink,
-            self.muted,
-            self.grid,
-            self.rule,
-            self.context,
-            self.on_fill,
-        ]
-
-
-#: A CSS font-family list: one or more family names of letters, digits, spaces, hyphens and
-#: underscores, comma-separated. No quotes, no punctuation a sentence needs — a family list names
-#: typefaces and nothing else — and :data:`_FONT_FAMILY_MAX` bounds it, so the one free-form string in
-#: a :class:`ChartFont` has no room for an instruction.
-_FONT_FAMILY_RE = re.compile(r"^[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*(?:, ?[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*)*$")
-
-#: The longest family list a :class:`ChartFont` may name, in characters.
-_FONT_FAMILY_MAX = 120
-
-#: A font file's path relative to the directory a renderer registers: ``/``-separated segments of letters,
-#: digits, spaces and ``._()+-``. Relative because the directory moves between a developer's checkout and the
-#: image that renders; shape-checked and bounded (:data:`_FONT_FILE_MAX`) for the reason the family list is —
-#: a file name is a string the host wrote, and this contract carries no free text.
-_FONT_FILE_RE = re.compile(r"^[A-Za-z0-9 ._()+-]+(?:/[A-Za-z0-9 ._()+-]+)*$")
-
-#: The longest font file path a :class:`ChartFont` may name, in characters.
-_FONT_FILE_MAX = 255
-
-#: A SHA-256 digest, as lowercase hex: what :attr:`ChartFont.font_files` records for each file.
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-
-#: The characters a :class:`ChartFont`'s metrics must cover: printable ASCII, space to tilde.
-#:
-#: Every model ID, measure name, number and unit a chart lays out is made of these. A character outside
-#: the table is laid out at the table's fallback advance, which is safe (it is the widest) but is not a
-#: measurement, so a table missing part of this range is refused rather than quietly estimated.
-CHART_FONT_CHARACTERS = "".join(chr(code) for code in range(0x20, 0x7F))
-
-
-@dataclass(frozen=True)
-class ChartFont:
-    """A typeface a renderer draws chart text in, with the advance widths its layout is computed from.
-
-    **A font is declared with its measurements, never without.** A chart renderer decides layout from
-    how wide a string draws — whether a category name fits its gutter, where a title wraps, which side of
-    a mark a value goes — and it computes that from a per-character advance table, not from the drawn
-    glyphs. A family name alone would be laid out against another face's widths: labels measured to fit
-    that draw truncated or overrun. So this type cannot be built without :attr:`advances`, and a
-    renderer refuses a font that is not one of these.
-
-    The table is produced by measuring the face through the renderer itself — for the Vega-Lite
-    renderer, ``python -m threetears.evals.vega.measure_font`` writes one, and
-    ``threetears.evals.vega.load_chart_font`` reads it back as a :class:`ChartFont`.
-
-    **The table names the files it was measured from** (:attr:`font_files`), because the advances are a
-    property of those bytes and not of the family name: a face updated in place keeps its name and changes
-    its widths. A renderer that registers a font directory refuses a font whose files there no longer hash
-    as measured, so a stale table is a refusal naming the command that re-measures it, not a label that
-    quietly truncates.
-
-    Numeric ticks are set in this face too, and line up only if its figures are tabular — every digit one
-    advance — since a renderer cannot ask a face for tabular figures it does not draw by default.
-
-    Provisional: shaped by the first host that adopted the engine, and kept or removed by whether a second host's
-    adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
-
-    Attributes:
-        family: The CSS font-family list a renderer emits, e.g. ``"Inter, Arial, sans-serif"``. The
-            FIRST family is the face :attr:`advances` was measured in; the rest are fallbacks for a
-            surface that lacks it, and are only correct if they are metric-compatible with it.
-        advances: Each character's advance width as a fraction of the font size, covering at least
-            :data:`CHART_FONT_CHARACTERS`. Kerning is not in it: a per-character sum is an estimate, and a
-            measuring tool should keep each character's widest measured context so the estimate leans long.
-        fallback_advance: The advance for a character the table does not hold — at least its widest entry,
-            so an unmeasured character errs toward "does not fit" rather than toward truncation.
-        font_files: Each font file that provided the measured face, by its path relative to the font directory
-            it was measured from, to the SHA-256 (lowercase hex) of its bytes when measured. Only the files that
-            resolved :attr:`measured_face` — not the whole directory, which may hold other faces whose changes say
-            nothing about this one. Empty for a face no directory provides: one embedded in the renderer.
-    """
-
-    family: str
-    advances: Mapping[str, float] = field(hash=False)
-    fallback_advance: float
-    font_files: Mapping[str, str] = field(default_factory=dict, hash=False)
-
-    def __post_init__(self) -> None:
-        """Refuse a font a renderer could not lay out against.
-
-        Raises:
-            StyleError: :attr:`family` is not a bounded CSS family list, :attr:`advances` is empty, misses
-                a character of :data:`CHART_FONT_CHARACTERS`, or holds an advance that is not a positive
-                finite number, or :attr:`fallback_advance` is narrower than the widest advance.
-        """
-        if (
-            not isinstance(self.family, str)
-            or len(self.family) > _FONT_FAMILY_MAX
-            or not _FONT_FAMILY_RE.match(self.family)
-        ):
-            raise StyleError(
-                f"chart_font.family {self.family!r} is not a CSS font-family list of at most {_FONT_FAMILY_MAX} "
-                "characters (family names of letters, digits, spaces, hyphens and underscores, comma-separated) — "
-                "this contract carries no free text"
-            )
-        if not self.advances:
-            raise StyleError(
-                f"chart_font {self.family!r} declares no metrics — a renderer lays chart text out from measured "
-                "advance widths, and without them it would fit every label against another face's widths. Measure "
-                "the face (python -m threetears.evals.vega.measure_font) and declare the table with it"
-            )
-        frozen = dict(self.advances)
-        missing = [character for character in CHART_FONT_CHARACTERS if character not in frozen]
-        if missing:
-            raise StyleError(
-                f"chart_font {self.family!r} has no measured advance for {''.join(missing)!r} — its metrics must "
-                "cover printable ASCII, the characters every model ID, measure name and number is made of"
-            )
-        for character, advance in frozen.items():
-            if (
-                not isinstance(advance, int | float)
-                or isinstance(advance, bool)
-                or not (math.isfinite(advance) and advance > 0)
-            ):
-                raise StyleError(
-                    f"chart_font {self.family!r} gives {character!r} an advance of {advance!r}; an advance is a "
-                    "positive fraction of the font size"
-                )
-        widest = max(frozen.values())
-        if not math.isfinite(self.fallback_advance) or self.fallback_advance < widest:
-            raise StyleError(
-                f"chart_font {self.family!r} has a fallback advance of {self.fallback_advance!r}, narrower than "
-                f"its widest measured advance ({widest}) — an unmeasured character would be laid out as fitting "
-                "where it may not"
-            )
-        files = dict(self.font_files)
-        for name, digest in files.items():
-            if (
-                not isinstance(name, str)
-                or len(name) > _FONT_FILE_MAX
-                or not _FONT_FILE_RE.match(name)
-                or any(segment in {".", ".."} for segment in name.split("/"))
-            ):
-                raise StyleError(
-                    f"chart_font {self.family!r} names font file {name!r}, which is not a relative path of at most "
-                    f"{_FONT_FILE_MAX} characters ('/'-separated names of letters, digits, spaces and ._()+-, no '.' "
-                    "or '..' segment) — a file is named relative to the font directory a renderer registers"
-                )
-            if not isinstance(digest, str) or not _SHA256_RE.match(digest):
-                raise StyleError(
-                    f"chart_font {self.family!r} records {digest!r} for {name!r}; a font file is recorded by the "
-                    "SHA-256 of its bytes, as 64 lowercase hex digits"
-                )
-        object.__setattr__(self, "advances", frozen)
-        object.__setattr__(self, "font_files", files)
-
-    @property
-    def measured_face(self) -> str:
-        """The face :attr:`advances` describes: the first family of :attr:`family`."""
-        return self.family.split(",")[0].strip()
-
 
 #: The engine-owned prompt fragment each register maps to. **This mapping is the reason
 #: ``tone_register`` can be safe:** the host picks a key and the engine supplies the words, so no
@@ -352,28 +54,12 @@ _TONE_FRAGMENTS: dict[ToneRegister, str] = {
 class StyleProfile:
     """One host's bounded presentation contract.
 
-    Every field is either an engine-owned enum or a value the renderer consumes. There is
-    deliberately **no** string field a host can fill with instructions, and no field that nothing reads.
+    Every field is an engine-owned enum. There is deliberately **no** string field a host can fill with
+    instructions, and no field that nothing reads.
     """
 
     tone_register: ToneRegister = "neutral"
     """Which engine-owned register to write in. The host picks; the engine supplies the words."""
-
-    chart_palette: ChartPalette | None = None
-    """The host's chart colours, which every renderer it builds draws with; never serialised into a prompt.
-
-    ``None`` declares no palette: the host has chosen to draw in a renderer's packaged one, and a renderer
-    built for this style (``VegaRenderer.for_style``) says so by taking it. That is the host's stated
-    choice, not a substitute for something it declared — a declared palette is always the one drawn.
-    """
-
-    chart_font: ChartFont | None = None
-    """The typeface every chart renderer built for this style draws in, with its measured metrics.
-
-    ``None`` declares no font: the host draws in a renderer's packaged face, measured for it. A declared
-    font is always the one drawn and laid out against — a :class:`ChartFont` cannot exist without its
-    advance table, so a font with no metrics is refused when it is built, not discovered in a picture.
-    """
 
 
 def prompt_fragment(style: StyleProfile) -> str:
@@ -391,61 +77,10 @@ def prompt_fragment(style: StyleProfile) -> str:
     return _TONE_FRAGMENTS[style.tone_register]
 
 
-def assert_no_style_text(prompt: str, style: StyleProfile) -> None:
-    """Raise when a host-supplied style **string** appears verbatim in ``prompt``.
-
-    The structural half of the no-style-text-in-prompts promise, as a callable rather than a habit: it
-    walks whatever the host actually supplied and proves none of it is there.
-
-    **Scoped to the values a host writes**, which is what makes it safe to point at a whole assembled
-    prompt rather than only at :func:`prompt_fragment`'s output: every colour of ``chart_palette``, each
-    held to ``#rrggbb``, and ``chart_font``'s family list and font file names, each held to a bounded shape. The closed
-    enums are out — see
-    :func:`_host_supplied_strings` for why matching them reports the engine's own words as a leak.
-
-    Args:
-        prompt: The assembled prompt text to check.
-        style: The profile whose values must not appear in it.
-
-    Raises:
-        StyleError: A host-supplied style value is present in the prompt, naming the value.
-    """
-    leaked = [value for value in _host_supplied_strings(style) if value and value in prompt]
-    if leaked:
-        raise StyleError(f"host style values reached the prompt: {sorted(leaked)} — this contract carries no free text")
-
-
-def _host_supplied_strings(style: StyleProfile) -> list[str]:
-    """Every string a host WROTE into ``style``.
-
-    Args:
-        style: The profile to walk.
-
-    Returns:
-        Every colour of ``chart_palette`` (none when it declares no palette), and ``chart_font``'s family
-        list and the names of its font files (none when it declares no font).
-
-        ``tone_register`` is deliberately absent: it is a CLOSED engine-owned enum, so a host picks
-        a key from a list and cannot hold a sentence in it, and a value that cannot carry an
-        instruction is not what this check is for. The engine-owned tone fragment is absent for
-        the opposite reason — it is the one thing that is *supposed* to reach a prompt.
-    """
-    return [
-        *(style.chart_palette.colours() if style.chart_palette is not None else []),
-        *([style.chart_font.family, *style.chart_font.font_files] if style.chart_font is not None else []),
-    ]
-
-
 __all__ = [
-    "CHART_FONT_CHARACTERS",
     "SERIES_SLOTS",
     "VALIDATED_SLOTS",
-    "ChartFont",
-    "ChartPalette",
-    "StyleError",
     "StyleProfile",
     "ToneRegister",
-    "assert_no_style_text",
     "prompt_fragment",
-    "require_resolved_colour",
 ]

@@ -124,7 +124,7 @@ numbers. `cassettes.py`, `reports.py` and `llm_analysis.py` grade nothing new: t
 | 4 | [`prompt_x_effort.py`](prompt_x_effort.py) | What does changing the prompt do at each effort? | `factors=`, and `Comparison.against` for a second control |
 | 5 | [`cassettes.py`](cassettes.py) | How do I compare candidates fairly when the tool they call answers differently every time? | `tools=`, `cassette_mode=`: capturing and replaying tool results |
 | 6 | [`world.py`](world.py) | Does the model turn the light on when the room is dark? | `world=`, `seed=`, `goal_checks=`: grade what the model did to a world |
-| 7 | [`reports.py`](reports.py) | How do I turn a finished campaign into files people read? | `report_markdown`, `report_html`, Vega-Lite charts, `Comparison.gate` |
+| 7 | [`reports.py`](reports.py) | How do I turn a finished campaign into files people read? | `Comparison.write`, `Comparison.gate` |
 | 8 | [`llm_analysis.py`](llm_analysis.py) | Can a model write the analysis from a frozen copy of the evidence? | `generate_analysis` over a fingerprinted bundle; a canned first draft the check refuses, and the model's repair |
 | 9 | [`guardrails.py`](guardrails.py) | The new prompt answers more questions. Does it still keep the customer's card private? | `guardrails=`: a guardrail with its margin, held / breached / undecided per arm, apart from the contrasts |
 

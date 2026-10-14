@@ -1425,8 +1425,7 @@ def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str
         finding_id: The finding's position in the authored document, as a string (``"0"`` is the first).
 
     Returns:
-        The chart's intent — what it draws and what it must say — for a
-        :class:`~threetears.evals.analysis.viz.ChartRenderer` to draw.
+        The chart's intent — what it draws and what it must say.
 
     Raises:
         NotFoundError: No such analysis, or no such finding, or the finding

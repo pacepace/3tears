@@ -1,7 +1,6 @@
-"""Finding charts — eval's own chart intent, and the seam a renderer sits behind.
+"""Finding charts — eval's own chart intent.
 
-**The engine decides what a chart SAYS; a renderer decides how it LOOKS.** This package is the first
-half and ships no charting library:
+**The engine decides what a chart SAYS.** This package ships no charting library:
 
 - :mod:`payloads` is the *generation-time* contract — each chart type's typed data, rejected while a
   generation can still be retried rather than discovered when a reader opens the report. :mod:`intent`
@@ -9,12 +8,6 @@ half and ships no charting library:
   what each field encodes, what must be said beside it — through one builder per type (:mod:`intents`),
   and :mod:`policy` holds every intent to the presentation rules. :mod:`quantities` is how a quantity
   is stated.
-- :mod:`renderer` is the seam: :class:`ChartRenderer` is what a renderer implements, and
-  :func:`renderer_disagreements` the one conformance check every renderer passes — what it draws
-  agrees with the intent's values.
-
-The package's own Vega-Lite renderer is an optional adapter, ``threetears.evals.vega`` (install
-``3tears-evals[vega]``); nothing in the core imports it.
 
 **This module is the package's public root.** A host imports from here and from no module below
 it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that. Code inside the
@@ -39,12 +32,6 @@ from threetears.evals.analysis.viz.intent import (
 )
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError, check_intent, table_disagreements
-from threetears.evals.analysis.viz.renderer import (
-    ChartRefused,
-    ChartRenderer,
-    assert_renderer_conforms,
-    renderer_disagreements,
-)
 
 __all__ = [
     "INTENT_VERSION",
@@ -56,15 +43,11 @@ __all__ = [
     "ChartIdentity",
     "ChartIntent",
     "ChartReference",
-    "ChartRefused",
-    "ChartRenderer",
     "ChartType",
     "EncodingRole",
     "IntentPolicyError",
     "PayloadError",
-    "assert_renderer_conforms",
     "chart_intent",
     "check_intent",
-    "renderer_disagreements",
     "table_disagreements",
 ]

@@ -19,14 +19,11 @@ the open tickets it closed, the meeting it booked, the light it switched on.
    ```bash
    TAG=v0.67.0-evaladopt.25
    pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@$TAG#subdirectory=packages/evals"
-   # adds SVG and PNG chart rendering
-   pip install "3tears-evals[vega] @ git+https://github.com/pacepace/3tears.git@$TAG#subdirectory=packages/evals"
    # adds the FastMCP transport, for driving evals from an agent
    pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@$TAG#subdirectory=packages/evals"
    ```
 
-   Once 0.67.0 is on PyPI these are `pip install 3tears-evals`, `pip install "3tears-evals[vega]"` and
-   `pip install "3tears-evals[fastmcp]"`. In a checkout of this repo, `uv sync` at the root does it.
+   Once 0.67.0 is on PyPI these are `pip install 3tears-evals` and `pip install "3tears-evals[fastmcp]"`. In a checkout of this repo, `uv sync` at the root does it.
    `threetears.evals.__version__` says which version is installed.
 
    The `[models]` extra (the shipped provider adapter, `threetears.evals.providers`) installs from PyPI once 0.67.0

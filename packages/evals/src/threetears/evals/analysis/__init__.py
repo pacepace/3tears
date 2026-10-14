@@ -21,9 +21,8 @@ not here. The pipeline:
   prompt and the closed, one-shot
   :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
   a schema-valid ``EvalAnalysis`` + extracted insights.
-- ``viz`` — the typed chart payloads the generator's authored charts compile to, the chart intent
-  decided from each, and the renderer seam (the Vega-Lite renderer is the ``threetears.evals.vega``
-  adapter, outside the core).
+- ``viz`` — the typed chart payloads the generator's authored charts compile to, and the chart intent
+  decided from each.
 - ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
   caught by ``service`` and ``reporter_kind``.
 - ``report`` — the :class:`~threetears.evals.analysis.report.Report` an analysis is read through, with

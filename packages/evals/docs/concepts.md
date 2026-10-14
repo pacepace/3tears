@@ -475,8 +475,7 @@ lapses before it ends reads `lost` everywhere. See [Operations and jobs](agents-
 
 #### Seam
 A place the engine calls code your host supplies, through a protocol the engine declares: the kind seam
-(`prepare` and `invoke`, under a `KindContract`), the cassette seams a kind wires (`CassetteSeams`), the chart
-renderer behind `ChartRenderer`. See [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating) and
+(`prepare` and `invoke`, under a `KindContract`), the cassette seams a kind wires (`CassetteSeams`). See [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating) and
 [cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools).
 
 #### Sink and reservation

@@ -33,7 +33,6 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.ops`](#api-ops)
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (fails to import without the `[fastmcp]` extra)
-- [`threetears.evals.vega`](#api-vega)
 - [`threetears.evals.negotiation`](#api-negotiation)
 - [`threetears.evals.providers`](#api-providers) (fails to import without the `[models]` extra)
 
@@ -895,8 +894,6 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`obligations(declared: WorldDimension) -> tuple[CheckName, ...]`
 - **`pass_threshold_label`** · function · How every surface names pass^k: its depth and what an attempt had to pass, e.g. `pass^k (k=3, criterion >= 4 of 5)`.
   <br>`pass_threshold_label(k: int | None, threshold: int, *, criteria: Collection[PassCriterion]) -> str`
-- **`require_resolved_colour`** · function · The palette's one colour check: `value` is resolved sRGB hex (`#rrggbb`), or a refusal.
-  <br>`require_resolved_colour(where: str, value: object) -> str`
 - **`resolve_preconditions`** · function · Refuse a template's presumption naming a dimension this host's world does not declare.
   <br>`resolve_preconditions(template: EvalTemplate, world: WorldRegistry | None) -> list[Precondition]`
 - **`schema_violations`** · function · Every way `value` fails `schema`, each naming the path it fails at.
@@ -913,8 +910,6 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`BarRegistrationError`** · exception · A bar declaration contradicts what this registry promises.
 - **`BarRegistry`** · *host contract* · class · One host's registered bars, keyed by `(behavior, measure)` and validated at construction.
 - **`CellTimeoutFactory`** · protocol · Builds the context manager one cell runs inside, from that cell's budget.
-- **`ChartFont`** · dataclass · A typeface a renderer draws chart text in, with the advance widths its layout is computed from.
-- **`ChartPalette`** · dataclass · A host's chart colours, by role — what a renderer themes every chart it draws with.
 - **`CompletionClients`** · *host contract* · protocol · The host's completion-client factory: one client per role, model and temperature.
 - **`ConformanceResult`** · dataclass · One check's verdict on one dimension, or on the registry when the check is registry-wide.
 - **`Coverage`** · dataclass · Whether eval reaches one precondition on one axis, and why when it does not.
@@ -936,7 +931,6 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`RolePins`** · dataclass · One pinned ROLE — who filled a seat in the rig, and the inputs that identify them.
 - **`SeedRefused`** · *host contract* · exception · A seed asked for a write the registry or the subject cannot make.
 - **`SeedWrite`** · class · One write a checked seed makes: through `handle`, of `value`, into dimension `name`.
-- **`StyleError`** · exception · A style profile contradicts the bounded contract this module promises.
 - **`StyleProfile`** · dataclass · One host's bounded presentation contract.
 - **`Sweepable`** · *host contract* · dataclass · One score-determining input: what it is called, who owns it, how to read it.
 - **`SweepableRegistry`** · *host contract* · class · The declared inputs for one host, validated at construction.
@@ -1001,10 +995,9 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`= 'candidate_kind'`
 - **`CANDIDATE_MODEL_LEVER`** · constant (str) · The one name the candidate model answers to, everywhere — a DECLARED COORDINATE of every observation (`ScoreRecord.model`) as well as the core lever below, which is why it is the only lever a reporting lens resolves off the observation rather than off the run.
   <br>`= 'model'`
-- **`CHART_FONT_CHARACTERS`** · constant (str) · The characters a `ChartFont`'s metrics must cover: printable ASCII, space to tilde.
 - **`DEFAULT_PASS_THRESHOLD`** · constant (int) · The 1–5 level a criterion must reach for pass^k where the behavior declares no threshold of its own.
   <br>`= 3`
-- **`SERIES_SLOTS`** · constant (int) · How many categorical colour slots a palette supplies before it recycles — the width of the vocabulary, and so exactly how many `ChartPalette.series` colours a palette declares.
+- **`SERIES_SLOTS`** · constant (int) · How many categorical colour slots a chart has before it recycles — the width of the vocabulary.
   <br>`= 8`
 - **`SHARED_CORE`** · *host contract* · constant (SweepableRegistry) · The registry a host extends. Nothing here names a product.
 - **`UNSEATED_LEVEL`** · constant (str) · The level an apparatus dimension reads at for a run whose rig has no such seat (`HostProfile.apparatus_level`), where the dimension is kept because another run in the same comparison does have it.
@@ -1859,18 +1852,14 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 <a id="api-analysis-viz"></a>
 ### `threetears.evals.analysis.viz`
 
-Finding charts — eval's own chart intent, and the seam a renderer sits behind.
+Finding charts — eval's own chart intent.
 
 **Functions**
 
-- **`assert_renderer_conforms`** · function · Raise unless `renderer` draws every one of `intents` in agreement with its values.
-  <br>`assert_renderer_conforms(renderer: ChartRenderer[DrawingT], intents: Sequence[ChartIntent]) -> None`
 - **`chart_intent`** · function · Decide a finding's chart: validate its payload, build its intent, and hold it to the policy rules.
   <br>`chart_intent(viz_type: str, payload: dict[str, Any]) -> ChartIntent`
 - **`check_intent`** · function · Check a chart intent against the presentation rules.
   <br>`check_intent(intent: ChartIntent) -> list[str]`
-- **`renderer_disagreements`** · function · Where `renderer`'s drawing of `intent` disagrees with the intent's values — empty when it agrees.
-  <br>`renderer_disagreements(renderer: ChartRenderer[DrawingT], intent: ChartIntent) -> list[str]`
 - **`table_disagreements`** · function · Where the values table states a value no mark of the same identity carries — empty when it agrees.
   <br>`table_disagreements(intent: ChartIntent) -> list[str]`
 
@@ -1883,8 +1872,6 @@ Finding charts — eval's own chart intent, and the seam a renderer sits behind.
 - **`ChartIdentity`** · model · What a chart's rows are named by, and the order they are drawn in.
 - **`ChartIntent`** · model · One chart's intent: what it draws and what it must say, for any renderer to draw.
 - **`ChartReference`** · model · A standard drawn across one axis — the bar the marks are read against, not one of them.
-- **`ChartRefused`** · exception · A renderer's refusal to draw one intent: this chart cannot be drawn as decided, and its neighbours still can.
-- **`ChartRenderer`** · protocol · A chart renderer: a host's palette, bound at construction, applied to any intent.
 - **`IntentPolicyError`** · exception · A chart intent breaks a presentation rule — a data problem, never a rendering one.
 - **`PayloadError`** · exception · A viz payload does not match the contract declared for its type.
 
@@ -2214,8 +2201,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`plan_reporter_arm(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> ArmPlan`
 - **`price_largest_reporter_call`** · async function · A reporter arm's largest generator call, priced before launch, for its `LaunchableKind.price_largest_call`.
   <br>`price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> CallCeiling | None`
-- **`report_charts`** · function · Draw every chart block of `report` with `renderer`, refusing each chart that cannot be drawn on its own.
-  <br>`report_charts(report: Report, renderer: ChartRenderer[DrawingT]) -> ReportCharts[DrawingT]`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
   <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument`
 - **`reporter_case_archive`** · function · Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
@@ -2294,10 +2279,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CaseSetLine`** · model · One version of a named case set.
 - **`CaseSetListing`** · model · A scope's case sets, every version, newest version first within a name.
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
-- **`ChartRefusal`** · model · One chart of a report that was not drawn, and why — stated where the chart would have been.
 - **`DetectableEffect`** · model · The smallest difference one reading's comparison would find, or why none can be stated.
 - **`DetectableEffects`** · model · What a launch could detect: per reading, the smallest difference its paired comparison would find.
-- **`DrawnChart`** · dataclass · One chart of a report, drawn.
 - **`InsightDeleted`** · model · What deleting an insight removed: the one insight, never the analysis that minted it.
 - **`InsightDetail`** · model · One insight in full — as stored — and where it stands.
 - **`InsightLine`** · model · One insight in the ledger, as a listing shows it.
@@ -2320,7 +2303,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`RegressionAlert`** · model · One regression the watch found on the step into a completed run: who, which measure, which step, and why.
 - **`RegressionSink`** · protocol · The host's delivery of a regression: a page, a message, a ticket. The engine ships none.
 - **`RegressionWatch`** · dataclass · Checks a completed run's measures against its contestant's history, and delivers each regression.
-- **`ReportCharts`** · dataclass · Every chart of a report: the ones drawn and the ones refused, each in report order.
 - **`ReportDocument`** · model · A campaign's report, serialized in one form.
 - **`ReporterAdmitted`** · dataclass · What `admit_reporter_launch` resolved of a reporter arm it can honour.
 - **`ReporterCaseEntry`** · model · One readable case of a reporter template, with whether a launch runs it.
@@ -2352,8 +2334,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Types**
 
-- **`ChartRefusalCause`** · literal · Why a chart was not drawn: `undrawable` — the report could not decide the stored chart into an intent, and its block says why; `refused_by_renderer` — the intent was decided and the renderer refused to draw it.
-  <br>`'undrawable'` | `'refused_by_renderer'`
 - **`InsightStandingName`** · literal · Where an insight stands, read from the analysis that minted it at every read and never stamped on the insight (`insight_standing`): `live` — fed to later generations as prior context; `retracted` — its analysis is archived, so no generation reads it; `orphaned` — its analysis was deleted, so it is still read but its provenance cannot be followed.
   <br>`'live'` | `'retracted'` | `'orphaned'`
 - **`JobKind`** · literal · What a job's work is: a launch (its arms prepared and its runs run), one launched run, an analysis generation, a sweep launching its arms in order, a second judge's pass, a judge temperature comparison, or a host action's work.
@@ -2487,55 +2467,6 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
   <br>`= 60.0`
 - **`HOOK_TAIL_TIMEOUT_S`** · constant (float) · How long an `around` hook may take, in seconds, past the outcome it was handed — or closing, once a call is stopped — and, separately, how long the `annotate` hook may take over that outcome.
   <br>`= 10.0`
-
-<a id="api-vega"></a>
-### `threetears.evals.vega`
-
-The Vega-Lite chart renderer — an optional adapter over eval's chart intent, which imports on the base install.
-
-**Functions**
-
-- **`check_font_files`** · function · Refuse `font` when the files declaring its face in `font_dirs` are not, byte for byte, the ones it was measured from.
-  <br>`check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None`
-- **`check_spec`** · function · Check a Vega-Lite spec against the presentation rules.
-  <br>`check_spec(spec: dict[str, Any]) -> list[str]`
-- **`compile_chart`** · function · Compile a finding's viz into a Vega-Lite spec, through the chart's intent.
-  <br>`compile_chart(viz_type: str, payload: dict[str, Any], *, font: ChartFont | None = None) -> CompiledChart`
-- **`draw_intent`** · function · Draw a decided chart intent as a Vega-Lite spec — this renderer's one entry point.
-  <br>`draw_intent(intent: ChartIntent, *, font: ChartFont | None = None) -> CompiledChart`
-- **`load_chart_font`** · function · Read a metrics artifact a host measured for its own face, as the font to declare.
-  <br>`load_chart_font(path: Path) -> ChartFont`
-- **`load_palette`** · function · Read a palette artifact a host built for its own colours, as the palette to declare.
-  <br>`load_palette(path: Path, theme: Theme) -> ChartPalette`
-- **`packaged_font`** · function · The face this renderer draws in when its host declares none, with the table measured for it.
-  <br>`packaged_font() -> ChartFont`
-- **`packaged_palette`** · function · The palette packaged with this renderer, in one of its two variants.
-  <br>`packaged_palette(theme: Theme) -> ChartPalette`
-- **`register_fonts`** · function · Make a directory of font files available to the rasteriser.
-  <br>`register_fonts(font_dir: Path) -> None`
-- **`render_png`** · function · Rasterise a compiled spec to PNG.
-  <br>`render_png(spec: dict[str, Any], *, palette: ChartPalette, scale: int = 2, font_dir: Path | None = None, font: ChartFont | None = None) -> bytes`
-- **`render_svg`** · function · Render a compiled spec to SVG.
-  <br>`render_svg(spec: dict[str, Any], *, palette: ChartPalette, font_dir: Path | None = None, font: ChartFont | None = None) -> str`
-- **`vega_config`** · function · Build the Vega-Lite config that themes a compiled spec in `palette`, set in `font`.
-  <br>`vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[str, Any]`
-- **`write_font_metrics`** · function · Commit a fresh measurement as a table `text_width` reads.
-  <br>`write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path`
-
-**Classes**
-
-- **`CompiledChart`** · dataclass · One finding's chart: its intent, and the Vega-Lite spec drawn from it.
-- **`CompiledColumn`** · typed dict · One column of the values-as-drawn table, as the compilation hands it on.
-- **`PaletteError`** · exception · The chart palette artifact is missing or cannot be drawn with.
-- **`RasterRefused`** · exception · vl-convert refused to convert a chart's spec: its runtime would not draw it.
-- **`SpecPolicyError`** · exception · A chart's spec breaks one or more of the report's presentation rules: the renderer refuses that chart.
-- **`TextMetricsError`** · exception · The font metrics artifact is missing or unusable.
-- **`VegaRenderer`** · *host contract* · dataclass · Draw chart intents as Vega-Lite, in one palette and one typeface.
-
-**Types**
-
-- **`Theme`** · literal · The colour theme a chart is drawn for.
-  <br>`'light'` | `'dark'`
 
 <a id="api-negotiation"></a>
 ### `threetears.evals.negotiation`

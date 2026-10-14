@@ -71,7 +71,6 @@ IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
 #: installed without it, and one extra's subpackage naming ANOTHER extra's dependency would tie the two
 #: extras together.
 IMPORT_ROOTS_BY_EXTRA: dict[str, tuple[str, dict[str, tuple[str, ...]]]] = {
-    "vega": ("threetears.evals.vega", {"vl-convert-python": ("vl_convert",)}),
     "fastmcp": ("threetears.evals.transports.fastmcp", {"fastmcp": ("fastmcp",)}),
     # The provider adapter names 3tears-models and the provider layer it is built on, every one of them a runtime
     # dependency of 3tears-models itself (``langchain-core``, ``anthropic`` and ``openrouter`` directly, ``openai``
@@ -282,7 +281,6 @@ print(json.dumps(sorted(root for root in PUBLIC_ROOTS if not importable(root))))
 #: than :data:`IMPORT_ROOTS_BY_EXTRA`'s roots, which also name what a distribution brings in itself (``httpx`` comes with
 #: ``3tears-models`` and with ``fastmcp`` alike), so an install with one extra and not another still has those.
 _DISTRIBUTION_ROOT: dict[str, str] = {
-    "vl-convert-python": "vl_convert",
     "fastmcp": "fastmcp",
     "3tears-models": "threetears.models",
 }
@@ -319,8 +317,7 @@ def _failing_roots(blocked: list[str]) -> set[str]:
 
 def test_on_the_base_install_exactly_the_listed_roots_fail_to_import():
     """With every extra's dependencies unimportable, each root ``ROOT_EXTRAS`` lists fails to import and every other
-    public root imports: the map is what an install without the extras meets, not what each extra serves (``vega``
-    serves ``[vega]`` and imports without it, its rasteriser importing ``vl_convert`` inside the calls)."""
+    public root imports: the map is what an install without the extras meets."""
     from threetears.evals import ROOT_EXTRAS
 
     assert _failing_roots(_extra_roots(*IMPORT_ROOTS_BY_EXTRA)) == set(ROOT_EXTRAS)
@@ -404,24 +401,10 @@ def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path, source,
 @pytest.mark.parametrize(
     ("importer", "allowed"),
     [
-        ("threetears.evals.vega.render", True),
-        ("threetears.evals.vega", True),
-        ("threetears.evals.analysis.viz.intent", False),
-        ("threetears.evals.vegan", False),
-    ],
-)
-def test_an_extras_dependency_is_admitted_only_inside_its_subpackage(importer, allowed):
-    """``vl_convert`` is the ``[vega]`` extra's: the renderer may name it and the core may not."""
-    assert _allowed("vl_convert", importer=importer) is allowed
-
-
-@pytest.mark.parametrize(
-    ("importer", "allowed"),
-    [
         ("threetears.evals.transports.fastmcp", True),
         ("threetears.evals.transports", False),
         ("threetears.evals.actions.catalogue", False),
-        ("threetears.evals.vega.render", False),
+        ("threetears.evals.providers.adapter", False),
         ("threetears.evals", False),
     ],
 )
@@ -431,8 +414,8 @@ def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed
 
 
 def test_one_extras_subpackage_may_not_name_another_extras_dependency():
-    """The two extras stay independent: the transport may not name the rasteriser."""
-    assert _allowed("vl_convert", importer="threetears.evals.transports.fastmcp") is False
+    """The extras stay independent: the transport may not name the provider adapter's dependency."""
+    assert _allowed("threetears.models", importer="threetears.evals.transports.fastmcp") is False
 
 
 def test_a_relative_import_is_judged_where_it_lands(tmp_path):

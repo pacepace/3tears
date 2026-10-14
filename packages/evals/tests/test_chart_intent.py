@@ -1,22 +1,17 @@
-"""Chart intent: eval's own chart vocabulary, the rules it is held to, and the seam a renderer sits behind.
+"""Chart intent: eval's own chart vocabulary and the rules it is held to.
 
-Three things are pinned, each in both directions:
+Two things are pinned, each in both directions:
 
 - **The vocabulary is closed and complete.** Every stored chart type has a payload model and an intent
-  builder, keyed alike; every type's intent round-trips through its JSON. (That the Vega-Lite renderer has
-  an arm for each is the renderer's, in ``test_renderer_conformance.py``.)
+  builder, keyed alike; every type's intent round-trips through its JSON.
 - **The policy reads the intent.** Each presentation rule refuses the shape it names (one test per
   refusal, each against an intent that otherwise passes), and :func:`chart_intent` enforces them, so no
   intent that breaks one leaves the entry point.
-- **The core never reaches the renderer.** No core module imports ``threetears.evals.vega``, the Vega-Lite
-  renderer adapter, at all.
 """
 
 from __future__ import annotations
 
-import ast
 import logging
-from pathlib import Path
 from typing import Any, get_args
 
 import pytest
@@ -38,8 +33,6 @@ from threetears.evals.analysis.viz.intents import INTENTS
 from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS
 from threetears.evals.kernel.campaign import VizType
 from threetears.evals.kernel.host import SERIES_SLOTS, VALIDATED_SLOTS
-from packages.evals.tests.import_resolution import absolute_module
-from packages.evals.tests.package_placement import eval_modules
 from packages.evals.tests.chart_examples import EVERY_TYPE
 
 
@@ -295,59 +288,3 @@ class TestTheIntentModel:
     def test_values_as_drawn_render_the_table(self) -> None:
         intent = _intent(columns=[ChartColumn(key="label", header="Part")], rows=[{"label": "a"}, {"label": None}])
         assert intent.values_as_drawn() == ["Part", "a", "—"]
-
-
-# =============================================================================
-# The core never reaches the renderer
-# =============================================================================
-
-#: The renderer adapter, relative to ``threetears.evals``. Nothing outside it may import it; the
-#: package matrix's ``vega`` row holds the same edge (and fires on a planted one), and this walk says it
-#: in the chart's own terms.
-RENDERER: str = "vega"
-
-_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
-
-
-def _in_the_renderer(relative: str) -> bool:
-    return relative == RENDERER or relative.startswith(RENDERER + ".")
-
-
-def _renderer_edges(root: Path) -> dict[str, set[str]]:
-    """Every module under ``root`` outside the renderer that imports it, and what it imports."""
-    edges: dict[str, set[str]] = {}
-    for relative, path in eval_modules(root).items():
-        if _in_the_renderer(relative):
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                base = absolute_module(path, node, root=root)
-                targets = [f"{base}.{alias.name}" for alias in node.names] + [base]
-            elif isinstance(node, ast.Import):
-                targets = [alias.name for alias in node.names]
-            else:
-                continue
-            for target in targets:
-                if target.startswith("threetears.evals.") and _in_the_renderer(
-                    target.removeprefix("threetears.evals.")
-                ):
-                    edges.setdefault(relative, set()).add(target)
-    return edges
-
-
-def test_no_core_module_imports_the_renderer() -> None:
-    assert _renderer_edges(_SOURCE_ROOT) == {}
-
-
-def test_the_walk_sees_an_edge_where_one_exists(tmp_path: Path) -> None:
-    """A walk that saw nothing would be broken, not clean — so plant the edge the service used to hold."""
-    service = tmp_path / "threetears" / "evals" / "analysis" / "service.py"
-    service.parent.mkdir(parents=True)
-    service.write_text("from threetears.evals.vega.compiler import compile_chart\n", encoding="utf-8")
-    (tmp_path / "threetears" / "evals" / "vega").mkdir()
-    (tmp_path / "threetears" / "evals" / "vega" / "compiler.py").write_text("", encoding="utf-8")
-
-    assert _renderer_edges(tmp_path) == {
-        "analysis.service": {"threetears.evals.vega.compiler.compile_chart", "threetears.evals.vega.compiler"}
-    }

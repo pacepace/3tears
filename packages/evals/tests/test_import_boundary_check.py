@@ -86,12 +86,12 @@ def test_a_root_that_cannot_be_imported_is_named_rather_than_counted_as_not_expo
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A root that failed to import dropped out of the suggestion unnamed: "no public root exports it" was unasked."""
-    monkeypatch.setitem(sys.modules, "threetears.evals.vega", None)
+    monkeypatch.setitem(sys.modules, "threetears.evals.providers", None)
     _write(tmp_path, "deep.py", "from threetears.evals.schema.models import SCALE_LEVELS\n")
 
     reason = _only(nonpublic_evals_imports(tmp_path)).reason
 
-    assert "no public root exports it; not counting threetears.evals.vega (ModuleNotFoundError" in reason
+    assert "no public root exports it; not counting threetears.evals.providers (ModuleNotFoundError" in reason
     assert reason.endswith("which could not be imported to check")
 
 

@@ -71,14 +71,9 @@ from threetears.evals.kernel.host.profile import (
     VariantLeverReader,
 )
 from threetears.evals.kernel.host.style import (
-    CHART_FONT_CHARACTERS,
     SERIES_SLOTS,
     VALIDATED_SLOTS,
-    ChartFont,
-    ChartPalette,
-    StyleError,
     StyleProfile,
-    require_resolved_colour,
     ToneRegister,
 )
 from threetears.evals.kernel.host.sweepables import (
@@ -128,7 +123,6 @@ from threetears.evals.kernel.host.world_seed import SeedRefused, SeedWrite, chec
 __all__ = [
     "CANDIDATE_KIND_LEVER",
     "CANDIDATE_MODEL_LEVER",
-    "CHART_FONT_CHARACTERS",
     "SERIES_SLOTS",
     "SHARED_CORE",
     "UNSEATED_LEVEL",
@@ -146,8 +140,6 @@ __all__ = [
     "BarRegistrationError",
     "BarRegistry",
     "CellTimeoutFactory",
-    "ChartFont",
-    "ChartPalette",
     "CheckName",
     "Comparability",
     "CompletionClients",
@@ -180,7 +172,6 @@ __all__ = [
     "SeedRefusalKind",
     "SeedRefused",
     "SeedWrite",
-    "StyleError",
     "StyleProfile",
     "Sweepable",
     "SweepableReader",
@@ -206,7 +197,6 @@ __all__ = [
     "freeze",
     "obligation_rows",
     "obligations",
-    "require_resolved_colour",
     "schema_violations",
     "served_models_by_score",
 ]

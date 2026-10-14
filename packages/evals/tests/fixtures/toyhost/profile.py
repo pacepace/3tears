@@ -15,11 +15,8 @@ from dataclasses import replace
 
 from threetears.evals.kernel import MetricDescriptor
 from threetears.evals.kernel.host import (
-    CHART_FONT_CHARACTERS,
     Bar,
     BarRegistry,
-    ChartFont,
-    ChartPalette,
     HostProfile,
     MeasureRegistry,
     StyleProfile,
@@ -135,34 +132,8 @@ TOYHOST_BARS: tuple[Bar, ...] = (
     ),
 )
 
-#: A style deliberately unlike the default on every axis, so the prompt-purity test is asserting
-#: something: a different register, a palette and a font of its own. If host style
-#: could leak into the prompt, this profile is what would show it — and the palette is what a renderer
-#: built for this host draws in, so it is a palette no packaged one shares a colour with.
-TOYHOST_PALETTE = ChartPalette(
-    series=("#f4a259", "#5b8e7d", "#bc4b51", "#8cb8d6", "#9a6b3a", "#3d5f54", "#7e3337", "#58788e"),
-    sequential=("#f6e3c9", "#e9b97c", "#c98a3d", "#8a5a22"),
-    background="#0b1021",
-    ink="#f2efe6",
-    muted="#a8a49a",
-    grid="#262b3d",
-    rule="#4a4f63",
-    context="#6d6a72",
-    on_fill="#0b1021",
-)
-
-#: The toy host's own chart face, declared with its metrics as every host font must be. A uniform
-#: table, wider than the packaged face's lowercase, so a layout taken from it differs visibly from one
-#: taken from the packaged table — which is what lets a test tell which table a chart was laid out in.
-#: The family is no real face, so a raster falls through to the generic family; a real host measures
-#: its face with ``python -m threetears.evals.vega.measure_font`` and ships the directory beside it.
-TOYHOST_FONT = ChartFont(
-    family="Toyface Grotesk, sans-serif",
-    advances=dict.fromkeys(CHART_FONT_CHARACTERS, 0.7),
-    fallback_advance=0.7,
-)
-
-TOYHOST_STYLE = StyleProfile(tone_register="executive", chart_palette=TOYHOST_PALETTE, chart_font=TOYHOST_FONT)
+#: A style deliberately unlike the default, so the prompt-purity test is asserting something: a register of its own.
+TOYHOST_STYLE = StyleProfile(tone_register="executive")
 
 #: A caveat kind the ENGINE does not own, registered for the reason the two opposite-direction
 #: bars are registered: the four engine kinds were derived from one product's caveats, and a

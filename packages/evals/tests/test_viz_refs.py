@@ -21,7 +21,6 @@ from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.vega.compiler import compile_chart
 from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS, parse_payload
 from threetears.evals.analysis.viz_refs import (
     CHART_READINGS,
@@ -36,7 +35,6 @@ from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.schema.values import IntervalScale, SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.kernel.metrics import WITHHELD_NOT_CONTAINED, WITHHELD_PARTITION_INCOMPLETE
 from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
@@ -338,39 +336,6 @@ def test_the_valid_population_is_the_whole_menu():
     assert REFERENCEABLE_VIZ_TYPES <= set(PAYLOAD_MODELS)
 
 
-@pytest.mark.parametrize("viz_type", sorted(REFERENCEABLE_VIZ_TYPES))
-def test_every_referenceable_type_builds_a_payload_that_parses_and_compiles(viz_type: str):
-    payload = build(VALID[viz_type])
-
-    assert parse_payload(viz_type, payload) is not None
-    compiled = compile_chart(viz_type, payload)
-    assert compiled.spec
-
-
-@pytest.mark.parametrize(
-    "authored",
-    [
-        chart("breakdown", [ref("A")], ["llm_ms", "tool_ms"]),
-        chart("attribution", [ref("A"), ref("B")], ["llm_ms", "tool_ms"]),
-        chart("distribution", [ref("A"), ref("C")], [("reply.grounding", "judged")]),
-        chart("frontier", [ref("A"), ref("B")], ["pass_rate", "production_replicating_cost", "total_ms"]),
-        chart("sweep_ranking", [ref("A"), ref("C")], ["pass_rate", "production_replicating_cost"]),
-    ],
-    ids=[
-        "numeric-breakdown",
-        "attribution-of-two-components",
-        "judged-distribution",
-        "named-contestants",
-        "named-configs",
-    ],
-)
-def test_the_second_form_of_a_type_parses_and_compiles_too(authored: Chart):
-    payload = build(authored)
-
-    assert parse_payload(authored.type, payload) is not None
-    assert compile_chart(authored.type, payload).spec
-
-
 # --- Reading the authored chart by position ---------------------------------------------------------
 
 
@@ -517,30 +482,6 @@ def _small(arm: str, case_values: list[float] | None) -> CellFacts:
     return cell.model_copy(update={"measures": MeasureCollection(measures=measures)})
 
 
-def test_a_reading_over_three_cases_draws_three_points_and_no_band():
-    """Below the band floor the chart draws each case, never a t interval from n = 3 (#677)."""
-    cells = [_small("A", [1100.0, 1200.0, 1300.0]), _cell("B"), _cell("C")]
-    payload = build(VALID["distribution"], surface(cells))
-
-    small, *rest = payload["groups"]
-    assert small["samples"] == [1100.0, 1200.0, 1300.0]
-    assert "ci" not in small
-    assert all("ci" in group for group in rest), "a cell at the floor or above keeps its band"
-    compiled = compile_chart("distribution", payload)
-    drawn = [row for row in compiled.intent.data if row["label"] == LABEL["A"]]
-    assert [row["sample"] for row in drawn if "sample" in row] == [1.1, 1.2, 1.3]
-    assert not any("low" in row for row in drawn), "no band for the three-case cell"
-    assert any("no interval band" in line and LABEL["A"] in line for line in compiled.disclosures)
-
-
-def test_a_reading_over_five_cases_draws_a_band():
-    cells = [_cell("A", n=5, n_independent=5), _cell("B"), _cell("C")]
-    payload = build(VALID["distribution"], surface(cells))
-
-    assert all("ci" in group and "samples" not in group for group in payload["groups"])
-    assert not any("no interval band" in line for line in compile_chart("distribution", payload).disclosures)
-
-
 def test_a_small_reading_with_no_recorded_cases_is_refused_rather_than_banded():
     """A small reading that recorded no per-case values cannot draw the points, and never draws the band."""
     cells = [_small("A", None), _cell("B"), _cell("C")]
@@ -589,118 +530,6 @@ def test_a_numeric_breakdown_reads_each_part_and_names_no_whole():
     }
     assert payload["unit"] == "ms"
     assert "total" not in payload and "measure" not in payload
-
-
-def test_an_attribution_withholds_the_remainder_of_one_component_of_a_partition():
-    """The pair the prompt steers the model to chart — a whole and the component that carried it.
-
-    `llm_ms` IS declared inside `total_ms`, and that is not enough: `total_ms` partitions into three
-    components, so the leftover is the other two's movement, attributed to measures the registry
-    names. Stating it as "unattributed" is the conclusion the divergence lens refuses to draw, and a
-    compiled payload that states it anyway is one the lens and the chart disagree on. This test once
-    asserted that remainder as the honest case.
-    """
-    partial = build(VALID["attribution"])
-    assert partial["contained_by"] == partial["end_to_end"]["measure"] == "Turn time"
-    assert partial["end_to_end"]["delta"] == pytest.approx(1000.0 - 1200.0)
-    assert partial["subsystem"]["delta"] == pytest.approx(650.0 - 800.0)
-    assert "unattributed_delta" not in partial
-    assert WITHHELD_PARTITION_INCOMPLETE in partial["unattributed_withheld"]
-    assert (partial["unit"], partial["a_label"], partial["b_label"]) == ("ms", LABEL["A"], LABEL["B"])
-    compile_chart("attribution", partial)
-
-
-def test_an_attribution_withholds_the_remainder_of_a_measure_not_declared_inside_the_whole():
-    # tool_ms is a component of total_ms, not of llm_ms — same unit, not nested, so no remainder.
-    withheld = build(chart("attribution", [ref("A"), ref("B")], ["llm_ms", "tool_ms"]))
-    assert "unattributed_delta" not in withheld
-    assert WITHHELD_NOT_CONTAINED in withheld["unattributed_withheld"]
-    compile_chart("attribution", withheld)
-
-
-def test_an_attribution_states_the_remainder_of_a_sole_component_a_host_declares():
-    """The branch the two refusals above cannot reach: a part that EXHAUSTS its whole.
-
-    No core measure is a whole with exactly one component (`total_ms` has three), so the stated
-    remainder is only reachable through a host catalogue — which is where the compiler resolves
-    descriptors from, and where a second product's `whole`/`part` pair would live. Without this
-    the compiler could withhold every remainder and the rule's positive half would stay green in
-    `test_metrics.py` while never being honoured on a chart.
-    """
-    from dataclasses import replace
-
-    from threetears.evals.kernel.metrics import MetricDescriptor
-    from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
-
-    def descriptor(name: str, scope: str, contained_by: str | None = None) -> MetricDescriptor:
-        return MetricDescriptor(
-            name=name,
-            reader_name=f"{name} reading",
-            data_type="numeric",
-            family="mechanical",
-            transferability_class="mechanical",
-            attribution_scope=scope,
-            higher_is_better=False,
-            unit="ms",
-            contained_by=contained_by,
-            description=f"Synthetic {name}: a whole with one declared component.",
-        )
-
-    def reading(name: str, scope: str, mean: float) -> MeasureSummary:
-        return MeasureSummary(
-            population="scored",
-            name=name,
-            attribution_scope=scope,
-            higher_is_better=False,
-            n=8,
-            n_independent=8,
-            mean=mean,
-        )
-
-    means = {"A": (2000.0, 1500.0), "B": (1600.0, 1300.0)}
-    cells = [
-        _cell(arm).model_copy(
-            update={
-                "measures": MeasureCollection(
-                    measures=sorted(
-                        [
-                            *_cell(arm).measures.measures,
-                            reading("host_part_ms", "subsystem", part),
-                            reading("host_whole_ms", "end_to_end", whole),
-                        ],
-                        key=lambda m: m.name,
-                    )
-                )
-            }
-        )
-        for arm, (whole, part) in means.items()
-    ]
-    facts = measure_facts() | {
-        name: MeasureFacts(unit="ms", merit_axis=None, higher_is_better=False)
-        for name in ("host_whole_ms", "host_part_ms")
-    }
-    host = replace(
-        toyhost_profile(),
-        measures=MeasureRegistry(
-            [
-                *TOYHOST_MEASURES,
-                descriptor("host_whole_ms", "end_to_end"),
-                descriptor("host_part_ms", "subsystem", contained_by="host_whole_ms"),
-            ],
-            families=toyhost_profile().measures.families,
-        ),
-    )
-    stated = build(
-        chart("attribution", [ref("A"), ref("B")], ["host_whole_ms", "host_part_ms"]),
-        surface(cells, facts=facts),
-        measures=host.measures,
-    )
-
-    assert stated["contained_by"] == "host_whole_ms"
-    assert "unattributed_withheld" not in stated
-    # (1600 - 2000) - (1300 - 1500): the whole fell 400, the part 200, so 200 is unexplained.
-    assert stated["unattributed_delta"] == pytest.approx(-200.0)
-    compile_chart("attribution", stated)
 
 
 def test_a_frontier_places_every_cell_and_reads_domination_off_the_frontier_lens():
@@ -1066,21 +895,6 @@ def test_a_numeric_measure_named_as_categorical_points_at_the_other_form():
 def test_an_unknown_categorical_measure_names_the_categorical_ones():
     with pytest.raises(UnresolvableReference, match=r"categorical measures are: stop_reason"):
         build(chart("breakdown", [ref("A")], ["outcome"]))
-
-
-def test_a_single_category_compiles_to_the_one_part_chart_the_drop_removes():
-    """Which categories a cell carries is the data's answer, so it is left to the drop, not refused.
-
-    The payload is built as the data has it; it fails the presentation rule, which is what the
-    generator's undrawable-chart drop catches — keeping the finding instead of paying for a repair.
-    """
-    from threetears.evals.analysis.viz.payloads import PayloadError
-    from threetears.evals.vega.spec_policy import SpecPolicyError
-
-    payload = build(chart("breakdown", [ref("B")], ["stop_reason"]))
-    assert [part["label"] for part in payload["parts"]] == ["end_turn"]
-    with pytest.raises((PayloadError, SpecPolicyError)):
-        compile_chart("breakdown", payload)
 
 
 def test_a_categorical_measure_cannot_be_a_numeric_part():

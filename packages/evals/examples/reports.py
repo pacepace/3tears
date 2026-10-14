@@ -1,9 +1,8 @@
 """How do I turn a finished campaign into the files people read: verdicts, report files and charts?
 
 The earlier examples printed a campaign's report; here it is written out. The verdicts are read as typed data
-and gated as a CI step gates them, the report goes to Markdown and HTML beside the evidence bundle its numbers
-come from, and each chart to a Vega-Lite spec (and an SVG, with the ``[vega]`` extra). New here:
-``report_markdown``, ``report_html``, ``inspect_campaign_bundle``, ``VegaRenderer`` and ``Comparison.gate``.
+and gated as a CI step gates them, and the report goes to Markdown and HTML beside the evidence bundle its numbers
+come from. New here: ``report_markdown``, ``report_html``, ``inspect_campaign_bundle`` and ``Comparison.gate``.
 Reading a report further: ``docs/reading-reports.md``.
 
 Run it with ``python reports.py`` (``README.md`` beside it says how); the files go to ``./eval-report/``. It calls
@@ -11,15 +10,12 @@ no model: both arms are keyword stand-ins, so it always runs offline and costs n
 """
 
 import asyncio
-import json
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from threetears.evals.analysis import ChartBlock, inspect_campaign_bundle, report_html, report_markdown
+from threetears.evals.analysis import inspect_campaign_bundle, report_html, report_markdown
 from threetears.evals.quick import compare
 from threetears.evals.run import run_blocking
-from threetears.evals.vega import VegaRenderer
 
 # -----------------------------------------------------------------------------
 # 1. The cases: on-call tickets, and whether each one is urgent.
@@ -94,27 +90,7 @@ async def main(out_dir: Path = Path("eval-report")) -> dict[tuple[str, str], str
     )
     (out_dir / "bundle.json").write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
 
-    # A chart block carries an intent, not a picture; the Vega-Lite renderer compiles it to a spec.
-    renderer = VegaRenderer.packaged("light")
-    (out_dir / "charts").mkdir(exist_ok=True)
-    svgs = []
-    for index, block in enumerate(block for block in report.blocks if isinstance(block, ChartBlock) and block.intent):
-        name = f"{index:02d}-" + re.sub(r"[^a-z0-9]+", "-", block.intent.title.lower()).strip("-")
-        chart = renderer.draw(block.intent)
-        spec = chart.spec | {"config": renderer.config()}  # the config colours the spec
-        (out_dir / "charts" / f"{name}.vl.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
-        try:
-            (out_dir / "charts" / f"{name}.svg").write_text(renderer.svg(chart), encoding="utf-8")
-            svgs.append(f"charts/{name}.svg")
-        except ImportError:  # drawing an SVG needs the [vega] extra; the spec does not
-            pass
-    if svgs:
-        page = "".join(f'<p><img src="{svg}" alt="{svg}"></p>' for svg in svgs)
-        (out_dir / "charts.html").write_text(f"<!doctype html><title>Charts</title>{page}", encoding="utf-8")
-    else:
-        print('No SVGs: install the [vega] extra (pip install "3tears-evals[vega]") to draw them.')
-
-    print(f"\nWrote report.md, report.html, bundle.json and charts/ to {out_dir.resolve()}")
+    print(f"\nWrote report.md, report.html and bundle.json to {out_dir.resolve()}")
     return verdicts
 
 

@@ -2781,21 +2781,6 @@
       "signature": "CellTimeoutFactory{__call__(self, budget_s: float) -> AbstractAsyncContextManager[Any]}",
       "tier": "closure"
     },
-    "threetears.evals.kernel.host.CHART_FONT_CHARACTERS": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.kernel.host.ChartFont": {
-      "kind": "dataclass",
-      "signature": "ChartFont(family: str, advances: Mapping[str, float], fallback_advance: float, font_files: Mapping[str, str] = dict())",
-      "tier": "closure"
-    },
-    "threetears.evals.kernel.host.ChartPalette": {
-      "kind": "dataclass",
-      "signature": "ChartPalette(series: tuple[str, ...], sequential: tuple[str, ...], background: str, ink: str, muted: str, grid: str, rule: str, context: str, on_fill: str)",
-      "tier": "closure"
-    },
     "threetears.evals.kernel.host.check_seed": {
       "kind": "function",
       "signature": "check_seed(registry: WorldRegistry, namespaces: Mapping[str, Any], *, attached: Collection[str] | None = None) -> tuple[SeedWrite, ...]",
@@ -2976,11 +2961,6 @@
       "signature": "",
       "tier": "closure"
     },
-    "threetears.evals.kernel.host.require_resolved_colour": {
-      "kind": "function",
-      "signature": "require_resolved_colour(where: str, value: object) -> str",
-      "tier": "closure"
-    },
     "threetears.evals.kernel.host.ResidualReader": {
       "kind": "type alias",
       "signature": "Callable[['EvalRun', 'Sequence[EvalResult]', frozenset[str]], Any]",
@@ -3041,14 +3021,9 @@
       "signature": "",
       "tier": "host-contract"
     },
-    "threetears.evals.kernel.host.StyleError": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "closure"
-    },
     "threetears.evals.kernel.host.StyleProfile": {
       "kind": "dataclass",
-      "signature": "StyleProfile(tone_register: ToneRegister = 'neutral', chart_palette: ChartPalette | None = None, chart_font: ChartFont | None = None)",
+      "signature": "StyleProfile(tone_register: ToneRegister = 'neutral')",
       "tier": "closure"
     },
     "threetears.evals.kernel.host.Sweepable": {
@@ -5826,11 +5801,6 @@
       "signature": "'verified'` | `'differs'",
       "tier": "closure"
     },
-    "threetears.evals.analysis.viz.assert_renderer_conforms": {
-      "kind": "function",
-      "signature": "assert_renderer_conforms(renderer: ChartRenderer[DrawingT], intents: Sequence[ChartIntent]) -> None",
-      "tier": "closure"
-    },
     "threetears.evals.analysis.viz.chart_intent": {
       "kind": "function",
       "signature": "chart_intent(viz_type: str, payload: dict[str, Any]) -> ChartIntent",
@@ -5871,16 +5841,6 @@
       "signature": "ChartReference(axis: str, value: float, label: str)",
       "tier": "closure"
     },
-    "threetears.evals.analysis.viz.ChartRefused": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.analysis.viz.ChartRenderer": {
-      "kind": "protocol",
-      "signature": "ChartRenderer{draw(self, intent: ChartIntent) -> DrawingT; drawn_data(self, drawing: DrawingT) -> list[dict[str, ChartValue]]}",
-      "tier": "closure"
-    },
     "threetears.evals.analysis.viz.ChartType": {
       "kind": "literal",
       "signature": "'delta_table'` | `'frontier'` | `'timeseries'` | `'distribution'` | `'null_result'` | `'breakdown'` | `'attribution'` | `'sweep_ranking'",
@@ -5914,11 +5874,6 @@
     "threetears.evals.analysis.viz.PayloadError": {
       "kind": "exception",
       "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.analysis.viz.renderer_disagreements": {
-      "kind": "function",
-      "signature": "renderer_disagreements(renderer: ChartRenderer[DrawingT], intent: ChartIntent) -> list[str]",
       "tier": "closure"
     },
     "threetears.evals.analysis.viz.table_disagreements": {
@@ -6591,16 +6546,6 @@
       "signature": "CaseSetMint(case_set: str, template_id: Annotated[str, LaunchArguments.model_fields['template_id']], test_case_ids: list[str], tracked: bool = True)",
       "tier": "closure"
     },
-    "threetears.evals.ops.ChartRefusal": {
-      "kind": "model",
-      "signature": "ChartRefusal(block: int, finding: int | None, viz_type: ChartType, cause: ChartRefusalCause, reason: str)",
-      "tier": "closure"
-    },
-    "threetears.evals.ops.ChartRefusalCause": {
-      "kind": "literal",
-      "signature": "'undrawable'` | `'refused_by_renderer'",
-      "tier": "closure"
-    },
     "threetears.evals.ops.DetectableEffect": {
       "kind": "model",
       "signature": "DetectableEffect(reading: ReadingKind, name: str, delta: float | None, cannot_estimate: str | None, basis: Literal['paired_runs', 'unrelated_case_effects'] | None = None, within_case_sd: float | None = None, between_case_sd: float | None = None, difference_sd: float | None = None, n_history_cases: int | None = None, run_ids: list[str] = list())",
@@ -6614,11 +6559,6 @@
     "threetears.evals.ops.dollars_text": {
       "kind": "function",
       "signature": "dollars_text(amount: float | None) -> str",
-      "tier": "closure"
-    },
-    "threetears.evals.ops.DrawnChart": {
-      "kind": "dataclass",
-      "signature": "DrawnChart(block: int, finding: int | None, viz_type: ChartType, drawing: DrawingT)",
       "tier": "closure"
     },
     "threetears.evals.ops.estimate_text": {
@@ -6956,19 +6896,9 @@
       "signature": "RegressionWatch(host: EvalHost, sink: RegressionSink, measures: Sequence[str], min_absolute_change: float = 0.0, min_relative_change: float = 0.0)",
       "tier": "closure"
     },
-    "threetears.evals.ops.report_charts": {
-      "kind": "function",
-      "signature": "report_charts(report: Report, renderer: ChartRenderer[DrawingT]) -> ReportCharts[DrawingT]",
-      "tier": "closure"
-    },
     "threetears.evals.ops.report_read": {
       "kind": "function",
       "signature": "report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument",
-      "tier": "closure"
-    },
-    "threetears.evals.ops.ReportCharts": {
-      "kind": "dataclass",
-      "signature": "ReportCharts(drawn: tuple[DrawnChart[DrawingT], ...], refused: tuple[ChartRefusal, ...])",
       "tier": "closure"
     },
     "threetears.evals.ops.ReportDocument": {
@@ -7504,111 +7434,6 @@
     "threetears.evals.transports.fastmcp.ToolCall": {
       "kind": "dataclass",
       "signature": "ToolCall(tool: str, action: str | None, caller: Caller, host: OpsHost | None, timeout_s: float, context: Any = None, refused: EvalServiceError | None = None)",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.check_font_files": {
-      "kind": "function",
-      "signature": "check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.check_spec": {
-      "kind": "function",
-      "signature": "check_spec(spec: dict[str, Any]) -> list[str]",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.compile_chart": {
-      "kind": "function",
-      "signature": "compile_chart(viz_type: str, payload: dict[str, Any], *, font: ChartFont | None = None) -> CompiledChart",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.CompiledChart": {
-      "kind": "dataclass",
-      "signature": "CompiledChart(intent: ChartIntent, spec: dict[str, Any], columns: list[CompiledColumn] = list(), rows: list[dict[str, Any]] = list(), unit: str = '', caption: str = '', disclosures: list[str] = list(), title: str = '')",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.CompiledColumn": {
-      "kind": "typed dict",
-      "signature": "CompiledColumn(key: str, header: str)",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.draw_intent": {
-      "kind": "function",
-      "signature": "draw_intent(intent: ChartIntent, *, font: ChartFont | None = None) -> CompiledChart",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.load_chart_font": {
-      "kind": "function",
-      "signature": "load_chart_font(path: Path) -> ChartFont",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.load_palette": {
-      "kind": "function",
-      "signature": "load_palette(path: Path, theme: Theme) -> ChartPalette",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.packaged_font": {
-      "kind": "function",
-      "signature": "packaged_font() -> ChartFont",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.packaged_palette": {
-      "kind": "function",
-      "signature": "packaged_palette(theme: Theme) -> ChartPalette",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.PaletteError": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.RasterRefused": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.register_fonts": {
-      "kind": "function",
-      "signature": "register_fonts(font_dir: Path) -> None",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.render_png": {
-      "kind": "function",
-      "signature": "render_png(spec: dict[str, Any], *, palette: ChartPalette, scale: int = 2, font_dir: Path | None = None, font: ChartFont | None = None) -> bytes",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.render_svg": {
-      "kind": "function",
-      "signature": "render_svg(spec: dict[str, Any], *, palette: ChartPalette, font_dir: Path | None = None, font: ChartFont | None = None) -> str",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.SpecPolicyError": {
-      "kind": "exception",
-      "signature": "SpecPolicyError(violations: list[str]) -> None",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.TextMetricsError": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.Theme": {
-      "kind": "literal",
-      "signature": "'light'` | `'dark'",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.vega_config": {
-      "kind": "function",
-      "signature": "vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[str, Any]",
-      "tier": "closure"
-    },
-    "threetears.evals.vega.VegaRenderer": {
-      "kind": "dataclass",
-      "signature": "VegaRenderer(palette: ChartPalette, font_dir: Path | None = None, font: ChartFont = packaged_font())",
-      "tier": "host-contract"
-    },
-    "threetears.evals.vega.write_font_metrics": {
-      "kind": "function",
-      "signature": "write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path",
       "tier": "closure"
     },
     "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET": {
