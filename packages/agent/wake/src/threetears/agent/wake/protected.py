@@ -9,7 +9,16 @@ the trigger's gate for its own transaction only:
 - :func:`update_protected` changes the schedule's ``schedule_config`` (an
   interval's length, say), after validating it against the wake's type,
   and moves ``next_fire_at`` to match. It answers with what was there before
-  and what is there now (:class:`ProtectedWakeChange`).
+  and what is there now (:class:`ProtectedWakeChange`). A fixed-step wake
+  stays on its grid (below), and a config equal to the one it has writes
+  nothing.
+
+**The grid of a fixed-step wake** (``interval``, ``every_n_hours``) is the
+set of instants ``anchor + k * step``. Its anchor is the occurrence before the
+next one: ``next_fire_at - step``. A change of step keeps that anchor and takes
+the first instant of the new grid after now, so 60 minutes, then 90, then 60
+again is due exactly where it was before either change. A wake with no next
+fire has no anchor, and its new grid starts from now.
 - :func:`delete_protected` deletes it. It exists for deleting the agent the
   wake belongs to, and for nothing else.
 
@@ -26,7 +35,7 @@ from L3 with nothing left to evict it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from uuid import UUID
 
@@ -126,6 +135,10 @@ async def update_protected(
     anything is written, and ``next_fire_at`` is recomputed from it. The
     cached row is invalidated so the next read sees the change.
 
+    A config equal to the one the wake has writes nothing: the answer's
+    ``changed`` is false and ``next_fire_at`` stays where it was. A fixed-step
+    wake keeps its grid across a change of step (module docstring).
+
     :param collection: three-tier wake-schedules collection
     :ptype collection: WakeScheduleCollection
     :param agent_id: the agent the wake must belong to
@@ -150,13 +163,27 @@ async def update_protected(
     error = validate_schedule_config(entity.schedule_type, schedule_config)
     if error is not None:
         raise ProtectedWakeError(error)
+    if dict(schedule_config) == config_before:
+        # The schedule it already has: writing it again would move the next fire for nothing.
+        return ProtectedWakeChange(
+            schedule=entity,
+            schedule_type=schedule_type,
+            config_before=config_before,
+            config_after=dict(config_before),
+            next_fire_before=next_fire_before,
+            next_fire_after=next_fire_before,
+        )
+    anchor = _grid_anchor(schedule_type, config_before, next_fire_before)
     try:
         next_fire_at = compute_next_fire_at(
             entity.schedule_type,
             schedule_config,
-            entity.missed_fire_policy,
+            # the first slot of the kept grid after now, whatever the wake's own policy:
+            # a catch-up step from the old anchor could be in the past
+            "coalesce" if anchor is not None else entity.missed_fire_policy,
             last_fired_at=entity.last_fired_at,
             now=now or datetime.now(UTC),
+            current_fire_at=anchor,
         )
     except ValueError as exc:
         raise ProtectedWakeError(f"schedule_config rejected by the reschedule engine: {exc}") from exc
@@ -192,6 +219,39 @@ async def update_protected(
         next_fire_before=next_fire_before,
         next_fire_after=updated.next_fire_at,
     )
+
+
+def _grid_anchor(schedule_type: str, config: dict[str, Any], next_fire_at: datetime | None) -> datetime | None:
+    """The occurrence before a fixed-step wake's next fire: the origin its grid is kept from.
+
+    :param schedule_type: the wake's type
+    :ptype schedule_type: str
+    :param config: the config the change replaces
+    :ptype config: dict[str, Any]
+    :param next_fire_at: when the wake was next due before the change
+    :ptype next_fire_at: datetime | None
+    :return: the anchor, or ``None`` for a type with no fixed step, a wake with no next fire,
+        or a config whose step cannot be read
+    :rtype: datetime | None
+    """
+    if next_fire_at is None:
+        return None
+    try:
+        if schedule_type == "interval":
+            step = timedelta(seconds=int(config["seconds"]))
+        elif schedule_type == "every_n_hours":
+            step = timedelta(hours=int(config["n"]))
+        else:
+            return None
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+    ):  # NOSILENT: a config with no readable step has no grid; the change starts from now
+        return None
+    if step <= timedelta(0):
+        return None
+    return next_fire_at - step
 
 
 async def delete_protected(

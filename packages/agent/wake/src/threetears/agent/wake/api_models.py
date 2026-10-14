@@ -79,7 +79,7 @@ _FireStatus = Literal[
     "checked_quiet",
     "failed",
 ]
-_FireSource = Literal["scheduled_tick", "webhook"]
+_FireSource = Literal["scheduled_tick", "webhook", "manual"]
 
 # Format guard for ``verification_scheme`` (mirrors v005's
 # ``^[a-z0-9_]+$`` length 1-64 CHECK). Vendor schemes (``'github'``,
@@ -194,7 +194,8 @@ class WakeFireResponse(BaseModel):
     instant); ``actual_fired_at`` is always set. ``schedule_id`` is
     ``None`` for webhook fires; ``webhook_subscription_id`` is
     ``None`` for scheduled fires (CHECK-constrained XOR at the L3
-    layer).
+    layer). ``requested_by`` names who asked for a fire run by hand
+    (``fire_source='manual'``).
     """
 
     model_config = _STRICT
@@ -212,6 +213,7 @@ class WakeFireResponse(BaseModel):
     error: str | None
     display_suppressed: bool
     started_conversation_id: UUID | None = None
+    requested_by: str | None = None
     date_created: datetime
 
 

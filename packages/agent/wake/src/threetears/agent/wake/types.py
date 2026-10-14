@@ -156,10 +156,11 @@ WebhookSubscriptionStatus = Literal["active", "paused"]
 
 # Source of a wake fire. ``'scheduled_tick'`` for fires emitted by
 # :func:`threetears.agent.wake.tick.wake_tick_job`; ``'webhook'`` for
-# inbound HTTP webhook fires (shard 06). Stored verbatim on the
-# ``wake_fires`` row so the audit history records the origin without
-# requiring a join.
-FireSource = Literal["scheduled_tick", "webhook"]
+# inbound HTTP webhook fires; ``'manual'`` for a fire someone asked for
+# outside the schedule (:mod:`threetears.agent.wake.manual`). Stored on the
+# ``wake_fires`` row (``fire_source``, v009) so the history records the origin
+# without a join.
+FireSource = Literal["scheduled_tick", "webhook", "manual"]
 
 
 @dataclass(frozen=True)
@@ -194,7 +195,9 @@ class WakeTrigger:
     :class:`FireConversationHook` started for this fire; :func:`dispatch_wake`
     sets it before the handler runs, and it is ``None`` when the consumer
     supplies no hook. ``webhook_subscription_id`` is the subscription a
-    webhook fire came through, ``None`` on scheduled fires.
+    webhook fire came through, ``None`` on scheduled fires. ``requested_by``
+    names who asked for a manual fire, as the consumer names them; ``None``
+    on every other fire.
     """
 
     schedule_id: UUID | None
@@ -214,6 +217,7 @@ class WakeTrigger:
     protected: bool = False
     started_conversation_id: UUID | None = None
     webhook_subscription_id: UUID | None = None
+    requested_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -227,10 +231,15 @@ class FireLimits:
     :ivar per_wake: fires one wake (or one webhook subscription) may make
     :ivar per_agent: fires all the agent's wakes and subscriptions may make
         together; protected wakes' fires are not counted
+    :ivar manual_fires_count: whether a fire run by hand spends these limits.
+        ``True``: a manual fire is counted like any other and is itself refused
+        when a limit is reached. ``False``: manual fires are left out of both
+        counts and are never refused by them
     """
 
     per_wake: int
     per_agent: int
+    manual_fires_count: bool = True
 
 
 @runtime_checkable
