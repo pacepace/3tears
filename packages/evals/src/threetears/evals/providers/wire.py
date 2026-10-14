@@ -311,8 +311,8 @@ def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, A
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
         raise ProviderError(provider, status, "the reply carried no choice", body=dict(body))
     choice = choices[0]
-    message = _mapping(choice.get("message"))
-    content = message.get("content")
+    reply = _mapping(choice.get("message"))
+    content = reply.get("content")
     text = content if isinstance(content, str) else ""
     if isinstance(content, list):
         text = "".join(
@@ -320,7 +320,7 @@ def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, A
         )
     finish = _named(choice.get("finish_reason"))
     raw = (_named(choice.get("native_finish_reason")) or finish) if provider == "openrouter" else finish
-    if _named(message.get("refusal")):
+    if _named(reply.get("refusal")):
         stop: StopReason = "content_filter"
     else:
         stop = _OPENAI_STOPS.get(finish, "truncated") if finish else "truncated"
