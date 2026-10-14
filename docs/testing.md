@@ -127,6 +127,12 @@ test a branch cut before the lane, run this checkout's dispatcher against it:
 rsync and the uv cache lives at `/testruns/.uv-cache`. `check-all.sh`'s last line names where the
 tests ran.
 
+**Nothing skips in the lane** that runs locally: its two process tests need what CI's runner has,
+so the image installs `procps` (`pgrep`/`ps`) and the container runs with `--init` (a PID 1 that
+reaps killed orphans); a host provisioned before those must re-run `remote-setup.sh`. Never start
+two dispatches from one worktree at once: both sync into the same `<worktree>-<hash>` directory,
+and the second rewrites the tree under the first's running pytest.
+
 **What stays local.** Lint and typecheck (fast), `test-sidecar.sh` (its own AGPL venv) and
 `test-integration.sh` (testcontainers needs a Docker daemon; the lane container has none). The
 remote run is the unit + enforcement suite only.

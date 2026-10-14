@@ -67,7 +67,12 @@ $SSH "$REMOTE" "mkdir -p ~/$LANE_DIR/build ~/testruns-3tears && cat > ~/$LANE_DI
 $SSH "$REMOTE" "${RPATH}docker build -q -t $CONTAINER:latest --build-arg UID=$RUID --build-arg GID=$RGID ~/$LANE_DIR/build"
 
 echo "==> (Re)creating container $CONTAINER"
-$SSH "$REMOTE" "${RPATH}docker rm -f $CONTAINER >/dev/null 2>&1; docker run -d --name $CONTAINER \
+# --init: docker's tini becomes PID 1 and reaps. Without it PID 1 is `sleep infinity`,
+# which never waits, so every process the suite kills after its parent died stays a
+# zombie with a live /proc entry for the container's lifetime (models'
+# test_killing_a_cli_takes_its_children_with_it fails on exactly that), and the
+# zombies pile up across runs in a container that is never recreated.
+$SSH "$REMOTE" "${RPATH}docker rm -f $CONTAINER >/dev/null 2>&1; docker run -d --init --name $CONTAINER \
     --restart unless-stopped --cpuset-cpus $CPUSET --memory $MEMORY --memory-swap $MEMORY \
     --cap-drop ALL --security-opt no-new-privileges -v $RHOME/testruns-3tears:/testruns $CONTAINER:latest"
 

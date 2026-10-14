@@ -10,8 +10,10 @@
 FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
 FROM python:3.14-slim
 
+# procps (pgrep, ps): the scrape suite's orphaned-regex-worker test finds and watches its
+# worker with them, as CI's ubuntu runner can; python:slim ships neither.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends rsync git ca-certificates \
+    && apt-get install -y --no-install-recommends rsync git ca-certificates procps \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /uvx /usr/local/bin/
 
