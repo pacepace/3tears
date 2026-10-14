@@ -51,21 +51,6 @@ SHOWN: tuple[Path, ...] = (
     *sorted((PACKAGE / "tests" / "fixtures" / "courierhost").rglob("*.py")),
 )
 
-#: TEMPORARY: rung 4's ``serve.py`` builds its MCP host by hand from names a host is not yet taught, so they are allowed
-#: for that one file only. The next commit on this branch replaces the hand-built host with a
-#: ``mount_fastmcp(as_host(...))`` one-liner, and this allowance goes with it (the test below fails once it is stale).
-_SERVE_UNTIL_ONE_LINER: dict[Path, frozenset[str]] = {
-    PACKAGE / "examples" / "4-booking" / "serve.py": frozenset(
-        {
-            "threetears.evals.actions.Caller",
-            "threetears.evals.actions.eval_catalogue",
-            "threetears.evals.actions.read_only_tools",
-            "threetears.evals.ops.OpsHost",
-            "threetears.evals.transports.fastmcp.mount_fastmcp",
-        }
-    ),
-}
-
 #: One ``from threetears.evals… import …`` statement in prose or a fenced block, parenthesised across lines or not.
 _DOC_IMPORT = re.compile(r"^[ \t]*from threetears\.evals(?:\.\w+)* import (?:\([^)]*\)|[^\n]*)", re.M)
 
@@ -91,19 +76,6 @@ def imported_names(path: Path) -> set[str]:
     return {name for match in _DOC_IMPORT.finditer(text) for name in _imported(ast.parse(textwrap.dedent(match[0])))}
 
 
-def _held_to_the_surface(path: Path) -> set[str]:
-    """What ``path`` imports, less the names :data:`_SERVE_UNTIL_ONE_LINER` allows it for now."""
-    return imported_names(path) - _SERVE_UNTIL_ONE_LINER.get(path, frozenset())
-
-
-def test_the_temporary_serve_allowance_is_still_needed() -> None:
-    """Once ``serve.py`` stops importing a name the allowance holds, the allowance is stale: delete it."""
-    for path, allowed in _SERVE_UNTIL_ONE_LINER.items():
-        assert allowed <= imported_names(path), (
-            f"{path.name} no longer imports {sorted(allowed - imported_names(path))}"
-        )
-
-
 def test_every_snapshot_entry_carries_a_tier() -> None:
     """Read from the file as written, so an entry with no tier is caught rather than defaulted on the way in."""
     names = json.loads(surface.SNAPSHOT_PATH.read_text(encoding="utf-8"))["names"]
@@ -114,7 +86,7 @@ def test_every_snapshot_entry_carries_a_tier() -> None:
 
 def test_every_name_a_host_is_taught_to_import_is_host_contract() -> None:
     recorded = surface.load_snapshot()
-    taught = {name: path for path in HOST_GUIDES for name in sorted(_held_to_the_surface(path))}
+    taught = {name: path for path in HOST_GUIDES for name in sorted(imported_names(path))}
     assert "threetears.evals.Eval" in taught, "the import reader found nothing, so this test says nothing"
     outside = {
         name: f"{path.relative_to(PACKAGE)} ({recorded[name].tier if name in recorded else 'not public'})"
@@ -130,7 +102,7 @@ def test_every_name_a_host_is_taught_to_import_is_host_contract() -> None:
 
 def test_every_name_a_page_or_an_example_host_imports_is_declared() -> None:
     recorded = surface.load_snapshot()
-    shown = {name: path for path in (*HOST_GUIDES, *SHOWN) for name in sorted(_held_to_the_surface(path))}
+    shown = {name: path for path in (*HOST_GUIDES, *SHOWN) for name in sorted(imported_names(path))}
     assert "threetears.evals.kernel.host.EvalHost" in shown, "the import reader found nothing, so this says nothing"
     provisional = {
         name: f"{path.relative_to(PACKAGE)} ({recorded[name].tier if name in recorded else 'not public'})"

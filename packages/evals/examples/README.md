@@ -108,8 +108,9 @@ Recorded on `deepseek/deepseek-v4-flash`: 180 calls, $0.0103 (`recordings/invoic
 [`agent.py`](4-booking/agent.py) books meetings: each request ([`requests.jsonl`](4-booking/requests.jsonl)) seeds one
 day's calendar, `World(Day, tools=[find_free, book])` hands the agent two tools in a JSON tool loop over
 `model.json`, and the graders are goal checks on the day it left, beside the did-nothing control that only the first
-check beats. [`serve.py`](4-booking/serve.py) serves the eval's runs to the team: `as_host`, an MCP server
-(`mount_fastmcp`, the `[fastmcp]` extra; [Driving it from an agent](../docs/agents-and-mcp.md)) and
+check beats. [`serve.py`](4-booking/serve.py) serves the eval's runs to the team: `as_host`, an MCP server in one
+call (`mount_fastmcp(host(), scope="booking").run()`, the `[fastmcp]` extra, read-only;
+[Driving it from an agent](../docs/agents-and-mcp.md)) and
 [the command line](../docs/command-line.md) (`python -m threetears.evals ls --host serve:host --scope booking`), both
 from `4-booking/`, where `agent.py`'s runs are stored when it is run there.
 

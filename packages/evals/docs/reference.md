@@ -830,8 +830,8 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 **Functions**
 
-- **`mount_fastmcp`** · function · Add the catalogue's tools to a FastMCP server.
-  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, annotate: CallAnnotator | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: CallTimeout = 60.0) -> tuple[str, ...]`
+- **`mount_fastmcp`** · *host contract* · function · Add the catalogue's tools to a FastMCP server; or, handed a host alone, build the server and return it.
+  <br>`mount_fastmcp(server: FastMCP | EvalHost | OpsHost, catalogue: ActionCatalogue | None = None, *, host: EvalHost | OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver | None = None, scope: str | None = None, identity: str = 'mcp', around: CallHook | None = None, annotate: CallAnnotator | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: CallTimeout = 60.0) -> FastMCP | tuple[str, ...]`
 
 **Classes**
 
