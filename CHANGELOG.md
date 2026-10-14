@@ -77,6 +77,22 @@ arrives exactly as before. A client whose `chat.send` / `chat.send_async` moved 
 `TypeError` when the model is built. Pinned at the wire, through the real `openrouter` SDK over a
 mock HTTP transport. No public name added.
 
+### Scheduled jobs: a failed fire keeps the output its handler reported
+
+A handler that returned `JobFireResult(status="failed", error=..., output=...)` had its `output`
+dropped: `finalize_failed` wrote the error and nothing else, so a consumer whose handler reports
+what it did beside the failure (was the result delivered, where is it kept) could read that only
+for a fire that succeeded.
+
+- **Changed, `FireStore.finalize_failed`:** gains an optional keyword `output: dict | None = None`.
+  `JobFireCollection.finalize_failed` writes it to `job_fires.output`; `None` leaves the column as
+  it is. The tick and `BackgroundDispatch` pass `output` only when the handler reported one, so a
+  consumer's own `FireStore` written before the argument existed is called exactly as before for
+  every failure without an output, and raises `TypeError` only if one of its handlers starts
+  returning a failure with an output: add the keyword to that store first.
+- The wake fire store accepts the keyword and does not keep it: `wake_fires` has no column for a
+  failed fire's output.
+
 ### Wake: the same wake made twice is made once
 
 `wake_schedule_create` had no notion of two rows being one wake: called again with the same

@@ -930,12 +930,14 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
         """Stamp a failed-dispatch result onto the fire row.
 
         Called by the tick body when the dispatch callback raises -- the
         per-job try/except keeps one bad fire from poisoning the rest of
-        the tick.
+        the tick -- and when it returns ``status='failed'``, whose ``output``
+        is kept beside the error. ``None`` leaves the row's output as it is.
 
         :param partition_key: partition column value
         :ptype partition_key: UUID
@@ -945,6 +947,8 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         :ptype error: str
         :param latency_ms: latency up to the failure
         :ptype latency_ms: int | None
+        :param output: what the callback reported beside its failure
+        :ptype output: dict[str, Any] | None
         :return: nothing
         :rtype: None
         """
@@ -952,12 +956,14 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
             return None
         # cache-bypass: targeted UPDATE on the failure columns.
         await self.l3_pool.execute(
-            "UPDATE job_fires SET status = 'failed', error = $1, latency_ms = $2 "
+            "UPDATE job_fires SET status = 'failed', error = $1, latency_ms = $2, "
+            "output = COALESCE($5::jsonb, output) "
             "WHERE partition_key = $3 AND fire_id = $4",
             error,
             latency_ms,
             partition_key,
             fire_id,
+            output,
         )
         return None
 

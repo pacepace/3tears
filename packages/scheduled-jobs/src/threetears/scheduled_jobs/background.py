@@ -77,7 +77,7 @@ from threetears.scheduled_jobs.events import (
 )
 from threetears.scheduled_jobs.metrics import ScheduledJobsMetricsEmitter, get_scheduled_jobs_emitter
 from threetears.scheduled_jobs.protocols import FireStore
-from threetears.scheduled_jobs.tick import DispatchCallback
+from threetears.scheduled_jobs.tick import DispatchCallback, _failed_output
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
 
 if TYPE_CHECKING:
@@ -566,6 +566,7 @@ class BackgroundDispatch:
                     fire_id,
                     error=result.error or "dispatch returned status='failed' without an error string",
                     latency_ms=result.latency_ms,
+                    **_failed_output(result),
                 )
             else:
                 await self._fire_store.finalize_success(

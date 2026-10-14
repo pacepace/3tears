@@ -219,6 +219,16 @@ class TestFireStoreWrites:
         sql, args = pool.calls[-1]
         assert "status = 'failed'" in sql
         assert args[0] == "boom"
+        assert args[4] is None
+
+    async def test_finalize_failed_keeps_a_reported_output(self) -> None:
+        pool = _RecordingPool()
+        coll = _make_fire_collection(pool)
+        fire_id, partition = uuid4(), uuid4()
+        await coll.finalize_failed(partition, fire_id, error="boom", latency_ms=3, output={"delivered": False})
+        sql, args = pool.calls[-1]
+        assert "output = COALESCE($5::jsonb, output)" in sql
+        assert args == ("boom", 3, partition, fire_id, {"delivered": False})
 
     async def test_reap_stale_dispatching_updates_old_dispatching_rows(self) -> None:
         # two reclaimed rows come back from RETURNING -> count == 2

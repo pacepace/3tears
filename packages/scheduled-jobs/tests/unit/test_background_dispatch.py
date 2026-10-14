@@ -212,6 +212,31 @@ async def test_a_failed_result_finalizes_failed_with_its_error() -> None:
     assert fires.succeeded == []
 
 
+async def test_a_failed_result_keeps_the_output_it_reported() -> None:
+    kept: list[dict[str, Any]] = []
+
+    class _KeepsOutput(_FakeFireStore):
+        async def finalize_failed(  # type: ignore[override]
+            self,
+            partition_key: UUID,
+            fire_id: UUID,
+            *,
+            error: str,
+            latency_ms: int | None = None,
+            output: dict[str, Any] | None = None,
+        ) -> None:
+            kept.append({"error": error, "output": output})
+
+    dispatch = _dispatch(_KeepsOutput())
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="failed", error="upstream said no", output={"delivered": True})
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await dispatch.join()
+    assert kept == [{"error": "upstream said no", "output": {"delivered": True}}]
+
+
 async def test_a_raised_exception_finalizes_failed_with_its_text() -> None:
     fires = _FakeFireStore()
     dispatch = _dispatch(fires)

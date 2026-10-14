@@ -162,6 +162,39 @@ async def test_a_slow_fire_does_not_hold_up_the_tick_and_finalizes_its_own_row(p
         await background.aclose()
 
 
+async def test_a_failed_fire_keeps_the_output_its_body_reported(pool: asyncpg.Pool) -> None:
+    """A body that returns ``status='failed'`` with an output: the row holds both, from the tick and from a hand-off.
+
+    A failure that reports no output leaves the column empty, as it always was.
+    """
+    schedule_store, fire_store = _stores(pool)
+    due = datetime.now(UTC) - timedelta(seconds=5)
+    _, in_tick = await _seed_job(pool, "in_tick", next_fire_at=due)
+    _, handed_off = await _seed_job(pool, "handed_off", next_fire_at=due)
+    _, bare = await _seed_job(pool, "bare", next_fire_at=due)
+
+    async def _said_no(trigger: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="failed", error="the helper said no", output={"by": trigger.kind})
+
+    async def _bare(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="failed", error="nothing to add")
+
+    background = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG)
+    routes = {"in_tick": _said_no, "handed_off": background.wrap(_said_no), "bare": _bare}
+    try:
+        await asyncio.wait_for(scheduled_tick_job(schedule_store, fire_store, routes), timeout=10)
+        await asyncio.wait_for(background.join(), timeout=10)
+        for job, kind in ((in_tick, "in_tick"), (handed_off, "handed_off")):
+            row = await _fire_row(pool, job)
+            assert row["status"] == "failed", kind
+            assert row["error"] == "the helper said no", kind
+            assert row["output"] == {"by": kind}, kind
+        plain = await _fire_row(pool, bare)
+        assert (plain["status"], plain["error"], plain["output"]) == ("failed", "nothing to add", None)
+    finally:
+        await background.aclose()
+
+
 @pytest.fixture
 async def two_pods(nats_container: str) -> AsyncIterator[tuple[NatsClient, NatsClient]]:
     set_default_namespace("3tears")
