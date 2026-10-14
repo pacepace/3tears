@@ -6056,6 +6056,11 @@
       "signature": "check_completion_conformance(completion: object, *, require_sent_settings: bool = False) -> None",
       "tier": "host-contract"
     },
+    "threetears.evals.testing.check_refusal_negotiation": {
+      "kind": "async function",
+      "signature": "check_refusal_negotiation(build_client: Callable[[RouterTransport], CompletionClient]) -> None",
+      "tier": "host-contract"
+    },
     "threetears.evals.testing.CompletionConformanceFailure": {
       "kind": "exception",
       "signature": "",
@@ -6106,6 +6111,11 @@
       "signature": "JobsConformanceHost(host: OpsHost, caller: Caller, sample: ConformanceSample)",
       "tier": "host-contract"
     },
+    "threetears.evals.testing.NegotiationConformanceFailure": {
+      "kind": "exception",
+      "signature": "NegotiationConformanceFailure(mistakes: list[str]) -> None",
+      "tier": "host-contract"
+    },
     "threetears.evals.testing.nonpublic_evals_imports": {
       "kind": "function",
       "signature": "nonpublic_evals_imports(*sources: Path | str) -> tuple[BoundaryFinding, ...]",
@@ -6150,6 +6160,11 @@
       "kind": "dataclass",
       "signature": "ReplayedCompletion(content: str, input_tokens: int | None, output_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, reasoning_tokens: int | None, temperature: float | None, stop_reason: StopReason, sent_settings: ClientRequestSettings | None, extra: Mapping[str, Any])",
       "tier": "closure"
+    },
+    "threetears.evals.testing.RouterTransport": {
+      "kind": "type alias",
+      "signature": "Callable[[Mapping[str, object]], Awaitable[tuple[int, Mapping[str, object]]]]",
+      "tier": "host-contract"
     },
     "threetears.evals.testing.STORE_CONFORMANCE_CASES": {
       "kind": "constant (tuple)",
@@ -7595,6 +7610,86 @@
       "kind": "function",
       "signature": "write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path",
       "tier": "closure"
+    },
+    "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "closure"
+    },
+    "threetears.evals.negotiation.anthropic_thinking": {
+      "kind": "function",
+      "signature": "anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str | int] | None",
+      "tier": "closure"
+    },
+    "threetears.evals.negotiation.BUDGET_SHARES": {
+      "kind": "constant (dict)",
+      "signature": "",
+      "tier": "closure"
+    },
+    "threetears.evals.negotiation.closest_settings": {
+      "kind": "function",
+      "signature": "closest_settings(asked: WireSettings, facts: SettingFacts, provider_family: ProviderFamily) -> tuple[WireSettings, tuple[str, ...]]",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.EFFORT_LADDER": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "closure"
+    },
+    "threetears.evals.negotiation.LearnedSettings": {
+      "kind": "class",
+      "signature": "LearnedSettings(*, client: str = 'eval.negotiation', declared_by: str = 'declared', contradiction: str = 'a declared fact the provider contradicts; correct where it was declared') -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.negotiate": {
+      "kind": "async function",
+      "signature": "negotiate(asked: WireSettings, *, provider_family: ProviderFamily, model: str, provider: str | None = None, send: Callable[[WireSettings, SettingFacts], Awaitable[R]], read_refusal: Callable[[Exception], SettingRefusal | None], learned: LearnedSettings, declared: SettingFacts | None = None) -> Negotiated[R]",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.Negotiated": {
+      "kind": "dataclass",
+      "signature": "Negotiated(reply: R, wire: WireSettings, notes: tuple[str, ...], refusals: tuple[SettingRefusal, ...])",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.ProviderFamily": {
+      "kind": "literal",
+      "signature": "'anthropic'` | `'openai'` | `'router'",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.read_anthropic_refusal": {
+      "kind": "function",
+      "signature": "read_anthropic_refusal(status: int, body: object) -> SettingRefusal | None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.read_openai_refusal": {
+      "kind": "function",
+      "signature": "read_openai_refusal(status: int, body: object) -> SettingRefusal | None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.read_router_refusal": {
+      "kind": "function",
+      "signature": "read_router_refusal(status: int, body: object) -> SettingRefusal | None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.RefusedSetting": {
+      "kind": "literal",
+      "signature": "'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'enforcement'",
+      "tier": "closure"
+    },
+    "threetears.evals.negotiation.SettingFacts": {
+      "kind": "dataclass",
+      "signature": "SettingFacts(accepts_temperature: bool | None = None, reasoning_efforts: tuple[str, ...] | None = None, refused_efforts: frozenset[str] = frozenset(), reasoning_budget: bool | None = None, adaptive_reasoning: bool | None = None, reasoning_disable: bool | None = None, structured_output: bool | None = None, enforcement: bool | None = None, max_output_tokens: int | None = None)",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.SettingRefusal": {
+      "kind": "dataclass",
+      "signature": "SettingRefusal(setting: RefusedSetting, message: str, word: str | None = None, accepted: tuple[str, ...] | None = None)",
+      "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.WireSettings": {
+      "kind": "dataclass",
+      "signature": "WireSettings(max_tokens: int | None = None, temperature: float | None = None, reasoning_effort: str | None = None, reasoning_max_tokens: int | None = None, strict_output: bool = False)",
+      "tier": "host-contract"
     },
     "threetears.evals.providers.models_client": {
       "kind": "function",

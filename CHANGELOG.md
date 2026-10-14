@@ -24,7 +24,7 @@ v<version>` prints a release's notes).
   `[models]` (`3tears-models`, for the shipped provider adapter). The examples that call a model need `[models]`.
 - **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
   `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`,
-  `providers`. A consumer
+  `negotiation`, `providers`. A consumer
   imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
   itself exports the roots and `__version__`, the installed version, which a host records beside what it stores
   since no stored document or analysis bundle carries it.
@@ -56,7 +56,7 @@ v<version>` prints a release's notes).
   the role factory a host hands `EvalHost` as `clients` (keys from `api_keys=` or each provider's environment
   variable, refused by name at first use), and `ModelsFailureDescriber` maps each SDK's errors onto the failure
   port without repeating a payload. A setting a model does not take never fails the call: the adapter sends the
-  closest one it accepts (`closest_settings`: a word as the closest word, never more than asked; a budget as the
+  closest one it accepts (`closest_settings`, in `negotiation`: a word as the closest word, never more than asked; a budget as the
   effort word its share of the cap maps to where only words are taken, and a word as that share where only budgets
   are; an Anthropic effort word over adaptive thinking with no temperature beside it; a strict format a model cannot
   take, unenforced), from what a provider refused, 3tears-models' capabilities and OpenRouter's catalogue, and each
@@ -78,6 +78,16 @@ v<version>` prints a release's notes).
   paid answer (it is logged and the completion returned unpriced), and a cached prompt's cost is marked approximate
   (`;cache-approximate`). The `judge` role is built from `JUDGE_REQUEST_SETTINGS`, what a judged run records it asked:
   an output cap and the effort word `high`, sent as the closest setting the judge model takes.
+- **One negotiation for every client** (`threetears.evals.negotiation`, on the base install: no SDK, no HTTP
+  client). Choosing the closest settings, reading a provider's refusal and resending are not the adapter's own:
+  `negotiate` takes a client's own `send` and refusal reader, resends in the fixed order (a temperature first,
+  keeping enforcement, then enforcement) at most once per setting and four times per call, learns into a shared
+  `LearnedSettings`, and returns what the served request carried (`Negotiated.sent_settings`, `.temperature`).
+  `read_router_refusal` (OpenRouter's 404 and the 400s it relays), `read_anthropic_refusal` and
+  `read_openai_refusal` read a refusal off a status and a JSON body, so a host's client of raw HTTP and the adapter
+  read the same. The host guide carries a minimal OpenRouter client built on it, and
+  `testing.check_refusal_negotiation` scripts a router that refuses a temperature and then enforcement, naming each
+  mistake a host's client makes in resending, reporting or remembering.
 - **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names

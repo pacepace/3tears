@@ -17,7 +17,9 @@ builds through ``create_chat_model``, prices through ``threetears.models.price_l
 needs that models does not do for it: retries off, a private breaker, the stop reason in the engine's words, the
 served model as the reply named it, and the closest setting a model accepts where it lacks the one asked for, reported
 as sent. It imports only public names
-of models and the public roots of this package.
+of models and the public roots of this package. Choosing that setting, reading a provider's refusal and resending
+are not the adapter's own: they are :mod:`threetears.evals.negotiation`, the base-install root a host's own client
+uses too, and the adapter supplies only the chat model, the SDK errors' status and body, and the declared facts.
 
 **What it promises, member by member** (each provider's row is pinned by
 ``tests/test_models_adapter_dimensions.py``, so a LangChain or models upgrade that starts hiding or exposing a

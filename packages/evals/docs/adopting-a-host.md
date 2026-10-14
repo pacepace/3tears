@@ -306,6 +306,115 @@ renamed, rather than every later run quietly recording unverified calls. **Ship 
 `.25`:** a run whose calls report what they were sent with and one whose calls do not are not the same record, and
 reporting from the first `.25` deploy keeps your campaigns from splitting at a later one.
 
+### A client of your own that never fails a request
+
+**No model may fail a request because it lacks a setting**: a judge model with no temperature, an effort word it
+does not have, a router that finds no endpoint for a strict call under `require_parameters`. The shipped adapter
+never does, and neither should your own client, so the logic is one public root, on the base install
+(`threetears.evals.negotiation`, no SDK and no HTTP client): `negotiate` sends the closest settings the model is
+known to take (`closest_settings`), hands any failure to your refusal reader, and on a refusal of a setting the
+request carried learns it and sends again, in a fixed order (a refused temperature first, keeping enforcement, and
+only then enforcement), at most once per setting and four times per call; anything else is raised as your transport
+raised it. It returns what the served request carried, which is what your completion reports. You write the
+request and the parsing; you never write the logic. A minimal OpenRouter client over raw HTTP (OpenRouter's request
+shape is the `router` family; `read_router_refusal` reads its 404 and the 400s it relays from an upstream):
+
+```python
+from dataclasses import dataclass, replace
+
+from threetears.evals.negotiation import LearnedSettings, WireSettings, negotiate, read_router_refusal
+from threetears.evals.schema import ClientRequestSettings, StopReason
+
+
+class RouterRefused(Exception):
+    """The router's answer to a request it did not serve: what a refusal reader reads."""
+
+    def __init__(self, status: int, body: object) -> None:
+        super().__init__(f"OpenRouter answered {status}")
+        self.status, self.body = status, body
+
+
+@dataclass(frozen=True)
+class RouterCompletion:
+    content: str
+    input_tokens: int | None
+    output_tokens: int | None
+    reasoning_tokens: int | None
+    cost_usd: float | None
+    price_source: str | None
+    model: str
+    served_model: str | None
+    temperature: float | None
+    stop_reason: StopReason
+    sent_settings: ClientRequestSettings | None
+
+
+STOPS: dict[str, StopReason] = {"stop": "end_turn", "length": "max_tokens", "content_filter": "content_filter"}
+
+
+class RouterClient:
+    def __init__(self, model: str, *, asked: WireSettings, post, learned: LearnedSettings) -> None:
+        # post(body) -> (status, json): your HTTP call to /chat/completions. learned: one per process or factory.
+        self.model, self.asked, self.post, self.learned = model, asked, post, learned
+
+    async def generate(self, *, system: str, user: str, response_format: dict | None = None) -> RouterCompletion:
+        async def send(wire: WireSettings, facts) -> dict:
+            body: dict = {"model": self.model, "messages": [
+                {"role": "system", "content": system}, {"role": "user", "content": user}]}
+            if wire.max_tokens is not None:
+                body["max_tokens"] = wire.max_tokens
+            if wire.temperature is not None:
+                body["temperature"] = wire.temperature
+            if wire.reasoning_effort is not None:
+                body["reasoning"] = {"effort": wire.reasoning_effort}
+            if response_format is not None:
+                body["response_format"] = response_format
+                body["provider"] = {"require_parameters": wire.strict_output}
+            status, answer = await self.post(body)
+            if status != 200:
+                raise RouterRefused(status, answer)
+            return answer
+
+        done = await negotiate(
+            replace(self.asked, strict_output=response_format is not None),  # a schema asks for enforcement
+            provider_family="router", provider="openrouter", model=self.model, send=send,
+            read_refusal=lambda exc: read_router_refusal(exc.status, exc.body) if isinstance(exc, RouterRefused) else None,
+            learned=self.learned,
+        )
+        choice, usage = done.reply["choices"][0], done.reply.get("usage", {})
+        return RouterCompletion(
+            content=choice["message"]["content"], input_tokens=usage.get("prompt_tokens"),
+            output_tokens=usage.get("completion_tokens"), reasoning_tokens=None, cost_usd=None,
+            price_source=None, model=self.model, served_model=done.reply.get("model"),
+            temperature=done.temperature, stop_reason=STOPS.get(choice.get("finish_reason"), "truncated"),
+            sent_settings=done.sent_settings,  # what the SERVED request carried, never what was asked
+        )
+
+    async def aclose(self) -> None:
+        pass
+```
+
+Price it and read its served provider your own way; the negotiation is the part not to copy. For another wire,
+`read_anthropic_refusal` and `read_openai_refusal` read Anthropic's and OpenAI's error bodies the same way (an SDK
+keeps both on its exception, `exc.status_code` and `exc.body`), and `anthropic_thinking` builds Anthropic's
+`thinking` for the settings sent. **Hold your suite to it** with `check_refusal_negotiation`
+(`threetears.evals.testing`): it scripts a router that refuses the temperature, then enforcement, and fails naming
+each mistake unless your client resends in that order, reports what was served, and sends the next call that way
+at once:
+
+```python
+from threetears.evals.testing import check_refusal_negotiation
+
+await check_refusal_negotiation(
+    lambda transport: RouterClient(
+        "openai/gpt-6-luna",
+        asked=WireSettings(max_tokens=10240, temperature=0.0, reasoning_effort="high"),
+        post=transport,
+        learned=LearnedSettings(),
+    )
+)
+```
+
 ## Tenancy: the scope
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the

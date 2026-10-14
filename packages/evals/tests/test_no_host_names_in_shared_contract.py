@@ -522,6 +522,9 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: ``providers``, the provider adapter the package ships as an optional extra, is whole from birth on the same
 #: terms: it serves every host that brings no client of its own. It names the providers it builds clients for,
 #: and one of them is also a host noun; :data:`_PROVIDER_NAMES` says which, and nothing else is exempt there.
+#: ``negotiation``, what every completion client (the adapter's and a host's own) sends and resends, is whole on the
+#: same terms and needs no exemption: it names the request shape OpenRouter speaks ``router`` (``ProviderFamily``,
+#: ``read_router_refusal``), so the provider's name is prose in its readers' docstrings and declared nowhere.
 #:
 #: A host's adapter tree never belongs here. Its whole purpose is host coupling — it names its
 #: host's concepts on purpose, and an extraction deletes it rather than porting it. Scanning it
@@ -539,6 +542,7 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "transports",
     "vega",
     "providers",
+    "negotiation",
 )
 
 #: Host nouns that, inside one shared-contract tree, name a PROVIDER the tree builds clients for, by tree.
