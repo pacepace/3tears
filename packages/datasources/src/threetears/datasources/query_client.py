@@ -51,7 +51,7 @@ import asyncio
 import random
 import re
 from collections.abc import Callable, Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid7
 
@@ -82,12 +82,17 @@ __all__ = [
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
     "RESULT_TOO_LARGE",
     "QUERY_STATEMENT_TIMEOUT_SECONDS",
+    "EXPORT_LIST_UNSUPPORTED",
     "EXPORT_NOT_GRANTED",
     "EXPORT_REFUSED",
     "EXPORT_UNSUPPORTED",
     "FINGERPRINT_GROUPS_UNSUPPORTED",
     "RelationFingerprintGroup",
     "DatasourceExportDeleteRequest",
+    "DatasourceExportListRequest",
+    "DatasourceExportListResult",
+    "DatasourceExportListUnsupportedError",
+    "DatasourceExportRecord",
     "DatasourceExportRequest",
     "DatasourceExportResult",
     "DatasourceQueryClient",
@@ -460,6 +465,57 @@ class DatasourceExportDeleteRequest(BaseModel):
         return value
 
 
+class DatasourceExportListRequest(BaseModel):
+    """ask the hub which exports it holds a record of for the caller, on this datasource: one page.
+
+    It names no pod. The hub answers for the pod its verified identity token names and for no
+    other, so there is nothing here by which a caller could ask about another pod's exports. What
+    comes back is what :class:`DatasourceExportDeleteRequest` needs: each export's destination.
+
+    :param cursor: where the page starts: the ``next_cursor`` of the page before, as the hub gave
+        it, or ``None`` for the first page
+    :ptype cursor: str | None
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cursor: str | None = None
+
+
+class DatasourceExportRecord(BaseModel):
+    """one export the hub ran for the caller and has not deleted, as the hub recorded it.
+
+    :param destination: the destination the caller chose for it, which names it to
+        :meth:`DatasourceQueryClient.delete_export`
+    :ptype destination: str
+    :param object_prefix: the key prefix its files sit under in the datasource's export bucket
+    :ptype object_prefix: str
+    :param date_created: when the hub recorded it, before the warehouse wrote a file
+    :ptype date_created: datetime
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    destination: str
+    object_prefix: str
+    date_created: datetime
+
+
+class DatasourceExportListResult(BaseModel):
+    """one page of the caller's recorded exports, in destination order.
+
+    :param exports: the page's exports
+    :ptype exports: list[DatasourceExportRecord]
+    :param next_cursor: the cursor that asks for the page after this one; ``None`` on the last
+    :ptype next_cursor: str | None
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    exports: list[DatasourceExportRecord]
+    next_cursor: str | None = None
+
+
 class DatasourceQueryRequest(BaseModel):
     """one datasource query, carrying the caller's identity as a forwarded token.
 
@@ -514,10 +570,14 @@ class DatasourceQueryRequest(BaseModel):
     export: DatasourceExportRequest | None = None
     #: the deletion of an export the caller read and proved, in place of a query
     export_delete: DatasourceExportDeleteRequest | None = None
+    #: a page of the exports recorded for the caller, in place of a query. A hub that predates the
+    #: ask refuses the field as unknown (``MALFORMED_REQUEST``), which the client reports as
+    #: :class:`DatasourceExportListUnsupportedError`
+    export_list: DatasourceExportListRequest | None = None
 
     @model_validator(mode="after")
     def _exactly_one_operation(self) -> "DatasourceQueryRequest":
-        """require exactly one of ``query``, ``fingerprint`` and ``export``.
+        """require exactly one of ``query``, ``fingerprint``, ``export``, ``export_delete`` and ``export_list``.
 
         The two are alternative asks on one subject, and the alternative to this
         check is a model that can represent a request meaning nothing (neither
@@ -540,20 +600,24 @@ class DatasourceQueryRequest(BaseModel):
                 ("fingerprint", self.fingerprint),
                 ("export", self.export),
                 ("export_delete", self.export_delete),
+                ("export_list", self.export_list),
             )
             if value is not None
         ]
         if len(asked) != 1:
             raise ValueError(
-                f"a datasource request carries exactly one of query, fingerprint, export or export_delete, got {asked or 'none'}"
+                "a datasource request carries exactly one of query, fingerprint, export, export_delete or "
+                f"export_list, got {asked or 'none'}"
             )
         if (self.export is not None or self.export_delete is not None) and self.params:
             raise ValueError("an export binds no parameters; write the values into its SELECT as literals")
+        if self.export_list is not None and self.params:
+            raise ValueError("an export list binds no parameters")
         return self
 
     @model_serializer(mode="wrap")
     def _omit_absent_export(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """leave ``export`` and ``export_delete`` off the wire when they are not asked for.
+        """leave ``export``, ``export_delete`` and ``export_list`` off the wire when they are not asked for.
 
         A hub that predates exports forbids unknown fields, so a query or fingerprint carrying
         ``"export": null`` would be refused there as malformed: every read of a newer caller would
@@ -566,7 +630,7 @@ class DatasourceQueryRequest(BaseModel):
         :rtype: dict[str, Any]
         """
         data: dict[str, Any] = handler(self)
-        for name in ("export", "export_delete"):
+        for name in ("export", "export_delete", "export_list"):
             if getattr(self, name) is None:
                 data.pop(name, None)
         return data
@@ -629,6 +693,8 @@ class DatasourceQueryResponse(BaseModel):
     export: DatasourceExportResult | None = None
     #: set only in answer to an ``export_delete`` request: the versions and delete markers deleted
     export_deleted: int | None = None
+    #: set only in answer to an ``export_list`` request: one page of the caller's recorded exports
+    export_list: DatasourceExportListResult | None = None
 
 
 class DatasourceQueryResult(BaseModel):
@@ -686,6 +752,34 @@ class DatasourceQueryError(RuntimeError):
         """
         super().__init__(f"{error_code}: {message}")
         self.error_code = error_code
+
+
+class DatasourceExportListUnsupportedError(DatasourceQueryError):
+    """the hub does not know the ask for a caller's own recorded exports: it predates it.
+
+    Its own type because it is neither an answer nor a fault. The hub named no export, so it is
+    not an empty list; and the bus, the grant and the request are all sound, so it is not a
+    failure to retry or to page anyone about. A caller that lists its exports to delete the ones a
+    killed run left catches this, logs it and carries on with nothing to clear: against such a hub
+    those exports stay for the operator's surface, as they did before the ask existed.
+    :attr:`error_code` is :data:`EXPORT_LIST_UNSUPPORTED`.
+
+    :param datasource_name: the datasource asked about
+    :ptype datasource_name: str
+    """
+
+    def __init__(self, datasource_name: str) -> None:
+        """name the datasource whose hub could not answer.
+
+        :param datasource_name: the datasource asked about
+        :ptype datasource_name: str
+        """
+        super().__init__(
+            EXPORT_LIST_UNSUPPORTED,
+            f"the hub serving {datasource_name!r} does not know the export list ask (it refused the request as "
+            "malformed, as a hub that predates the ask does); it named no export, so none can be cleared through it",
+        )
+        self.datasource_name = datasource_name
 
 
 class DatasourceQueryClient:
@@ -1064,6 +1158,116 @@ class DatasourceQueryClient:
             )
         return response.export_deleted
 
+    @traced
+    async def list_own_exports(
+        self, datasource_name: str, *, correlation_id: UUID | None = None
+    ) -> list[DatasourceExportRecord]:
+        """every export the hub holds a record of for this caller on a datasource, read to the last page.
+
+        For a pod that deletes each export once its load has proven it: a run that was killed left
+        its exports recorded at the hub and nowhere else, and the next run finds them here and
+        deletes each through :meth:`delete_export` by its ``destination``. The hub answers for the
+        pod its verified identity token names, so the ask names no pod and returns no other pod's.
+
+        :param datasource_name: the datasource's name as the hub holds it
+        :ptype datasource_name: str
+        :param correlation_id: trace id every page carries; generated when omitted
+        :ptype correlation_id: UUID | None
+        :return: the caller's recorded exports, in destination order; empty when it has none
+        :rtype: list[DatasourceExportRecord]
+        :raises DatasourceExportListUnsupportedError: when the hub predates the ask; nothing was
+            listed, which is not the same as nothing recorded
+        :raises DatasourceQueryError: on a refusal, a transport failure, a success carrying no page,
+            or a cursor the hub has already given (the list cannot be shown to end)
+        """
+        if not datasource_name:
+            raise DatasourceQueryError(
+                "INVALID_DATASOURCE_NAME",
+                "an export list needs the datasource's name; an empty name composes no subject",
+            )
+        trace = correlation_id if correlation_id is not None else uuid7()
+        subject = Subjects.datasource_query(datasource_name)
+        exports: list[DatasourceExportRecord] = []
+        given: set[str] = set()
+        cursor: str | None = None
+        more = True
+        while more:
+            page = await self._own_exports_page(subject, datasource_name, cursor, trace)
+            exports.extend(page.exports)
+            cursor = page.next_cursor
+            more = cursor is not None
+            if cursor is not None:
+                if cursor in given:
+                    # the hub is handing back a page it already gave: following it would never end,
+                    # and stopping here would pass off a prefix as the whole list
+                    raise DatasourceQueryError(
+                        "MALFORMED_RESPONSE",
+                        f"export list on {datasource_name!r} repeated a cursor after {len(exports)} exports",
+                    )
+                given.add(cursor)
+        log.info(
+            "datasource exports listed for the caller",
+            extra={
+                "extra_data": {
+                    "datasource": datasource_name,
+                    "correlation_id": f"{trace}",
+                    "exports": len(exports),
+                }
+            },
+        )
+        return exports
+
+    async def _own_exports_page(
+        self, subject: Subject, datasource_name: str, cursor: str | None, correlation_id: UUID
+    ) -> DatasourceExportListResult:
+        """ask the hub for one page of the caller's recorded exports.
+
+        :param subject: the datasource's query subject
+        :ptype subject: Subject
+        :param datasource_name: the datasource, for the messages
+        :ptype datasource_name: str
+        :param cursor: the page's cursor, or ``None`` for the first page
+        :ptype cursor: str | None
+        :param correlation_id: the listing's trace id
+        :ptype correlation_id: UUID
+        :return: the page
+        :rtype: DatasourceExportListResult
+        :raises DatasourceExportListUnsupportedError: when the hub refuses the request as malformed
+        :raises DatasourceQueryError: on any other refusal, a transport failure, or a success
+            carrying no page
+        """
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id,
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            export_list=DatasourceExportListRequest(cursor=cursor),
+        )
+        try:
+            response = await self._ask(subject, request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"export list on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            if response.error_code == _MALFORMED_REQUEST:
+                # what a hub answers when it cannot read the ask: one that predates it forbids the
+                # unknown field. This client builds the request from its own validated models, so
+                # nothing else in it is unreadable, and a hub that knows the ask never answers it
+                # with this code
+                log.warning(
+                    "the hub does not know the export list ask; no export was listed",
+                    extra={"extra_data": {"datasource": datasource_name, "correlation_id": f"{correlation_id}"}},
+                )
+                raise DatasourceExportListUnsupportedError(datasource_name)
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"export list on {datasource_name!r} was refused",
+            )
+        if response.export_list is None:
+            # a hub that answered success without a page listed nothing; taking it as a caller
+            # with no exports would leave them in the bucket unlooked for
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"export list on {datasource_name!r} returned success with no page"
+            )
+        return response.export_list
+
     async def query(
         self,
         datasource_name: str,
@@ -1225,6 +1429,14 @@ FINGERPRINT_GROUPS_UNSUPPORTED: Final = "FINGERPRINT_GROUPS_UNSUPPORTED"
 #: the hub's refusal of an export whose ``SELECT`` cannot sit in a quoted literal, or whose destination
 #: would leave the configured prefix
 EXPORT_REFUSED: Final = "EXPORT_REFUSED"
+
+#: the client's own code for a hub that predates the export list ask, carried by
+#: :class:`DatasourceExportListUnsupportedError`. No hub sends it
+EXPORT_LIST_UNSUPPORTED: Final = "EXPORT_LIST_UNSUPPORTED"
+
+#: the hub's refusal of a request it could not read: a body that did not parse, or a field its
+#: model forbids, which is how a hub answers an ask newer than it is
+_MALFORMED_REQUEST: Final = "MALFORMED_REQUEST"
 
 #: how many times the client asks again after a ``DATASOURCE_BUSY`` refusal before raising it
 BUSY_RETRIES: Final = 3

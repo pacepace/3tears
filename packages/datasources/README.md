@@ -89,6 +89,114 @@ work in seconds, and the reader takes the files from the bucket.
 
 Reading an export needs `pip install '3tears-datasources[export]'` (pyarrow).
 
+### A pod's own exports
+
+A pod deletes each export once its load has proven it. A pod killed in the
+middle of a load never gets to, and the only other record of what it wrote is
+the hub's (`platform.datasource_export_objects`, one row per export the hub
+ran and has not deleted). `DatasourceQueryClient.list_own_exports` reads that
+record back for the calling pod, so the next run can delete what the last one
+left:
+
+```python
+try:
+    left = await client.list_own_exports("reports-warehouse")
+except DatasourceExportListUnsupportedError:
+    left = []  # a hub that predates the ask: nothing can be cleared through it; log and carry on
+for export in left:
+    await client.delete_export("reports-warehouse", destination=export.destination)
+```
+
+It returns every `DatasourceExportRecord` (`destination`, `object_prefix`,
+`date_created`), read to the last page. Nothing ends an export but its
+deletion: there is no timer, and listing changes nothing.
+
+#### The hub's contract for the ask
+
+The ask rides the datasource's existing query subject
+(`{ns}.datasource.<name>.query`) as one more field of
+`DatasourceQueryRequest`, beside `query`, `fingerprint`, `export` and
+`export_delete`. No subject and no NATS grant is added.
+
+Request (one page):
+
+```json
+{"correlation_id": "<uuid>", "identity_token": "<token>", "user_identity_token": null,
+ "export_list": {"cursor": null}}
+```
+
+`cursor` is `null` for the first page and the previous page's `next_cursor`,
+unchanged, for each page after it.
+
+Reply (`DatasourceQueryResponse`):
+
+```json
+{"success": true, "correlation_id": "<the request's>",
+ "export_list": {"exports": [{"destination": "enr/r1/VA",
+                              "object_prefix": "exports/<namespace id>/enr/r1/VA/",
+                              "date_created": "2026-10-13T09:00:00Z"}],
+                 "next_cursor": null}}
+```
+
+What the hub does, in order:
+
+1. **Verify the caller**, exactly as for every ask on the subject. A token
+   that does not verify is `IDENTITY_REFUSED`.
+2. **Resolve the datasource** from the subject. None served there is
+   `DATASOURCE_NOT_FOUND`.
+3. **Admit a tool pod, on its identity alone.** A principal that is not a
+   tool pod is `EXPORT_NOT_GRANTED`. Neither `datasource.read` nor the export
+   grant is asked, for the reason the delete asks neither: a pod whose grant
+   was withdrawn must still be able to find, and so delete, what it was let
+   write. The datasource needs no export configured to answer.
+4. **Answer for the verified caller only.** The rows returned are those of
+   `datasource_export_objects` whose `datasource_name` is the subject's
+   datasource and whose `tool_pod_id` is the principal the verified token
+   names. The request has no field naming a pod and forbids unknown fields,
+   so there is no way to ask about another pod; the hub must not add one.
+5. **Page by destination.** Rows are ordered by `destination`, ascending
+   (unique within a datasource). The cursor is opaque to the caller; build it
+   with `threetears.core.pagination.Keyset(columns=("destination",),
+   descending=False)`: read `page_size + 1` rows after the cursor and let
+   `Keyset.page` cut the page and mint `next_cursor`. `next_cursor` is `null`
+   on the last page, and a pod with no recorded export gets
+   `{"exports": [], "next_cursor": null}` with `success: true`. A page
+   carries at most 200 exports, so the largest reply fits a 1 MiB message. A
+   cursor that does not decode is `EXPORT_REFUSED`.
+6. **Never answer `MALFORMED_REQUEST` to a request it parsed.** That code is
+   how the client recognises a hub that does not know the ask (below), so a
+   hub that does know it answers every refusal with another code.
+
+The hub reads these models from this package, so the hub change that moves
+its 3tears pin to the release carrying them ships the handler with it.
+
+#### Against a hub that predates the ask
+
+Pods and hubs upgrade at different times. A hub on an earlier release reads
+the request with a model that forbids unknown fields, so `export_list` fails
+to parse and it answers, before verifying anything:
+
+```json
+{"success": false, "error_code": "MALFORMED_REQUEST",
+ "error_message": "malformed datasource query request", "correlation_id": null}
+```
+
+A hub that has the models but no handler reads the request, finds no ask it
+serves and answers `MALFORMED_REQUEST` as well, with the correlation id. The
+client turns `MALFORMED_REQUEST` in answer to this ask into
+`DatasourceExportListUnsupportedError` (a `DatasourceQueryError` whose
+`error_code` is `EXPORT_LIST_UNSUPPORTED`) and logs it at WARNING. It is
+raised rather than returned as an empty list because the hub named no
+export: "none recorded" and "could not ask" must not look alike. A caller
+that lists in order to clear catches it and clears nothing; the leftover
+exports stay on the operator's surface, as before the ask existed. The same
+holds part-way through a hub's roll: a later page answered by an older
+replica raises it, and no part of the list is returned.
+
+Every other ask a newer client sends is unchanged on the wire (`export_list`
+is left off a request that does not make it), so pod and hub upgrade in
+either order.
+
 ## Reporting reloaded geography layers
 
 `threetears.datasources.geo_reload` is the tool pod to hub contract for

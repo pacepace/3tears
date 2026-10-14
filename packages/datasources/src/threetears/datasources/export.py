@@ -30,7 +30,11 @@ under, and the manifest that lists them.
 asks the hub to delete every version under its destination (the ``export_delete`` ask), and the hub
 does it with a delete-only grant on the export prefix (:attr:`ExportConfig.cleanup_access_key_ref`,
 or its own role), so the reader's keys stay read-only. No timer and no lifecycle rule own an
-export's end; a refused export stays for an operator to look at. The reader trusts
+export's end; a refused export stays for an operator to look at. A reader killed before it could
+ask leaves its exports recorded at the hub, and its next run reads that record back for itself
+(the ``export_list`` ask, :meth:`~threetears.datasources.query_client.DatasourceQueryClient.list_own_exports`)
+and deletes each; the ask and the hub's side of it are set out in the package README ("A pod's own
+exports"). The reader trusts
 none of it on its own: :mod:`threetears.datasources.export_read` checks the files against the
 manifest, the rows against that count, and the count against a fingerprint of the relation taken
 before and after.
