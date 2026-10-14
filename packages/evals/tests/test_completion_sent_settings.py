@@ -281,7 +281,9 @@ def test_a_judge_case_s_digest_leaves_out_its_first_sent_settings_while_none() -
         source=JudgeCaseSource(run_id="source-run", result_id="result-1", test_case_id="source-case-1"),
     )
     unset = case.model_dump(mode="json")
+    # The case as a build before either added source field dumped it: the sent settings, and the author (v15.2).
     del unset["source"]["first_judge_sent_settings"]
+    del unset["source"]["authored"]
 
     assert case.source.first_judge_sent_settings is None
     assert case.content_digest() == canonical_digest(unset)

@@ -21,12 +21,14 @@ import pytest
 from threetears.evals.analysis import JudgeKey, judge_kind_readings
 from threetears.evals.kernel import (
     JUDGE_CASE_KEY,
+    AuthoredJudgeCase,
     JUDGE_KIND,
     JUDGE_LABEL_AGREEMENT_MEASURE,
     JUDGE_PARSE_VALID_MEASURE,
     JudgeKindOverlays,
     ValidationFailedError,
     judge_case_of,
+    judge_trial_of,
     withhold_failure_detail,
 )
 from threetears.evals.kernel.host import EvalHost
@@ -48,6 +50,7 @@ from threetears.evals.schema import (
     EvalTemplate,
     JudgeConfig,
     JudgedArtifact,
+    RubricDim,
 )
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.scripted_table import FakeCellSink
@@ -55,6 +58,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOS
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import (
     FAITHFULNESS_DIM,
+    toyhost_rubric,
     TOY_JUDGE_MODEL,
     ScriptedJudgeClient,
     ToyJudgeCompletion,
@@ -758,3 +762,230 @@ def test_a_result_whose_trial_this_build_cannot_read_is_left_out_saying_why() ->
     assert reasons["res-absent"] == "it carries no judge trial"
     assert reasons["res-unreadable"].startswith("its kind_payload is not a judge trial this build can read")
     assert "scale" in reasons["res-unreadable"], "the reason names what failed to validate"
+
+
+# --- authored cases: the hard negatives no run stored ----------------------------------------------------------
+
+#: The invoice every authored case is judged against, rendered as the toy kind renders one.
+_AUTHORED_INVOICE = "\n".join(
+    [
+        "Invoice doc-authored",
+        "invoice_number: INV-0042",
+        "invoice_date: 2026-03-01",
+        "total_amount: 0.00",
+        "vendor_name: Acme Ltd",
+    ]
+)
+
+#: Who writes the authored cases.
+_AUTHOR = "cy@example.com"
+
+
+def _authored(fields: dict[str, str], expected: int | str, note: str, **overrides: Any) -> AuthoredJudgeCase:
+    """One hand-written case on the toy criterion, judged against :data:`_AUTHORED_INVOICE`."""
+    (criterion,) = toyhost_rubric()
+    return AuthoredJudgeCase(
+        criterion=overrides.pop("criterion", criterion),
+        output=json.dumps(fields, sort_keys=True),
+        case_material=_AUTHORED_INVOICE,
+        intent=toyhost_judged_template().intent,
+        expected=expected,
+        author=_AUTHOR,
+        note=note,
+        **overrides,
+    )
+
+
+def _hard_cases() -> list[AuthoredJudgeCase]:
+    """A hard negative a lenient judge passes, a plain negative, and an output that looks wrong and must pass."""
+    right = {
+        "invoice_number": "INV-0042",
+        "invoice_date": "2026-03-01",
+        "total_amount": "0.00",
+        "vendor_name": "Acme Ltd",
+    }
+    return [
+        # Three of four fields right, so the toy judge scores it 4; the swapped date is the whole point: it fails.
+        _authored(
+            {**right, "invoice_date": "2026-01-03"}, 1, "the date is day-month swapped, which bills a month early"
+        ),
+        _authored({name: "?" for name in right}, 1, "nothing on it is the invoice's"),
+        # A zero total reads like an extraction that dropped the amount; the invoice says zero, so it is right.
+        _authored(right, 5, "the invoice really is for 0.00: a credit-note reissue"),
+    ]
+
+
+async def test_authored_cases_are_judged_and_read_out_as_labelled_cases_whose_label_is_the_verdict() -> None:
+    from threetears.evals.analysis import judge_profiles_of
+
+    judge = _ServedJudge()
+    host = toyhost_host(clients=lambda role, model, *, temperature=None: judge)
+    template = _judge_template()
+    off_loop(host.storage.save_template, template)
+
+    report = off_loop(
+        freeze_judge_cases,
+        host.storage,
+        template=template,
+        scope_id=TOYHOST_SCOPE,
+        authored=_hard_cases(),
+        case_set="faithfulness-hard",
+    )
+
+    assert report.case_set is not None and len(report.cases) == 3 and not report.skipped
+    assert all(case.authored_by == _AUTHOR and case.source_result_id is None for case in report.cases)
+    for frozen, written in zip(report.cases, _hard_cases(), strict=True):
+        stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
+        assert stored is not None and stored.stratum == FAITHFULNESS_DIM
+        case = judge_case_of(stored)
+        assert case is not None and case.source.authored is not None and case.source.run_id is None
+        assert case.evidence.artifact == written.output and case.criterion == written.criterion
+        (label,) = case.labels
+        assert (label.rater, label.score, label.reason, label.rating_id) == (
+            _AUTHOR,
+            written.expected,
+            written.note,
+            None,
+        )
+    # Authoring the same cases again names the stored ones.
+    again = off_loop(
+        freeze_judge_cases, host.storage, template=template, scope_id=TOYHOST_SCOPE, authored=_hard_cases()
+    )
+    assert [case.test_case_id for case in again.cases] == [case.test_case_id for case in report.cases]
+    assert not any(case.created for case in again.cases)
+
+    run = await _judge_arm(
+        host,
+        template,
+        [case.test_case_id for case in report.cases],
+        run_id="judge-arm-hard",
+        overlays=JudgeKindOverlays(),
+    )
+    results = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+
+    trials = [trial for result in results if (trial := judge_trial_of(result.kind_payload)) is not None]
+    assert trials and all(trial.source_result_id is None and trial.labels[0].rater == _AUTHOR for trial in trials)
+    # The lenient toy judge passes the swapped date (4 against a 1): the hard negative catches it, and only it.
+    agreement = {result.test_case_id: result.host_measures[JUDGE_LABEL_AGREEMENT_MEASURE] for result in results}
+    assert sorted(set(agreement.values())) == [0.0, 1.0]
+    readings = judge_kind_readings(results)
+    (reading,) = readings.readings
+    assert reading.label_agreement is not None and reading.label_agreement.results == 3
+    (profile,) = judge_profiles_of(readings, scope_id=TOYHOST_SCOPE).profiles
+    assert profile.label_agreement is not None and profile.label_agreement.results == 3
+
+
+async def test_authored_cases_freeze_beside_stored_ones_into_one_case_set() -> None:
+    host = toyhost_host()
+    source = await _judged_source(host)
+    template = _judge_template()
+    off_loop(host.storage.save_template, template)
+
+    report = off_loop(
+        freeze_judge_cases,
+        host.storage,
+        template=template,
+        run_ids=sorted({result.eval_run_id for result in source}),
+        scope_id=TOYHOST_SCOPE,
+        authored=_hard_cases(),
+        case_set="faithfulness",
+    )
+
+    assert report.case_set is not None and len(report.cases) == len(source) + 3
+    assert [case.authored_by for case in report.cases[:3]] == [_AUTHOR] * 3
+    assert all(case.authored_by is None and case.source_result_id is not None for case in report.cases[3:])
+
+
+@pytest.mark.parametrize(
+    ("scale", "verdict", "named"),
+    [
+        ("ordinal", "fail", "'fail'"),
+        ("ordinal", 7, "verdict 7"),
+        ("pass_fail", 3, "verdict 3"),
+        ("ordinal", 0, "verdict 0"),
+    ],
+)
+def test_an_authored_verdict_its_criterion_s_scale_cannot_hold_is_refused_naming_both(
+    scale: str, verdict: int | str, named: str
+) -> None:
+    (criterion,) = toyhost_rubric()
+    if scale == "pass_fail":
+        criterion = RubricDim(
+            name=FAITHFULNESS_DIM, description=criterion.description, scale="pass_fail", judge="builtin"
+        )
+    with pytest.raises(
+        ValueError, match=rf"criterion '{FAITHFULNESS_DIM}' is answered on the {scale} scale"
+    ) as refused:
+        _authored({}, verdict, "out of range", criterion=criterion)
+    assert named in str(refused.value)
+
+
+def test_an_authored_pass_fail_verdict_is_stored_as_the_score_it_stands_for() -> None:
+    (criterion,) = toyhost_rubric()
+    criterion = RubricDim(name=FAITHFULNESS_DIM, description=criterion.description, scale="pass_fail", judge="builtin")
+    must_fail = _authored({}, "fail", "a hard negative", criterion=criterion)
+    must_pass = _authored({}, "pass", "looks wrong, is right", criterion=criterion)
+
+    assert [must_fail.expected_score, must_pass.expected_score] == [0, 1]
+    from threetears.evals.kernel import JudgeCase
+
+    assert JudgeCase.from_authored(must_fail).labels[0].score == 0
+
+
+def test_a_freeze_naming_no_run_no_labels_and_no_authored_case_is_refused() -> None:
+    host = toyhost_host()
+    with pytest.raises(ValidationFailedError, match="no judged run, no labels and no authored case"):
+        freeze_judge_cases(host.storage, template=_judge_template(), scope_id=TOYHOST_SCOPE)
+
+
+async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_the_caller() -> None:
+    from threetears.evals.actions import engine_actions
+    from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
+
+    host = toyhost_host()
+    subject = toyhost_judged_template()
+    off_loop(host.storage.save_template, subject)
+    template = _judge_template()
+    off_loop(host.storage.save_template, template)
+    hard = JudgeCaseAuthor(
+        template_id=template.id,
+        criterion_template_id=subject.id,
+        criterion=FAITHFULNESS_DIM,
+        output=json.dumps({"invoice_number": "INV-0042"}),
+        case_material=_AUTHORED_INVOICE,
+        expected=1,
+        note="three of four fields missing is not faithful",
+    )
+
+    report = off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR)
+
+    (frozen,) = report.cases
+    stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
+    assert stored is not None and stored.template_id == template.id
+    case = judge_case_of(stored)
+    assert case is not None and case.criterion == subject.rubric[0] and case.intent == subject.intent
+    assert case.labels[0].rater == _AUTHOR and frozen.authored_by == _AUTHOR
+    action = next(action for action in engine_actions() if action.name == "judge_case_author")
+    assert action.permission == "write"
+    assert f"{FAITHFULNESS_DIM} authored by {_AUTHOR}, its expected verdict its label" in action.render(report)
+    # Authoring it again names the stored case.
+    assert off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR).cases[0].created is False
+    # A dimension the template does not have, and a verdict its scale cannot hold, are each refused by name.
+    with pytest.raises(ValidationFailedError, match="has no rubric dimension 'extraction.tone'"):
+        off_loop(
+            judge_case_author,
+            host,
+            hard.model_copy(update={"criterion": "extraction.tone"}),
+            TOYHOST_SCOPE,
+            author=_AUTHOR,
+        )
+    with pytest.raises(
+        ValidationFailedError, match=rf"criterion '{FAITHFULNESS_DIM}' .* cannot hold the verdict 'fail'"
+    ):
+        off_loop(
+            judge_case_author,
+            host,
+            JudgeCaseAuthor.model_validate({**hard.model_dump(), "expected": "fail"}),
+            TOYHOST_SCOPE,
+            author=_AUTHOR,
+        )

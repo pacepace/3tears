@@ -647,8 +647,12 @@ def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
         + (f"; case set {report.case_set.label}" if report.case_set is not None else ""),
     ]
     lines += [
-        f"- {case.test_case_id}: {case.dim} on result {case.source_result_id} (run {case.source_run_id}), "
-        f"{case.labels} label(s)"
+        f"- {case.test_case_id}: {case.dim} "
+        + (
+            f"authored by {case.authored_by}, its expected verdict its label"
+            if case.authored_by is not None
+            else f"on result {case.source_result_id} (run {case.source_run_id}), {case.labels} label(s)"
+        )
         for case in report.cases
     ]
     if report.skipped:

@@ -6,7 +6,8 @@ scorer, the in-memory reference store — launches through the engine's own laun
 an :class:`~threetears.evals.analysis.EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
 classifier, and the summary carries its confusion matrix (:class:`~threetears.evals.analysis.ConfusionCount`) and each label's
 precision, recall and F1 (:class:`~threetears.evals.analysis.LabelStatistics`). Handed a :class:`Judge`, it also grades each answer
-with a model against a rubric. A candidate that calls a paid model returns an :class:`Answer` to report
+with a model against a rubric, and stores the :class:`JudgeExample` answers it must grade a known way as the
+cases its calibration starts from. A candidate that calls a paid model returns an :class:`Answer` to report
 what each answer spent, which the summary and the results' ``cost_usd`` carry. :func:`compare` runs two or
 more candidates over one case list the same way, each as one arm, and returns a :class:`Comparison` whose
 campaign report tests every arm against the one named the control; keyed by their level of each of several
@@ -68,7 +69,7 @@ from threetears.evals.quick.one_call import (
     run_eval,
 )
 from threetears.evals.quick.guardrails import Guardrail, GuardrailDirection
-from threetears.evals.quick.judged import CaseMaterial, Judge
+from threetears.evals.quick.judged import CaseMaterial, Judge, JudgeExample
 from threetears.evals.quick.measures import Measure, measure
 from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
 from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
@@ -101,6 +102,7 @@ __all__ = [
     "HostCommand",
     "HostFactory",
     "Judge",
+    "JudgeExample",
     "Measure",
     "Scorer",
     "Tool",

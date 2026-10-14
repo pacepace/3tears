@@ -342,7 +342,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 1`
+  <br>`= 2`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 15`
 - **`DURABLE_UPGRADERS`** · constant (tuple) · The registered durable steps, oldest first: `[s.from_version for s in DURABLE_UPGRADERS]` is `range(DURABLE_BASELINE_VERSION, DURABLE_SCHEMA_VERSION)`.
@@ -537,6 +537,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`AdmittedGeneration`** · dataclass · A case generation's calls, admitted in the call that asked for it, for the job that makes them.
 - **`ArmGuardrails`** · class · Where one arm stands on every guardrail checked against the control, under any rig.
 - **`AuthoredAnalysis`** · model · A decision memo over one campaign's evidence.
+- **`AuthoredJudgeCase`** · model · A calibration case written by hand: an output, the criterion it is judged on, and the verdict it must get.
 - **`BarAdjudication`** · model · One bar the campaign is held to, adjudicated against every cell.
 - **`BarName`** · dataclass · A bar name a result can carry: which kind it is, and the descriptor that says which way it runs.
 - **`BarOverride`** · model · A standard this campaign holds itself to, tighter than the registered one.
@@ -608,8 +609,9 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`JobStore`** · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
 - **`JobTimeoutFactory`** · protocol · Builds the context manager a single job runs inside.
 - **`JudgeCase`** · model · One output and the criterion it is judged on, frozen from a stored result — and what people said about it.
+- **`JudgeCaseAuthoring`** · model · Who wrote an authored judge case, and why its verdict is what it is: the case's provenance in place of a result.
 - **`JudgeCaseLabel`** · model · One person's rating of the frozen output on the case's criterion, as it stood when the case was frozen.
-- **`JudgeCaseSource`** · model · Where a judge case's output came from: the stored result, and what its own judge answered.
+- **`JudgeCaseSource`** · model · Where a judge case's output came from: the stored result and what its own judge answered, or its author.
 - **`JudgedDimensionFacts`** · model · What one judged dimension IS, frozen beside its scores — `MeasureFacts`' judged sibling.
 - **`JudgedReading`** · model · One judged dimension's scores in one cell.
 - **`JudgeEvidenceTier`** · model · The evidence tier of one judge's readings on one dimension, and the two measurements that decided it.
@@ -695,6 +697,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'running'` | `'stored'` | `'refused'` | `'failed'` | `'cancelled'` | `'timed_out'`
 - **`AttributionScope`** · literal · Whether a measure isolates one `subsystem` or reflects the whole `end_to_end` run.
   <br>`'subsystem'` | `'end_to_end'`
+- **`AuthoredVerdict`** · type alias · An expected verdict as its author states it: a score on the criterion's scale (1-5 ordinal; 1 pass, 0 fail), or `"pass"` / `"fail"` on a pass/fail criterion.
+  <br>`Annotated[int, Field(strict=True)] | Literal['pass', 'fail']`
 - **`BarDecision`** · literal · What a bar's verdict on one cell came to — see `BarVerdict.decision`.
   <br>`'cleared'` | `'missed'` | `'undecided'` | `'no_interval'` | `'no_data'`
 - **`BarNameKind`** · literal · The three kinds of name a bar may carry, each read from a different place on a result.
@@ -1087,8 +1091,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`execute_run(host: EvalHost, *, run: EvalRun, template: EvalTemplate, test_cases: list[EvalTestCase], judge_service: JudgeService | None, options: RunnerOptions, callbacks: RunCallbacks | None = None, budget_gate: Callable[[float | None], CapBreach | None] | None = None, on_cost: Callable[[float | None], None] | None = None, cell_sink: list[CellSummary] | None = None) -> list[CellSummary]`
 - **`fold_metered_cell`** · function · Fold one cell's action-seam tally into the external role's rows.
   <br>`fold_metered_cell(external_usage: RoleUsageLedger, cell: MeteredCallTally | None) -> None`
-- **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results into a judge template.
-  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False) -> JudgeCaseFreezeReport`
+- **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
+  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = ()) -> JudgeCaseFreezeReport`
 - **`get_judge_config`** · function · Load a judge config by id within a scope.
   <br>`get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) -> JudgeConfig`
 - **`get_result`** · function · Load one eval result by id within its scope.
@@ -2021,6 +2025,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`Guardrail`** · *host contract* · dataclass · A reading every arm must not get worse on than the control by more than `margin`.
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - **`Judge`** · *host contract* · dataclass · A model that grades each answer on a rubric, one call per dimension.
+- **`JudgeExample`** · *host contract* · dataclass · An answer the judge must grade a known way: one that must fail a dimension, or one that looks wrong and must pass.
 - **`Measure`** · class · A function that computes a measure, carrying the measure's declaration.
 - **`ToolRefused`** · exception · A tool call the world did not make: no such tool, or parameters its schema refuses. Nothing changed.
 - **`World`** · *host contract* · class · A small world: named state each case seeds, and tools the candidate changes it with.
@@ -2148,6 +2153,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str | None = None) -> JobStatus`
 - **`job_poll`** · async function · Where a job stands, read from the record its work writes — the same answer in every process.
   <br>`job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus`
+- **`judge_case_author`** · function · Write one judge case by hand into a judge template: an output, its criterion, and the verdict it must get.
+  <br>`judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, author: str) -> JudgeCaseFreezeReport`
 - **`judge_cases_freeze`** · function · Freeze stored judged outputs, their criteria and their labels into cases of a judge template.
   <br>`judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport`
 - **`judge_configs_list`** · function · The scope's judge configs — what a second judge's `config_ids` and a launch's `judge_config_ids` name.
@@ -2275,6 +2282,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
+- **`JudgeCaseAuthor`** · model · What authoring one judge case by hand names: the judge template, the output, its criterion and its verdict.
 - **`JudgeCasesFreeze`** · model · What freezing judge cases names: the judge template, the judged runs (or the scope's labels), and optionally which dims and results.
 - **`JudgeConfigLine`** · model · One judge config, as a listing shows it: the versioned prompt a judge is asked one dimension with.
 - **`JudgeConfigListing`** · model · A scope's judge configs.
@@ -3060,6 +3068,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
 | `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
+| `judge_case_author` | `write` | `template_id`, `criterion_template_id`, `criterion`, `output`, `case_material`, `expected`, `note`, `scenario?`, `subject?`, `judged_artifact?` | Write a judge case by hand: an output, the rubric dimension it is judged on, and its verdict. |
 | `judge_profiles_record` | `write` | `judge_run_ids` | Store what a judge campaign measured each judge to be, per criterion, for other campaigns to read. |
 | `judge_profiles_list` | `read` | `criterion_dim?` | List the stored judge profiles: each judge and criterion measured, on what, when, and its tier. |
 | `scope_pivot` | `read` | `row_factor`, `column_factor`, `metric?`, `weighting?`, `subject_filter?`, `run_status?`, `predicted_cost?`, `launched_run_ids?` | Aggregate one measure over the scope's observations by two coordinates, cell by cell. |
@@ -3103,6 +3112,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_id` | `string` | A campaign's id, as campaigns_list names it. |
 | `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one afterwards with campaign_update. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
+| `case_material` | `string` | What the output is judged against: its source, or its facts. |
 | `case_set` | `string` | The case set's name; a new name starts at version 1. |
 | `case_set_filter` | `string` or `null` | List only this case set's versions. |
 | `case_set_name` | `string` or `null` | A named case set of the template to run, as case_sets_list names it; every arm runs exactly its cases and records it. Named with case_set_version, and refused beside n_variations. |
@@ -3113,11 +3123,14 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `confirm` | `string` | Must echo the id of what is destroyed, exactly. |
 | `control_from_run_id` | `string` or `null` | One of the campaign's runs whose variant becomes the declared control, the cell every other is read against: its variant key is resolved from the run, so nobody types it. Requires a declaration — declared_design in the same call, or, on an update, the stored one — and is refused beside a design that types its own control. On an update, null clears the control and omitted leaves it as it is. |
 | `criteria` | array of `string` or `null` | The criteria to freeze; omitted freezes every dim each result was judged on. |
+| `criterion` | `string` | The rubric dimension's name on that template. |
 | `criterion_dim` | `string` or `null` | Only the profiles of this criterion's dim; omitted lists every one. |
+| `criterion_template_id` | `string` | The subject template whose rubric dimension the case is judged on, as templates_list names it. |
 | `declared_design` | `object` or `null` | What the campaign sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally questions ([{id, text, merit_axes?}]), bars ([{measure_id, threshold, direction}], no looser than the registered ones), merit_priority and intended_repetitions. Validated and gated as every campaign declaration is. A campaign is created with a design or with exploratory: true, never neither and never both; its control is named by control_from_run_id. On an update it replaces the stored declaration, its questions reconciled with the stored ones by id; declaring one on an exploratory campaign makes it declared; null withdraws the declaration, only beside exploratory: true; omitted leaves it as it is. |
 | `description` (on `campaign_create`) | `string` | A longer description of the campaign. |
 | `description` (on `campaign_update`) | `string` or `null` | A longer description of the campaign. |
 | `dim_filter` | `string` or `null` | List only the configs asking for this dimension. |
+| `expected` | `integer` or `'pass'` \| `'fail'` | The verdict the output must get: 'pass' or 'fail' (or 1 / 0) on a pass/fail dimension, a score from 1 to 5 on an ordinal one. Refused, naming both, when the dimension's scale cannot hold it. |
 | `exploratory` | `boolean` | True says the campaign declares no design: someone learning to run evals, or testing an intuition with no settled question. Its report and analysis say once that its readings confirm nothing, and its design is inferred from the runs. On a create, required without declared_design and refused beside one; on an update, required beside declared_design: null and refused beside a design, or on a declared campaign the update leaves declared. An assertion checked and never stored: a campaign is exploratory exactly while it declares no design, so declaring one later (campaign_update) ends it. |
 | `export_format` | `'csv'` \| `'json'` | The export's form: csv (flat rows, a column per lever) or json (the rows and what was left out). |
 | `export_run_ids` | array of `string` or `null` | Export only these runs, archived ones included since they are named; omitted exports all. |
@@ -3130,6 +3143,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `job_id` | `string` | A job's id, exactly as the action that started it returned it. |
 | `judge_model` | `string` or `null` | The judge model, where the kind is model-judged. |
 | `judge_run_ids` | array of `string` | The finished judge-kind runs whose trials make up the measurement — every arm of the judge campaign, as runs_list names them. Each judge and criterion they measured is recorded from all of them together. |
+| `judged_artifact` | `'document'` \| `'transcript'` | 'document' (judged against its material) or 'transcript' (a conversation's). |
 | `judged_result_ids` | array of `string` or `null` | The results to freeze; omitted freezes every result of the runs. |
 | `judged_run_ids` | array of `string` | The judged runs whose stored results to freeze, as runs_list names them; omitted with from_labels, and required without it. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
@@ -3150,7 +3164,9 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |
 | `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it. |
 | `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it. |
+| `note` | `string` | Why the output must get that verdict, in the author's words. |
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
+| `output` | `string` | The output under review, as the judge reads it. |
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
 | `part` | `'record'` \| `'judge'` \| `'spans'` | Which part of the stored trace to return: record (the output the kind stored, its call ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans). |
 | `predicted_cost` | `object` or `null` | A cost pivot's plan: the structured result launch_estimate returned before these runs. The cell at each priced arm's model and template then shows its predicted cost beside the cost observed. |
@@ -3170,6 +3186,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `run_status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `string` | Read only runs with this status, or 'all'. Completed unless named: a run still going is still adding results. |
 | `sample_fraction` | `number` | The share of the run's judged results the second judge is asked about. |
 | `sample_seed` | `integer` | The seed the share is drawn with; the same seed draws the same results. |
+| `scenario` | `string` or `null` | The scenario the judge reads as what the case asks; omitted reads the criterion template's intent, as its runs' judge does. |
 | `score` | `integer` | The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail). |
 | `second_judge_config_ids` | `object` or `null` | dim -> the versioned judge config whose prompt asks the second judge for that dim; omitted for the prompts the run recorded. A dim absent from a map given is asked with the built-in prompt. |
 | `second_judge_model` | `string` | The model the second judge sends every judged dimension to. |
@@ -3177,11 +3194,12 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `selection` | `'borderline'` \| `'all'` | Which scored dims are re-judged: borderline (stored score inside the scale, or a recorded repeat or second judge disagreed) or all. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
+| `subject` | `string` or `null` | Who or what produced the output, as the judge should know it; omitted for none. |
 | `subject_filter` | `string` or `null` | Read only this subject's runs or insights; omitted reads every subject. |
 | `subject_id` | `string` | The subject the runs measure, as the host names it. |
 | `supersedes` | array of `string` | The live case(s) of this campaign and memo the freeze replaces, by id — needed to revise a case's labels or re-freeze moved evidence; every live case of the pair when it holds several. |
 | `template_filter` | `string` or `null` | Only calls made for this template, by id. |
-| `template_id` (on `sweep_launch`, `case_set_mint`, `run_launch`, `launch_estimate`, `reporter_case_freeze`, `reporter_cases_list`, `judge_cases_freeze`) | `string` | A template's id, as templates_list names it. |
+| `template_id` (on `sweep_launch`, `case_set_mint`, `run_launch`, `launch_estimate`, `reporter_case_freeze`, `reporter_cases_list`, `judge_cases_freeze`, `judge_case_author`) | `string` | A template's id, as templates_list names it. |
 | `template_id` (on `campaign_create`) | `string` or `null` | A template's id, as templates_list names it. |
 | `template_name` | `string` | The judge template's name, unique in the scope. |
 | `test_case_ids` | array of `string` | The cases, in order, each a stored case of the template; a list the latest version already holds is refused. |
