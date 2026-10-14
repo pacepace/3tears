@@ -30,6 +30,11 @@ if [ -n "${THREETEARS_TEST_REMOTE:-}" ]; then
         "$REPO_ROOT/scripts/test-remote.sh" "$lane" "$@" || rc=$?
         echo "tests ran on $lane (remote)"
         exit "$rc"
+    elif [ "$probe" = 75 ]; then
+        # Another dispatch of this tree held the lane past THREETEARS_LANE_WAIT_S. A
+        # local run would quietly take the whole suite onto this box; stop instead.
+        echo "remote lane $lane is still busy with this tree: not running" >&2
+        exit 75
     elif [ "$probe" = 64 ]; then
         echo "remote lane $lane cannot carry these arguments: running locally" >&2
     else

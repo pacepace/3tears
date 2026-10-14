@@ -13,7 +13,9 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -22,8 +24,18 @@ _BASH = shutil.which("bash")
 pytestmark = pytest.mark.skipif(_BASH is None or shutil.which("git") is None, reason="needs bash and git")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+# ``ssh -G`` runs after the lane lock is taken, so with STUB_LOCK_LOG set the stub
+# records what the lock directory holds at that moment, and with STUB_BLOCK set it
+# then waits there (holding the dispatcher inside its locked section) until killed.
 _SSH_STUB = """#!{bash}
-if [ "$1" = -G ]; then printf 'hostname lane.internal\\nuser tester\\nport 2222\\n'; exit 0; fi
+if [ "$1" = -G ]; then
+    if [ -n "${{STUB_LOCK_LOG:-}}" ]; then
+        cat "$XDG_STATE_HOME"/threetears-testlane/*.lock/owner >>"$STUB_LOCK_LOG" 2>/dev/null || echo none >>"$STUB_LOCK_LOG"
+    fi
+    if [ -n "${{STUB_BLOCK:-}}" ]; then sleep 60; fi
+    printf 'hostname lane.internal\\nuser tester\\nport 2222\\n'
+    exit 0
+fi
 exit 255
 """
 
@@ -38,17 +50,22 @@ def _stubs(tmp_path: Path) -> Path:
     return stubs
 
 
-def _run(tmp_path: Path, script: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
+def _env(tmp_path: Path, **env: str) -> dict[str, str]:
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents=True, exist_ok=True)
     (home / ".ssh" / "threetears-testlane.pub").write_text("ssh-ed25519 AAAA test\n")
-    full_env = {
+    return {
         "PATH": f"{_stubs(tmp_path)}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(home),
         **env,
     }
+
+
+def _run(tmp_path: Path, script: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
     assert _BASH is not None
-    return subprocess.run([_BASH, str(script), *args], env=full_env, capture_output=True, text=True, check=False)  # noqa: S603
+    return subprocess.run(  # noqa: S603
+        [_BASH, str(script), *args], env=_env(tmp_path, **env), capture_output=True, text=True, check=False
+    )
 
 
 def _stage(tmp_path: Path, dirname: str) -> Path:
@@ -60,8 +77,10 @@ def _stage(tmp_path: Path, dirname: str) -> Path:
     return root
 
 
-def _dry(tmp_path: Path, root: Path, *args: str) -> list[list[str]]:
-    result = _run(tmp_path, root / "scripts" / "test-remote.sh", "gpu-x", *args, THREETEARS_TEST_REMOTE_DRY_RUN="1")
+def _dry(tmp_path: Path, root: Path, *args: str, **env: str) -> list[list[str]]:
+    result = _run(
+        tmp_path, root / "scripts" / "test-remote.sh", "gpu-x", *args, THREETEARS_TEST_REMOTE_DRY_RUN="1", **env
+    )
     assert result.returncode == 0, result.stderr
     return [shlex.split(line[2:]) for line in result.stdout.splitlines() if line.startswith("+ ")]
 
@@ -79,6 +98,148 @@ def test_the_name_is_a_sanitised_basename_plus_a_path_hash(tmp_path: Path) -> No
     assert one.startswith("my_wt_-")
     assert one == same
     assert other != one
+
+
+_STARTED = "2026-10-14 09:00:00"
+
+
+def _hold(tmp_path: Path, name: str, pid: int) -> Path:
+    """a lane lock on ``name`` as another dispatch (``pid``) would have left it."""
+    lock = tmp_path / "state" / "threetears-testlane" / f"{name}.lock"
+    lock.mkdir(parents=True)
+    (lock / "owner").write_text(f"{pid}\n{_STARTED}\n")
+    return lock
+
+
+def _dead_pid() -> int:
+    child = subprocess.Popen(["true"])  # noqa: S607
+    child.wait()
+    return child.pid
+
+
+def test_a_dispatch_holds_its_trees_lock_and_releases_it(tmp_path: Path) -> None:
+    root = _stage(tmp_path, "wt")
+    seen = tmp_path / "seen"
+    state = tmp_path / "state"
+    _dry(tmp_path, root, XDG_STATE_HOME=str(state), STUB_LOCK_LOG=str(seen))
+    pid, started = seen.read_text().splitlines()
+    assert pid.isdigit()
+    assert len(started) == len(_STARTED)
+    assert list((state / "threetears-testlane").iterdir()) == []
+    # Without XDG_STATE_HOME the lock lives under ~/.local/state; the probe takes it too.
+    probe = _run(tmp_path, root / "scripts" / "test-remote.sh", "--probe", "gpu-x", THREETEARS_TEST_REMOTE_DRY_RUN="1")
+    assert probe.returncode == 0, probe.stderr
+    assert list((tmp_path / "home" / ".local" / "state" / "threetears-testlane").iterdir()) == []
+
+
+def test_a_second_dispatch_of_a_held_tree_exits_75_without_touching_the_lock(tmp_path: Path) -> None:
+    root = _stage(tmp_path, "wt")
+    name = _remote_name(_dry(tmp_path, root))
+    lock = _hold(tmp_path, name, os.getpid())
+    env = {
+        "THREETEARS_TEST_REMOTE_DRY_RUN": "1",
+        "THREETEARS_LANE_WAIT_S": "0",
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+    }
+    for mode in ((), ("--probe",)):
+        result = _run(tmp_path, root / "scripts" / "test-remote.sh", *mode, "gpu-x", **env)
+        assert result.returncode == 75, result.stderr
+        assert f"remote lane: {name} is already being tested from {os.getpid()} (started {_STARTED})" in result.stderr
+        assert "+ " not in result.stdout
+        assert (lock / "owner").read_text() == f"{os.getpid()}\n{_STARTED}\n"
+
+
+def test_test_sh_stops_rather_than_run_locally_when_the_tree_stays_held(tmp_path: Path) -> None:
+    name = _remote_name(_dry(tmp_path, _REPO_ROOT))
+    _hold(tmp_path, name, os.getpid())
+    result = _run(
+        tmp_path,
+        _REPO_ROOT / "scripts" / "test.sh",
+        "core",
+        THREETEARS_TEST_REMOTE="gpu-x",
+        THREETEARS_TEST_REMOTE_DRY_RUN="1",
+        THREETEARS_LANE_WAIT_S="0",
+        XDG_STATE_HOME=str(tmp_path / "state"),
+    )
+    assert result.returncode == 75
+    assert "remote lane gpu-x is still busy with this tree: not running" in result.stderr
+    assert "STUB:uv" not in result.stdout
+
+
+def test_a_stale_lock_is_removed_and_the_dispatch_proceeds(tmp_path: Path) -> None:
+    root = _stage(tmp_path, "wt")
+    name = _remote_name(_dry(tmp_path, root))
+    dead = _dead_pid()
+    lock = _hold(tmp_path, name, dead)
+    seen = tmp_path / "seen"
+    result = _run(
+        tmp_path,
+        root / "scripts" / "test-remote.sh",
+        "gpu-x",
+        THREETEARS_TEST_REMOTE_DRY_RUN="1",
+        THREETEARS_LANE_WAIT_S="0",
+        XDG_STATE_HOME=str(tmp_path / "state"),
+        STUB_LOCK_LOG=str(seen),
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"removing the stale lock on {name} (pid {dead} is gone)" in result.stderr
+    assert seen.read_text().splitlines()[0] != str(dead)
+    assert not lock.exists()
+
+
+def test_two_trees_never_wait_on_each_other(tmp_path: Path) -> None:
+    held = _remote_name(_dry(tmp_path, _stage(tmp_path, "one")))
+    _hold(tmp_path, held, os.getpid())
+    commands = _dry(
+        tmp_path, _stage(tmp_path, "two"), THREETEARS_LANE_WAIT_S="0", XDG_STATE_HOME=str(tmp_path / "state")
+    )
+    assert _remote_name(commands) != held
+
+
+def test_an_interrupted_dispatch_releases_its_lock(tmp_path: Path) -> None:
+    root = _stage(tmp_path, "wt")
+    seen = tmp_path / "seen"
+    state = tmp_path / "state"
+    env = _env(
+        tmp_path,
+        THREETEARS_TEST_REMOTE_DRY_RUN="1",
+        XDG_STATE_HOME=str(state),
+        STUB_LOCK_LOG=str(seen),
+        STUB_BLOCK="1",
+    )
+    assert _BASH is not None
+    dispatch = subprocess.Popen(  # noqa: S603
+        [_BASH, str(root / "scripts" / "test-remote.sh"), "gpu-x"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not seen.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert seen.read_text().splitlines()[0] == str(dispatch.pid)
+        assert len(list((state / "threetears-testlane").iterdir())) == 1
+        os.killpg(dispatch.pid, signal.SIGINT)
+        assert dispatch.wait(timeout=10) == 130
+    finally:
+        if dispatch.poll() is None:
+            os.killpg(dispatch.pid, signal.SIGKILL)
+    assert list((state / "threetears-testlane").iterdir()) == []
+
+
+@pytest.mark.parametrize("wait", ["soon", "-1", "1.5"])
+def test_a_wait_that_is_not_whole_seconds_is_refused(tmp_path: Path, wait: str) -> None:
+    result = _run(
+        tmp_path,
+        _REPO_ROOT / "scripts" / "test-remote.sh",
+        "gpu-x",
+        THREETEARS_TEST_REMOTE_DRY_RUN="1",
+        THREETEARS_LANE_WAIT_S=wait,
+    )
+    assert result.returncode == 64
+    assert "THREETEARS_LANE_WAIT_S must be a whole number of seconds" in result.stderr
 
 
 def test_only_the_lane_key_is_offered_and_config_is_bypassed(tmp_path: Path) -> None:

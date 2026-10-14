@@ -26,6 +26,21 @@
 # on the far side is safe: the synced tree is a copy, never a git checkout, and
 # the runner's contract (shim argv in, test.sh args out) belongs to the lane, not
 # to the branch under test.
+#
+# One dispatch per <name> at a time. Two dispatches of one tree share
+# testruns-3tears/<name>/, and the second's --delete rsync would rewrite the tree
+# under the first's running pytest. So before the probe or the first connection
+# the dispatcher takes ${XDG_STATE_HOME:-~/.local/state}/threetears-testlane/<name>.lock,
+# a directory (mkdir is atomic everywhere; macOS has no flock) holding an `owner`
+# file with the holder's pid and start time. It is held until the remote command
+# returns and released by an EXIT trap on every path, Ctrl-C included. A second
+# dispatch of the same tree says who holds it and waits, polling every 5 s, up to
+# THREETEARS_LANE_WAIT_S seconds (default 1800; 0 means do not wait), then exits
+# 75. A lock whose pid is no longer alive is stale: it is removed and taken. The
+# dry run takes and releases the lock too. Different trees have different names
+# and never wait on each other. --probe locks as well, so test.sh's probe waits
+# out a run in flight instead of probing a host about to be busy with it, and a
+# 75 from that probe stops test.sh rather than sending the suite to run locally.
 set -euo pipefail
 
 DISPATCHER_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -77,6 +92,73 @@ if [ -z "$DRY" ] && [ ! -e "$KEY" ]; then
     echo "remote lane: no lane key at $KEY (set THREETEARS_TEST_REMOTE_KEY)" >&2
     exit 65
 fi
+
+WAIT_S="${THREETEARS_LANE_WAIT_S:-1800}"
+case "$WAIT_S" in
+    "" | *[!0-9]*)
+        echo "remote lane: THREETEARS_LANE_WAIT_S must be a whole number of seconds, not '$WAIT_S'" >&2
+        exit 64
+        ;;
+esac
+LOCK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/threetears-testlane"
+LOCK="$LOCK_DIR/$NAME.lock"
+HELD=0
+holder_pid="" holder_started=""
+
+# Only ever removes a lock this process took and still owns (an empty owner is
+# this process interrupted between its mkdir and writing the file).
+release() {
+    if [ "$HELD" = 1 ]; then
+        owner=""
+        { read -r owner <"$LOCK/owner"; } 2>/dev/null || true
+        if [ -z "$owner" ] || [ "$owner" = "$$" ]; then rm -rf "$LOCK"; fi
+    fi
+    HELD=0
+}
+trap release EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+claim_lock() {
+    mkdir "$LOCK" 2>/dev/null || return 1
+    HELD=1
+    printf '%s\n%s\n' "$$" "$(date '+%Y-%m-%d %H:%M:%S')" >"$LOCK/owner"
+}
+
+# One attempt: 0 when this process now holds the lock. A holder whose pid is not
+# alive left the lock behind (kill -9, a closed laptop): remove it and try once
+# more. A lock with no owner file yet is being taken right now, so it is live.
+take_lock() {
+    if claim_lock; then return 0; fi
+    holder_pid="" holder_started=""
+    if [ -f "$LOCK/owner" ]; then
+        { read -r holder_pid && read -r holder_started; } <"$LOCK/owner" || true
+    fi
+    case "$holder_pid" in
+        "" | *[!0-9]*) return 1 ;;
+    esac
+    if kill -0 "$holder_pid" 2>/dev/null; then return 1; fi
+    echo "remote lane: removing the stale lock on $NAME (pid $holder_pid is gone)" >&2
+    rm -rf "$LOCK"
+    if claim_lock; then return 0; fi
+    return 1
+}
+
+mkdir -p "$LOCK_DIR"
+waited=0
+until take_lock; do
+    if [ "$waited" = 0 ]; then
+        if [ "$WAIT_S" = 0 ]; then then_what="not waiting (THREETEARS_LANE_WAIT_S=0)"; else then_what="waiting"; fi
+        echo "remote lane: $NAME is already being tested from ${holder_pid:-an unknown pid} (started ${holder_started:-just now}); $then_what" >&2
+    fi
+    if [ "$waited" -ge "$WAIT_S" ]; then
+        echo "remote lane: gave up on $NAME after ${waited}s, still held by ${holder_pid:-an unknown pid} ($LOCK)" >&2
+        exit 75
+    fi
+    sleep 5
+    waited=$((waited + 5))
+done
 
 hostname="$HOST" user="" port=22
 if resolved="$(ssh -G "$HOST" 2>/dev/null)"; then

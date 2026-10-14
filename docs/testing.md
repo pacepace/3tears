@@ -129,9 +129,19 @@ tests ran.
 
 **Nothing skips in the lane** that runs locally: its two process tests need what CI's runner has,
 so the image installs `procps` (`pgrep`/`ps`) and the container runs with `--init` (a PID 1 that
-reaps killed orphans); a host provisioned before those must re-run `remote-setup.sh`. Never start
-two dispatches from one worktree at once: both sync into the same `<worktree>-<hash>` directory,
-and the second rewrites the tree under the first's running pytest.
+reaps killed orphans); a host provisioned before those must re-run `remote-setup.sh`.
+
+**One dispatch per tree at a time.** Two dispatches of one worktree (or two `--tree DIR` of the
+same DIR) would share `<worktree>-<hash>`, and the second would rewrite the tree under the first's
+running pytest. So the dispatcher locks
+`${XDG_STATE_HOME:-~/.local/state}/threetears-testlane/<worktree>-<hash>.lock` (a directory, since
+macOS has no `flock`, holding the holder's pid and start time) before the probe, and holds it
+until the remote command returns; a trap releases it on every exit, Ctrl-C included. A second
+dispatch prints `remote lane: <name> is already being tested from <pid> (started <time>); waiting`
+and polls every 5 s for up to `THREETEARS_LANE_WAIT_S` seconds (default 1800; `0` fails at once),
+then exits 75, and `test.sh` stops with 75 too rather than running the suite locally. A lock whose
+pid is gone is stale and is removed. Different worktrees lock different names and never wait on
+each other.
 
 **What stays local.** Lint and typecheck (fast), `test-sidecar.sh` (its own AGPL venv) and
 `test-integration.sh` (testcontainers needs a Docker daemon; the lane container has none). The
