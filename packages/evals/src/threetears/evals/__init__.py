@@ -61,7 +61,7 @@ if TYPE_CHECKING:
 
 #: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
 #: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
-#: pre-release tag (``v0.67.0-evaladopt.N``) states the version it prepares, so a host running one records the tag.
+#: pre-release tag (``v0.68.0-evaladopt.N``) states the version it prepares, so a host running one records the tag.
 #: Read on first use through the module's ``__getattr__`` rather than at import: the source tree imports without
 #: distribution metadata (the installability check and a checkout on ``sys.path`` both do), and a read that finds
 #: no metadata raises ``importlib.metadata.PackageNotFoundError`` by name rather than answering ``"unknown"``.
