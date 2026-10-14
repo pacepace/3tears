@@ -43,7 +43,7 @@ async def test_with_no_api_key_the_writer_repairs_the_canned_draft_from_the_reco
         out,
     )
     assert verdict is not None and verdict.group(1) == "not separated from the control"
-    assert out.index("Code's verdict") < out.index("\n# ")
+    assert out.index("Code's verdict") < out.index("\n- ")  # before the first finding the writer wrote
     # This run's bundle is frozen and reloads to the fingerprint printed; the writer read the recorded one.
     saved = tmp_path / "bundle.json"
     printed = re.search(r"fingerprint ([0-9a-f]{64})", out)
