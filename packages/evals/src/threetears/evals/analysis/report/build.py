@@ -75,12 +75,14 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.decision import evaluate_rule, parse_decision_rule, rule_readings
+from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
     CauseWords,
     arm_exclusions,
     cause_short,
     caveat_lines,
+    rule_sentence,
     fail_words,
     loss_words,
     verdict_line,
@@ -166,6 +168,7 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
     """
     generation = analysis.generation
     bundle = analysis_bundle(analysis)
+    style = _memo_style(bundle, analysis)
     source = ReportSource(
         analysis_id=analysis.id,
         campaign_id=analysis.campaign_id,
@@ -180,12 +183,35 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
         bundle,
         basis="analysis",
         source=source,
-        memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names),
+        memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names, style),
         finding_count=len(analysis.document.findings),
         writer=(
             f"{generation.generator_model}, prompt {generation.prompt_id} version {generation.prompt_version}, "
             f"{_date(generation.generated_at)}"
         ),
+        style=style,
+    )
+
+
+def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoStyle:
+    """The style pass a stored memo's words go through, with the declared question and the rule's outcome to hold
+    them to."""
+    names = {**_arm_names(bundle), **_arm_names(bundle, analysis.variant_index)}
+    questions = _preregistered(bundle)
+    control = _control_key(bundle)
+    candidates = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
+    rule = next((parsed for question in questions if (parsed := parse_decision_rule(question.text))), None)
+    verdict = sentence = None
+    if rule is not None and control is not None and len(candidates) == 1:
+        verdict = evaluate_rule(rule, rule_readings(bundle, control, candidates[0]))
+        namer = _namer(names)
+        sentence = rule_sentence(verdict, control=namer(control), candidate=namer(candidates[0]), bundle=bundle)
+    return MemoStyle(
+        bundle=bundle,
+        names=names,
+        question=questions[0].text if questions else None,
+        rule=verdict,
+        rule_sentence=sentence,
     )
 
 
@@ -253,6 +279,7 @@ def _page(
     memo: Callable[[_ChartLedger, dict[str, ArmName]], list[ReportBlock]],
     finding_count: int,
     writer: str | None,
+    style: MemoStyle | None = None,
 ) -> Report:
     """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
 
@@ -272,6 +299,11 @@ def _page(
     contrasts += _bar_blocks(surface, bars_read)
     notes = [block for block in contrasts if block.section == "methods"]
     contrasts = [block for block in contrasts if block.section != "methods"]
+    if style is not None:
+        notes += [_note(text, "memo") for text in decision_disclosures(style)]
+        notes += [
+            DisclosureBlock(section="methods", source="memo", text=text, fold="Style") for text in style.offending()
+        ]
     name = source.campaign_name or f"Campaign {source.campaign_id}"
     blocks: list[ReportBlock] = [
         DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source)),
@@ -287,7 +319,7 @@ def _page(
         *_case_blocks(bundle, arm),
         *_trial_blocks(bundle, arm),
         *_not_tested_blocks(bundle, surface, arm),
-        *_method_blocks(bundle, surface, arm, names, source=source, writer=writer, notes=notes),
+        *_method_blocks(bundle, surface, arm, names, source=source, writer=writer, notes=notes, style=style),
     ]
     # In reading order, each section's blocks in the order laid out (a code-only page's unasked readings are said
     # with what was not tested, though they are laid out with the questions).
@@ -644,33 +676,45 @@ class _ChartLedger:
 
 
 def _memo_blocks(
-    analysis: EvalAnalysis, bundle: AnalysisContextBundle, charts: _ChartLedger, names: dict[str, ArmName]
+    analysis: EvalAnalysis,
+    bundle: AnalysisContextBundle,
+    charts: _ChartLedger,
+    names: dict[str, ArmName],
+    style: MemoStyle,
 ) -> list[ReportBlock]:
     """The memo: answers to the declared questions, the findings, the recommendations and the next steps.
 
     A finding is one sentence its writer wrote and a table code built from the readings the writer chose; everything
-    else it carries sits in a closed ``Evidence`` fold.
+    else it carries sits in a closed ``Evidence`` fold. Every word the memo contributes passes ``style`` first
+    (:mod:`~threetears.evals.analysis.report.memo_style`).
     """
     document = analysis.document
     # The analysis's own variant index names the cells its memo cites, by the page's rule.
     arm = _ref_namer(analysis.decision_surface, {**names, **_arm_names(bundle, analysis.variant_index)})
     questions = _preregistered(bundle)
-    blocks: list[ReportBlock] = [
-        TextBlock(
-            section="memo",
-            role="answer",
-            body=answer.answer,
-            rests_on=list(answer.rests_on),
-            facts=[Fact(name="Resolution", value=answer.resolution)],
+    blocks: list[ReportBlock] = []
+    for answer in document.questions:
+        replaced = len(style.replaced)
+        body = style.sentence(answer.answer)
+        # An answer the rule's settled outcome replaced is code's answer now, not the memo's resolution.
+        resolution = "answered" if len(style.replaced) > replaced else answer.resolution
+        blocks.append(
+            TextBlock(
+                section="memo",
+                role="answer",
+                body=body,
+                rests_on=list(answer.rests_on),
+                facts=[Fact(name="Resolution", value=resolution)],
+            )
         )
-        for answer in document.questions
-    ]
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
     for position, (finding, resolution) in enumerate(zip(document.findings, resolutions, strict=True)):
         exploratory = not questions or _rests_on_exploratory(resolution, analysis.decision_surface, questions)
-        blocks.extend(_finding_blocks(analysis, position, finding, resolution, arm, charts, exploratory=exploratory))
+        blocks.extend(
+            _finding_blocks(analysis, position, finding, resolution, arm, charts, style, exploratory=exploratory)
+        )
     for decision in document.decisions:
         facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[decision.confidence])]
         if decision.cells:
@@ -685,16 +729,14 @@ def _memo_blocks(
             TextBlock(
                 section="memo",
                 role="recommendation",
-                body=decision.proposal,
+                body=style.sentence(decision.proposal, decides=decision.disposition == "adopted"),
                 rests_on=list(decision.rests_on),
                 facts=[Fact(name="Disposition", value=decision.disposition)],
             )
         )
-        if decision.revisit_when.strip():
+        if (revisit := style.prose(decision.revisit_when)).strip():
             blocks.append(
-                TextBlock(
-                    section="memo", role="revisit_when", body=decision.revisit_when, rests_on=list(decision.rests_on)
-                )
+                TextBlock(section="memo", role="revisit_when", body=revisit, rests_on=list(decision.rests_on))
             )
         blocks.append(_facts_table(facts, name="recommendation_facts"))
     coverage_status = {row.name: row.status for row in analysis.coverage.levers}
@@ -704,9 +746,11 @@ def _memo_blocks(
             status = coverage_status.get(step.lever) or "no coverage row"
             facts.append(Fact(name="Lever", value=f"{step.lever} ({status})"))
         # The facts ride on the block for a program; the page prints them once, in the fold below.
-        blocks.append(TextBlock(section="memo", role="next_step", body=step.title, facts=facts))
-        if step.why.strip():
-            blocks.append(TextBlock(section="memo", role="next_step_why", body=step.why, fold="Why"))
+        blocks.append(
+            TextBlock(section="memo", role="next_step", body=style.sentence(step.title, decides=False), facts=facts)
+        )
+        if (why := style.prose(step.why)).strip():
+            blocks.append(TextBlock(section="memo", role="next_step_why", body=why, fold="Why"))
         blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
     blocks.extend(_coverage_blocks(analysis))
     return blocks
@@ -829,10 +873,15 @@ def _finding_blocks(
     resolution: FindingResolution | None,
     arm: Callable[[str], str],
     charts: _ChartLedger,
+    style: MemoStyle,
     *,
     exploratory: bool,
 ) -> list[ReportBlock]:
-    """One finding: its one sentence, the table code built from its readings, their charts, then a closed fold."""
+    """One finding: its one sentence, the table code built from its readings, their charts, then a closed fold.
+
+    A title restating a number the bundle measured is replaced by the table's own row in words: a measured fact is
+    stated by code, flatly.
+    """
     facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[finding.confidence])]
     if exploratory:
         facts.append(Fact(name="Scope", value=EXPLORATORY_FINDING))
@@ -844,39 +893,43 @@ def _finding_blocks(
         facts.append(Fact(name="Trials", value=", ".join(finding.trials)))
     if finding.invalidates:
         facts.append(Fact(name="Overturns", value=positions(list(finding.invalidates))))
+    table = _evidence_table(analysis, position, resolution, arm) if resolution and resolution.evidence else None
+    fallback = None
+    if table is not None and len(table.columns) > 2:
+        reading = table.columns[1]
+        fallback = row_words(reading.header, [(str(row["arm"].value), row[reading.key].text) for row in table.rows])
     blocks: list[ReportBlock] = [
         # The facts ride on the block for a program; the page prints them once, in the finding's fold.
         TextBlock(
             section="memo",
             role="finding_title",
             finding=position,
-            body=finding.title,
+            body=style.sentence(finding.title, fallback=fallback),
             facts=facts,
             anchor=f"F{position + 1}",
         )
     ]
-    if resolution is not None and resolution.evidence:
-        blocks.append(_evidence_table(analysis, position, resolution, arm))
+    if table is not None and resolution is not None:
+        blocks.append(table)
         blocks.extend(_finding_charts(analysis, position, resolution, charts, arm))
     blocks.append(_facts_table(facts, name="finding_facts", finding=position))
-    if finding.body.strip():
+    if (body := style.prose(finding.body)).strip():
+        blocks.append(TextBlock(section="memo", role="finding_body", finding=position, body=body, fold="Evidence"))
+    for caveat in finding.caveats:
+        if (said := style.prose(caveat.text)).strip():
+            blocks.append(
+                TextBlock(
+                    section="memo",
+                    role="caveat",
+                    finding=position,
+                    body=said,
+                    facts=[Fact(name="Kind", value=caveat.kind)],
+                    fold="Evidence",
+                )
+            )
+    if (durable := style.prose(finding.durable)).strip():
         blocks.append(
-            TextBlock(section="memo", role="finding_body", finding=position, body=finding.body, fold="Evidence")
-        )
-    blocks.extend(
-        TextBlock(
-            section="memo",
-            role="caveat",
-            finding=position,
-            body=caveat.text,
-            facts=[Fact(name="Kind", value=caveat.kind)],
-            fold="Evidence",
-        )
-        for caveat in finding.caveats
-    )
-    if finding.durable.strip():
-        blocks.append(
-            TextBlock(section="memo", role="carried_forward", finding=position, body=finding.durable, fold="Evidence")
+            TextBlock(section="memo", role="carried_forward", finding=position, body=durable, fold="Evidence")
         )
     return blocks
 
@@ -2381,9 +2434,10 @@ def _method_blocks(
     source: ReportSource,
     writer: str | None,
     notes: Sequence[ReportBlock] = (),
+    style: MemoStyle | None = None,
 ) -> list[ReportBlock]:
     """How everything on the page was measured and made: a table, then the engine's disclosures in one closed fold."""
-    blocks: list[ReportBlock] = [_methods_table(bundle, names, source=source, writer=writer)]
+    blocks: list[ReportBlock] = [_methods_table(bundle, names, source=source, writer=writer, style=style)]
 
     def say(source_of: DisclosureSource, text: str | None) -> None:
         if text and text.strip():
@@ -2435,7 +2489,12 @@ def _method_blocks(
 
 
 def _methods_table(
-    bundle: AnalysisContextBundle, names: dict[str, ArmName], *, source: ReportSource, writer: str | None
+    bundle: AnalysisContextBundle,
+    names: dict[str, ArmName],
+    *,
+    source: ReportSource,
+    writer: str | None,
+    style: MemoStyle | None = None,
 ) -> TableBlock:
     """Models, judge, settings sent, cost, the analysis's writer and the bundle, one row each."""
     rows: list[tuple[str, str]] = []
@@ -2469,6 +2528,9 @@ def _methods_table(
         )
     )
     rows.append(("Analysis", writer or NO_ANALYSIS))
+    if style is not None:
+        offending = style.offending()
+        rows.append(("Memo style", f"style: {len(offending)} violations" if offending else "no violations left"))
     rows.append(("Date", _date(source.generated_at)))
     if unshown := _uncarried(bundle):
         rows.append(("Readings not shown", f"{len(unshown)} carried by no trial: {_listed(unshown)}"))

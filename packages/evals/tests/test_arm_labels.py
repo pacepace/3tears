@@ -315,7 +315,7 @@ def rig_only() -> Report:
 
 class TestARigOnlyCampaignIsNamedByItsModel:
     # The page reads the name's levers as words, never ``axis=level``.
-    _ARM = f"candidate kind {TOY_EXTRACTOR_KIND}, model extractor-v2"
+    _ARM = "extractor-v2"
 
     def test_the_arm_is_named_by_its_kind_and_model(self, rig_only: Report) -> None:
         assert _arm_column(rig_only, "scoreboard") == [self._ARM]
@@ -461,7 +461,7 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
 def _rig_only_analysis() -> tuple[EvalAnalysis, list[str]]:
     (arm,) = _rig_only_index()
     rigs = [RIG, RIG_B, RIG_C]
-    names = [f"candidate kind assistant, model openai/gpt-5-mini (test setup {rig[:12]})" for rig in rigs]
+    names = [f"gpt-5-mini (test setup {rig[:12]})" for rig in rigs]
     return _analysis_naming([(arm.variant_key, rig) for rig in rigs], [arm]), names
 
 

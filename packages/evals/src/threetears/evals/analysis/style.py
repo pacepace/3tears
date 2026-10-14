@@ -15,6 +15,7 @@ memo on it cannot drift into two styles.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
 
@@ -94,6 +95,10 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
     """
     pairs = [_PAIR.match(part.strip()) for part in display.split(", ")]
     if len(pairs) > 1 and all(pairs):
+        # The candidate's kind is no name: an arm named by its kind and one other lever is named by that lever.
+        named = [match for match in pairs if match and match["axis"] != "candidate_kind"]
+        pairs = named if len(named) == 1 else pairs
+    if len(pairs) > 1 and all(pairs):
         label = ", ".join(f"{humanize('dimension', match['axis'])} {match['level']}" for match in pairs if match)
         return ArmName(label=label, control=control)
     level = pairs[0]["level"] if len(pairs) == 1 and pairs[0] else display
@@ -153,6 +158,7 @@ _NUMERAL = re.compile(r"(?<![\w.$/-])\$?\d[\d,]*(?:\.\d+)?%?(?![\w-])")
 _KEY_VALUE = re.compile(r"\b[a-z_][a-z0-9_]*=[^\s,;)}=]+")
 _FACT_LINE = re.compile(r"^[A-Z][a-z ]+: .* · [A-Z][a-z ]+: ")
 _CODE_SPAN = re.compile(r"`[^`]*`")
+_CASE_NUMBER = re.compile(r"\bcase \d+\b")
 
 
 @dataclass(frozen=True)
@@ -197,7 +203,8 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     for sentence in sentences(text):
         if (words := len(_WORD.findall(sentence))) > MAX_WORDS:
             found.append(StyleViolation("long_sentence", sentence, f"{words} words"))
-        if (numerals := len(_NUMERAL.findall(sentence))) > MAX_NUMERALS:
+        # A case named by its number is a name, not a figure, as a trial's ``T4`` is.
+        if (numerals := len(_NUMERAL.findall(_CASE_NUMBER.sub("case", sentence)))) > MAX_NUMERALS:
             found.append(StyleViolation("numerals", sentence, f"{numerals} numerals: make it a table"))
     if question:
         found += [
@@ -229,7 +236,7 @@ def fix_prose(text: str, *, question: str | None = None) -> tuple[str, list[Styl
     return fixed, lint_prose(fixed, question=question)
 
 
-def lint_page(markdown: str, *, question: str | None = None) -> list[StyleViolation]:
+def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[StyleViolation]:
     """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
 
     Headings and table headers are held to the header rule; prose lines to every rule. Table body cells, fenced
@@ -238,6 +245,7 @@ def lint_page(markdown: str, *, question: str | None = None) -> list[StyleViolat
     Args:
         markdown: The page.
         question: The declared question, which only the title may carry.
+        names: The arms' names, which head a column as a name, not a header's words.
 
     Returns:
         The violations, in page order.
@@ -257,7 +265,8 @@ def lint_page(markdown: str, *, question: str | None = None) -> list[StyleViolat
         if line.startswith("|"):
             cells = [cell.strip() for cell in line.strip("|").split(" | ")]
             if not header_row and not line.startswith("|---"):
-                found += [v for cell in cells for v in lint_prose(cell, header=True) if v.rule == "header"]
+                headers = [cell for cell in cells if cell.removeprefix("▸ ") not in names]
+                found += [v for cell in headers for v in lint_prose(cell, header=True) if v.rule == "header"]
             header_row = True
             continue
         header_row = False

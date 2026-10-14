@@ -29,11 +29,8 @@ def _rules(text: str, **kwargs: object) -> list[str]:
         ("candidate=v1", "v1", "v1 (control)"),
         ("model=deepseek/deepseek-v4-flash", "deepseek-v4-flash", "deepseek/deepseek-v4-flash (control)"),
         ("prompt=v1, effort=low", "prompt v1, effort low", "prompt v1, effort low (control)"),
-        (
-            "candidate_kind=assistant, model=m",
-            "candidate kind assistant, model m",
-            "candidate kind assistant, model m (control)",
-        ),
+        # The candidate's kind is no name: the other lever names the arm.
+        ("candidate_kind=assistant, model=m", "m", "m (control)"),
     ],
 )
 def test_an_arm_is_named_in_full_once_then_by_its_given_label(display: str, short: str, first: str) -> None:
