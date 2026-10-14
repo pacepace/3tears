@@ -145,6 +145,14 @@ async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled:
         "and cost more per reply ($0.003301 vs $0.003092)."
     )
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "decision"]
+    # One candidate: each arm heads its own column by name.
+    assert [column.header for column in table.columns] == [
+        "Clause",
+        "Reading",
+        "production",
+        "cheaper candidate",
+        "Outcome",
+    ]
     outcomes = [row["outcome"] for row in table.values() if row["outcome"] is not None]
     assert outcomes == ["settled: keep", "settled: keep"]
     assert {"reading": "cost per reply", "control": "$0.003092", "candidate": "$0.003301"}.items() <= next(

@@ -574,7 +574,11 @@ def _design_line(bundle: AnalysisContextBundle) -> str:
 
 
 def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
-    """A declared decision rule, clause by clause, on each arm against the control: a table, never prose."""
+    """A declared decision rule, clause by clause, on each arm against the control: a table, never prose.
+
+    The control and the candidate head their columns by name; with several candidates the candidate's column is
+    ``Candidate`` and an ``Arm`` column names each row's.
+    """
     control = _control_key(bundle)
     questions = _preregistered(bundle)
     rule = next((parsed for question in questions if (parsed := parse_decision_rule(question.text))), None)
@@ -618,20 +622,26 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                         else None,
                     }
                 )
+    if not rows:
+        return []
+    # One candidate heads its own column by name; several share a "Candidate" column, each row naming its arm.
+    candidates = list(dict.fromkeys(str(row["arm"]) for row in rows))
+    single = len(candidates) == 1
+    columns = [
+        TableColumn(key="clause", header="Clause"),
+        *([] if single else [TableColumn(key="arm", header="Arm")]),
+        TableColumn(key="reading", header="Reading"),
+        TableColumn(key="control", header=arm(control)),
+        TableColumn(key="candidate", header=candidates[0] if single else "Candidate"),
+        TableColumn(key="outcome", header="Outcome", term="settled"),
+    ]
     return [
         TableBlock(
             section="decision",
             name="decision",
             title="Decision rule",
-            columns=[
-                TableColumn(key="clause", header="Clause"),
-                TableColumn(key="arm", header="Arm"),
-                TableColumn(key="reading", header="Reading"),
-                TableColumn(key="control", header=arm(control)),
-                TableColumn(key="candidate", header="Arm's"),
-                TableColumn(key="outcome", header="Outcome", term="settled"),
-            ],
-            rows=[table_row(row) for row in rows],
+            columns=columns,
+            rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
             order="clause by clause, each arm against the control",
             total_rows=len(rows),
         )
