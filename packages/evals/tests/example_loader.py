@@ -1,7 +1,7 @@
 """Load a file under ``examples/`` as a module, and run a model-calling example against its recording.
 
 Run as a script, an example reads ``ANTHROPIC_API_KEY``: with it the example calls Claude through
-:func:`threetears.evals.providers.models_client`, and without it it replays ``examples/recordings/<example>.jsonl``.
+:class:`threetears.evals.providers.Model`, and without it it replays ``examples/recordings/<example>.jsonl``.
 A test runs the second way only: :func:`replaying` takes the key out of the environment, makes building a live
 client fail the test, and counts every call the example's clients serve from the recording, keeping each refusal a
 replay raised so the test can name it rather than read it as a missing result.
@@ -92,7 +92,7 @@ def replaying(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Replay:
     def no_live_client(model: str, **_: Any) -> Any:
         pytest.fail(f"a replay built a live client for {model}")
 
-    monkeypatch.setattr(module, "models_client", no_live_client)
+    monkeypatch.setattr(module, "Model", no_live_client)
     replay, build = Replay(), module.client
 
     def counted(model: str, settings: ClientRequestSettings) -> Any:
