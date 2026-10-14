@@ -313,7 +313,21 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
                 "caveats": [{"kind": "sampling", "text": long_caveat}],
                 "invalidates": [],
                 "durable": "",
-            }
+            },
+            {
+                "title": "Candidate model showed no measurable cost reduction over production",
+                "body": "The candidate searched the catalog more.",
+                "confidence": "low",
+                "axes": [],
+                "evidence": [
+                    {"cell": aliases[production], "measure_id": "production_replicating_cost", "reading": "measure"},
+                    {"cell": aliases[candidate], "measure_id": "production_replicating_cost", "reading": "measure"},
+                ],
+                "trials": [],
+                "caveats": [],
+                "invalidates": [],
+                "durable": "",
+            },
         ],
         "decisions": [],
         "questions": [
@@ -342,6 +356,9 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     # The hedge on a measured fact is code's row instead; the meta-prose and the restated count are gone.
     assert "no measurable" not in markdown and "**Accuracy: cheaper candidate " in markdown
     assert "**F1." not in markdown
+    # A title restating its one reading is code's plain sentence, the candidate first, money in dollars.
+    assert "**Cheaper candidate cost $0.003301 per reply to production's $0.003092" in markdown
+    assert " usd" not in markdown
     assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
     assert "The candidate skipped the queue." in markdown
     # The answer that contradicted the settled rule reads the rule's outcome, and the methods say so.
