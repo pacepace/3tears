@@ -57,7 +57,7 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.67.0"
+since = "v0.68.0"
 summary = """
 The first release of 3tears-evals. No earlier release shipped the package, so no public name has moved or been
 removed: every name on the surface is new, and api/surface.json is the baseline later releases are measured from.
