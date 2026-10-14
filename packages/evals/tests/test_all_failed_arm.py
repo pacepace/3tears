@@ -67,9 +67,10 @@ from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET
 from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor, goal_check_measure
-from threetears.evals.quick import Comparison, callable_host, compare
+from threetears.evals import Eval, Result
 from threetears.evals.analysis import summarize_run
-from threetears.evals.quick.one_call import UNUSABLE_ANSWER
+from threetears.evals.quick.graders import UNUSABLE_ANSWER
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import list_results
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
@@ -319,13 +320,8 @@ class TestTheRunnerCountsTheTurnsDelivered:
         assert count_delivered_turns([{"role": "user"}], reported=None) is None
 
     async def test_a_quick_call_stores_one_turn_answered_and_none_refused(self) -> None:
-        comparison = await compare(
-            _QUICK_CASES,
-            {"control": _guess, "candidate": _refuse},
-            expected=lambda case: str(case["label"]),
-            control="control",
-            scope_id="all-failed-turns",
-            k=1,
+        comparison = await Eval(_QUICK_CASES, {"control": _guess, "candidate": _refuse}, ["label"], k=1).run(
+            store=":memory:", scope="all-failed-turns"
         )
         bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, "all-failed-turns").bundle
         stored = [
@@ -714,14 +710,9 @@ async def _refuse(case: Mapping[str, Any]) -> str:
 
 
 class TestAQuickClassifierLandsItsRefusalAsAMiss:
-    async def _comparison(self) -> Comparison:
-        return await compare(
-            _QUICK_CASES,
-            {"control": _guess, "candidate": _refuse},
-            expected=lambda case: str(case["label"]),
-            control="control",
-            scope_id=_QUICK_SCOPE,
-            k=2,
+    async def _comparison(self) -> Result:
+        return await Eval(_QUICK_CASES, {"control": _guess, "candidate": _refuse}, ["label"], k=2).run(
+            store=":memory:", scope=_QUICK_SCOPE
         )
 
     async def test_the_refusing_arm_has_an_accuracy_and_its_refusals_are_unusable_answers(self) -> None:

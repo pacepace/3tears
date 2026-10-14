@@ -24,7 +24,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.metrics import classifier_label_of
-from threetears.evals.quick import Comparison, compare
+from threetears.evals import Eval, Result
 from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "compact-code-only-report"
@@ -40,10 +40,6 @@ CONTROL_ARM = "candidate=control (control)"
 CANDIDATE_ARM = "candidate=candidate"
 
 
-def _expected(case: Mapping[str, Any]) -> str:
-    return str(case["label"])
-
-
 async def right(case: Mapping[str, Any]) -> str:
     return str(case["label"])
 
@@ -52,11 +48,9 @@ async def guess(case: Mapping[str, Any]) -> str:
     return "plant"
 
 
-async def _classifier() -> Comparison:
+async def _classifier() -> Result:
     """Two arms over four cases twice: the control right every time, the candidate never saying ``animal``."""
-    return await compare(
-        CASES, {"control": right, "candidate": guess}, expected=_expected, control="control", scope_id=SCOPE, k=2
-    )
+    return await Eval(CASES, {"control": right, "candidate": guess}, ["label"], k=2).run(store=":memory:", scope=SCOPE)
 
 
 def _table(report: Report, name: str) -> TableBlock | None:

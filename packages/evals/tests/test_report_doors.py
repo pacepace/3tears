@@ -1,11 +1,11 @@
 """Every door into a campaign's report returns the same page: one builder, one disclosure set, no door adding a block.
 
-The quick path's ``compare(...).report``, the command line's ``report`` and the ``report_read`` operation behind the
+The quick path's ``Result.report``, the command line's ``report`` and the ``report_read`` operation behind the
 MCP action all render :func:`~threetears.evals.analysis.report.build_code_only_report` over the bundle they assemble,
-so with the clock fixed they return byte-identical HTML, and the same disclosures — the three ``compare`` once added
-on its own (a judge grading its own model's answers, no margin to be equivalent on, a guardrail not shown held) are
-the builder's now, so the command line and an agent read them too. ``Report.write`` puts the page, its Markdown and
-the bundle it was computed from in one directory, and the page names the bundle's fingerprint.
+so with the clock fixed they return byte-identical HTML, and the same disclosures — the three the quick path once
+added on its own (a judge grading its own model's answers, no margin to be equivalent on, a guardrail not shown
+held) are the builder's now, so the command line and an agent read them too. ``Report.write`` puts the page, its
+Markdown and the bundle it was computed from in one directory, and the page names the bundle's fingerprint.
 """
 
 from __future__ import annotations
@@ -27,7 +27,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis import service as analysis_service
 from threetears.evals.ops import report_read
-from threetears.evals.quick import Comparison, compare, run_cli
+from threetears.evals import Eval, Result
+from threetears.evals.quick import run_cli
 from packages.evals.tests.off_loop import off_loop
 
 #: The instant every door's report is assembled at, so their pages can be compared byte for byte.
@@ -47,24 +48,19 @@ async def _hasty(case: Mapping[str, Any]) -> str:
 
 
 @pytest.fixture
-async def comparison(monkeypatch: pytest.MonkeyPatch) -> Comparison:
+async def comparison(monkeypatch: pytest.MonkeyPatch) -> Result:
     # The module, not the function the package root re-exports under the same name.
-    monkeypatch.setattr(importlib.import_module("threetears.evals.quick.compare"), "utc_now_iso", lambda: NOW)
+    monkeypatch.setattr(importlib.import_module("threetears.evals.quick.result"), "utc_now_iso", lambda: NOW)
     monkeypatch.setattr(analysis_service, "utc_now_iso", lambda: NOW)
-    return await compare(
-        CASES,
-        {"hasty": _hasty, "careful": _careful},
-        expected=lambda case: case["label"],
-        control="hasty",
-        name="doors",
-    )
+    ev = Eval(CASES, {"hasty": _hasty, "careful": _careful}, ["label"], name="doors")
+    return await ev.run(store=":memory:")
 
 
 def _disclosures(page_blocks: list[Any]) -> set[str]:
     return {block.text for block in page_blocks if isinstance(block, DisclosureBlock)}
 
 
-async def test_compare_the_service_and_report_read_return_one_page_byte_for_byte(comparison: Comparison) -> None:
+async def test_compare_the_service_and_report_read_return_one_page_byte_for_byte(comparison: Result) -> None:
     host = comparison.host
     by_service = off_loop(campaign_report, host, comparison.campaign_id, comparison.scope_id)
     by_operation = off_loop(report_read, host, comparison.campaign_id, comparison.scope_id, format="html").body
@@ -73,9 +69,7 @@ async def test_compare_the_service_and_report_read_return_one_page_byte_for_byte
     assert _disclosures(comparison.report.blocks) == _disclosures(by_service.blocks)
 
 
-async def test_the_command_line_prints_the_same_page(
-    comparison: Comparison, capsys: pytest.CaptureFixture[str]
-) -> None:
+async def test_the_command_line_prints_the_same_page(comparison: Result, capsys: pytest.CaptureFixture[str]) -> None:
     host = comparison.host
     capsys.readouterr()
     args = ["report", comparison.campaign_id, "--scope", comparison.scope_id, "--format", "html"]
@@ -83,7 +77,7 @@ async def test_the_command_line_prints_the_same_page(
     assert capsys.readouterr().out == report_html(comparison.report)
 
 
-async def test_report_read_json_is_the_bundle_the_page_was_computed_from(comparison: Comparison) -> None:
+async def test_report_read_json_is_the_bundle_the_page_was_computed_from(comparison: Result) -> None:
     body = off_loop(report_read, comparison.host, comparison.campaign_id, comparison.scope_id, format="json").body
     bundle = AnalysisContextBundle.from_json(body)
     assert bundle.fingerprint() == comparison.report.source.bundle_fingerprint
@@ -91,7 +85,7 @@ async def test_report_read_json_is_the_bundle_the_page_was_computed_from(compari
 
 
 async def test_write_puts_one_self_contained_page_its_markdown_and_its_bundle_in_one_directory(
-    comparison: Comparison, tmp_path: Path
+    comparison: Result, tmp_path: Path
 ) -> None:
     files = comparison.write(tmp_path / "out")
     assert {role: path.name for role, path in files.items()} == {
@@ -117,7 +111,7 @@ async def test_write_puts_one_self_contained_page_its_markdown_and_its_bundle_in
 
 
 async def test_the_command_line_writes_the_directory(
-    comparison: Comparison, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    comparison: Result, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     host = comparison.host
     args = ["report", comparison.campaign_id, "--scope", comparison.scope_id, "--out", str(tmp_path / "cli")]
@@ -126,8 +120,8 @@ async def test_the_command_line_writes_the_directory(
     assert "report.html, bundle.json, report.md" in capsys.readouterr().out
 
 
-async def test_compare_s_disclosures_are_the_builder_s(comparison: Comparison) -> None:
-    """A measure with no margin is said on the page whichever door built it: the builder says it, not ``compare``."""
+async def test_compare_s_disclosures_are_the_builder_s(comparison: Result) -> None:
+    """A measure with no margin is said on the page whichever door built it: the builder says it, not the quick path."""
     by_service = off_loop(campaign_report, comparison.host, comparison.campaign_id, comparison.scope_id)
     said = [text for text in _disclosures(by_service.blocks) if text.startswith("No margin is declared on Accuracy")]
     assert len(said) == 1

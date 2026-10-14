@@ -18,9 +18,9 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.quick import Judge, callable_host, run_eval
+from threetears.evals import Eval, Judge
 from threetears.evals.run.judge import run_judge_llm, sent_temperature
-from threetears.evals.schema import CompletionProtocolDefect
+from threetears.evals.schema import CompletionProtocolDefect, RubricDim
 from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE
 from threetears.evals.testing import CompletionConformanceFailure, check_completion_conformance
 
@@ -63,6 +63,8 @@ def test_a_temperature_sent_or_withheld_is_read() -> None:
 # parity-with: threetears.evals.schema.CompletionClient
 class _FakeUntemperedJudge:
     """A judge client whose completions are billed and carry no ``temperature``."""
+
+    model_name = "judge-model"
 
     def __init__(self) -> None:
         self.calls = 0
@@ -107,15 +109,9 @@ async def test_a_judged_run_on_such_a_client_fails_naming_the_check_rather_than_
     None
 ):
     """Every call through the client returns the same type, so the run fails on it, its error naming the check."""
-    judge = _FakeUntemperedJudge()
-    summary = await run_eval(
-        [{"q": "a"}, {"q": "b"}],
-        _answer,
-        judge=Judge(client=judge, model="judge-model", rubric={"helpful": "It helps."}),
-        scope_id="untempered-judge",
-        host=callable_host(),
-        k=1,
-    )
+    rubric = [RubricDim(name="answer.helpful", description="It helps.", scale="ordinal")]
+    ev = Eval([{"q": "a"}, {"q": "b"}], _answer, [Judge(_FakeUntemperedJudge(), rubric)], k=1)
+    summary = (await ev.run(store=":memory:", scope="untempered-judge")).summary
     assert summary.status == "failed"
     assert any("check_completion_conformance" in error for error in summary.errors)
 

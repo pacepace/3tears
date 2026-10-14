@@ -1,8 +1,8 @@
-"""A ``run_eval`` candidate reports its own spend by returning an ``Answer``, and a plain answer still reports none.
+"""A runner reports its own spend by returning an ``Answer``, and a plain answer still reports none.
 
 The answer's value is what is graded and stored; its spend lands on each result as the ``candidate`` usage
 row, from which the engine derives the result's ``cost_usd``, and on the summary as the candidate's calls
-and dollars. Unpriced stays unknown, never zero. Across arms, ``compare``'s report tests the
+and dollars. Unpriced stays unknown, never zero. Across arms, a comparison's report tests the
 ``cost_usd`` reading against the control like any other.
 """
 
@@ -14,7 +14,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import TableBlock
-from threetears.evals.quick import Answer, callable_host, compare, run_eval
+from threetears.evals import Answer, Eval
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import get_result_trace, list_results
 from packages.evals.tests.off_loop import off_loop
 
@@ -33,12 +34,11 @@ COMPARED_CASES = [
     {"text": "a salamander", "label": "animal"},
 ]
 
-#: Dollars per input token, for the priced candidate below.
+#: Dollars per input token, for the priced runner below.
 RATE = 1e-6
 
-
-def _expected(case: Mapping[str, Any]) -> str:
-    return str(case["label"])
+#: The field each case carries its label in, graded as the classifier.
+LABEL = "label"
 
 
 async def priced(case: Mapping[str, Any]) -> Answer:
@@ -49,7 +49,7 @@ async def priced(case: Mapping[str, Any]) -> Answer:
 
 async def test_an_answer_s_spend_lands_on_each_result_and_on_the_summary() -> None:
     host = callable_host()
-    summary = await run_eval(CASES, priced, expected=_expected, scope_id=SCOPE, host=host, k=1)
+    summary = (await Eval(CASES, priced, [LABEL], k=1).run(host=host, scope=SCOPE)).summary
 
     # The value is what was graded: every label matched.
     (match,) = [measure for measure in summary.measures if measure.name == "match"]
@@ -74,7 +74,7 @@ async def test_a_plain_answer_reports_no_spend_as_before() -> None:
         return str(case["label"])
 
     host = callable_host()
-    summary = await run_eval(CASES, plain, expected=_expected, scope_id=SCOPE, host=host, k=1)
+    summary = (await Eval(CASES, plain, [LABEL], k=1).run(host=host, scope=SCOPE)).summary
     assert summary.role_spend("candidate") is None
     assert "candidate spend" not in summary.render()
     assert all(result.usage == [] for result in off_loop(list_results, host.storage, summary.run_id, SCOPE))
@@ -85,7 +85,7 @@ async def test_an_unpriced_answer_leaves_the_cost_unknown_never_zero() -> None:
         return Answer(case["label"], model="local", input_tokens=5)
 
     host = callable_host()
-    summary = await run_eval(CASES, unpriced, expected=_expected, scope_id=SCOPE, host=host, k=1)
+    summary = (await Eval(CASES, unpriced, [LABEL], k=1).run(host=host, scope=SCOPE)).summary
     assert summary.role_spend("candidate").calls == 3 and summary.role_spend("candidate").cost_usd is None
     assert "candidate spend: unpriced over 3 call(s): its client reported no price for them" in summary.render()
     assert all(result.cost_usd is None for result in off_loop(list_results, host.storage, summary.run_id, SCOPE))
@@ -106,28 +106,23 @@ def test_a_spend_no_usage_row_can_hold_is_refused(spend: dict[str, Any], refusal
         Answer("x", **spend)
 
 
-async def test_a_candidate_building_a_bad_answer_fails_its_cell() -> None:
+async def test_a_runner_building_a_bad_answer_fails_its_cell() -> None:
     async def miscounted(case: Mapping[str, Any]) -> Answer:
         return Answer(case["label"], input_tokens=-1)
 
-    summary = await run_eval(CASES, miscounted, expected=_expected, scope_id=SCOPE, k=1)
+    summary = (await Eval(CASES, miscounted, [LABEL], k=1).run(store=":memory:", scope=SCOPE)).summary
     assert summary.n_candidate_failed == 3
     assert all("Answer.input_tokens" in error for error in summary.errors)
 
 
-async def test_compare_tests_the_arms_reported_cost_against_the_control() -> None:
+async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -> None:
     async def dearer(case: Mapping[str, Any]) -> Answer:
         cheaper = await priced(case)
         assert cheaper.cost_usd is not None
         return Answer(cheaper.value, model="m-2", input_tokens=cheaper.input_tokens, cost_usd=cheaper.cost_usd * 10)
 
-    comparison = await compare(
-        COMPARED_CASES,
-        {"dearer": dearer, "cheaper": priced},
-        expected=_expected,
-        control="dearer",
-        scope_id=SCOPE,
-        k=2,
+    comparison = await Eval(COMPARED_CASES, {"dearer": dearer, "cheaper": priced}, [LABEL], k=2).run(
+        store=":memory:", scope=SCOPE
     )
     assert comparison.arms["cheaper"].role_spend("candidate").cost_usd == pytest.approx(
         comparison.arms["dearer"].role_spend("candidate").cost_usd / 10  # type: ignore[operator]

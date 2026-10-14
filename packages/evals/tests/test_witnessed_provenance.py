@@ -30,7 +30,8 @@ from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bu
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import ControlDeclaration
-from threetears.evals.quick import callable_host, run_eval
+from threetears.evals import Eval
+from threetears.evals.quick import as_host
 from threetears.evals.run import list_runs
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
@@ -117,9 +118,10 @@ def answered(case: Mapping[str, Any], answer: Any) -> float:
 
 async def test_the_launch_path_stamps_every_run_it_starts_commissioned() -> None:
     """A launch is the act of fixing a rig and measuring against it."""
-    host = callable_host([answered])
+    ev = Eval([{"n": 1}], _echo, [answered])
+    host = as_host([ev], store=":memory:")
 
-    await run_eval([{"n": 1}], _echo, [answered], scope_id="provenance", host=host)
+    await ev.run(host=host, scope="provenance")
 
     (run,) = off_loop(list_runs, host, "provenance")
     assert run.apparatus_provenance == "commissioned"

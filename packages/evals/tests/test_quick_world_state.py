@@ -1,58 +1,66 @@
-"""``run_eval(world=, seed=, goal_checks=)``: each cell seeds its world, the candidate acts on it, code grades the end.
+"""A world with state: each cell seeds its world from its case, the agent acts on it, code grades the end.
 
-The world example (``test_world_example.py``) is the happy path read from outside. These pin the
-mechanism: the seed lands before the candidate's first turn, every cell starts from its own case's
-state, the end state is read back after the last turn, a tool call that succeeds is recorded where
-``calls(...)`` reads it and one the world refuses is not, the goal checks grade the result — and a
-world-less call is exactly what it was.
+The world example (``test_world_example.py``) is the happy path read from outside. These pin the mechanism: the seed
+(each case's reserved ``world`` key) lands before the agent's first turn, every cell starts from its own case's state,
+the end state is read back after the last turn, a tool call that succeeds is recorded where ``calls(...)`` reads it
+and one the world refuses is not, the expression graders grade the result — and a world-less eval is exactly what it
+was.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import pytest
+from pydantic import BaseModel, Field
 
+from threetears.evals import Eval, World
+from threetears.evals.quick import as_host
+from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import RecordedCall
-from threetears.evals.quick import Dimension, ToolRefused, World, WorldTool, WorldTools, callable_host, run_eval
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
 from packages.evals.tests.off_loop import off_loop
 
-SCOPE = "run-eval-world-tests"
+SCOPE = "quick-world-state-tests"
 
 
-def switch(room: dict[str, Any], to: str) -> str:
+class Room(BaseModel):
+    """A room with a lamp."""
+
+    lamp: Literal["on", "off"] = Field(description="What the agent switches.")
+    dark: bool = Field(description="Whether the lamp is needed.")
+
+
+def switch(state: Room, to: Literal["on", "off"]) -> str:
     """Turn the lamp on or off."""
-    room["lamp"] = to
+    state.lamp = to
     return f"lamp {to}"
 
 
-def broken(room: dict[str, Any]) -> str:
+def broken(state: Room) -> str:
     """A tool whose own code fails."""
     raise RuntimeError("the relay is stuck")
 
 
 def room() -> World:
-    return World(
-        "room",
-        [
-            Dimension("lamp", {"enum": ["on", "off"]}, "What the candidate switches."),
-            Dimension("dark", {"type": "boolean"}, "Whether the lamp is needed."),
-        ],
-        tools=[WorldTool(switch, to={"enum": ["on", "off"]}), WorldTool(broken)],
-    )
+    return World(Room, tools=[switch, broken])
 
 
-CASES = [{"lamp": "off", "dark": True}, {"lamp": "on", "dark": False}]
-LIT_IFF_DARK = '(state.lamp == "on") == state.dark'
-
-
-def start(case: Mapping[str, Any]) -> Mapping[str, Any]:
+def start(case: Mapping[str, Any]) -> dict[str, Any]:
     return {"lamp": case["lamp"], "dark": case["dark"]}
 
 
-async def sensible(case: Mapping[str, Any], tools: WorldTools) -> str:
+#: Each case states its lamp and darkness (read as ``variation.*``), and starts its world from them.
+CASES = [
+    {"lamp": "off", "dark": True, "world": {"lamp": "off", "dark": True}},
+    {"lamp": "on", "dark": False, "world": {"lamp": "on", "dark": False}},
+]
+LIT_IFF_DARK = '(state.lamp == "on") == state.dark'
+
+
+async def sensible(case: Mapping[str, Any], tools: Any) -> str:
+    """Light the room when it is dark, and only then."""
     seen = await tools.view()
     wanted = "on" if seen["dark"] else "off"
     return "kept" if wanted == seen["lamp"] else await tools["switch"](to=wanted)
@@ -70,32 +78,32 @@ async def stored(host: Any, run_id: str) -> list[Any]:
 async def test_the_seed_lands_before_the_first_turn_and_every_cell_starts_from_its_own_case() -> None:
     first_sight: list[dict[str, Any]] = []
 
-    async def meddling(case: Mapping[str, Any], tools: WorldTools) -> str:
-        assert list(tools) == ["switch", "broken"]  # the mapping a tool-using candidate is handed
+    async def meddling(case: Mapping[str, Any], tools: Any) -> str:
+        """Leave the lamp on."""
+        assert list(tools) == ["switch", "broken"]  # the mapping a tool-using agent is handed
+        assert "world" not in case  # the starting state is the world's, never shown as the case
         first_sight.append(await tools.view())
         await tools.call("switch", to="on")  # every cell leaves the lamp on; the next must not inherit it
         return "done"
 
-    await run_eval(CASES, meddling, world=room(), seed=start, goal_checks=[LIT_IFF_DARK], scope_id=SCOPE, k=2)
+    await Eval(CASES, room()(meddling), [LIT_IFF_DARK], k=2).run(store=":memory:")
     assert sorted(map(str, first_sight)) == sorted(map(str, [start(case) for case in CASES] * 2))
 
 
 async def test_the_end_state_is_read_back_after_the_last_turn_and_the_goal_check_grades_it() -> None:
-    world = room()
-    host = callable_host(world=world)
-    summary = await run_eval(
-        CASES, sensible, host=host, world=world, seed=start, goal_checks=[LIT_IFF_DARK], scope_id=SCOPE, k=1
-    )
+    ev = Eval(CASES, room()(sensible), [LIT_IFF_DARK], k=1)
+    host = as_host([ev], store=":memory:")
+    summary = (await ev.run(host=host, scope=SCOPE)).summary
     assert (summary.status, summary.n_scored) == ("completed", 2)
     assert [(goal.check, goal.passed, goal.n) for goal in summary.goal_checks] == [(LIT_IFF_DARK, 2, 2)]
-    # A quick run names no control, so the check is unproven, and its do-nothing baseline is read off each case's seed:
+    # An eval names no control, so the check is unproven, and its do-nothing baseline is read off each case's seed:
     # both cases start with the lamp wrong, so doing nothing passes neither.
     (goal,) = summary.goal_checks
     assert (goal.proof, goal.did_nothing_passed, goal.did_nothing_cases) == ("unproven", 0, 2)
     assert f"goal check {LIT_IFF_DARK}: passed 2/2 — unproven" in summary.render()
     for (result, trace), case in zip(await stored(host, summary.run_id), CASES, strict=True):
         assert trace is not None
-        # Both cases started wrong, so the stored end state is the candidate's, never the seed.
+        # Both cases started wrong, so the stored end state is the agent's, never the seed.
         assert trace.end_state == {"lamp": "on" if case["dark"] else "off", "dark": case["dark"]} != start(case)
         assert [outcome.passed for outcome in result.goal_state_outcomes] == [True]
     (run,) = off_loop(list_runs, host, SCOPE)
@@ -113,9 +121,7 @@ def test_a_check_unevaluable_against_a_starting_state_loses_only_its_own_baselin
 
 async def test_a_check_doing_nothing_passes_in_every_case_never_reads_as_a_measurement() -> None:
     never_needless = 'all(it.to != variation.lamp for it in calls("room.switch"))'
-    summary = await run_eval(
-        CASES, sensible, world=room(), seed=start, goal_checks=[never_needless], scope_id=SCOPE, k=1
-    )
+    summary = (await Eval(CASES, room()(sensible), [never_needless], k=1).run(store=":memory:")).summary
     (goal,) = summary.goal_checks
     assert (goal.passed, goal.n, goal.did_nothing_passed, goal.did_nothing_cases) == (2, 2, 2, 2)
     (line,) = [line for line in summary.render().splitlines() if "goal check" in line]
@@ -126,20 +132,20 @@ async def test_a_check_doing_nothing_passes_in_every_case_never_reads_as_a_measu
 
 
 async def test_a_call_that_succeeds_is_recorded_for_calls_and_one_the_world_refuses_is_not() -> None:
-    async def sloppy(case: Mapping[str, Any], tools: WorldTools) -> str:
+    async def sloppy(case: Mapping[str, Any], tools: Any) -> str:
+        """Try a dim lamp, shout, then switch on twice."""
         with pytest.raises(ToolRefused, match="dim"):
             await tools.call("switch", to="dim")
-        with pytest.raises(ToolRefused, match="no tool 'shout'"):
+        # A refusal is a ValueError, which an agent written against no type of this package catches.
+        with pytest.raises(ValueError, match="no tool 'shout'"):
             await tools.call("shout")
         await tools.call("switch", to="on")
         return await tools.call("switch", to="on")
 
-    world = room()
-    host = callable_host(world=world)
     once = 'call_count("room.switch") <= 1'
-    summary = await run_eval(
-        CASES[:1], sloppy, host=host, world=world, seed=start, goal_checks=[once], scope_id=SCOPE, k=1
-    )
+    ev = Eval(CASES[:1], room()(sloppy), [once], k=1)
+    host = as_host([ev], store=":memory:")
+    summary = (await ev.run(host=host, scope=SCOPE)).summary
     ((result, trace),) = await stored(host, summary.run_id)
     assert trace is not None and trace.call_ledger is not None
     assert trace.call_ledger.calls == [RecordedCall(tool="room", action="switch", params={"to": "on"})] * 2
@@ -147,53 +153,64 @@ async def test_a_call_that_succeeds_is_recorded_for_calls_and_one_the_world_refu
 
 
 async def test_a_tool_that_raises_excludes_the_cell_as_the_rigs_fault() -> None:
-    async def presses(case: Mapping[str, Any], tools: WorldTools) -> str:
+    async def presses(case: Mapping[str, Any], tools: Any) -> str:
+        """Press the broken relay."""
         return await tools.call("broken")
 
-    summary = await run_eval(
-        CASES[:1], presses, world=room(), seed=start, goal_checks=[LIT_IFF_DARK], scope_id=SCOPE, k=1
-    )
+    summary = (await Eval(CASES[:1], room()(presses), [LIT_IFF_DARK], k=1).run(store=":memory:")).summary
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
     assert "the tool broken raised RuntimeError: the relay is stuck" in summary.errors[0]
     assert summary.goal_checks == []
 
 
-async def test_scorers_grade_a_world_candidates_answer_beside_its_goal_checks() -> None:
-    def answered(case: Mapping[str, Any], answer: Any) -> bool:
-        return isinstance(answer, str) and bool(answer)
+async def test_function_graders_read_the_answer_the_state_and_the_calls_beside_the_goal_checks() -> None:
+    def answered(case: Mapping[str, Any], out: Any) -> bool:
+        """The agent said something."""
+        return isinstance(out.answer, str) and bool(out.answer)
 
-    summary = await run_eval(
-        CASES, sensible, [answered], world=room(), seed=start, goal_checks=[LIT_IFF_DARK], scope_id=SCOPE, k=1
-    )
-    assert [(m.name, m.mean) for m in summary.measures] == [("answered", 1.0)]
+    def lit_iff_dark(case: Mapping[str, Any], out: Any) -> bool:
+        """The state the agent left, as the state model."""
+        return isinstance(out.state, Room) and (out.state.lamp == "on") == out.state.dark
+
+    def switched_at_most_once(case: Mapping[str, Any], out: Any) -> bool:
+        """The calls the agent made."""
+        return len([call for call in out.calls if call.action == "switch"]) <= 1
+
+    graders = [answered, lit_iff_dark, switched_at_most_once, LIT_IFF_DARK]
+    summary = (await Eval(CASES, room()(sensible), graders, k=1).run(store=":memory:")).summary
+    assert [(m.name, m.mean) for m in summary.measures] == [
+        ("answered", 1.0),
+        ("lit_iff_dark", 1.0),
+        ("switched_at_most_once", 1.0),
+    ]
     assert summary.goal_checks[0].passed == 2
 
 
-async def test_a_world_runs_starting_states_and_checks_are_part_of_its_case_set() -> None:
+async def test_a_worlds_starting_states_and_checks_are_part_of_its_case_set() -> None:
     world = room()
-    host = callable_host(world=world)
+    all_off = [{**case, "world": {"lamp": "off", "dark": case["dark"]}} for case in CASES]
 
-    def all_off(case: Mapping[str, Any]) -> Mapping[str, Any]:
-        return {"lamp": "off", "dark": case["dark"]}
+    async def template_of(cases: list[dict[str, Any]], check: str) -> str | None:
+        return (await Eval(cases, world(sensible), [check], k=1).run(store=":memory:")).template_id
 
-    kwargs: dict[str, Any] = {"host": host, "world": world, "scope_id": SCOPE, "k": 1}
-    first = await run_eval(CASES, sensible, seed=start, goal_checks=[LIT_IFF_DARK], **kwargs)
-    again = await run_eval(CASES, sensible, seed=start, goal_checks=[LIT_IFF_DARK], **kwargs)
-    reseeded = await run_eval(CASES, sensible, seed=all_off, goal_checks=[LIT_IFF_DARK], **kwargs)
-    rechecked = await run_eval(CASES, sensible, seed=start, goal_checks=['state.lamp == "on"'], **kwargs)
-    assert first.template_id == again.template_id
-    assert len({first.template_id, reseeded.template_id, rechecked.template_id}) == 3
+    first = await template_of(CASES, LIT_IFF_DARK)
+    again = await template_of(CASES, LIT_IFF_DARK)
+    reseeded = await template_of(all_off, LIT_IFF_DARK)
+    rechecked = await template_of(CASES, 'state.lamp == "on"')
+    assert first == again
+    assert len({first, reseeded, rechecked}) == 3
 
 
-async def test_a_world_less_call_is_unchanged_it_opens_no_world_and_keeps_no_ledger() -> None:
+async def test_a_world_less_eval_is_unchanged_it_opens_no_world_and_keeps_no_ledger() -> None:
     async def double(case: Mapping[str, Any]) -> int:
         return int(case["n"]) * 2
 
     def even(case: Mapping[str, Any], answer: Any) -> bool:
         return answer % 2 == 0
 
-    host = callable_host([even])
-    summary = await run_eval([{"n": 1}], double, [even], host=host, scope_id=SCOPE, k=1)
+    ev = Eval([{"n": 1}], double, [even], k=1)
+    host = as_host([ev], store=":memory:")
+    summary = (await ev.run(host=host, scope=SCOPE)).summary
     assert summary.goal_checks == [] and "goal check" not in summary.render()
     ((result, trace),) = await stored(host, summary.run_id)
     assert trace is not None
@@ -204,59 +221,67 @@ async def test_a_world_less_call_is_unchanged_it_opens_no_world_and_keeps_no_led
 # --- refusals: each made before anything is stored ------------------------------------------------
 
 
-#: Stands in for the test's own world in a parametrized case, which cannot build one per test itself.
-WORLD = object()
-
-
 @pytest.mark.parametrize(
-    ("kwargs", "said"),
+    ("cases", "checks", "said"),
     [
-        ({"seed": start, "goal_checks": [LIT_IFF_DARK]}, r"pass the world they read \(world=\)"),
-        ({"goal_checks": [LIT_IFF_DARK]}, r"pass the world they read \(world=\)"),
-        ({"world": WORLD, "goal_checks": [LIT_IFF_DARK]}, "pass seed="),
-        ({"world": WORLD, "seed": lambda case: {"lamp": "off"}, "goal_checks": [LIT_IFF_DARK]}, "gave case 0 no dark"),
-        (
-            {"world": WORLD, "seed": lambda case: {"lamp": "dim", "dark": True}, "goal_checks": [LIT_IFF_DARK]},
-            "case 0 a starting state the world",
-        ),
-        (
-            {"world": WORLD, "seed": lambda case: case["nope"], "goal_checks": [LIT_IFF_DARK]},
-            "seed= raised on case 0: KeyError",
-        ),
-        ({"world": WORLD, "seed": start, "goal_checks": ["state.colour == 1"]}, "reads state.colour"),
-        ({"world": WORLD, "seed": start, "goal_checks": ['call_count("room.dim") == 0']}, "names room.dim"),
-        ({"world": room(), "seed": start, "goal_checks": [LIT_IFF_DARK]}, "does not declare world 'room'"),
-        (
-            {"world": WORLD, "seed": start, "goal_checks": [LIT_IFF_DARK], "tools": {"switch": lambda to: to}},
-            "pass no tools= beside world=",
-        ),
-        (
-            {"world": WORLD, "seed": start, "goal_checks": [LIT_IFF_DARK], "cassette_mode": "capture"},
-            "no cassette_mode",
-        ),
+        ([{"lamp": "off", "dark": True}], [LIT_IFF_DARK], "case\\(s\\) 0 carry none"),
+        ([{"world": {"lamp": "off"}}], [LIT_IFF_DARK], "case 0's world is no Room"),
+        ([{"world": {"lamp": "dim", "dark": True}}], [LIT_IFF_DARK], "case 0's world is no Room"),
+        ([{"world": "off"}], [LIT_IFF_DARK], "a starting state maps each field to its value"),
+        (CASES, ["state.colour == 1"], "reads state.colour"),
+        (CASES, ['call_count("room.dim") == 0'], "names room.dim"),
     ],
     ids=[
-        "seed with no world",
-        "goal checks with no world",
-        "a world with no seed",
-        "a seed leaving a dimension unset",
-        "a seed the schema refuses",
-        "a seed that raises",
+        "a case with no world",
+        "a world leaving a field unset",
+        "a world the state refuses",
+        "a world that is no mapping",
         "a check reading undeclared state",
         "a check naming an unknown tool",
-        "a host that does not declare the world",
-        "generic tools beside a world",
-        "a cassette mode on a world run",
     ],
 )
-async def test_an_incoherent_world_run_is_refused_before_anything_is_stored(kwargs: dict[str, Any], said: str) -> None:
+async def test_an_incoherent_world_eval_is_refused_before_anything_is_stored(
+    cases: list[dict[str, Any]], checks: list[str], said: str
+) -> None:
     world = room()
-    host = callable_host(world=world)
-    if kwargs.get("world") is WORLD:
-        kwargs = kwargs | {"world": world}
+    host = as_host([Eval(CASES, world(sensible), [LIT_IFF_DARK])], store=":memory:")
     with pytest.raises(ValueError, match=said):
-        await run_eval(CASES, sensible, host=host, scope_id=SCOPE, **kwargs)
+        await Eval(cases, world(sensible), checks, k=1).run(host=host, scope=SCOPE)
     assert off_loop(list_templates, host.storage, SCOPE) == []
+
+
+async def test_a_host_that_does_not_declare_the_world_is_refused_before_anything_is_stored() -> None:
+    host = as_host([Eval(CASES, room()(sensible), [LIT_IFF_DARK])], store=":memory:")
+    with pytest.raises(ValueError, match="does not declare world 'room'"):
+        await Eval(CASES, room()(sensible), [LIT_IFF_DARK], k=1).run(host=host, scope=SCOPE)
+    assert off_loop(list_templates, host.storage, SCOPE) == []
+
+
+def test_an_expression_grader_with_no_world_with_state_is_refused_where_the_eval_is_written() -> None:
+    async def plain(case: Mapping[str, Any]) -> str:
+        return "x"
+
+    with pytest.raises(ValueError, match="read a world's state, and the runner acts on none"):
+        Eval(CASES, plain, [LIT_IFF_DARK])
+
+
+async def test_cases_carrying_a_world_for_a_runner_on_none_are_refused_before_anything_runs() -> None:
+    async def plain(case: Mapping[str, Any]) -> str:
+        return "x"
+
+    def said(case: Mapping[str, Any], answer: Any) -> bool:
+        return bool(answer)
+
+    with pytest.raises(ValueError, match="carry a starting state under 'world'"):
+        await Eval(CASES, plain, [said], k=1).run(store=":memory:")
+
+
+def test_a_state_field_with_no_description_is_refused() -> None:
+    class Bare(BaseModel):
+        lamp: str
+
+    with pytest.raises(ValueError, match="Bare.lamp has no description"):
+        World(Bare, tools=[])
 
 
 async def test_a_well_formed_quick_world_passes_the_engine_s_own_conformance_kit() -> None:
@@ -268,6 +293,7 @@ async def test_a_well_formed_quick_world_passes_the_engine_s_own_conformance_kit
     from threetears.evals.kernel.host.world_conformance import check_world_conformance
 
     world = room()
+    assert world.registry is not None
     report = await check_world_conformance(world.registry, expressions=[LIT_IFF_DARK])
 
     failed = [
@@ -278,90 +304,77 @@ async def test_a_well_formed_quick_world_passes_the_engine_s_own_conformance_kit
     assert ab == {"lamp": "passed", "dark": "passed"}
 
 
-def note(room: dict[str, Any], text: str) -> str:
+class NotingRoom(BaseModel):
+    """A room with a lamp and a notepad."""
+
+    lamp: Literal["on", "off"] = Field(description="What the agent switches.")
+    dark: bool = Field(description="Whether the lamp is needed.")
+    note: str = Field(description="What the agent wrote down.")
+
+
+def note(state: NotingRoom, text: str) -> str:
     """Leave a note by the lamp."""
-    room["note"] = text
+    state.note = text
     return "noted"
 
 
 def noting_room() -> World:
-    return World(
-        "room",
-        [
-            Dimension("lamp", {"enum": ["on", "off"]}, "What the candidate switches."),
-            Dimension("dark", {"type": "boolean"}, "Whether the lamp is needed."),
-            Dimension("note", {"type": "string"}, "What the candidate wrote down."),
-        ],
-        tools=[WorldTool(switch, to={"enum": ["on", "off"]}), WorldTool(note, text={"type": "string"})],
-    )
+    def switch(state: NotingRoom, to: Literal["on", "off"]) -> str:
+        """Turn the lamp on or off."""
+        state.lamp = to
+        return f"lamp {to}"
+
+    return World(NotingRoom, tools=[switch, note])
 
 
-def noting_start(case: Mapping[str, Any]) -> Mapping[str, Any]:
-    return {**start(case), "note": ""}
+#: The cases, each starting with an empty note; the world is ``noting_room`` (``calls("noting_room.switch")``).
+NOTING_CASES = [{**case, "world": {**case["world"], "note": ""}} for case in CASES]
 
 
 async def test_a_string_match_over_a_free_text_tool_parameter_is_refused_before_anything_runs() -> None:
     """Authoring refuses it, so the quick path does: a free string is what the model wrote, not structure."""
     ran: list[str] = []
 
-    async def candidate(case: Mapping[str, Any], tools: WorldTools) -> str:
+    async def agent(case: Mapping[str, Any], tools: Any) -> str:
+        """Run, which it must not."""
         ran.append("ran")
         return "x"
 
-    with pytest.raises(ValueError, match=r"room.note's text is free text"):
-        await run_eval(
-            CASES,
-            candidate,
-            world=noting_room(),
-            seed=noting_start,
-            goal_checks=['any(it.text == "lamp fixed" for it in calls("room.note"))'],
-            scope_id=SCOPE,
-        )
+    check = 'any(it.text == "lamp fixed" for it in calls("noting_room.note"))'
+    with pytest.raises(ValueError, match=r"noting_room.note's text is free text"):
+        await Eval(NOTING_CASES, noting_room()(agent), [check]).run(store=":memory:")
     assert ran == [], "refused up front, never graded"
 
 
 async def test_a_comparison_over_an_enum_closed_tool_parameter_is_accepted_and_graded() -> None:
-    """The quick world describes its tools' parameters from their schemas, so authoring's closure rule admits it."""
-    summary = await run_eval(
-        CASES,
-        sensible,
-        world=noting_room(),
-        seed=noting_start,
-        goal_checks=['any(it.to == "on" for it in calls("room.switch"))'],
-        scope_id=SCOPE,
-        k=1,
-    )
+    """The quick world describes its tools' parameters from their types, so authoring's closure rule admits it."""
+    check = 'any(it.to == "on" for it in calls("noting_room.switch"))'
+    summary = (await Eval(NOTING_CASES, noting_room()(sensible), [check], k=1).run(store=":memory:")).summary
     assert summary.status == "completed"
     (goal,) = summary.goal_checks
     assert (goal.passed, goal.n) == (1, 2), "only the dark case switches the lamp on"
 
 
 async def test_a_check_the_grammar_refuses_is_refused_by_the_quick_path() -> None:
+    ev = Eval([{"p": "on", **case} for case in CASES], room()(sensible), ['intersects(["on"], variation.p)'])
     with pytest.raises(ValueError, match=r"intersects\(\) over variation.p"):
-        await run_eval(
-            [{"p": "on", **case} for case in CASES],
-            sensible,
-            world=room(),
-            seed=start,
-            goal_checks=['intersects(["on"], variation.p)'],
-            scope_id=SCOPE,
-        )
+        await ev.run(store=":memory:")
 
 
-def test_authoring_on_a_quick_world_host_closes_its_tools_parameters_from_their_schemas() -> None:
+def test_authoring_on_a_quick_world_host_closes_its_tools_parameters_from_their_types() -> None:
     """The quick host described no tool parameters, so authoring refused even an enum-closed comparison on it."""
     from threetears.evals.schema import EvalTemplate
     from threetears.evals.kernel import ValidationFailedError
     from threetears.evals.run.authoring import refuse_unsupplied_world
 
     world = noting_room()
-    profile = callable_host(world=world).profile
+    profile = as_host([Eval(NOTING_CASES, world(sensible), [LIT_IFF_DARK])], store=":memory:").profile
 
     def template(check: str) -> EvalTemplate:
         return EvalTemplate(scope_id=SCOPE, name="t", intent="i", candidate_kind="callable", goal_state_checks=[check])
 
-    refuse_unsupplied_world(template('any(it.to == "on" for it in calls("room.switch"))'), profile=profile)
-    with pytest.raises(ValidationFailedError, match="room.note's text is free text"):
-        refuse_unsupplied_world(template('calls("room.note")[0].text == "x"'), profile=profile)
+    refuse_unsupplied_world(template('any(it.to == "on" for it in calls("noting_room.switch"))'), profile=profile)
+    with pytest.raises(ValidationFailedError, match="noting_room.note's text is free text"):
+        refuse_unsupplied_world(template('calls("noting_room.note")[0].text == "x"'), profile=profile)
     with pytest.raises(ValidationFailedError, match="names calls this host does not define"):
-        refuse_unsupplied_world(template('calls("room.paint").length > 0'), profile=profile)
+        refuse_unsupplied_world(template('calls("noting_room.paint").length > 0'), profile=profile)

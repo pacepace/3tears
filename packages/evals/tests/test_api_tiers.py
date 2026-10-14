@@ -76,7 +76,7 @@ def test_every_snapshot_entry_carries_a_tier() -> None:
 def test_every_name_a_host_is_taught_to_import_is_host_contract() -> None:
     recorded = surface.load_snapshot()
     taught = {name: path for path in HOST_GUIDES for name in sorted(imported_names(path))}
-    assert "threetears.evals.quick.run_eval" in taught, "the import reader found nothing, so this test says nothing"
+    assert "threetears.evals.Eval" in taught, "the import reader found nothing, so this test says nothing"
     outside = {
         name: f"{path.relative_to(PACKAGE)} ({recorded[name].tier if name in recorded else 'not public'})"
         for name, path in sorted(taught.items())
@@ -97,7 +97,7 @@ def test_the_import_reader_sees_every_spelling(tmp_path: Path) -> None:
             Run it:
 
             ```python
-            from threetears.evals.quick import run_eval
+            from threetears.evals import Eval
             from threetears.evals.storage import (
                 SqliteDocumentStore,  # a file
                 DocTypeRoute as Route,
@@ -117,7 +117,7 @@ def test_the_import_reader_sees_every_spelling(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert imported_names(page) == {
-        "threetears.evals.quick.run_eval",
+        "threetears.evals.Eval",
         "threetears.evals.storage.SqliteDocumentStore",
         "threetears.evals.storage.DocTypeRoute",
         "threetears.evals.kernel.host.EvalHost",
@@ -127,7 +127,7 @@ def test_the_import_reader_sees_every_spelling(tmp_path: Path) -> None:
 def test_a_tier_comes_from_the_declared_list() -> None:
     installed = surface.installed_surface()
     assert installed["threetears.evals.kernel.host.EvalHost"].tier == "host-contract"
-    assert installed["threetears.evals.quick.ARM_LEVER"].tier == "closure"
+    assert installed["threetears.evals.quick.EXIT_FAILED"].tier == "closure"
     assert {name for name, entry in installed.items() if entry.tier == "host-contract"} == surface.HOST_CONTRACT
 
 

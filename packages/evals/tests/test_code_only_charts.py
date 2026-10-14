@@ -24,7 +24,7 @@ from typing import Any
 from threetears.evals.analysis import ChartBlock, DisclosureBlock, TableBlock, inspect_campaign_bundle
 from threetears.evals.schema.models import RoleUsage
 from threetears.evals.kernel.usage_capture import spend_observed
-from threetears.evals.quick import Answer, Comparison, compare
+from threetears.evals import Answer, Eval, Result
 from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "code-only-chart-tests"
@@ -38,10 +38,6 @@ CASES = [
     {"text": "an oak", "label": "plant"},
     {"text": "a yew", "label": "plant"},
 ]
-
-
-def _expected(case: Mapping[str, Any]) -> str:
-    return str(case["label"])
 
 
 async def right(case: Mapping[str, Any]) -> str:
@@ -66,13 +62,13 @@ async def right_free(case: Mapping[str, Any]) -> Answer:
     return Answer(case["label"], model="local", cost_usd=0.0)
 
 
-async def _compare(candidate: Any, control: Any) -> Comparison:
-    return await compare(
-        CASES, {"control": control, "candidate": candidate}, expected=_expected, control="control", scope_id=SCOPE, k=2
-    )
+async def _compare(candidate: Any, control: Any) -> Result:
+    """The two arms, the control first, graded on each case's ``label``."""
+    ev = Eval(CASES, {"control": control, "candidate": candidate}, ["label"], k=2)
+    return await ev.run(store=":memory:", scope=SCOPE)
 
 
-def _chart_titles(comparison: Comparison) -> list[str]:
+def _chart_titles(comparison: Result) -> list[str]:
     """The reading each interval chart is drawn for: its title up to the colon."""
     return [
         block.title.partition(":")[0]
@@ -81,11 +77,11 @@ def _chart_titles(comparison: Comparison) -> list[str]:
     ]
 
 
-def _disclosures(comparison: Comparison) -> list[str]:
+def _disclosures(comparison: Result) -> list[str]:
     return [block.text for block in comparison.report.blocks if isinstance(block, DisclosureBlock)]
 
 
-def _cost_disclosures(comparison: Comparison) -> list[str]:
+def _cost_disclosures(comparison: Result) -> list[str]:
     return [text for text in _disclosures(comparison) if text.startswith("Cost was not measured")]
 
 

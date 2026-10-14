@@ -23,7 +23,8 @@ from threetears.evals.analysis import IntervalRow, campaign_report, report_markd
 from threetears.evals.analysis.stats import mean_interval, observed_mean_interval, wilson_interval
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from threetears.evals.ops import CampaignDefinition, campaign_create
-from threetears.evals.quick import Answer, callable_host, compare, run_eval
+from threetears.evals import Answer, Eval
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import list_results
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.off_loop import off_loop
@@ -149,7 +150,7 @@ def test_below_two_observations_a_numeric_mean_has_no_interval(values: list[floa
 
 
 # =============================================================================
-# End to end: run_eval → campaign_report
+# End to end: an eval of each classifier → campaign_report
 # =============================================================================
 
 _CASES = [
@@ -178,14 +179,11 @@ async def _loose(case: Mapping[str, Any]) -> str:
     return "positive" if any(word in words for word in ("exactly", "bad", "great")) else "neutral"
 
 
-def _expected(case: Mapping[str, Any]) -> str:
-    return str(case["expected"])
-
-
 async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_scale() -> None:
     host = callable_host()
-    strict = await run_eval(_CASES, _strict, scope_id=SCOPE, expected=_expected, host=host, k=2)
-    loose = await run_eval(_CASES, _loose, scope_id=SCOPE, expected=_expected, host=host, k=2)
+    # Each case's label is its ``expected`` field, which the field grader reads.
+    strict = (await Eval(_CASES, _strict, ["expected"], k=2).run(host=host, scope=SCOPE)).summary
+    loose = (await Eval(_CASES, _loose, ["expected"], k=2).run(host=host, scope=SCOPE)).summary
 
     # The bundle: accuracy states the very interval match does, and none exceeds the unit scale.
     bundle = one_batch_bundle(off_loop(list_results, host.storage, loose.run_id, SCOPE), profile=host.profile)
@@ -232,7 +230,7 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
 
 
 # =============================================================================
-# End to end: compare → a spend whose interval would reach below zero
+# End to end: a comparison → a spend whose interval would reach below zero
 # =============================================================================
 
 
@@ -247,14 +245,8 @@ def _spending(heavy: bool) -> Any:
 
 
 async def test_a_spend_interval_stops_at_zero_and_a_delta_interval_on_it_does_not() -> None:
-    comparison = await compare(
-        _CASES,
-        {"heavy": _spending(True), "light": _spending(False)},
-        [],
-        expected=_expected,
-        control="heavy",
-        scope_id=SCOPE,
-        k=2,
+    comparison = await Eval(_CASES, {"heavy": _spending(True), "light": _spending(False)}, ["expected"], k=2).run(
+        store=":memory:", scope=SCOPE
     )
     lows = [
         summary.ci_low

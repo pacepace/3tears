@@ -278,7 +278,7 @@ class TestIdenticalArmsOnPassFailAnswers:
     tied, the regime a t-test is least sure of. No difference exists, so ANY ``improved`` or ``regressed``
     is a false separation, and the family's chance of one must stay at most α at every bank size.
 
-    Through ``compare()`` itself, 1,500 seeded comparisons per bank size gave 0.004 (12 cases), 0.023 (24)
+    Through an eval comparing two arms (as ``compare()`` ran it then), 1,500 seeded comparisons per bank size gave 0.004 (12 cases), 0.023 (24)
     and 0.021 (48); this runs the same rule fast.
     """
 

@@ -31,7 +31,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.reporting import model_identity_disclosure, unconfirmed_model_identities
 from threetears.evals.kernel import EvalCampaign, EvalStorage
-from threetears.evals.quick import Answer, callable_host
+from threetears.evals import Answer
+from threetears.evals.quick.one_call import callable_host
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.schema import EvalResult, EvalRun, RoleUsage, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore

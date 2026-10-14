@@ -1,13 +1,12 @@
-"""``store=``: the quick path keeps its runs in a store of the caller's choosing, with nothing else to build.
+"""``store=``: an eval keeps its runs in a store of the caller's choosing, with nothing else to build.
 
-The step after a first eval is "the same thing, but keep the results". Before ``store=``, keeping them meant
-replacing the host ``run_eval`` builds with one built by hand — a profile, a measure per scorer, a kind contract
-— and losing ``margins=`` and ``ranges=`` with it, since ``compare`` refuses those beside a host of the caller's
-own. ``store=`` keeps the built host and changes only where it stores.
+The step after a first eval is "the same thing, but keep the results". Without ``store=``, keeping them would mean
+replacing the host an eval builds with one built by hand — a profile, a measure per grader, a kind contract — and
+declaring every margin and range on it. ``Eval.run(store=...)`` keeps the built host and changes only where it
+stores.
 
-Mutations that turn this file red: ``callable_host`` ignoring ``store=``; ``run_eval`` or ``compare`` not passing it
-on; accepting ``store=`` beside ``host=``; the SQLite store keeping anything in the connection rather than the
-file.
+Mutations that turn this file red: ``callable_host`` ignoring ``store=``; ``Eval.run`` not passing it on; accepting
+``store=`` beside ``host=``; the SQLite store keeping anything in the connection rather than the file.
 """
 
 from __future__ import annotations
@@ -28,7 +27,9 @@ from threetears.evals.analysis import list_campaigns
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import scope_history
 from threetears.evals.analysis import summarize_run
-from threetears.evals.quick import Judge, callable_host, compare, run_eval
+from threetears.evals import Eval, Judge, grader
+from threetears.evals.quick.one_call import callable_host
+from threetears.evals.schema import RubricDim
 from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore
 from packages.evals.tests.off_loop import off_loop
@@ -53,16 +54,16 @@ async def misses_one(case: Mapping[str, Any]) -> str:
     return "wrong" if case["n"] == 0 else "right"
 
 
-async def test_a_run_eval_run_is_read_back_by_a_new_process(tmp_path: Path) -> None:
+async def test_an_evals_run_is_read_back_by_a_new_process(tmp_path: Path) -> None:
     path = tmp_path / "evals.sqlite"
     with SqliteDocumentStore(path) as store:
-        first = await run_eval(CASES[:6], always_right, [correct], scope_id="kept", k=2, store=store)
-        second = await run_eval(CASES[:6], misses_one, [correct], scope_id="kept", k=2, store=store)
+        first = await Eval(CASES[:6], always_right, [correct], k=2).run(store=store, scope="kept")
+        second = await Eval(CASES[:6], misses_one, [correct], k=2).run(store=store, scope="kept")
     # A process that never saw the runs, holding nothing but the file's path and the scorer.
     script = textwrap.dedent(
         f"""
         from threetears.evals.analysis import summarize_run
-        from threetears.evals.quick import callable_host
+        from threetears.evals.quick.one_call import callable_host
         from threetears.evals.run import list_runs
         from threetears.evals.storage import SqliteDocumentStore
 
@@ -87,12 +88,12 @@ async def misses_half(case: Mapping[str, Any]) -> str:
     return "wrong" if case["n"] % 2 else "right"
 
 
-async def test_a_kept_scorer_has_a_history_read_back_from_the_file(tmp_path: Path) -> None:
-    """``scope_history(metric=<scorer>)`` series a quick-path scorer, read through a host over the reopened file."""
+async def test_a_kept_grader_has_a_history_read_back_from_the_file(tmp_path: Path) -> None:
+    """``scope_history(metric=<grader>)`` series a quick-path grader, read through a host over the reopened file."""
     path = tmp_path / "evals.sqlite"
     with SqliteDocumentStore(path) as store:
-        first = await run_eval(CASES[:12], always_right, [correct], scope_id="kept", k=2, store=store, model="router")
-        second = await run_eval(CASES[:12], misses_half, [correct], scope_id="kept", k=2, store=store, model="router")
+        first = await Eval(CASES[:12], {"router": always_right}, [correct], k=2).run(store=store, scope="kept")
+        second = await Eval(CASES[:12], {"router": misses_half}, [correct], k=2).run(store=store, scope="kept")
     with SqliteDocumentStore(path) as reopened:
         host = callable_host([correct], store=reopened)
         history = off_loop(scope_history, host, "kept", metric="correct")
@@ -109,21 +110,17 @@ async def test_a_kept_scorer_has_a_history_read_back_from_the_file(tmp_path: Pat
     assert flag is not None and flag.label == "regressed" and flag.n_pairs == 12
 
 
-async def test_compare_keeps_its_margins_with_a_store(tmp_path: Path) -> None:
+async def test_a_comparison_keeps_its_margins_with_a_store(tmp_path: Path) -> None:
     path = tmp_path / "evals.sqlite"
     with SqliteDocumentStore(path) as store:
-        comparison = await compare(
+        comparison = await Eval(
             CASES,
             # Alike on every case: 48 agreeing pairs show a 0.1 margin held whatever order the bounded test bets in.
             # One miss among them is shown equivalent in 18 of the 48 places it can fall, so it would test luck.
             {"current": always_right, "cheaper": always_right},
-            [correct],
-            control="current",
-            scope_id="kept",
+            [grader(correct, margin=0.1)],
             k=2,
-            store=store,
-            margins={"correct": 0.1},
-        )
+        ).run(store=store, scope="kept")
     (row,) = comparison.contrasts("correct")
     assert row["verdict"].startswith("equivalent to the control") and "(margin ±0.1)" in row["verdict"]
     with SqliteDocumentStore(path) as reopened:
@@ -153,22 +150,24 @@ async def _stand_in_judge(*, system: str, user: str, response_format: dict[str, 
 
 
 async def test_rerunning_unchanged_cases_never_makes_an_earlier_run_read_as_edited(tmp_path: Path) -> None:
-    """A second call over the same cases leaves the stored template alone, so the first run keeps its intent.
+    """A second run over the same cases leaves the stored template alone, so the first run keeps its intent.
 
-    The template is addressed by its content, so the second call finds it stored. Restamping it on every call made
+    The template is addressed by its content, so the second run finds it stored. Restamping it on every run made
     every earlier judged run's summary read its template as edited since, and withhold the intent its judge read.
     """
     judge = Judge(
-        client=SimpleNamespace(generate=_stand_in_judge),
-        model="stand-in",
-        rubric={"acknowledges": "The reply acknowledges the problem."},
+        SimpleNamespace(generate=_stand_in_judge, model_name="stand-in"),
+        [RubricDim(name="answer.acknowledges", description="The reply acknowledges the problem.", scale="ordinal")],
         case_material=lambda case: str(case["n"]),
     )
+
+    async def say_it(case: Mapping[str, Any]) -> str:
+        """Say it."""
+        return "right"
+
     with SqliteDocumentStore(tmp_path / "evals.sqlite") as store:
-        first = await run_eval(
-            CASES[:3], always_right, judge=judge, scope_id="kept", k=1, store=store, intent="Say it."
-        )
-        await run_eval(CASES[:3], always_right, judge=judge, scope_id="kept", k=1, store=store, intent="Say it.")
+        first = (await Eval(CASES[:3], say_it, [judge], k=1).run(store=store, scope="kept")).summary
+        await Eval(CASES[:3], say_it, [judge], k=1).run(store=store, scope="kept")
         again = off_loop(summarize_run, callable_host([], store=store), first.run_id, "kept")
     assert first.intent == again.intent == "Say it."
 
@@ -177,16 +176,10 @@ async def test_a_store_beside_a_host_is_refused() -> None:
     host = callable_host([correct])
     with SqliteDocumentStore(":memory:") as store:
         with pytest.raises(ValueError, match="brings its own storage"):
-            await run_eval(CASES[:2], always_right, [correct], scope_id="kept", host=host, store=store)
+            await Eval(CASES[:2], always_right, [correct]).run(host=host, store=store, scope="kept")
         with pytest.raises(ValueError, match="brings its own storage"):
-            await compare(
-                CASES[:2],
-                {"a": always_right, "b": misses_one},
-                [correct],
-                control="a",
-                scope_id="kept",
-                host=host,
-                store=store,
+            await Eval(CASES[:2], {"a": always_right, "b": misses_one}, [correct]).run(
+                host=host, store=store, scope="kept"
             )
 
 

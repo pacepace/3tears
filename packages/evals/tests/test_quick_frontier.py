@@ -1,6 +1,6 @@
 """The frontier over a quick comparison: one subject, so its models rank on one frontier, from Python, an action or the CLI.
 
-``compare`` used to make each arm's model its run's subject, and the frontier ranks within a subject, so on
+A comparison used to make each arm's model its run's subject, and the frontier ranks within a subject, so on
 the quick path it only ever compared arms that shared a model: "the cheapest model that clears the bar" could
 not be asked. The arms of one comparison now share its subject, the model a lever the frontier ranks across;
 and the frontier is reachable as the ``scope_frontier`` action and the ``frontier`` command, both answering
@@ -22,7 +22,9 @@ import pytest
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.ops import OpsHost, frontier_text, scope_frontier
-from threetears.evals.quick import Answer, Judge, compare, run_cli
+from threetears.evals import Answer, Eval, Judge
+from threetears.evals.quick import run_cli
+from threetears.evals.schema import RubricDim
 from threetears.evals.run import LaunchHost, LaunchSettings
 from packages.evals.tests.off_loop import off_loop
 
@@ -58,17 +60,21 @@ async def _stand_in_judge(*, system: str, user: str, response_format: dict[str, 
 
 def _judge() -> Judge:
     return Judge(
-        client=SimpleNamespace(generate=_stand_in_judge),
-        model="stand-in",
-        rubric={"sound": "The answer is sound."},
+        SimpleNamespace(generate=_stand_in_judge, model_name="stand-in"),
+        [RubricDim(name="answer.sound", description="The answer is sound.", scale="ordinal")],
         case_material=lambda case: f"Case {case['n']}",
     )
 
 
-async def test_a_comparison_of_two_models_is_one_frontier_naming_the_cheaper_one() -> None:
-    comparison = await compare(
-        CASES, {"big": big, "small": small}, control="big", scope_id="ranked", k=2, factors=("model",), judge=_judge()
+async def _models_compared(scope: str) -> Any:
+    """``big`` against ``small``, each arm named as the model it is, judged and run twice per case."""
+    return await Eval(CASES, {"model=big": big, "model=small": small}, [_judge()], k=2).run(
+        store=":memory:", scope=scope
     )
+
+
+async def test_a_comparison_of_two_models_is_one_frontier_naming_the_cheaper_one() -> None:
+    comparison = await _models_compared("ranked")
     ranked = off_loop(scope_frontier, comparison.host, "ranked", bar=0.5)
     (subject,) = ranked.subjects
     assert subject.subject_id == comparison.name
@@ -79,16 +85,14 @@ async def test_a_comparison_of_two_models_is_one_frontier_naming_the_cheaper_one
 
 
 async def test_named_arms_share_the_comparison_s_subject_too() -> None:
-    comparison = await compare(CASES[:4], {"v1": big, "v2": small}, control="v1", scope_id="named", k=1, judge=_judge())
+    comparison = await Eval(CASES[:4], {"v1": big, "v2": small}, [_judge()], k=1).run(store=":memory:", scope="named")
     (subject,) = off_loop(scope_frontier, comparison.host, "named").subjects
     assert len(subject.points) == 2
     assert {summary.arm for summary in comparison.arms.values()} == {"v1", "v2"}
 
 
 async def test_the_action_and_the_cli_return_the_python_call_s_frontier(capsys: pytest.CaptureFixture[str]) -> None:
-    comparison = await compare(
-        CASES, {"big": big, "small": small}, control="big", scope_id="ranked", k=2, factors=("model",), judge=_judge()
-    )
+    comparison = await _models_compared("ranked")
     host = comparison.host
     expected = off_loop(scope_frontier, host, "ranked", bar=0.5).model_dump(mode="json")
 

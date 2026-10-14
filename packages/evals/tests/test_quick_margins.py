@@ -1,22 +1,23 @@
-"""``compare(margins=...)``: the quick path declares a margin on a scorer's measure, so a contrast can read equivalent.
+"""``grader(fn, margin=...)``: a margin declared on a grader's reading, so a contrast can read equivalent.
 
 ``equivalent`` is the only verdict that says two arms are alike, and the engine reads it only against a margin
-declared on the measure (``materiality_threshold``). Before ``margins=``, :func:`~threetears.evals.quick.callable_host`
-declared none on any measure, so no quick comparison could ever answer "is the cheaper model good enough?".
+declared on the measure (``materiality_threshold``). With none declared — and none ever is by default — no
+comparison could answer "is the cheaper model good enough?".
 
-A scorer returning a number states no range, and with none no equivalence test holds its error rate (#695), so
-the engine would refuse to test a margin on it and tell the reader to "declare value_range", which the quick path
-had no way to do. ``ranges=`` is that way, and a margin on such a scorer without one is refused at the call.
+A grader returning a number states no range, and with none no equivalence test holds its error rate (#695), so
+the engine would refuse to test a margin on it. ``grader(fn, range=(low, high))`` declares it, and a margin on such
+a grader without one is refused before anything runs.
 
-A margin on accuracy (#698) is the runs': the engine owns accuracy's descriptor, so ``compare(margins={"accuracy":
-...})`` declares it on every arm's run at launch (``EvalRun.declared_margins``), and the analysis reads it only when
-every run of the campaign declares it alike, naming it as the runs' (``margin_source`` ``run``).
+A margin on accuracy (#698) is the runs': the engine owns accuracy's descriptor, so a margin on the classifier's
+field (``grader("label", margin=...)``, the first field grader) is declared on every arm's run at launch
+(``EvalRun.declared_margins``), and the analysis reads it only when every run of the campaign declares it alike,
+naming it as the runs' (``margin_source`` ``run``).
 
 Mutations that turn this file red: dropping ``materiality_threshold=margin`` in ``scorer_measure``; declaring a
-default margin; dropping the no-margin disclosure; accepting a margin on a name no scorer has, on a scorer
-returning a number with no range, or beside a host of the caller's own; dropping ``ranges=`` from the scorer's
-descriptor; landing a score outside its declared range; not recording a run margin on the run; reading one the runs
-disagree on; accepting one on accuracy with no ``expected=`` or on a core measure that is not a rate.
+default margin; dropping the no-margin disclosure; accepting a margin that is not a positive number, on a grader
+returning a number with no range, or on a host of the caller's own that does not declare it; dropping the range from
+the grader's descriptor; landing a score outside its declared range; not recording a run margin on the run; reading
+one the runs disagree on; accepting one on a core measure.
 """
 
 from __future__ import annotations
@@ -27,12 +28,15 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import DisclosureBlock, inspect_campaign_bundle
-from threetears.evals.kernel import RUN_MARGIN_MEASURES, run_margin_refusal
-from threetears.evals.quick import Answer, Comparison, callable_host, compare
+from threetears.evals import Answer, Eval, Result, grader
+from threetears.evals.analysis import report_markdown
+from threetears.evals.kernel import RUN_MARGIN_MEASURES, ValidationFailedError, run_margin_refusal
+from threetears.evals.quick.one_call import callable_host
 from packages.evals.tests.off_loop import off_loop
 
-#: Enough cases for two arms that agree on every one to be shown within 0.1 of each other.
-CASES = [{"n": index} for index in range(48)]
+#: Enough cases for two arms that agree on every one to be shown within 0.1 of each other. Each expects the answer
+#: ``right``, which a classifier's field grader reads.
+CASES = [{"n": index, "label": "right"} for index in range(48)]
 
 
 def correct(case: Mapping[str, Any], answer: str) -> bool:
@@ -52,19 +56,26 @@ def _answers(misses: int) -> Any:
     return candidate
 
 
-async def _compare(*, cheaper_misses: int = 1, **overrides: Any) -> Comparison:
-    arguments: dict[str, Any] = {"control": "current", "scope_id": "margins", "k": 2}
-    arguments.update(overrides)
+async def _compare(
+    graders: list[Any] | None = None, *, cheaper_misses: int = 1, host: Any = None, scope: str = "margins"
+) -> Result:
     arms = {"current": _answers(0), "cheaper": _answers(cheaper_misses)}
-    return await compare(CASES, arms, [correct], **arguments)
+    ev = Eval(CASES, arms, [correct] if graders is None else graders, k=2)
+    if host is not None:
+        return await ev.run(host=host, scope=scope)
+    return await ev.run(store=":memory:", scope=scope)
 
 
-def _row(comparison: Comparison, measure: str) -> dict[str, Any]:
+async def _run(cases: list[dict[str, Any]], arms: Mapping[str, Any], graders: list[Any], scope: str, k: int) -> Result:
+    return await Eval(cases, arms, graders, k=k).run(store=":memory:", scope=scope)
+
+
+def _row(comparison: Result, measure: str) -> dict[str, Any]:
     (row,) = comparison.contrasts(measure)
     return row
 
 
-def _no_margin_lines(comparison: Comparison) -> list[str]:
+def _no_margin_lines(comparison: Result) -> list[str]:
     return [
         block.text
         for block in comparison.report.blocks
@@ -76,7 +87,7 @@ class TestADeclaredMargin:
     async def test_two_arms_inside_it_read_equivalent_with_the_margin_named(self) -> None:
         """Alike on all 48 cases. One miss among them is shown inside 0.1 in only 18 of the 48 places the bounded
         test can meet it, so the arms here agree throughout rather than test where the miss falls."""
-        comparison = await _compare(margins={"correct": 0.1}, cheaper_misses=0)
+        comparison = await _compare([grader(correct, margin=0.1)], cheaper_misses=0)
         row = _row(comparison, "correct")
         assert row["verdict"].startswith("equivalent to the control") and "(margin ±0.1)" in row["verdict"]
         assert row["delta"] == 0.0
@@ -94,27 +105,21 @@ class TestADeclaredMargin:
         assert plain.get("wordy").value_range is None, "nothing says what a float scorer's values can be"
 
     async def test_a_second_control_reads_the_same_margin(self) -> None:
-        comparison = await _compare(margins={"correct": 0.1}, cheaper_misses=0)
+        comparison = await _compare([grader(correct, margin=0.1)], cheaper_misses=0)
         assert _row(await comparison.against("cheaper"), "correct")["verdict"].startswith("equivalent to the control")
 
 
 class TestHowManyCasesEquivalenceTakes:
-    """The case counts ``reading-reports.md`` states, through ``compare``: arms answering alike on every case."""
+    """The case counts ``reading-reports.md`` states, through a comparison: arms answering alike on every case."""
 
     @staticmethod
     async def _verdict(n: int, margin: float, *, expected: bool) -> str:
         async def alike(case: Mapping[str, Any]) -> str:
             return "right" if case["n"] % 3 else "wrong"
 
-        comparison = await compare(
-            CASES[:n],
-            {"current": alike, "cheaper": alike},
-            [correct],
-            expected=(lambda case: "right") if expected else None,
-            control="current",
-            scope_id=f"how-many-{n}-{margin}-{expected}",
-            k=2,
-            margins={"correct": margin},
+        graders = [*(["label"] if expected else []), grader(correct, margin=margin)]
+        comparison = await _run(
+            CASES[:n], {"current": alike, "cheaper": alike}, graders, f"how-many-{n}-{margin}-{expected}", 2
         )
         return str(_row(comparison, "correct")["verdict"])
 
@@ -124,7 +129,7 @@ class TestHowManyCasesEquivalenceTakes:
     async def test_the_first_count_at_which_alike_arms_read_equivalent(
         self, margin: float, expected: bool, first: int
     ) -> None:
-        """One reading in the family, or two when ``expected=`` adds accuracy and Holm divides α between them."""
+        """One reading in the family, or two when a field grader adds accuracy and Holm divides α between them."""
         assert (await self._verdict(first - 1, margin, expected=expected)).startswith("not separated")
         assert (await self._verdict(first, margin, expected=expected)).startswith("equivalent")
 
@@ -144,9 +149,7 @@ class TestAPassFailInterval:
         async def half(case: Mapping[str, Any]) -> str:
             return "right" if case["n"] < 3 else "wrong"
 
-        comparison = await compare(
-            six, {"current": never, "fixed": half}, [correct], control="current", scope_id="pass-fail-bounds", k=2
-        )
+        comparison = await _run(six, {"current": never, "fixed": half}, [correct], "pass-fail-bounds", 2)
         row = _row(comparison, "correct")
         assert row["delta"] == pytest.approx(0.5)
         assert row["interval"] == "[-0.0748, 1] at 95%", (
@@ -160,47 +163,34 @@ class TestNoMargin:
         assert _row(comparison, "correct")["verdict"].startswith("not separated")
         (line,) = _no_margin_lines(comparison)
         assert "Correct score" in line and "not separated never means the arms are alike" in line
-        assert "compare(margins={'correct': ...})" in line
+        assert "grader(correct, margin=...)" in line
         (block,) = [b for b in comparison.report.blocks if isinstance(b, DisclosureBlock) and b.text == line]
         assert block.section == "not_tested", "said with what the campaign could not test"
 
     async def test_on_a_classifier_it_names_accuracy_and_the_one_way_to_declare_it(self) -> None:
-        comparison = await compare(
-            CASES,
-            {"current": _answers(0), "cheaper": _answers(1)},
-            expected=lambda case: "right",
-            control="current",
-            scope_id="margins-accuracy",
-            k=2,
-        )
+        arms = {"current": _answers(0), "cheaper": _answers(1)}
+        comparison = await _run(CASES, arms, ["label"], "margins-accuracy", 2)
         (line,) = _no_margin_lines(comparison)
         assert "No margin is declared on Accuracy" in line
-        assert "Declare a margin on Accuracy (compare(margins={'accuracy': ...}))" in line
+        assert "Declare a margin on Accuracy on the classifier's field (grader('<field>', margin=...))" in line
         assert "scorer" not in line, "accuracy takes a margin of its own: no duplicate scorer is needed"
 
 
-async def _classify(margins: Mapping[str, float] | None, *, n: int = len(CASES), scope_id: str = "acc") -> Comparison:
+async def _classify(margin: Any, *, n: int = len(CASES), scope_id: str = "acc") -> Result:
     """Two classifiers that agree on every case, one in three of them wrong, compared on accuracy."""
 
     async def alike(case: Mapping[str, Any]) -> str:
         return "right" if case["n"] % 3 else "wrong"
 
-    return await compare(
-        CASES[:n],
-        {"current": alike, "cheaper": alike},
-        expected=lambda case: "right",
-        control="current",
-        scope_id=scope_id,
-        k=2,
-        margins=margins,
-    )
+    label = "label" if margin is None else grader("label", margin=margin)
+    return await _run(CASES[:n], {"current": alike, "cheaper": alike}, [label], scope_id, 2)
 
 
 class TestAMarginOnAccuracy:
     """#698: a run-scoped margin on a core rate measure, with no duplicate scorer."""
 
     async def test_agreeing_arms_at_an_adequate_n_read_equivalent_and_the_reading_names_its_margin(self) -> None:
-        comparison = await _classify({"accuracy": 0.1})
+        comparison = await _classify(0.1)
         row = _row(comparison, "accuracy")
         assert row["verdict"] == (
             "equivalent to the control, within the measure's margin (margin ±0.1, declared on the runs)"
@@ -215,11 +205,11 @@ class TestAMarginOnAccuracy:
         assert _no_margin_lines(comparison) == []
 
     async def test_too_few_cases_stay_not_separated_naming_the_margin_it_could_not_show(self) -> None:
-        (verdict,) = (await _classify({"accuracy": 0.1}, n=12, scope_id="acc-few")).verdicts("accuracy")
+        (verdict,) = (await _classify(0.1, n=12, scope_id="acc-few")).verdicts("accuracy")
         assert (verdict.outcome, verdict.reason, verdict.margin_source) == ("not_separated", "not_inside_margin", "run")
 
     async def test_every_run_records_it_and_the_stored_comparison_names_it(self) -> None:
-        comparison = await _classify({"accuracy": 0.1}, scope_id="acc-stored")
+        comparison = await _classify(0.1, scope_id="acc-stored")
         storage = comparison.host.storage
         for summary in comparison.arms.values():
             (run,) = off_loop(storage.load_eval_runs, [summary.run_id], comparison.scope_id, elide_payload=frozenset())
@@ -230,7 +220,7 @@ class TestAMarginOnAccuracy:
         assert (tested.equivalence_margin, tested.margin_source, tested.verdict) == (0.1, "run", "equivalent")
 
     async def test_runs_that_disagree_on_it_read_none_and_say_so(self) -> None:
-        comparison = await _classify({"accuracy": 0.1}, scope_id="acc-disagree")
+        comparison = await _classify(0.1, scope_id="acc-disagree")
         storage = comparison.host.storage
         cheaper = comparison.arms["cheaper"].run_id
         (run,) = off_loop(storage.load_eval_runs, [cheaper], comparison.scope_id, elide_payload=frozenset())
@@ -255,38 +245,38 @@ class TestAMarginOnAccuracy:
 
 
 class TestARefusedMargin:
-    async def test_on_accuracy_without_expected_it_says_only_a_classifier_measures_it(self) -> None:
-        with pytest.raises(ValueError, match=r"names 'accuracy', which only a classifier's arms measure"):
-            await _compare(margins={"accuracy": 0.05})
+    @pytest.mark.parametrize("name", ["accuracy", "match", "precision", "cost_usd"])
+    def test_on_a_core_measure_it_names_the_function_route(self, name: str) -> None:
+        with pytest.raises(ValueError, match=r"engine core measure's name; grade it with a function"):
+            Eval(CASES, {"current": _answers(0), "cheaper": _answers(1)}, [grader(name, margin=0.05)])
 
-    @pytest.mark.parametrize("name", ["match", "precision", "cost_usd"])
-    async def test_on_a_core_measure_that_takes_no_run_margin_it_names_the_one_that_does(self, name: str) -> None:
-        with pytest.raises(ValueError, match=r"declares margins only on accuracy"):
-            await _compare(margins={name: 0.05})
-
-    @pytest.mark.parametrize("margin", [0, 1, -0.1, float("nan"), True, "0.1"])
-    async def test_on_accuracy_outside_a_rate_s_width(self, margin: Any) -> None:
-        assert run_margin_refusal("accuracy", margin) is not None
-        with pytest.raises(ValueError, match="the margin on 'accuracy'"):
-            await _classify({"accuracy": margin}, scope_id="acc-refused")
-
-    async def test_a_scorer_margin_with_a_host_of_your_own_but_an_accuracy_margin_works_with_one(self) -> None:
-        with pytest.raises(ValueError, match="pass one or the other"):
-            await _compare(margins={"correct": 0.1}, host=callable_host([correct]))
-        assert run_margin_refusal("accuracy", 0.05) is None and RUN_MARGIN_MEASURES == {"accuracy"}
-
-    async def test_on_a_name_no_scorer_has_it_names_the_scorers(self) -> None:
-        with pytest.raises(ValueError, match=r"'corect', which no scorer reports.*'correct'"):
-            await _compare(margins={"corect": 0.05})
+    async def test_on_accuracy_wider_than_a_rate_the_launch_refuses_it(self) -> None:
+        assert run_margin_refusal("accuracy", 1) is not None
+        with pytest.raises(ValidationFailedError, match="the margin on 'accuracy'"):
+            await _classify(1, scope_id="acc-refused")
 
     @pytest.mark.parametrize("margin", [0, -0.1, float("nan"), True, "0.1"])
-    async def test_that_is_not_a_positive_number(self, margin: Any) -> None:
-        with pytest.raises(ValueError, match="is a positive number in the measure's own units"):
-            await _compare(margins={"correct": margin})
+    def test_that_is_not_a_positive_number(self, margin: Any) -> None:
+        assert run_margin_refusal("accuracy", margin) is not None
+        with pytest.raises(ValueError, match="is a positive number in the reading's own units"):
+            grader("label", margin=margin)
+        with pytest.raises(ValueError, match="is a positive number in the reading's own units"):
+            grader(correct, margin=margin)
+
+    async def test_a_grader_margin_a_host_of_your_own_does_not_declare_is_refused_but_an_accuracy_one_works(
+        self,
+    ) -> None:
+        with pytest.raises(ValueError, match="without the materiality_threshold its grader declares"):
+            await _compare([grader(correct, margin=0.1)], host=callable_host([correct]))
+        assert run_margin_refusal("accuracy", 0.05) is None and RUN_MARGIN_MEASURES == {"accuracy"}
+        result = await Eval(CASES, _answers(0), [grader("label", margin=0.05)], k=1).run(
+            host=callable_host(), scope="acc-own-host"
+        )
+        assert result.summary.status == "completed"
 
     async def test_on_a_scorer_returning_a_number_with_no_range_it_teaches_ranges(self) -> None:
         """Refused at the call, never accepted and then left untested with a remedy the quick path cannot take."""
-        with pytest.raises(ValueError, match=r"a margin on 'wordy' needs its range too.*ranges=\{'wordy': \(1, 5\)\}"):
+        with pytest.raises(ValueError, match=r"a margin on 'wordy' needs its range too.*grader\(wordy, margin=\.\.\., range=\(1, 5\)\)"):
             callable_host([wordy], margins={"wordy": 2.0})
 
 
@@ -297,19 +287,16 @@ def rating(case: Mapping[str, Any], answer: str) -> float:
 
 class TestADeclaredRange:
     async def test_a_float_scorer_with_a_margin_and_its_range_can_read_equivalent(self) -> None:
-        comparison = await compare(
+        comparison = await _run(
             CASES,
             {"current": _answers(0), "cheaper": _answers(1)},
-            [rating],
-            control="current",
-            scope_id="ranges",
-            k=2,
-            margins={"rating": 0.5},
-            ranges={"rating": (1, 5)},
+            [grader(rating, margin=0.5, range=(1, 5))],
+            "ranges",
+            2,
         )
         row = _row(comparison, "rating")
         assert row["verdict"].startswith("equivalent to the control") and "(margin ±0.5)" in row["verdict"]
-        assert "value_range" not in comparison.render()
+        assert "value_range" not in report_markdown(comparison.report)
 
     async def test_a_score_outside_it_excludes_the_cell_naming_the_scorer(self) -> None:
         def overrated(case: Mapping[str, Any], answer: str) -> float:
@@ -317,14 +304,12 @@ class TestADeclaredRange:
             return 7.0 if case["n"] == 0 else 3.0
 
         summary = (
-            await compare(
+            await _run(
                 CASES[:4],
                 {"current": _answers(0), "cheaper": _answers(0)},
-                [overrated],
-                control="current",
-                scope_id="ranges-outside",
-                k=1,
-                ranges={"overrated": (1, 5)},
+                [grader(overrated, range=(1, 5))],
+                "ranges-outside",
+                1,
             )
         ).arms["current"]
         assert summary.n_excluded == 1
@@ -334,7 +319,7 @@ class TestADeclaredRange:
         ("ranges", "match"),
         [
             ({"correct": (0, 1)}, "returns a bool, a pass/fail, which is on 0 to 1 already"),
-            ({"rateing": (1, 5)}, "'rateing', which no scorer reports"),
+            ({"rateing": (1, 5)}, "'rateing', which no grader reports"),
             ({"rating": (5, 1)}, "the lowest and the highest score it can return"),
             ({"rating": (1, float("inf"))}, "the lowest and the highest score it can return"),
             ({"rating": 5}, "the lowest and the highest score it can return"),
@@ -344,9 +329,18 @@ class TestADeclaredRange:
         with pytest.raises(ValueError, match=match):
             callable_host([correct, rating], ranges=ranges)
 
-    async def test_beside_a_host_of_your_own_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="pass one or the other"):
-            await _compare(ranges={"correct": (0, 1)}, host=callable_host([correct]))
+    async def test_one_a_host_of_your_own_does_not_declare_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="without the value_range its grader declares"):
+            await _compare([grader(rating, range=(1, 5))], host=callable_host([rating]))
+
+    @pytest.mark.parametrize("bounds", [(5, 1), (1, float("inf")), (1, 2, 3)])
+    def test_an_unusable_one_is_refused_where_the_grader_is_declared(self, bounds: Any) -> None:
+        with pytest.raises(ValueError, match="the lowest and highest grade it can return"):
+            grader(rating, range=bounds)
+
+    def test_a_field_takes_none(self) -> None:
+        with pytest.raises(ValueError, match="graded pass/fail, on 0 to 1 already"):
+            grader("label", range=(0, 1))
 
 
 class TestTheNoMarginLineAdvisesEachKindOfMeasure:
@@ -357,17 +351,9 @@ class TestTheNoMarginLineAdvisesEachKindOfMeasure:
         async def priced(case: Mapping[str, Any]) -> Answer:
             return Answer("right", model="m", input_tokens=10, output_tokens=1, cost_usd=0.001 * (1 + case["n"] % 2))
 
-        comparison = await compare(
-            CASES,
-            {"current": priced, "cheaper": priced},
-            [correct],
-            expected=lambda case: "right",
-            control="current",
-            scope_id="no-margin-kinds",
-            k=1,
-        )
+        comparison = await _run(CASES, {"current": priced, "cheaper": priced}, ["label", correct], "no-margin-kinds", 1)
         (line,) = _no_margin_lines(comparison)
-        assert "Declare a margin on Correct score by the scorer's name (compare(margins={'correct': ...}))" in line
-        assert "Declare a margin on Accuracy (compare(margins={'accuracy': ...}))" in line
+        assert "Declare a margin on Correct score where it is graded (grader(correct, margin=...))" in line
+        assert "Declare a margin on Accuracy on the classifier's field (grader('<field>', margin=...))" in line
         assert "No comparison can declare one on Production cost" in line
         assert "Production cost by the scorer's name" not in line and "Production cost (compare" not in line
