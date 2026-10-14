@@ -11,8 +11,7 @@ lets the goal language say which it is reading (``state.<dimension>`` against ``
 **Any kind fills one.** A kind records each action its candidate took that succeeded, from what the
 tool actually returned — never what a simulation reported — and hands the ledger back on
 :attr:`~threetears.evals.kernel.candidate_kind.CandidateOutput.call_ledger`. The runner stores it
-beside the cell's output, which is what lets a stored result be re-graded later under today's rule
-without re-running it (:mod:`threetears.evals.run.recheck`).
+beside the cell's output, so what the candidate did stays readable after the run.
 
 **A refused call is recorded apart, never among the calls.** A call the tool refused changed nothing, and a
 check that counted it would grade an attempt as an effect, so :attr:`CallLedger.calls` holds successes only and

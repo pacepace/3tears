@@ -114,15 +114,6 @@ from threetears.evals.run.executor import (
 from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs, list_runs_disclosing
-from threetears.evals.run.recheck import (
-    CheckFlip,
-    KeptOutcome,
-    RecheckStore,
-    ResultRecheck,
-    RunRecheck,
-    recheck_goal_states,
-    recheck_result,
-)
 from threetears.evals.run.judge_repeat import (
     JudgeRepeatEstimate,
     JudgeRepeatReport,
@@ -262,7 +253,6 @@ __all__ = [
     "CellExecutor",
     "CellMeter",
     "CellWork",
-    "CheckFlip",
     "CurationStore",
     "UnreadableRunDeleteStore",
     "ErrorLedger",
@@ -283,7 +273,6 @@ __all__ = [
     "JudgeOutcome",
     "JudgeRequest",
     "JudgeService",
-    "KeptOutcome",
     "KindFactory",
     "KindLauncher",
     "KindWiring",
@@ -302,12 +291,9 @@ __all__ = [
     "MeteredCallLedger",
     "MeteredCallTally",
     "RatingStore",
-    "RecheckStore",
     "ReproducibleJudgeInputs",
     "RequestSettingsPolicy",
-    "ResultRecheck",
     "RunCallbacks",
-    "RunRecheck",
     "PlannedJudge",
     "RunJudge",
     "RunnerOptions",
@@ -372,8 +358,6 @@ __all__ = [
     "settable_apparatus",
     "precondition_failure_text",
     "rate_result",
-    "recheck_goal_states",
-    "recheck_result",
     "record_witnessed_cell",
     "stamp_witnessed_judge",
     "refuse_stale_presumptions",

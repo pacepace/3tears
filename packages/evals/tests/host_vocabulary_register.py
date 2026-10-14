@@ -222,7 +222,6 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/metering.py": {},
     "run/ratings.py": {},
     "run/reads.py": {},
-    "run/recheck.py": {},
     "run/rejudge.py": {},
     "run/judge_repeat.py": {},
     "run/run_document.py": {},

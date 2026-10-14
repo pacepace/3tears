@@ -160,8 +160,7 @@ calls are the ones that succeeded, and every call builtin counts only those. The
 same ledger (`CallLedger.record_refusal`: the tool, the parameters, the reason and where it fell among the calls), and
 `refused("<world>.<tool>")` and `refused_count(...)` read them, so a candidate whose every call was refused no longer
 reads as one that never tried. The quick world records its refusals; a host kind records its tools' own. A ledger that
-keeps no refusal record is never read as "none refused": a refusal check against it cannot be graded. Stored runs
-re-grade from their ledgers (`recheck_goal_states`) rather than re-running.
+keeps no refusal record is never read as "none refused": a refusal check against it cannot be graded.
 
 *Evidence:* conversational agent with tools, 96 runs, 1 campaign, 2026-10, one result passed 7 of 7 action checks
 with every call refused, single campaign.

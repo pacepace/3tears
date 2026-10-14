@@ -426,10 +426,6 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The registry of stored document types and their facts, which a host partitions its storage by: the
     # engine's own types only, so a host noun here would be one host's document written into every host's list.
     "schema/doc_types.py",
-    # The re-check that re-grades a stored run from the ledgers its cells stored, through the run's
-    # own grading function. It reads no kind's trace shape, so a host noun here would be one kind's
-    # replay written back into the engine.
-    "run/recheck.py",
     # Moved off _HOST_COUPLED_MODULES when a launch's overlays became one map the kind's own model
     # validates: the launch names no overlay of any host's, so a host noun arriving
     # here would be one host's knob written into every host's launch signature.

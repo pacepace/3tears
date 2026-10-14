@@ -1352,8 +1352,7 @@ on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSe
   `world.bind(<that cell's handle table>)` before `seed` — every call the session makes then lands in
   that cell's world, and a session that seeds unbound is refused.
 - **Grading.** A goal check reads the end state as `state.<dimension>`, the calls the kind recorded on its
-  `CallLedger`, and what fired as `fired("<dimension>")`; grade them with `grade_goal_checks`, and a
-  stored run re-grades from all three with `recheck_goal_states`.
+  `CallLedger`, and what fired as `fired("<dimension>")`; grade them with `grade_goal_checks`.
 - **Witnessed cells.** The runner's session is `commissioned`; a host grading a cell it witnessed through
   a session of its own constructs `WorldSession(registry, provenance="witnessed")`, so `fired_armed(...)`
   is not established there — no seed armed the session — and `record_witnessed_cell` refuses any world
