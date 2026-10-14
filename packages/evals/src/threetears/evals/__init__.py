@@ -6,7 +6,7 @@ contract under :mod:`~threetears.evals.kernel.host`), :mod:`~threetears.evals.ru
 and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and reports) and :mod:`~threetears.evals.gen` (generating
 cases), plus three that sit beside the engine rather than inside it: :mod:`~threetears.evals.storage`
 (the in-memory reference store), :mod:`~threetears.evals.testing` (the store conformance kit) and
-:mod:`~threetears.evals.quick` (``run_eval`` and the command line). Above the engine sit the surfaces an
+:mod:`~threetears.evals.quick` (an eval's host, and the command line). Above the engine sit the surfaces an
 agent drives it through: :mod:`~threetears.evals.ops` (typed operations, and one job contract for long
 work), :mod:`~threetears.evals.actions` (the action catalogue every transport mounts) and
 :mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). Two more are for a
@@ -14,6 +14,14 @@ completion client: :mod:`~threetears.evals.negotiation` (sending the closest req
 takes, and answering a provider's refusal of one, on the base install) and :mod:`~threetears.evals.providers` (the
 shipped adapter over 3tears-models, ``3tears-evals[models]``, which uses it); nothing in the engine imports
 either. Runs are launched on demand; there is no scheduled-run surface.
+
+**Start here: an eval is three slots.** ``Eval(cases, runner, grader)`` says what is evaluated — the cases, the thing
+under test (a function, or a mapping of them whose first key is the control) and what counts as right (functions,
+field names, a :class:`Judge`) — and ``await ev.run()`` runs it, returning a :class:`Result` that prints quietly and
+writes its report. ``python -m threetears.evals FILE`` runs every eval a ``.py`` or ``.toml`` file declares. The
+names that take it further are this module's own: :class:`World` and :class:`Log` (two more shapes of runner),
+:func:`grader` (what a reading declares beside its grade), :class:`Example`, :class:`Model` and :class:`Answer`. Each
+is loaded on first use, so importing this package loads none of the engine.
 
 **Import only from a public root**, and only the names its ``__all__`` declares. The roots are
 :data:`PUBLIC_ROOTS`, which a consumer can read to check its own imports rather than keep a copy;
@@ -35,8 +43,10 @@ what records it beside what it stores.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from importlib.metadata import version as _distribution_version
 from types import MappingProxyType
+from typing import Any
 
 #: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
 #: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
@@ -47,14 +57,32 @@ from types import MappingProxyType
 __version__: str
 
 
-def __getattr__(name: str) -> str:
-    """Resolve :data:`__version__` from the distribution's metadata on first read.
+#: The quick path's names, each by the module that defines it: served by :func:`__getattr__` on first use, so
+#: ``import threetears.evals`` (and ``from threetears.evals import ops``) loads none of the engine until one is asked
+#: for. What each is: ``docs/reference.md`` under the package's own root.
+_LADDER: Mapping[str, str] = MappingProxyType(
+    {
+        "Answer": "threetears.evals.quick.answer",
+        "Eval": "threetears.evals.quick.contract",
+        "Example": "threetears.evals.quick.judged",
+        "Judge": "threetears.evals.quick.judged",
+        "Log": "threetears.evals.quick.logged",
+        "Model": "threetears.evals.quick.client",
+        "Result": "threetears.evals.quick.result",
+        "World": "threetears.evals.quick.world",
+        "grader": "threetears.evals.quick.graders",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve :data:`__version__` from the distribution's metadata, and a quick-path name from its module, on first read.
 
     Args:
-        name: The attribute asked for; only ``__version__`` is served here.
+        name: The attribute asked for: ``__version__``, or one of the quick path's names (``Eval``, ``Judge``, ...).
 
     Returns:
-        The installed distribution's version string.
+        The installed distribution's version string, or the quick-path object.
 
     Raises:
         AttributeError: For any other name, as a module normally would.
@@ -63,7 +91,14 @@ def __getattr__(name: str) -> str:
     """
     if name == "__version__":
         return _distribution_version("3tears-evals")
+    if (defined_in := _LADDER.get(name)) is not None:
+        return getattr(import_module(defined_in), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """Every name the module holds, the quick path's lazily served ones among them."""
+    return sorted({*globals(), *_LADDER})
 
 
 #: The public roots, as absolute module names. A consumer imports from these and from no module
@@ -123,4 +158,18 @@ ROOT_EXTRAS: Mapping[str, RootExtra] = MappingProxyType(
     }
 )
 
-__all__ = ["PUBLIC_ROOTS", "ROOT_EXTRAS", "RootExtra", "__version__"]
+__all__ = [
+    "PUBLIC_ROOTS",
+    "ROOT_EXTRAS",
+    "Answer",
+    "Eval",
+    "Example",
+    "Judge",
+    "Log",
+    "Model",
+    "Result",
+    "RootExtra",
+    "World",
+    "__version__",
+    "grader",
+]

@@ -1,44 +1,30 @@
-"""Batteries: run an eval in one call, and drive the engine from a command line.
+"""The host bridge: an eval's host, the command line, and a measure declared on the function computing it.
 
-The quickest way in. :func:`run_eval` takes a list of cases, an async candidate and scorer
-functions, builds what a host would — a kind over the callable, a profile with one measure per
-scorer, the in-memory reference store — launches through the engine's own launch path, and returns
-an :class:`~threetears.evals.analysis.EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
-classifier, and the summary carries its confusion matrix (:class:`~threetears.evals.analysis.ConfusionCount`) and each label's
-precision, recall and F1 (:class:`~threetears.evals.analysis.LabelStatistics`). Handed a :class:`Judge`, it also grades each answer
-with a model against a rubric, and stores the :class:`JudgeExample` answers it must grade a known way as the
-cases its calibration starts from. A candidate that calls a paid model returns an :class:`Answer` to report
-what each answer spent, which the summary and the results' ``cost_usd`` carry. :func:`compare` runs two or
-more candidates over one case list the same way, each as one arm, and returns a :class:`Comparison` whose
-campaign report tests every arm against the one named the control; keyed by their level of each of several
-factors (``factors=``), its arms are the cells of a factorial design, each factor a lever of its own. A scorer or
-a judged dimension no arm may get worse on is declared a :class:`Guardrail` (``guardrails=``), decided for each
-arm against the control apart from every contrast: held, breached or undecided. A candidate that calls tools declares them (``tools=``, each a
-:data:`Tool`) and is handed them beside each case (:data:`ToolUsingCandidate`); a run with
-``cassette_mode='capture'`` records what they answered, and ``'replay'`` serves that recording to every arm
-in place of calling them. Handed a :class:`World`, each case's starting state and goal-state checks,
-:func:`run_eval` seeds every cell's world, hands the candidate :class:`WorldTools` that act on it, and
-grades the state it leaves (:class:`~threetears.evals.analysis.GoalCheckSummary`).
-:func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle``, ``spend``, ``gate`` and ``frontier`` over
-a host named ``module:factory``, or mounted under a product's own CLI with its host factory and any
-subcommands of its own (:class:`HostCommand`).
+The quick path itself — :class:`~threetears.evals.quick.contract.Eval` and what it takes and returns — is the
+package root's (``from threetears.evals import Eval, Judge, Model``), loaded on first use. This root holds what a
+product adopting the engine as a host reaches for beside it:
 
-**A host of your own** uses the same pieces without :func:`callable_host`: ``@measure(...)`` declares a measure on
-the function that computes it (a :class:`Measure`, whose ``descriptor`` the host registers),
-:func:`callable_kind` is the kind over a plain candidate and its scorers, declared under
-:func:`callable_kind_contracts`, and a :class:`World`'s ``registry`` and ``bindings(state)`` are its world's
-declaration and handles. Each is an ordinary contract object, mixed freely with ones the host writes by hand.
+- :func:`as_host` is the host for a set of evals: the vocabulary their graders, levers and world need, over the
+  product's own store, so ``Eval(...).run(host=as_host([...], store=...), scope=...)`` stores where the product
+  reads, and the engine's other surfaces read the same runs through it.
+- :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle``, ``spend``, ``gate``,
+  ``frontier`` and ``judge-temperature`` over a host named ``module:factory``, or mounted under a product's own
+  command line with its host factory and any subcommands of its own (:class:`HostCommand`). Handed a ``.py`` or
+  ``.toml`` file instead, ``python -m threetears.evals`` runs the evals it declares
+  (:mod:`threetears.evals.quick.files`).
+- ``@measure(...)`` declares a measure on the function that computes it (a :class:`Measure`, whose ``descriptor`` a
+  host registers): an ordinary contract object, mixed freely with ones the host writes by hand, and a function
+  grader an eval reads as the measure it declares.
 
-This package composes the others and is composed by nothing: it may import ``schema``, ``kernel``,
-``run``, ``analysis`` and ``storage``, and no package of the engine imports it.
+This package composes the others and is composed by nothing in the engine: it may import ``schema``, ``kernel``,
+``run``, ``analysis``, ``storage`` and ``testing``, and no package of the engine imports it.
 
-**This module is the package's public root.** A host imports from here and from no module below it,
-and only the names in ``__all__``.
+**This module is the package's public root for the host bridge.** A host imports from here and from no module
+below it, and only the names in ``__all__``.
 """
 
 from __future__ import annotations
 
-from threetears.evals.quick.answer import Answer
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
     ENGINE_COMMANDS,
@@ -52,72 +38,22 @@ from threetears.evals.quick.cli import (
     build_parser,
     run_cli,
 )
-from threetears.evals.quick.compare import ArmKey, Comparison, compare
-from threetears.evals.quick.one_call import (
-    ARM_LEVER,
-    CALLABLE_KIND,
-    CALLABLE_KIND_CONTRACT,
-    DEFAULT_QUICK_SCOPE,
-    JUDGED_CALLABLE_KIND,
-    UNUSABLE_ANSWER,
-    Candidate,
-    ExpectedLabel,
-    Scorer,
-    callable_host,
-    callable_kind,
-    callable_kind_contracts,
-    run_eval,
-)
-from threetears.evals.quick.guardrails import Guardrail, GuardrailDirection
-from threetears.evals.quick.judged import CaseMaterial, Judge, JudgeExample
+from threetears.evals.quick.contract import as_host
 from threetears.evals.quick.measures import Measure, measure
-from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
-from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
 
 __all__ = [
-    "ARM_LEVER",
-    "CALLABLE_KIND",
-    "CALLABLE_KIND_CONTRACT",
     "DEFAULT_PROG",
-    "DEFAULT_QUICK_SCOPE",
     "ENGINE_COMMANDS",
     "EXIT_FAILED",
     "EXIT_GATE_FAILED",
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_RUN_DID_NOT_COMPLETE",
-    "JUDGED_CALLABLE_KIND",
-    "UNUSABLE_ANSWER",
-    "Answer",
-    "ArmKey",
-    "Candidate",
-    "CandidateTools",
-    "CaseMaterial",
-    "CaseSeed",
-    "Comparison",
-    "Dimension",
-    "ExpectedLabel",
-    "Guardrail",
-    "GuardrailDirection",
     "HostCommand",
     "HostFactory",
-    "Judge",
-    "JudgeExample",
     "Measure",
-    "Scorer",
-    "Tool",
-    "ToolUsingCandidate",
-    "ToolRefused",
-    "World",
-    "WorldCandidate",
-    "WorldTool",
-    "WorldTools",
+    "as_host",
     "build_parser",
-    "callable_host",
-    "callable_kind",
-    "callable_kind_contracts",
-    "compare",
     "measure",
     "run_cli",
-    "run_eval",
 ]

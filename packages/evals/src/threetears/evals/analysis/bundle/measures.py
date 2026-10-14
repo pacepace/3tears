@@ -610,7 +610,7 @@ def _open_map_leaves(
     # the engine's own spend distribution under that core descriptor, with `n` inflated,
     # because `record()` appends into one bucket per name at this level. So a host may not
     # DECLARE a measure named like a core one: `MeasureRegistry._defects` refuses it, and
-    # `run_eval` refuses a scorer so named. A core name still arrives here legitimately — the
+    # an eval refuses a grader so named. A core name still arrives here legitimately — the
     # classifier track lands `match` and `confusion_cell` as host measures — and those pass. Any
     # other engine-owned key is one no host could have declared: the runner refuses a kind landing
     # one, and a result stored before its name became engine-owned has it dropped here and named as unreported

@@ -13,7 +13,7 @@ analysis      yes     yes     --     yes       --   --       --       --     pyd
 gen           yes     yes     --     --        yes  --       --       --     pydantic
 storage       yes     --      --     --        --   yes      --       --     (none)
 testing       yes     yes     --     --        --   --       yes      --     (none)
-quick         yes     yes     yes    yes       --   yes      --       yes    pydantic
+quick         yes     yes     yes    yes       --   yes      yes      yes    pydantic
 ============  ======  ======  =====  ========  ===  =======  =======  =====  ===========
 
 ``schema`` is the stored shapes and the ports a host implements; ``kernel`` is the behaviour every
@@ -58,11 +58,18 @@ port, but the reader kit derives identities and reads a host profile. And it rea
 the engine, because the jobs conformance kit runs a catalogue's actions and polls their jobs as a transport does;
 nothing reaches ``testing``, so this adds no edge into the engine.
 
-``quick`` is the batteries: ``run_eval`` and the command line. It is the one package that COMPOSES
+``quick`` is the batteries: ``Eval`` and the command line. It is the one package that COMPOSES
 the others -- a launch from ``run``, a report from ``analysis``, the reference store from ``storage``
 -- which is why it is a package of its own rather than a module of ``run``: ``run`` building the
-in-memory store would be the engine reaching an adapter. Nothing imports ``quick``, so composing
-sits above everything it composes. ``python -m threetears.evals`` (``__main__``) is held to its row.
+in-memory store would be the engine reaching an adapter. Nothing in the engine imports ``quick``, so
+composing sits above everything it composes. ``python -m threetears.evals`` (``__main__``) is held to its
+row. It reaches ``testing`` for one thing: the seam to a completion client
+(``threetears.evals.quick.client``) replays a model's recorded calls through ``RecordedCompletions`` until
+the provider client lands, and ``testing`` reaches nothing of ``quick``.
+
+**The root** (``threetears.evals``) is held to a row of its own: the schema, and the quick path whose names
+(``Eval``, ``Judge``, ...) its module ``__getattr__`` serves on first use, so ``import threetears.evals``
+loads none of the engine. ``testing`` reads the root's ``PUBLIC_ROOTS``.
 
 No row names a 3tears package: the engine depends on none. Its loggers are stdlib loggers, taken from
 :mod:`threetears.evals.schema.logs`, which every package may import.
@@ -71,7 +78,7 @@ No row names a 3tears package: the engine depends on none. Its loggers are stdli
 directory: ``threetears/evals/schema/``, ``kernel/``, ``run/``, ``analysis/``, ``gen/``, ``storage/``,
 ``testing/`` or ``quick/``. The two markers the path cannot place -- the ``threetears.evals`` root and its
 ``__main__`` -- are placed by name in :data:`~packages.evals.tests.package_placement.TREE_MARKERS`, the root
-held to schema's row and ``__main__`` to quick's. The rule
+held to its own row and ``__main__`` to quick's. The rule
 itself lives in :mod:`packages.evals.tests.package_placement`.
 
 **What is checked:**
@@ -125,8 +132,9 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "analysis": frozenset({"schema", "kernel", "analysis"}),
     "gen": frozenset({"schema", "kernel", "gen"}),
     "storage": frozenset({"schema", "storage"}),
-    "testing": frozenset({"schema", "kernel", "ops", "actions", "testing"}),
-    "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "quick"}),
+    "testing": frozenset({"schema", "kernel", "ops", "actions", "testing", "root"}),
+    "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "testing", "quick"}),
+    "root": frozenset({"schema", "quick", "root"}),
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
     "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
     "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
@@ -145,6 +153,7 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "storage": frozenset(),
     "testing": frozenset(),
     "quick": frozenset({"pydantic"}),
+    "root": frozenset(),
     "ops": frozenset({"pydantic"}),
     "actions": frozenset({"pydantic"}),
     "transports": frozenset({"pydantic"}),
@@ -763,6 +772,8 @@ def test_the_matrix_refuses_each_forbidden_edge(
             "from threetears.evals.schema.models import M\nfrom . import loop\n",
         ),
         ("threetears/evals/providers/adapter.py", "from threetears.evals.negotiation.loop import negotiate\n"),
+        # The root serves the quick path's names on first use, from the module that defines each.
+        ("threetears/evals/__init__.py", "def f():\n    from threetears.evals.quick.contract import Eval\n"),
     ],
 )
 def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, source: str) -> None:
