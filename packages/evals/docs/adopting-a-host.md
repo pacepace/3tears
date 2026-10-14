@@ -70,7 +70,11 @@ pass it to every entrypoint. It holds:
   `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
   `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not
   know and a value of the wrong type rather than ignoring or coercing them, because a misspelt `rationale`
-  dropped silently would register a standard other than the one you wrote;
+  dropped silently would register a standard other than the one you wrote. A bar may stand on a judged dimension
+  rather than a measure you declare: set `judged=True` (`"judged": true` in a declaration) and name the rubric
+  dimension (`<context>.<dim>`) or a reserved axis. Each campaign of the behavior resolves it against its template
+  and is refused when the template does not declare it, exactly as a campaign's own bar on a judged dimension is;
+
 - the `EvalStorage` you read and write through;
 - a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads the
@@ -595,10 +599,11 @@ a live one), and the records of every other job: a launch (the runs it started),
 a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
 `CORE_DOC_TYPES` lists them.
 
-**The first public release is the baseline.** It writes core v15.0 (major `CORE_BASELINE_VERSION`, equal to
-`CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 0), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and
-cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is
-nothing older for it to read.
+**The first public release is the baseline.** It writes core v15.1 (major `CORE_BASELINE_VERSION`, equal to
+`CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 1, which added refused calls to the call ledger and to
+control end states and reads every v15.0 document), regenerable v10 (`REGENERABLE_SCHEMA_VERSION`) and cassette
+v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is nothing older
+for it to read.
 
 **A core version is a major and a minor, and your store needs no migration for either.** Every core document
 carries `schema_version`, the major, and `schema_minor`, the minor within it. Every change to a core shape is one
@@ -651,7 +656,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.0), regenerable documents (v10), cassettes
+**Each version space moves on its own.** Core documents (v15.1), regenerable documents (v10), cassettes
 (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 53), the cell model
 (`CELL_MODEL_VERSION`, 13), the report (`REPORT_VERSION`, 10) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.

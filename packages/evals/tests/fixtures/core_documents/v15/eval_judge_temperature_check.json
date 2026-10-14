@@ -2,14 +2,14 @@
   "answers": null,
   "cancel_request_reason": null,
   "cancel_requested_at": null,
-  "created_at": "2026-10-13T23:01:57.748609+00:00",
+  "created_at": "2026-10-14T04:44:45.317239+00:00",
   "detail": null,
   "doc_type": "eval_judge_temperature_check",
   "ended_at": null,
   "faults": [
     "job lease: its holder, process 0199a000-0000-7000-8000-000000000001, could not renew it for 60s, its whole lease, and stopped the job \u2014 the last renewal failed: StorageError: the store refused the write"
   ],
-  "id": "01a13780-4d74-7219-b380-903d41e8f6ee",
+  "id": "01a138ba-2384-71e4-9794-1bf8ace38a06",
   "lease": null,
   "lost": null,
   "outcome": "running",
@@ -17,7 +17,7 @@
   "repeats": 2,
   "result_ids": null,
   "run_id": "run-1",
-  "schema_minor": 0,
+  "schema_minor": 1,
   "schema_version": 15,
   "scope_id": "uni-1",
   "selection": "borderline"

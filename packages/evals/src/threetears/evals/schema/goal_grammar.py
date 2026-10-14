@@ -58,6 +58,20 @@ none of the call builtins sees it, and ``passed()`` reads it, the same for every
 ``passed()`` holds when the cell recorded a pass and no call: a candidate that acted and then passed did not
 pass. A cell that did nothing and recorded no pass did not pass either.
 
+Refused calls (``refused()`` and ``refused_count()`` read the calls a tool refused — recorded apart by
+``CallLedger.record_refusal``, never among the calls — and nothing else does)::
+
+    refused("inventory.place_order")
+    refused_count("inventory.place_order") == 0
+    call_count("inventory.place_order") >= 1 and not refused("inventory.place_order")
+
+Every other call builtin counts only calls that succeeded, so a candidate whose every call was refused reads,
+to them, as one that never called; these two are what tell the two apart. ``refused(a)`` is
+``refused_count(a) >= 1``. A ledger that keeps no refusal record (a kind that does not record refusals, or a
+cell stored before refusals were recorded) is not read as "none refused": evaluating either against it raises,
+so the check cannot be graded rather than graded as a pass. ``passed()`` does not read refusals: it is an
+end-state check, and a refused call is its own outcome, which these two grade.
+
 Call parameters (``calls()`` returns the matching calls' recorded parameters, in order)::
 
     calls("inventory.place_order").length >= 3
@@ -212,6 +226,8 @@ _BUILTINS = frozenset(
         "call_count",
         "last_call_was",
         "calls",
+        "refused",
+        "refused_count",
         "fired",
         "fired_armed",
         "passed",
@@ -711,7 +727,13 @@ def _is_text_comparand(node: ast.AST, it_binding: TextOperand | None) -> bool:
 
 
 #: The builtins whose string arguments name a ``tool.action``.
-_ACTION_BUILTINS = frozenset({"called_before", "called_after", "call_count", "last_call_was", "calls"})
+_ACTION_BUILTINS = frozenset(
+    {"called_before", "called_after", "call_count", "last_call_was", "calls", "refused", "refused_count"}
+)
+
+
+#: The builtins that read the calls a tool refused (``CallLedger.refused``) rather than the calls that succeeded.
+REFUSAL_BUILTINS = frozenset({"refused", "refused_count"})
 
 
 #: Every builtin that reads the cell's call ledger: the action builtins, and ``passed()``.
@@ -752,14 +774,32 @@ def reads_call_ledger(expression: str) -> bool:
         expression: A goal-state expression.
 
     Returns:
-        Whether it calls ``called_before``, ``called_after``, ``call_count``, ``last_call_was``, ``calls`` or
-        ``passed``.
+        Whether it calls ``called_before``, ``called_after``, ``call_count``, ``last_call_was``, ``calls``,
+        ``refused``, ``refused_count`` or ``passed``.
 
     Raises:
         DSLError: The expression does not parse.
     """
     return any(
         isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _LEDGER_BUILTINS
+        for node in ast.walk(parse(expression).body)
+    )
+
+
+def reads_refusals(expression: str) -> bool:
+    """Whether a goal check reads the calls a tool refused, through ``refused()`` or ``refused_count()``.
+
+    Args:
+        expression: A goal-state expression.
+
+    Returns:
+        Whether it calls either.
+
+    Raises:
+        DSLError: The expression does not parse.
+    """
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in REFUSAL_BUILTINS
         for node in ast.walk(parse(expression).body)
     )
 
@@ -841,6 +881,7 @@ def parse_tool_action(spec: Any) -> tuple[str, str]:
 
 __all__ = [
     "FIRE_PREDICATES",
+    "REFUSAL_BUILTINS",
     "TextOperand",
     "parse_tool_action",
     "text_operand",
@@ -852,6 +893,7 @@ __all__ = [
     "extract_text_matches",
     "parse",
     "reads_call_ledger",
+    "reads_refusals",
     "referenced_actions",
     "referenced_fires",
     "speaks_the_goal_language",

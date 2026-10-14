@@ -323,9 +323,11 @@ A model the engine asks to score a result against a rubric, reading only the evi
 #### Judged dimension (rubric dimension)
 One subjective quality a judge scores (`RubricDim`): a name, a description and a scoring guide. *Example:*
 "does the auto-reply sound polite", for a variant that also drafts a reply. A **judge config**
-(`JudgeConfig`) is a versioned prompt, model and settings for one dimension. Every judge call is requested at
-temperature 0 (`DEFAULT_JUDGE_TEMPERATURE`) unless a config states another, whether or not the dimension has a
-config; a model that refuses a temperature is sent none, and each score records what was sent.
+(`JudgeConfig`) is a versioned prompt, model and settings for one dimension; name its model by a concrete model id,
+never an alias, since the served model is part of the judge's calibration key and an alias re-pointed under the same
+name merges two judges' evidence. Every judge call is requested at temperature 0 (`DEFAULT_JUDGE_TEMPERATURE`)
+unless a config states another, whether or not the dimension has a config; a model that refuses a temperature is sent
+none, and each score records what was sent.
 
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
@@ -433,8 +435,11 @@ The words [Adopting the engine](adopting-a-host.md) uses for what a host author 
 A standard one measure must reach for one behavior (`Bar`, registered on the profile's `BarRegistry`, with
 `PassThreshold` for the 1–5 level an attempt must reach to pass). It is decided on a cell's interval, never its
 mean: `cleared`, `missed` or `undecided`. A campaign's design may declare a bar tighter than the registered one,
-never looser, and the frontier takes one as `bar=`. *Example:* routing accuracy of at least 0.9 for the `routing`
-behavior. See [Reading reports: Methods](reading-reports.md#methods).
+never looser, and the frontier takes one as `bar=`. Either kind of bar can cover judged behaviour: a campaign's
+`BarOverride.measure_id` may name a rubric dimension of its template, and a registered `Bar` with `judged=True` names
+one that each campaign of the behavior resolves against its own template, refused at authoring when the template does
+not declare it. *Example:* routing accuracy of at least 0.9 for the `routing` behavior. See
+[Reading reports: Methods](reading-reports.md#methods).
 
 #### Conformance kit
 A set of checks you run in your own test suite against what you implemented, so a gap fails there and not in a

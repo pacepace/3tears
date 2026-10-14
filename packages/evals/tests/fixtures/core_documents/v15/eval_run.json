@@ -18,7 +18,7 @@
   "completeness": null,
   "context_components": null,
   "context_key": null,
-  "created_at": "2026-10-13T23:01:57.789176+00:00",
+  "created_at": "2026-10-14T04:44:45.555389+00:00",
   "declared_margins": {},
   "declared_measures": {},
   "doc_type": "eval_run",
@@ -36,7 +36,7 @@
     "state.shop.cart.length >= 1": "proven"
   },
   "host_payload": {},
-  "id": "01a13780-4d9d-7121-b1cf-fef32850076b",
+  "id": "01a138ba-2471-7194-b12b-15c1ad776d84",
   "identity_version": null,
   "judge_asked_settings": {
     "max_tokens": 4096,
@@ -71,7 +71,7 @@
   "resolved_tools_allowed": null,
   "resolved_world_seed": {},
   "rubric_scales": {},
-  "schema_minor": 0,
+  "schema_minor": 1,
   "schema_version": 15,
   "scope_id": "uni-1",
   "simulator_asked_settings": null,

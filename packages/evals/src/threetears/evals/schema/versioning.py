@@ -208,7 +208,16 @@ CORE_SCHEMA_VERSION: int = 15
 #: :data:`MINOR_ADDITIVITY_SENTENCE`; a major resets it to 0.
 #:
 #: - **v15.0** — the baseline minor.
-CORE_SCHEMA_MINOR: int = 0
+#: - **v15.1** — a call ledger keeps the calls a tool refused apart from those that succeeded:
+#:   ``CallLedger.refused``, an optional list of ``RefusedCall`` (tool, action, params, the refusal's reason, and its
+#:   position among the calls), ``None`` by default and read as "no refusal record kept", never as "none refused".
+#:   ``ControlEndState.refused`` (a list of ``RefusedCall``, empty by default) lets a control state refusals, so a
+#:   refusal check is proven against controls as a call check is. Every call builtin keeps reading successes only,
+#:   so no stored verdict moves; ``refused()`` and ``refused_count()`` read the new list and raise on a ledger
+#:   without one, and a re-check keeps a stored outcome of either as stored for such a ledger. A ledger stored at
+#:   v15.0 reads as keeping no refusal record, which is what it is.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 1
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

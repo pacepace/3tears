@@ -44,7 +44,7 @@ import inspect
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, NoReturn
 
 from threetears.evals.schema import (
     CallLedger,
@@ -343,7 +343,7 @@ class WorldTools(Mapping[str, Callable[..., Awaitable[Any]]]):
         self.world = world
         self.session = session
         self.state = state
-        self.ledger = CallLedger()
+        self.ledger = CallLedger(refused=[])
         self.fault: str | None = None
 
     def __getitem__(self, tool: str) -> Callable[..., Awaitable[Any]]:
@@ -377,13 +377,15 @@ class WorldTools(Mapping[str, Callable[..., Awaitable[Any]]]):
         """Call one tool on this cell's world and record the call; returns what the tool says.
 
         Raises:
-            ToolRefused: No such tool, or parameters its schema refuses. Nothing changed, nothing recorded.
+            ToolRefused: No such tool, or parameters its schema refuses. Nothing changed; the refusal is recorded
+                on the ledger's refusal record, never among its calls, before it is raised.
         """
         declared = self.world.tools.get(tool)
         if declared is None:
-            raise ToolRefused(f"there is no tool {tool!r}; the tools are {', '.join(self.world.tools) or 'none'}")
+            known = ", ".join(self.world.tools) or "none"
+            self._refuse(tool, params, f"there is no tool {tool!r}; the tools are {known}")
         if violations := schema_violations(declared.input_schema, params, at=tool):
-            raise ToolRefused("; ".join(violations))
+            self._refuse(tool, params, "; ".join(violations))
         try:
             said = declared.act(self.state, **params)
             if inspect.isawaitable(said):
@@ -394,6 +396,15 @@ class WorldTools(Mapping[str, Callable[..., Awaitable[Any]]]):
             raise
         self.ledger.record(self.world.name, tool, params)
         return said
+
+    def _refuse(self, tool: str, params: dict[str, Any], reason: str) -> NoReturn:
+        """Record a refused call on the ledger, then refuse it: the record is written before the candidate hears no.
+
+        Raises:
+            ToolRefused: Always, carrying ``reason``.
+        """
+        self.ledger.record_refusal(self.world.name, tool, params, reason=reason)
+        raise ToolRefused(reason)
 
 
 #: A world candidate: an async callable taking one case and the tools on its cell's world.

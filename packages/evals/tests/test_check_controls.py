@@ -8,6 +8,7 @@ kind grades a live cell with.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 
 import pytest
@@ -19,6 +20,7 @@ from threetears.evals.schema import (
     GoalCheckControl,
     GoalCheckControls,
     RecordedCall,
+    RefusedCall,
     WorldSeed,
 )
 from threetears.evals.kernel import ValidationFailedError
@@ -372,3 +374,82 @@ def test_a_recorded_call_is_the_control_s_call_shape() -> None:
     call = RecordedCall(tool="extractor", action="emit_field", params={"field": "vendor_name"})
 
     assert ControlEndState(describes="one field emitted", calls=[call]).calls == [call]
+
+
+class TestARefusalCheckIsProvenAsACallCheckIs:
+    """A control states the calls a tool refused as a cell's ledger keeps them, so ``refused()`` is proven too."""
+
+    _REFUSED = RefusedCall(
+        tool="extractor", action="emit_field", params={"field": "no_such_field"}, reason="unknown field", position=0
+    )
+    _NEVER_REFUSED = 'refused_count("extractor.emit_field") == 0'
+
+    def test_an_act_check_on_a_refusal_discriminates_against_a_control_stating_one(self) -> None:
+        check = 'refused("extractor.emit_field")'
+        template = _single_check(
+            toyhost_template(),
+            check,
+            "act",
+            ControlEndState(describes="The extractor asked for a field its tool refused.", refused=[self._REFUSED]),
+        )
+
+        refuse_non_discriminating_checks(template, profile=toyhost_profile())
+        (verdict,) = check_discriminations(template, profile=toyhost_profile())
+        assert (verdict.did_nothing.passed, verdict.controlled.passed) == (False, True)
+
+    def test_a_hold_check_on_no_refusal_discriminates_and_reads_the_control_s_refusals_apart_from_its_calls(
+        self,
+    ) -> None:
+        emitted = RecordedCall(tool="extractor", action="emit_field", params={"field": "vendor_name"})
+        template = _single_check(
+            toyhost_template(),
+            self._NEVER_REFUSED,
+            "hold",
+            ControlEndState(
+                describes="The extractor emitted one field, then asked for one its tool refused.",
+                calls=[emitted],
+                refused=[self._REFUSED.model_copy(update={"position": 1})],
+            ),
+        )
+
+        refuse_non_discriminating_checks(template, profile=toyhost_profile())
+        controls = template.goal_check_controls
+        assert controls is not None
+        stated = control_end_state(template, controls.end_states["it"], world=toyhost_profile().world)
+        assert stated.ledger.calls == [emitted]
+        assert [refusal.position for refusal in stated.ledger.refused or []] == [1]
+
+    def test_a_control_stating_no_refusal_cannot_prove_a_refusal_check(self) -> None:
+        template = _single_check(
+            toyhost_template(),
+            'refused("extractor.emit_field")',
+            "act",
+            ControlEndState(describes="The extractor emitted nothing and nothing was refused."),
+        )
+
+        with pytest.raises(ValidationFailedError, match="the same verdict on both"):
+            refuse_non_discriminating_checks(template, profile=toyhost_profile())
+
+    @pytest.mark.parametrize(
+        ("refusal", "says"),
+        [
+            (_REFUSED.model_copy(update={"action": "shred"}), "a refused call: extractor has no action 'shred'"),
+            (_REFUSED.model_copy(update={"position": 2}), "refused at position 2, after only 0 call(s) succeeded"),
+        ],
+        ids=["undefined action", "position past the calls"],
+    )
+    def test_a_refusal_no_run_could_record_is_refused(self, refusal: RefusedCall, says: str) -> None:
+        template = _single_check(
+            toyhost_template(),
+            self._NEVER_REFUSED,
+            "hold",
+            ControlEndState(describes="The extractor's call was refused.", refused=[refusal]),
+        )
+
+        # A host that lists its tools' actions, so an undefined one is refused rather than left unchecked.
+        listing = replace(
+            toyhost_profile(), tool_actions=lambda tool: frozenset({"emit_field"}) if tool == "extractor" else frozenset()
+        )
+
+        with pytest.raises(ValidationFailedError, match=re.escape(says)):
+            refuse_non_discriminating_checks(template, profile=listing)

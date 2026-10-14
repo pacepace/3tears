@@ -447,6 +447,16 @@ def _record_lines(detail: ResultDetail) -> list[str]:
     else:
         lines.append(f"call ledger ({len(record.call_ledger.calls)} call(s) the kind recorded as succeeded):")
         lines += [f"- {call.tool}.{call.action} {_compact(call.params)}" for call in record.call_ledger.calls]
+        refused = record.call_ledger.refused
+        if refused is None:
+            lines.append("refused calls: no refusal record kept")
+        else:
+            lines.append(f"refused calls ({len(refused)} the kind recorded as refused, never among the calls above):")
+            lines += [
+                f"- {refusal.tool}.{refusal.action} {_compact(refusal.params)} after {refusal.position} call(s): "
+                f"{refusal.reason}"
+                for refusal in refused
+            ]
     if record.end_state is not None:
         lines.append(f"end state: {_compact(record.end_state)}")
     if record.judged_artifact is not None:

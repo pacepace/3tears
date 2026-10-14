@@ -21,9 +21,10 @@ a kind's output documents hold: whatever the kind wrote about each turn — the 
 whether a call succeeded and what the tool answered — is there exactly as far as the kind wrote it, and
 nothing more. A kind that records only what succeeded leaves no trace of a refused call in its output.
 Projecting a typed "actions" view out of the documents would mean the engine guessing a kind's shape, which
-is the one thing the trace's contract forbids. The call ledger beside them is the kind's other record, and
-holds only the calls that succeeded (:mod:`threetears.evals.schema.call_ledger`): the two are different
-facts, so both are returned and neither stands in for the other.
+is the one thing the trace's contract forbids. The call ledger beside them is the kind's other record: the
+calls that succeeded, and apart from them the calls a tool refused, where its kind records them
+(:mod:`threetears.evals.schema.call_ledger`). The two are different facts, so both are returned and neither
+stands in for the other.
 
 **Every read is in the caller's scope.** A run or a result in another scope is not found, as every other
 read answers it — never an empty listing, which would read as a run that produced nothing.
@@ -113,7 +114,10 @@ class TraceRecord(EvalBaseModel):
         description="The candidate's output documents exactly as its kind stored them; what each holds is the kind's."
     )
     call_ledger: CallLedger | None = Field(
-        description="The calls the kind recorded as succeeded; None when the kind keeps no ledger."
+        description=(
+            "The calls the kind recorded as succeeded, and apart from them those a tool refused; None when the "
+            "kind keeps no ledger."
+        )
     )
     end_state: dict[str, Any] | None = Field(
         description="The world the cell left behind, by dimension; None when nothing was read."

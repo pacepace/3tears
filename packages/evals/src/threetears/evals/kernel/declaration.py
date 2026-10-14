@@ -1280,6 +1280,27 @@ def resolve_bar_name(
     )
 
 
+def _registered_judged_bar_reading(
+    name: str, *, rubric: Mapping[str, RubricScale], checks: Collection[str], profile: HostProfile
+) -> UnreadableBarName | None:
+    """Why a registered judged bar's dimension is one this campaign's results cannot carry, or None when they can.
+
+    Resolved by :func:`resolve_bar_name`, the path a campaign's own bars take, so the refusal reads as theirs does.
+    A name the template carries as something other than a judged dimension (a goal-state check written the same
+    way) is refused too: the bar was registered as judged, and would otherwise be read as the check.
+    """
+    reading = resolve_bar_name(name, rubric_dimensions=rubric, goal_state_checks=checks, measures=profile.measures)
+    if isinstance(reading, UnreadableBarName):
+        return reading
+    if reading.kind != "judged":
+        return UnreadableBarName(
+            name,
+            "not_carried",
+            f"{name} is registered as a judged dimension, and this campaign's template carries it as a {reading.kind}",
+        )
+    return None
+
+
 class DesignRefused(RefusedInput):
     """A declaration this host cannot honour, as what is wrong with it and what to declare instead.
 
@@ -1385,6 +1406,12 @@ def refuse_an_undeclarable_design(
     result — so a bar on one the kind never emits passes here and is adjudicated as carried by no
     result.
 
+    **A host's registered bar on a judged dimension is resolved here too**
+    (:attr:`~threetears.evals.kernel.host.bars.Bar.judged`). Its registration could not resolve a template-minted
+    name, so every campaign of its behavior that does not override it resolves it against the campaign's template
+    by the same resolver, and is refused in the same words when the template does not carry it as a judged
+    dimension.
+
     **The last two checks are one evaluability axis and one standard**, and they are not one check
     twice. The looser-bar rule is the campaign against the INCUMBENT and can only fire where a
     bar is registered; the direction rule is the campaign against the measure DESCRIPTOR and
@@ -1463,11 +1490,23 @@ def refuse_an_undeclarable_design(
     # bundle passes it to the frontier, which decides each contestant's pass^k interval against it. It is held
     # to pass^k's own range here, since the frontier refuses a threshold outside it.
     unreadable = [
-        (override, reading)
+        (f"the bar at {override.threshold!r} names '{override.measure_id}'", reading)
         for override in design.bars
         if override.measure_id != FRONTIER_RANKING_MEASURE
         and isinstance(reading := resolved[override.measure_id], UnreadableBarName)
     ]
+    # A host's registered bar on a judged dimension names a template-minted name no registry enumerates, so its
+    # registration could not resolve it: each campaign of its behavior resolves it here, against its own template,
+    # by the same resolver and refused in the same words. One the campaign overrides is replaced by the campaign's
+    # own bar, which the resolution above already read.
+    overridden = {override.measure_id for override in design.bars}
+    for bar in profile.bars.bars:
+        if not bar.judged or bar.behavior != behavior or bar.measure in overridden:
+            continue
+        unread = _registered_judged_bar_reading(bar.measure, rubric=rubric, checks=checks, profile=profile)
+        if unread is not None:
+            which = f"host '{profile.host_id}''s registered bar at {bar.threshold!r} names '{bar.measure}'"
+            unreadable.append((which, unread))
     out_of_range = [
         override.threshold
         for override in design.bars
@@ -1482,9 +1521,7 @@ def refuse_an_undeclarable_design(
     if unreadable:
         # The author's own declared value, echoed as written: a refusal quotes its input rather than
         # restating it under the reader-facing number rule, which lives outside the kernel.
-        named = "; ".join(
-            f"the bar at {o.threshold!r} names '{o.measure_id}': {reading.reason}" for o, reading in unreadable
-        )
+        named = "; ".join(f"{which}: {reading.reason}" for which, reading in unreadable)
         if template is None:
             minted = (
                 "The campaign's template: none — this campaign names no template that could be read, so no "

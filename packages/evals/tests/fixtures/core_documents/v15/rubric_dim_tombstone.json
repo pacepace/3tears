@@ -1,10 +1,10 @@
 {
-  "deleted_at": "2026-10-13T23:01:57.817656+00:00",
+  "deleted_at": "2026-10-14T04:44:45.771958+00:00",
   "deleted_dim_id": "d-1",
   "doc_type": "rubric_dim_tombstone",
-  "id": "01a13780-4db9-77c4-a1e3-bf5f19106cc2",
+  "id": "01a138ba-254b-7454-9eb0-6031cd61d922",
   "key": "conversation.tone",
-  "schema_minor": 0,
+  "schema_minor": 1,
   "schema_version": 15,
   "scope_id": "uni-1"
 }

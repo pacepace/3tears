@@ -59,7 +59,7 @@ from threetears.evals.schema.base import (
     VerbatimJsonObject,
     VerbatimObject,
 )
-from threetears.evals.schema.call_ledger import CallLedger, RecordedCall
+from threetears.evals.schema.call_ledger import CallLedger, RecordedCall, RefusedCall
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 from threetears.evals.schema.hashing import bytes_digest, canonical_digest
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse, referenced_fires
@@ -599,9 +599,9 @@ class ControlEndState(EvalDocumentModel, CoreShapeModel):
     user and the judge never see it. A control that reached the candidate would be a hint about the
     answer.
 
-    It is the seed with what the candidate changed laid over it, plus the calls it made. The overlay
-    is per state key: a key named here replaces the seed's value whole, and a key not named keeps
-    the seed's, so a control states only what the behaviour changed.
+    It is the seed with what the candidate changed laid over it, plus the calls it made and those a tool
+    refused. The overlay is per state key: a key named here replaces the seed's value whole, and a key not
+    named keeps the seed's, so a control states only what the behaviour changed.
     """
 
     describes: str = Field(
@@ -625,6 +625,15 @@ class ControlEndState(EvalDocumentModel, CoreShapeModel):
         description=(
             "Every call the candidate made, in order — the whole ledger, not an overlay: an empty list "
             "states a candidate that made no calls."
+        ),
+    )
+    refused: list[RefusedCall] = Field(
+        default_factory=list,
+        description=(
+            "Every call a tool refused the candidate, in order — what refused() and refused_count() read, kept apart "
+            "from `calls` as a cell's ledger keeps them. Each names an action the host defines and its position "
+            "among `calls` (how many had succeeded before it); its parameters are what was refused, so no schema "
+            "holds them. An empty list states a candidate no tool refused."
         ),
     )
     variation: dict[str, Any] = Field(
@@ -4706,9 +4715,9 @@ class EvalTrace(CoreDocumentModel):
     judge_evidence: JudgeEvidence | None = None
     #: The kind's declaration that picked the judged axes, stored with the evidence it applies to.
     judged_artifact: JudgedArtifact | None = None
-    #: The calls the candidate made that succeeded, as its kind recorded them and graded its goal
-    #: checks against. Stored so a re-check re-grades from what the candidate did rather than from
-    #: the verdicts alone. ``None`` when the kind keeps no ledger.
+    #: The calls the candidate made that succeeded, and apart from them those a tool refused, as its kind
+    #: recorded them and graded its goal checks against. Stored so a re-check re-grades from what the candidate
+    #: did rather than from the verdicts alone. ``None`` when the kind keeps no ledger.
     call_ledger: CallLedger | None = None
     #: The world the cell left behind, keyed by declared dimension name: every dimension of every carrier
     #: the cell attached, read back through its ``read`` handle once the kind's ``invoke`` returned (or
