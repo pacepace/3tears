@@ -38,6 +38,15 @@ good enough for this behavior — so a host declares it beside its bars (:class:
 :meth:`BarRegistry.pass_threshold` answers it, :data:`DEFAULT_PASS_THRESHOLD` where none is declared.
 Every stored pass^k figure records the threshold it was computed at.
 
+**A bar may stand on a judged dimension too** (:attr:`Bar.judged`): a rubric dimension a template declares, or
+a reserved dual-score axis. No registry enumerates those — templates mint them — so registration checks only what
+it can (the name is a dimension's name and no measure's, and clearing runs higher), and each campaign of the
+behavior resolves the name against its own template through
+:func:`~threetears.evals.kernel.declaration.resolve_bar_name`, the path a campaign's own bars take, refused in the
+same words when the template does not declare the dimension. The bundle then adjudicates it as it does a
+campaign's judged bar, with the judges' evidence tier on each verdict, and the ratchet holds a campaign's bar on
+the same dimension to it.
+
 **A registry is built in code, or loaded from a declaration a host keeps as data.**
 :func:`load_bar_registry` reads a mapping — what a host's JSON or YAML file parses to — into the same
 registry, strictly: a field the declaration does not know is refused rather than ignored, because a
@@ -54,6 +63,8 @@ from typing import TYPE_CHECKING, Any, Literal, assert_never
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError
 
 from threetears.evals.kernel.host.attribution import HostAttributed
+from threetears.evals.kernel.metrics import describe_rubric_dim
+from threetears.evals.schema.models import require_namespaced_dim_name
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -128,7 +139,8 @@ class Bar:
     """The behavior this bar governs — host vocabulary the engine never interprets."""
 
     measure: str
-    """The measure the bar is read on. Must be a measure the host's registry declares."""
+    """The measure the bar is read on. Must be a measure the host's registry declares — or, on a :attr:`judged`
+    bar, a judged dimension's name (``<context>.<dim>``, or a reserved dual-score axis)."""
 
     threshold: float
     """The value the measure must reach — read against a cell's interval and the measure's margin, never its mean."""
@@ -157,6 +169,13 @@ class Bar:
 
     vacuous_seed: bool = False
     """True when the incumbent was failing at the moment this was seeded — flagged, never silently adopted."""
+
+    judged: bool = False
+    """True when :attr:`measure` names a judged dimension rather than a registered measure: a rubric dimension a
+    template declares, or a reserved dual-score axis, read on its judged mean (a pass rate on a pass/fail
+    dimension, a 1-5 mean on an ordinal one), higher better. No registry declares one, so each campaign of the
+    behavior resolves it against its template, as it resolves its own bars, and is refused when the template does
+    not declare it."""
 
     def clears(self, value: float) -> bool:
         """Whether one value is at or beyond this bar — a point, for a value that is exactly known.
@@ -433,16 +452,26 @@ class BarRegistry(HostAttributed):
         :meth:`propose` refuses to seed one, through the same predicate (:func:`no_better_end`):
         nothing ever reads it, so registering it would only make a sentence look like a standard.
 
+        A :attr:`~Bar.judged` bar names no registered measure, so it is held to what can be known without a
+        template: its name is a judged dimension's (namespaced, or a reserved axis), no measure this host declares
+        shares it — a bar's name resolves to the measure first, so it would never be read as the dimension — and it
+        clears upward, as every judged dimension does. Whether a template declares it is each campaign's question
+        (:func:`~threetears.evals.kernel.declaration.refuse_an_undeclarable_design`).
+
         Args:
             measures: The host's measure registry.
 
         Raises:
             BarRegistrationError: A bar names an undeclared measure or one with no better end, or
-                declares the opposite better-direction from the descriptor. Every defect is reported
-                at once.
+                declares the opposite better-direction from the descriptor; or a judged bar names
+                something no judged dimension can be called, a measure this host declares, or runs
+                lower-is-better. Every defect is reported at once.
         """
         defects: list[str] = []
         for bar in self._bars:
+            if bar.judged:
+                defects.extend(_judged_bar_defects(bar, measures))
+                continue
             descriptor = measures.get(bar.measure)
             if descriptor is None:
                 defects.append(f"{bar.behavior}/{bar.measure} names a measure this host does not declare")
@@ -460,6 +489,27 @@ class BarRegistry(HostAttributed):
                 )
         if defects:
             raise BarRegistrationError(f"{self._host}bar declaration is unsound: " + "; ".join(defects))
+
+
+def _judged_bar_defects(bar: Bar, measures: MeasureRegistry) -> list[str]:
+    """Every way a judged bar contradicts what can be known of a judged dimension before a template is read."""
+    where = f"{bar.behavior}/{bar.measure}"
+    if measures.get(bar.measure) is not None:
+        return [
+            f"{where} is declared judged, and this host declares a measure by that name — a bar's name resolves to "
+            "the measure first, so the bar would be read on the measure and never on the judged dimension"
+        ]
+    try:
+        require_namespaced_dim_name(bar.measure)
+    except ValueError as unnamed:
+        return [f"{where} is declared judged, and no judged dimension can carry its name: {unnamed}"]
+    # The scale moves a judged dimension's range, never its direction, so any scale states the direction it owns.
+    if contradicts_descriptor(describe_rubric_dim(bar.measure, scale="ordinal"), bar.higher_is_better):
+        return [
+            f"{where} declares higher_is_better={bar.higher_is_better} on a judged dimension, which the engine "
+            "declares higher-is-better — the descriptor owns the fact"
+        ]
+    return []
 
 
 def contradicts_descriptor(descriptor: MetricDescriptor | None, higher_is_better: bool) -> bool:
@@ -550,6 +600,7 @@ class _BarDeclaration(BaseModel):
     higher_is_better: bool
     rationale: str
     vacuous_seed: bool = False
+    judged: bool = False
 
 
 class _PassThresholdDeclaration(BaseModel):
@@ -587,11 +638,13 @@ def load_bar_registry(declaration: Mapping[str, Any]) -> BarRegistry:
         }
 
     Either list may be left out for none. ``vacuous_seed`` is optional on a bar (``False``) and carries
-    a ratchet proposal's flag across adoption. Values are read strictly — a threshold written as a
-    string, a pass threshold as ``4.0`` or a direction as ``"yes"`` is refused rather than coerced —
-    and a bar's threshold must be finite. What is refused here is the declaration's SHAPE; the
-    registry then refuses what it always refuses (a pair declared twice, a blank rationale, a pass
-    threshold outside 2-5), and the profile checks each bar against the host's measures
+    a ratchet proposal's flag across adoption. ``judged`` is optional too (``False``): ``True`` puts the bar on a
+    judged dimension (:attr:`Bar.judged`), such as ``{"behavior": "answer", "measure": "answer.grounded",
+    "threshold": 4.0, "higher_is_better": True, "judged": True, "rationale": "..."}``. Values are read
+    strictly — a threshold written as a string, a pass threshold as ``4.0`` or a direction as ``"yes"`` is
+    refused rather than coerced — and a bar's threshold must be finite. What is refused here is the
+    declaration's SHAPE; the registry then refuses what it always refuses (a pair declared twice, a blank
+    rationale, a pass threshold outside 2-5), and the profile checks each bar against the host's measures
     (:meth:`BarRegistry.validate_against`).
 
     Args:

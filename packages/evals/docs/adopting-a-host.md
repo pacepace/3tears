@@ -70,7 +70,11 @@ pass it to every entrypoint. It holds:
   `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
   `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not
   know and a value of the wrong type rather than ignoring or coercing them, because a misspelt `rationale`
-  dropped silently would register a standard other than the one you wrote;
+  dropped silently would register a standard other than the one you wrote. A bar may stand on a judged dimension
+  rather than a measure you declare: set `judged=True` (`"judged": true` in a declaration) and name the rubric
+  dimension (`<context>.<dim>`) or a reserved axis. Each campaign of the behavior resolves it against its template
+  and is refused when the template does not declare it, exactly as a campaign's own bar on a judged dimension is;
+
 - the `EvalStorage` you read and write through;
 - a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads the

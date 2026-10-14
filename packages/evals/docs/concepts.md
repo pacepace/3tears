@@ -433,8 +433,11 @@ The words [Adopting the engine](adopting-a-host.md) uses for what a host author 
 A standard one measure must reach for one behavior (`Bar`, registered on the profile's `BarRegistry`, with
 `PassThreshold` for the 1–5 level an attempt must reach to pass). It is decided on a cell's interval, never its
 mean: `cleared`, `missed` or `undecided`. A campaign's design may declare a bar tighter than the registered one,
-never looser, and the frontier takes one as `bar=`. *Example:* routing accuracy of at least 0.9 for the `routing`
-behavior. See [Reading reports: Methods](reading-reports.md#methods).
+never looser, and the frontier takes one as `bar=`. Either kind of bar can cover judged behaviour: a campaign's
+`BarOverride.measure_id` may name a rubric dimension of its template, and a registered `Bar` with `judged=True` names
+one that each campaign of the behavior resolves against its own template, refused at authoring when the template does
+not declare it. *Example:* routing accuracy of at least 0.9 for the `routing` behavior. See
+[Reading reports: Methods](reading-reports.md#methods).
 
 #### Conformance kit
 A set of checks you run in your own test suite against what you implemented, so a gap fails there and not in a
