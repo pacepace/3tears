@@ -379,9 +379,10 @@ class Result:
                 lines += [f"    {line}" for line in summary.label_lines]
             lines += [f"  {line}" for line in summary.dimension_lines]
             lines += [f"  {line}" for line in summary.goal_check_lines]
-            for warning in (summary.self_judging_warning, summary.model_identity_warning, summary.total_spend_text):
-                if warning is not None and (warning is not summary.total_spend_text or "unknown" in warning):
-                    lines.append(f"  {warning}")
+            # What it cost, priced or not, and the warnings no quiet print drops.
+            for line in (summary.total_spend_text, summary.self_judging_warning, summary.model_identity_warning):
+                if line is not None:
+                    lines.append(f"  {line}")
             lines += [f"  error: {error}" for error in summary.errors]
             lines += [f"  excluded: {cause}" for cause in _exclusion_causes(summary)]
         lines += self.calibration_lines()
@@ -424,9 +425,9 @@ class Result:
             out_dir: The directory; created when missing.
 
         Returns:
-            ``report.html``, ``bundle.json`` and ``report.md``, by role, and, for a judged eval,
-            :data:`TO_LABEL` under ``to_label``: each judged answer on each dimension, the judge's verdict withheld,
-            for a person to label and ``Judge(labels=...)`` to read back.
+            Each file written, by role: ``html`` (``report.html``), ``bundle`` (``bundle.json``) and ``markdown``
+            (``report.md``), and, for a judged eval, ``to_label`` (:data:`TO_LABEL`): each judged answer on each
+            dimension, the judge's verdict withheld, for a person to label and ``Judge(labels=...)`` to read back.
         """
         written: dict[str, Path] = {str(role): path for role, path in self.report.write(out_dir).items()}
         if self.judge is not None:
@@ -898,11 +899,11 @@ def declare(
     prefix = host.profile.kind_contract(kind).lever_prefix
     axes = []
     for factor in factors:
-        levels = list(dict.fromkeys(levels[arm][factor] for arm in ordered))
+        values = list(dict.fromkeys(levels[arm][factor] for arm in ordered))
         axes.append(
             {
                 "axis_id": factor if factor in _UNPREFIXED else f"{prefix}.{factor}",
-                "values": [{"content": level, "display": level} for level in levels],
+                "values": [{"content": value, "display": value} for value in values],
                 "rationale": (
                     f"does any arm do better than {control}"
                     if len(factors) == 1

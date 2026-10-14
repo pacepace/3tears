@@ -133,7 +133,11 @@ class WorldTool:
                 raise ValueError(f"the tool {name} changes the world's state, so its first parameter is the state")
             parameters = parameters[1:]
         try:
-            hints = get_type_hints(act)
+            # The state model by its own name too, so a tool written beside a state model defined in a function, under
+            # postponed annotations, still resolves the annotation naming it; Annotated metadata (a Field's
+            # description) is kept, so it reaches the schema the agent is shown.
+            local = None if state is None else {state.__name__: state}
+            hints = get_type_hints(act, localns=local, include_extras=True)
         except NameError as unresolved:
             raise ValueError(f"the tool {name}'s annotations do not resolve: {unresolved}") from unresolved
         params: dict[str, dict[str, Any]] = {}
@@ -197,7 +201,7 @@ class WorldRunner:
     """
 
     world: World
-    agent: WorldAgent
+    agent: Callable[[Mapping[str, Any], Any], Awaitable[Any]]
 
 
 def _dimensions(state: type[BaseModel]) -> list[Dimension]:
@@ -309,7 +313,7 @@ class World:
         state = "" if self.state is None else f"{self.state.__name__}, "
         return f"World({state}tools={list(self.tools)!r})"
 
-    def __call__(self, agent: WorldAgent) -> WorldRunner:
+    def __call__(self, agent: Callable[[Mapping[str, Any], Any], Awaitable[Any]]) -> WorldRunner:
         """The runner hosting ``agent`` on this world.
 
         Args:

@@ -1400,9 +1400,9 @@ def pairing_correlation(a: Sequence[float], b: Sequence[float]) -> float | None:
 
 #: Why a guardrail on a reading with no declared range is never read ``held`` (#695's rule, applied to guardrails).
 GUARDRAIL_HELD_NEEDS_RANGE = (
-    "declare value_range on this measure (on compare(), ranges= beside the scorer) for it to be shown held: it "
-    "declares no range, and with no range no test of a mean holds its error rate (an unbounded value can hide a rare "
-    "large move), so held is never read off it and only a breach can be shown"
+    "declare value_range on this measure (on an eval, grader(..., range=) beside the guard) for it to be shown held: "
+    "it declares no range, and with no range no test of a mean holds its error rate (an unbounded value can hide a "
+    "rare large move), so held is never read off it and only a breach can be shown"
 )
 
 #: Why a guardrail whose values contradict their declared range is not decided.

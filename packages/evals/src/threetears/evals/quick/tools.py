@@ -99,8 +99,8 @@ class FunctionTool:
             return ToolAnswer(value=answered)
         except ValidationError as unrecordable:
             raise ApparatusError(
-                f"the tool {self._name!r} answered a {type(answered).__name__}, which a cassette cannot record; "
-                "a run_eval tool returns a JSON value"
+                f"the tool {self._name!r} answered a {type(answered).__name__}, which a recording cannot keep; "
+                "a world's lookup returns a JSON value"
             ) from unrecordable
 
 

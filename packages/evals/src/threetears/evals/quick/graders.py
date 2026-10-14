@@ -65,7 +65,7 @@ class Grader:
         range: The lowest and highest grade a function returning a number can give; ``None`` for a pass/fail.
     """
 
-    target: GraderFunction | str
+    target: Callable[[Mapping[str, Any], Any], float | bool] | str
     margin: float | None = None
     guard: float | None = None
     range: tuple[float, float] | None = None
@@ -114,12 +114,12 @@ def grader(
     margin: float | None = None,
     guard: float | None = None,
     range: tuple[float, float] | None = None,
-) -> Callable[[GraderFunction], Grader]: ...
+) -> Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]: ...
 
 
 @overload
 def grader(
-    target: GraderFunction | str,
+    target: Callable[[Mapping[str, Any], Any], float | bool] | str,
     /,
     *,
     margin: float | None = None,
@@ -129,13 +129,13 @@ def grader(
 
 
 def grader(
-    target: GraderFunction | str | None = None,
+    target: Callable[[Mapping[str, Any], Any], float | bool] | str | None = None,
     /,
     *,
     margin: float | None = None,
     guard: float | None = None,
     range: tuple[float, float] | None = None,
-) -> Grader | Callable[[GraderFunction], Grader]:
+) -> Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]:
     """Declare what a reading needs beside its grade: ``@grader(guard=0.02)``, ``grader("total", margin=0.05)``.
 
     Args:
@@ -328,7 +328,13 @@ def plan_graders(graders: Any) -> GraderPlan:
                 f"Judge or a grader(...), not {target!r}"
             )
         else:
-            seen.append(getattr(target, "__name__", ""))
+            name = getattr(target, "__name__", None)
+            if not isinstance(name, str) or not name.isidentifier():
+                raise ValueError(
+                    f"a grader's __name__ names its measure, and {target!r} has none a measure can carry; write each "
+                    "grader as a def"
+                )
+            seen.append(name)
         plan.scorers.append(target)
         name = target.__name__
         if declared is not None:

@@ -12,6 +12,9 @@ product adopting the engine as a host reaches for beside it:
   command line with its host factory and any subcommands of its own (:class:`HostCommand`). Handed a ``.py`` or
   ``.toml`` file instead, ``python -m threetears.evals`` runs the evals it declares
   (:mod:`threetears.evals.quick.files`).
+- :class:`Grader`, :class:`WorldRunner`, :class:`WorldOutcome` and :class:`JudgeCalibration` are what the root's
+  names hand back (``grader(...)``, ``World(...)(agent)``, what a world runner's graders see, a result's judge
+  calibration), named here so a host can annotate them.
 - ``@measure(...)`` declares a measure on the function that computes it (a :class:`Measure`, whose ``descriptor`` a
   host registers): an ordinary contract object, mixed freely with ones the host writes by hand, and a function
   grader an eval reads as the measure it declares.
@@ -39,7 +42,10 @@ from threetears.evals.quick.cli import (
     run_cli,
 )
 from threetears.evals.quick.contract import as_host
+from threetears.evals.quick.graders import Grader
 from threetears.evals.quick.measures import Measure, measure
+from threetears.evals.quick.result import JudgeCalibration
+from threetears.evals.quick.world import WorldOutcome, WorldRunner
 
 __all__ = [
     "DEFAULT_PROG",
@@ -50,8 +56,12 @@ __all__ = [
     "EXIT_REFUSED",
     "EXIT_RUN_DID_NOT_COMPLETE",
     "HostCommand",
+    "Grader",
     "HostFactory",
+    "JudgeCalibration",
     "Measure",
+    "WorldOutcome",
+    "WorldRunner",
     "as_host",
     "build_parser",
     "measure",

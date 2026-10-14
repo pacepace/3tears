@@ -2046,16 +2046,17 @@ def _no_margin_sentence(bundle: AnalysisContextBundle) -> str | None:
     advice = []
     if scorers:
         advice.append(
-            f"Declare a margin on {heading(scorers)} by the scorer's name (compare(margins={{{scorers[0]!r}: ...}}))"
+            f"Declare a margin on {heading(scorers)} where it is graded (grader({scorers[0]}, margin=...))"
             + (
-                "; a scorer that returns a number, not a bool, takes its range beside it (ranges=)."
+                "; a grader that returns a number, not a bool, takes its range beside it (range=)."
                 if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in scorers)
                 else "."
             )
         )
     if rates:
         advice.append(
-            f"Declare a margin on {heading(rates)} (compare(margins={{{rates[0]!r}: ...}})) on every arm's run."
+            f"Declare a margin on {heading(rates)} on the classifier's field (grader('<field>', margin=...)), "
+            "on every arm's run."
         )
     if fixed:
         advice.append(

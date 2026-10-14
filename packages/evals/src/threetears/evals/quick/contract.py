@@ -42,7 +42,6 @@ from threetears.evals.quick.client import RECORD_ENV
 from threetears.evals.quick.graders import GraderPlan, expected_label, plan_graders
 from threetears.evals.quick.levers import refuse_unusable_lever_names
 from threetears.evals.quick.logged import Log
-from threetears.evals.quick.measures import Measure
 from threetears.evals.quick.one_call import (
     ARM_LEVER,
     CALLABLE_KIND,
@@ -50,6 +49,7 @@ from threetears.evals.quick.one_call import (
     SHARED_ARM_MODEL,
     CallableArm,
     callable_host,
+    refuse_an_unusable_cap,
     run_arms,
 )
 from threetears.evals.quick.result import CREATED_BY, Result, calibrate, coordinates, declare, judged_rows
@@ -263,6 +263,7 @@ class Eval:
         )
         if not self.name or not self.name.strip():
             raise ValueError("an eval is named by name=, its cases file or its runner, and this one has none of them")
+        refuse_an_unusable_cap(max_cost_usd)
         self.k = k
         self.max_cost_usd = max_cost_usd
         self.measure_latency = measure_latency
@@ -278,14 +279,14 @@ class Eval:
         return len(self.arms) > 1
 
     def _factors(self) -> tuple[str, ...] | None:
-        """The factors a factorial comparison's arms name, in order; ``None`` for arms named plainly, or one arm.
+        """The factors the arms name as ``k=v`` pairs, in order; ``None`` for arms named plainly, or one unnamed arm.
 
         Raises:
             ValueError: Arms naming ``k=v`` factors unlike one another, or mixing pairs and plain names.
         """
-        if not self.comparison:
-            return None
         named = {arm: coordinates(arm) for arm in self.arms if arm is not None}
+        if not named:
+            return None
         if all(pairs is None for pairs in named.values()):
             return None
         if any(pairs is None for pairs in named.values()):
@@ -344,7 +345,9 @@ class Eval:
             levels[arm] = {"model": model or SHARED_ARM_MODEL, **{lever: pairs[lever] for lever in self.levers}}
         return launched, factors, levels
 
-    def host(self, store: StoreSpec = None, *, clients: CompletionClients | None = None) -> EvalHost:
+    def host(
+        self, store: DocumentStore | str | os.PathLike[str] | None = None, *, clients: CompletionClients | None = None
+    ) -> EvalHost:
         """The host this eval runs in when it is handed none: its graders' measures, its levers and its world.
 
         Args:
@@ -357,7 +360,13 @@ class Eval:
         return as_host([self], store=store, clients=clients)
 
     # scope-default: an eval's scope is its own name unless the run names one, and every result states which
-    async def run(self, *, store: StoreSpec = None, host: EvalHost | None = None, scope: str | None = None) -> Result:
+    async def run(
+        self,
+        *,
+        store: DocumentStore | str | os.PathLike[str] | None = None,
+        host: EvalHost | None = None,
+        scope: str | None = None,
+    ) -> Result:
         """Run every arm over every case ``k`` times, grade every answer, and read the campaign's report.
 
         Args:
@@ -396,7 +405,8 @@ class Eval:
             self.plan.scorers,
             scope_id=scope_id,
             host=host,
-            template_name=self.name,
+            # Named by its cases alone, as its id is: evals of other names over these cases share it unchanged.
+            template_name=f"eval over {len(self.cases)} case(s)",
             expected=None if self.plan.classifier is None else partial(expected_label, name=self.plan.classifier),
             label_field=self.plan.classifier,
             judge=judge,
@@ -503,7 +513,7 @@ def _refuse_undeclared_readings(host: EvalHost, plan: GraderPlan) -> None:
 def as_host(
     evals: Sequence[Eval],
     *,
-    store: StoreSpec,
+    store: DocumentStore | str | os.PathLike[str] | None,
     clients: CompletionClients | None = None,
 ) -> EvalHost:
     """A host for these evals: the vocabulary their graders, levers and world need, over one store.
@@ -561,11 +571,11 @@ def as_host(
         levers=next(iter(levers)),
         world=next(iter(worlds.values()), None),
         arms=any(ev.comparison and ev.factors is None for ev in evals),
-        margins={name: margin for name, margin in margins.items() if not isinstance(scorers[name], Measure)},
-        ranges={name: bounds for name, bounds in ranges.items() if not isinstance(scorers[name], Measure)},
+        margins=margins,
+        ranges=ranges,
         store=opened,
         clients=clients,
-        guardrails={name: guard for name, guard in guardrails.items() if not isinstance(scorers[name], Measure)},
+        guardrails=guardrails,
     )
 
 

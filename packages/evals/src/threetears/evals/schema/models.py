@@ -3150,7 +3150,7 @@ class MeasureDeclaration(EvalBaseModel, CoreShapeModel):
 
     The reading-side half of a :class:`~threetears.evals.kernel.metrics.MetricDescriptor`: which way is better,
     the merit axis it serves, whether it is a guardrail, its margin and its range. A host builds these in code, and
-    the quick path builds them from ``compare(margins=, ranges=, guardrails=)``, so a later reader's host may declare
+    the quick path builds them from ``grader(..., margin=, range=, guard=)``, so a later reader's host may declare
     them differently, or not at all. A comparison of stored runs is read on what the runs were launched under
     (:attr:`EvalRun.declared_measures`), never on whoever reads it.
     """

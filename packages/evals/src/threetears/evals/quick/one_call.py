@@ -73,7 +73,6 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.schema import (
     DEFAULT_LAUNCH_K_RUNS,
-    SCALES,
     DocumentStore,
     EvalRun,
     EvalTemplate,
@@ -263,7 +262,12 @@ def _launch_settings(arms: int = 1, max_cost_usd: float | None = None) -> Launch
     )
 
 
-def _refuse_an_unusable_cap(max_cost_usd: float | None) -> None:
+def refuse_an_unusable_cap(max_cost_usd: float | None) -> None:
+    """Refuse a spend ceiling that is not a positive finite number of US dollars.
+
+    Raises:
+        ValueError: A ``max_cost_usd`` that is a bool, not a number, not finite, or not above 0.
+    """
     if max_cost_usd is not None and (
         isinstance(max_cost_usd, bool)
         or not isinstance(max_cost_usd, int | float)
@@ -398,13 +402,13 @@ def refuse_unusable_margins(
     for name, bounds in ranges.items():
         if name not in names:
             raise ValueError(
-                f"ranges= names {name!r}, which no scorer reports; a range is declared on a scorer's measure, by "
-                f"its def's name: {', '.join(map(repr, names)) or 'none were given'}"
+                f"a range names {name!r}, which no grader reports; a range is declared on a grader "
+                f"(grader(<function>, range=(1, 5))): {', '.join(map(repr, names)) or 'none were given'}"
             )
         if _returns_bool(by_name[name]):
             raise ValueError(
-                f"{name!r} returns a bool, a pass/fail, which is on 0 to 1 already: declare ranges= only for a "
-                "scorer returning a number"
+                f"{name!r} returns a bool, a pass/fail, which is on 0 to 1 already: declare range= only on a "
+                "grader returning a number"
             )
         if (
             not isinstance(bounds, tuple | list)
@@ -416,7 +420,7 @@ def refuse_unusable_margins(
         ):
             raise ValueError(
                 f"the range of {name!r} is the lowest and the highest score it can return, as two numbers, low "
-                f"first: ranges={{{name!r}: (1, 5)}} for a 1-to-5 score, not {bounds!r}"
+                f"first: grader({name}, range=(1, 5)) for a 1-to-5 score, not {bounds!r}"
             )
     for name, margin in margins.items():
         if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
@@ -427,8 +431,8 @@ def refuse_unusable_margins(
             )
         if name not in names:
             raise ValueError(
-                f"margins= names {name!r}, which no scorer reports; a margin is declared on a scorer's measure, by "
-                f"its def's name: {', '.join(map(repr, names)) or 'none were given'}"
+                f"a margin names {name!r}, which no grader reports; a margin is declared on a grader "
+                f"(grader(<function>, margin=0.05)): {', '.join(map(repr, names)) or 'none were given'}"
             )
         if isinstance(margin, bool) or not isinstance(margin, int | float) or not math.isfinite(margin) or margin <= 0:
             raise ValueError(
@@ -440,7 +444,8 @@ def refuse_unusable_margins(
                 f"a margin on {name!r} needs its range too: {name!r} does not return a bool, so nothing says what "
                 "its scores can be, and with no range no test can show two arms inside a margin (one rare large "
                 f"score can hide a move). Declare the lowest and highest score it can return beside the margin: "
-                f"ranges={{{name!r}: (1, 5)}} for a 1-to-5 score. A pass/fail scorer annotated -> bool needs none"
+                f"grader({name}, margin=..., range=(1, 5)) for a 1-to-5 score. A pass/fail grader annotated -> bool "
+                "needs none"
             )
 
 
@@ -453,14 +458,14 @@ def refuse_a_store_beside_a_host(store: DocumentStore | None, host: EvalHost | N
     if store is not None and host is not None:
         raise ValueError(
             f"store= is where the host this call builds keeps the runs, and host {host.profile.host_id!r} brings its "
-            "own storage; pass one or the other (callable_host(..., store=...) builds a host over a store)"
+            "own storage; pass one or the other (as_host([...], store=...) builds a host over a store)"
         )
 
 
 #: Why a scorer named in both ``margins=`` and ``guardrails=`` is refused, naming it.
 _MARGIN_ON_A_GUARDRAIL = (
-    "{name!r} is declared a guardrail and given a margin in margins= too: a guardrail is never contrasted, so a "
-    "margin for equivalence has no use on it, and its own margin is Guardrail(margin=...); drop it from margins="
+    "{name!r} is declared a guardrail and given a margin too: a guardrail is never contrasted, so a margin for "
+    "equivalence has no use on it, and its own margin is its guard (grader(..., guard=0.02)); drop the margin"
 )
 
 
@@ -470,66 +475,47 @@ def refuse_unusable_guardrails(
     *,
     margins: Mapping[str, float] | None = None,
     ranges: Mapping[str, tuple[float, float]] | None = None,
-    judge: Judge | None = None,
 ) -> None:
-    """Refuse a guardrail no scorer's measure, or judged dimension, could carry, naming the ones that can.
+    """Refuse a guardrail no grader's measure could carry, naming the ones that can.
+
+    A judged dimension's guardrail is the :class:`~threetears.evals.quick.judged.Judge`'s to declare and refuse
+    (``Judge(guard=...)``); this holds a function grader's.
 
     Args:
-        scorers: The scorers whose measures a guardrail may be declared on.
-        guardrails: Each guardrail, by the name of the scorer (or the judge's rubric dimension) it is declared on.
-        margins: The margins declared beside them, by scorer.
-        ranges: The ranges declared for scorers returning a number, by scorer (``grader(range=...)``).
-        judge: The judge whose rubric dimensions a guardrail may also be declared on, or ``None``.
+        scorers: The graders whose measures a guardrail may be declared on.
+        guardrails: Each guardrail, by the name of the grader it is declared on.
+        margins: The margins declared beside them, by grader.
+        ranges: The ranges declared for graders returning a number, by grader.
 
     Raises:
-        ValueError: A guardrail that is not a :class:`~threetears.evals.quick.Guardrail` (a bare margin among
-            them); on an engine core measure (the classifier's accuracy among them), or a name no scorer or
-            dimension has; on a scorer also given a margin; a margin as wide as the scorer's range (0 to 1 for a
-            pass/fail) or the dimension's scale; or a lower-is-better direction on a judged dimension.
+        ValueError: A guardrail that is not a :class:`~threetears.evals.quick.guardrails.Guardrail`; on an engine core
+            measure, or a name no grader has; on a grader also given a margin; or a margin as wide as the grader's
+            range (0 to 1 for a pass/fail).
     """
     names = [_scorer_name(scorer) for scorer in scorers]
     by_name = dict(zip(names, scorers, strict=True))
-    dims = {dim.name: dim for dim in judge.dims} if judge is not None else {}
     for name, guardrail in guardrails.items():
         if not isinstance(guardrail, Guardrail):
-            raise ValueError(
-                f"guardrails= maps a name to a Guardrail, its margin and direction both declared "
-                f"(guardrails={{{name!r}: Guardrail(margin=0.02, direction='higher_is_better')}}), not {guardrail!r}"
-            )
+            raise ValueError(f"a guard is declared as grader(<function>, guard=0.02), not {guardrail!r}")
         if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
             raise ValueError(
                 f"a guardrail on {name!r} cannot be declared: it is an engine core measure, read under the core's own "
-                "description. Grade what the candidate must not get worse on with a scorer "
-                "(def no_leak(case, answer) -> bool: ...) and declare the guardrail on that"
+                "description. Grade what the runner must not get worse on with a function "
+                "(def no_leak(case, out) -> bool: ...) and guard that: grader(no_leak, guard=0.02)"
             )
-        if name in by_name:
-            if margins and name in margins:
-                raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
-            bounds = (0.0, 1.0) if _returns_bool(by_name[name]) else (ranges or {}).get(name)
-            if bounds is not None and guardrail.margin >= bounds[1] - bounds[0]:
-                raise ValueError(
-                    f"a margin of {guardrail.margin!r} on {name!r}, which scores {bounds[0]:g} to {bounds[1]:g}, is "
-                    "as wide as every value it can return, so every arm would hold whatever it did; declare a "
-                    "smaller one"
-                )
-            continue
-        dim = dims.get(judge.dim_name(name)) if judge is not None else None
-        if dim is None:
-            said = ", ".join(map(repr, [*names, *dims])) or "none were given"
+        if name not in by_name:
             raise ValueError(
-                f"guardrails= names {name!r}, which no scorer reports and no rubric dimension of the judge scores; a "
-                f"guardrail is declared on a scorer's measure, by its def's name, or on a judged dimension: {said}"
+                f"a guard names {name!r}, which no grader reports; a guard is declared on a grader "
+                f"(grader(<function>, guard=0.02)): {', '.join(map(repr, names)) or 'none were given'}"
             )
-        if not guardrail.higher_is_better:
+        if margins and name in margins:
+            raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
+        bounds = (0.0, 1.0) if _returns_bool(by_name[name]) else (ranges or {}).get(name)
+        if bounds is not None and guardrail.margin >= bounds[1] - bounds[0]:
             raise ValueError(
-                f"{dim.name!r} is judged with higher better, so its guardrail's direction is 'higher_is_better': "
-                "word the dimension as what the answer must do (never_leaks), and a higher score is the safer one"
-            )
-        low, high = SCALES[dim.scale].value_range
-        if guardrail.margin >= high - low:
-            raise ValueError(
-                f"a margin of {guardrail.margin!r} on {dim.name!r}, judged {low:g} to {high:g}, is as wide as its "
-                "scale, so every arm would hold whatever it did; declare a smaller one"
+                f"a margin of {guardrail.margin!r} on {name!r}, which scores {bounds[0]:g} to {bounds[1]:g}, is "
+                "as wide as every value it can return, so every arm would hold whatever it did; declare a "
+                "smaller one"
             )
 
 
@@ -1633,13 +1619,13 @@ def _template_intent(arms: Sequence[CallableArm], graded_by: str, intent: str | 
     if len(arms) > 1:
         if first:
             return first, "from the docstring every arm's candidate shares"
-        lacking = "the arms' candidates share no docstring first line"
+        lacking = "the arms' runners share no docstring first line"
     else:
         name = getattr(arms[0].candidate, "__name__", None) or arms[0].model or "the candidate"
         if first:
             return first, f"from {name}'s docstring"
         lacking = f"{name} has no docstring"
-    return f"Answer each case so that {graded_by} the answer well.", f"a generic default: no intent=, and {lacking}"
+    return f"Answer each case so that {graded_by} the answer well.", f"a generic default: {lacking}"
 
 
 async def run_arms(
@@ -1713,7 +1699,7 @@ async def run_arms(
     # What the runner, every grader and the judge are handed: the case less what names, sorts and seeds it.
     addressed = [{key: value for key, value in case.items() if key != WORLD_KEY} for case in plain_cases]
     stimulus = [{key: value for key, value in case.items() if key not in RESERVED_CASE_KEYS} for case in plain_cases]
-    _refuse_an_unusable_cap(max_cost_usd)
+    refuse_an_unusable_cap(max_cost_usd)
     goal_checks = list(goal_checks)
     if not scorers and expected is None and judge is None and not goal_checks:
         raise ValueError(
@@ -1736,7 +1722,9 @@ async def run_arms(
         if model is None:
             model = getattr(arm.candidate, "__name__", None)
             if not model:
-                raise ValueError(f"{arm.candidate!r} has no __name__ to label its arm by; pass model=")
+                raise ValueError(
+                    f"{arm.candidate!r} has no __name__ to label its arm by; name the arm ({{'<name>': runner}})"
+                )
         models.append(model)
     graded_by = "every scorer grades" if judge is None else "the judge and every scorer grade"
     template_intent, intent_source = _template_intent(arms, graded_by, intent)
@@ -2000,6 +1988,7 @@ __all__ = [
     "callable_kind",
     "callable_kind_contracts",
     "refuse_a_store_beside_a_host",
+    "refuse_an_unusable_cap",
     "refuse_unusable_guardrails",
     "refuse_unusable_margins",
     "run_arms",

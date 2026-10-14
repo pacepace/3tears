@@ -120,7 +120,7 @@ class Judge:
         *,
         examples: Sequence[Example] = (),
         labels: str | os.PathLike[str] | None = None,
-        case_material: CaseMaterial | None = None,
+        case_material: Callable[[Mapping[str, Any]], str] | None = None,
         guard: Mapping[str, float] | None = None,
     ) -> None:
         """Declare the judge.

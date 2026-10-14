@@ -177,8 +177,7 @@ class Model:
             ValueError: The reply is not ``schema``; the message is pydantic's, so a miss says why, and nothing is
                 filled in for it.
         """
-        directive = strict_response_format(schema.__name__, schema.model_json_schema())
-        completion = await self.generate(system=system or "", user=user, response_format=directive)
+        completion = await self.generate(system=system or "", user=user, response_format=json_directive(schema))
         try:
             return schema.model_validate_json(completion.content)
         except ValidationError as refused:
@@ -210,6 +209,18 @@ class Model:
         await self.aclose()
 
 
+def json_directive(schema: type[BaseModel]) -> dict[str, Any]:
+    """The provider directive :meth:`Model.json` sends for ``schema``: the strict ``json_schema`` of it.
+
+    Args:
+        schema: The pydantic model the reply must be.
+
+    Returns:
+        The directive, which a recording of the call is keyed by.
+    """
+    return strict_response_format(schema.__name__, schema.model_json_schema())
+
+
 def judge_client(model: str | CompletionClient) -> tuple[CompletionClient, str]:
     """The client a judge calls and the model the run records it as, from what ``Judge(model=...)`` was handed.
 
@@ -235,4 +246,4 @@ def judge_client(model: str | CompletionClient) -> tuple[CompletionClient, str]:
     return model, name
 
 
-__all__ = ["RECORD_ENV", "Model", "cell_spend", "judge_client", "note_spend", "spent"]
+__all__ = ["RECORD_ENV", "Model", "cell_spend", "json_directive", "judge_client", "note_spend", "spent"]
