@@ -22,7 +22,7 @@
   ],
   "has_trace": false,
   "host_measures": {},
-  "id": "01a13942-3ccb-726c-aec5-c05ef616311a",
+  "id": "01a13bbf-c016-74d2-b1f4-a7993f7fbf10",
   "identity_version": 24,
   "infra_error": null,
   "judge_cannot_tell": {},
@@ -54,7 +54,8 @@
         "max_tokens": 10240,
         "reasoning_effort": "high",
         "reasoning_max_tokens": null,
-        "strict_output": true
+        "strict_output": true,
+        "unsent_reasoning_max_tokens": null
       },
       "judge_temperature": 0.0,
       "output_fingerprint": "1f9d9bece16539e2c8031142aefce56788324982259145a36677bf1cc818ad1c",
@@ -65,10 +66,10 @@
     }
   ],
   "runner_error": null,
-  "schema_minor": 1,
+  "schema_minor": 2,
   "schema_version": 15,
   "scope_id": "uni-1",
-  "scored_at": "2026-10-14T07:13:24.683526+00:00",
+  "scored_at": "2026-10-14T18:49:44.726381+00:00",
   "stop_cause": null,
   "subject_id": null,
   "termination": "completed",
@@ -95,7 +96,8 @@
           "max_tokens": 10240,
           "reasoning_effort": "high",
           "reasoning_max_tokens": null,
-          "strict_output": true
+          "strict_output": true,
+          "unsent_reasoning_max_tokens": null
         }
       ],
       "served_model": "judge-a-2026"
