@@ -101,7 +101,7 @@ is reported as ``conflicted``, by key, on every boot until one of the two is arc
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Hashable, Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -341,8 +341,11 @@ class SeedOutcome:
         return "; ".join(parts)
 
 
-def _load_dir[M: BaseModel](directory: Path, model: type[M], scope_id: str | None) -> tuple[M, ...]:
-    """Construct every ``*.json`` in ``directory`` through ``model``, in ``scope_id`` (``None`` for a shape with none).
+def _load_dir[M: BaseModel](directory: Path, model: type[M], scoped: Mapping[str, str]) -> tuple[M, ...]:
+    """Construct every ``*.json`` in ``directory`` through ``model``, with ``scoped``'s fields added to each.
+
+    ``scoped`` is ``{"scope_id": ...}`` for a shape that carries a scope and empty for one that carries none: the
+    caller knows the shape, so the scope is passed through as an opaque value and never inspected here.
 
     Sorted so a corpus loads in a stable order and a seeding log is diffable between boots.
 
@@ -356,7 +359,6 @@ def _load_dir[M: BaseModel](directory: Path, model: type[M], scope_id: str | Non
     loaded: list[M] = []
     for path in sorted(directory.glob("*.json")):
         try:
-            scoped = {} if scope_id is None else {"scope_id": scope_id}
             loaded.append(model(**json.loads(path.read_text(encoding="utf-8")), **scoped))
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             raise ValueError(f"seed definition {path} is not a valid {model.__name__}: {e}") from e
@@ -390,12 +392,13 @@ def load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus:
     """
     if not seed_dir.is_dir():
         raise FileNotFoundError(f"eval seed corpus directory {seed_dir} does not exist or is not a directory")
+    scoped = {"scope_id": scope_id}
     return SeedCorpus(
         scope_id=scope_id,
-        templates=_load_dir(seed_dir / "templates", EvalTemplate, scope_id),
-        rubric_dims=_load_dir(seed_dir / "rubric_dims", CatalogRubricDim, scope_id),
-        judge_configs=_load_dir(seed_dir / "judge_configs", JudgeConfig, scope_id),
-        judge_cases=_load_dir(seed_dir / "judge_cases", SeedJudgeCase, None),
+        templates=_load_dir(seed_dir / "templates", EvalTemplate, scoped),
+        rubric_dims=_load_dir(seed_dir / "rubric_dims", CatalogRubricDim, scoped),
+        judge_configs=_load_dir(seed_dir / "judge_configs", JudgeConfig, scoped),
+        judge_cases=_load_dir(seed_dir / "judge_cases", SeedJudgeCase, {}),
     )
 
 
