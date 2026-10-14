@@ -74,8 +74,12 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     ]
     assert lines[9] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $0.003092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
-    caveat = "Too few cases to estimate a rate. Usable cases: production 4, cheaper candidate 4; a rate needs 5."
+    # The rule settled keep on the counts, so the floor caveat says what four cases can and cannot do.
+    caveat = (
+        "4 cases per arm: enough to apply the rule, too few to estimate how large the difference is (that needs 5)."
+    )
     assert caveat in first.splitlines(), "the case floor, in normal weight"
+    assert "Too few cases to estimate a rate" not in first
     assert first.index("**Keep production") < first.index("**Scoreboard**") < first.index(caveat)
 
 
@@ -88,9 +92,12 @@ async def test_the_question_is_the_title_and_never_repeated_in_the_body(g2_ruled
 
 async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
-    sections = re.split(r"\n## ", report_markdown(report)) + [
-        _visible_text(part) for part in report_html(report).split("<h2>")
+    # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
+    (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    sections = re.split(r"\n## ", report_markdown(report).replace(verdict, "")) + [
+        _visible_text(part).replace(verdict, "") for part in report_html(report).split("<h2>")
     ]
+    assert "deepseek-v4-flash passed" in verdict
     for section in sections:
         for model in ("deepseek-v4.1-flash", "deepseek-v4-flash"):
             assert len(re.findall(rf"(?<![\w.-]){re.escape(model)}(?![\w.-])", section)) <= 1, (model, section[:80])

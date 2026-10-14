@@ -139,8 +139,10 @@ def test_a_cost_lower_by_a_point_estimate_only_is_unsettled() -> None:
 async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     (verdict,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    # Plain counts and both costs, each arm by its model: "cheaper candidate cost more" would read as a contradiction.
     assert verdict.text == (
-        "Keep production: the pass rate drops at least 67 points, and cheaper candidate costs more per reply."
+        "Keep production: deepseek-v4-flash passed 2 of 12 trials to deepseek-v4.1-flash's 10 of 12, "
+        "and cost more per reply ($0.003301 vs $0.003092)."
     )
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "decision"]
     outcomes = [row["outcome"] for row in table.values() if row["outcome"] is not None]

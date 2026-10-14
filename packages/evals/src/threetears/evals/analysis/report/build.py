@@ -268,7 +268,7 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     """
     bundle = analysis_bundle(analysis)
     names = _arm_names(bundle)
-    return verdict_line(bundle, _namer(names), case_name=_case_namer(bundle)).text
+    return verdict_line(bundle, _namer(names), case_name=_case_namer(bundle), model=_model_namer(names)).text
 
 
 def _page(
@@ -310,7 +310,7 @@ def _page(
         DisclosureBlock(
             section="header",
             source="verdict",
-            text=verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle)).text,
+            text=verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle), model=_model_namer(names)).text,
         ),
         *_scoreboard_blocks(bundle, arm, charts),
         *_decision_blocks(bundle, arm),
@@ -372,6 +372,21 @@ def _namer(names: dict[str, ArmName]) -> Callable[[str], str]:
         if variant_key in names:
             return names[variant_key].label
         return f"unplaced arm {short_digest(variant_key)}"
+
+    return name
+
+
+def _model_namer(names: dict[str, ArmName]) -> Callable[[str], str]:
+    """Name an arm by its model, vendor dropped, where it has one, else as every table names it.
+
+    Only line 2 and the verdict sentence name a model: a label like ``cheaper candidate`` beside "costs more" reads
+    as a contradiction, and the model does not.
+    """
+    label = _namer(names)
+
+    def name(variant_key: str) -> str:
+        model = names[variant_key].model if variant_key in names else None
+        return humanize("model", model) if model else label(variant_key)
 
     return name
 
