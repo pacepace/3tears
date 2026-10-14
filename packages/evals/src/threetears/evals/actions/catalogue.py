@@ -364,6 +364,12 @@ class Refusal:
     kind: KnownRefusalKind
     status: int
 
+    @property
+    def raised(self) -> bool:
+        """Whether the call RAISED rather than was refused: a 5xx status, the engine or host failing to carry it out
+        (a store, a provider, a host's own 5xx), never the call turned away (:func:`~threetears.evals.actions.render.raised`)."""
+        return render.raised(self.status)
+
     def __post_init__(self) -> None:
         """Refuse a kind outside the closed set.
 
@@ -403,6 +409,13 @@ _CALL_REFUSAL = Refusal.of(
 class ActionOutcome:
     """What one call came to: the text an agent reads, the typed result as data, and why it was refused.
 
+    **Refused or raised.** A call the catalogue, the engine or the host turned away (an unknown action, a value that
+    does not validate, a run that does not exist, a conflict) is ``refused``; one the engine or host failed to carry
+    out (a store that failed, a provider that refused the account: a 5xx :attr:`Refusal.status`) is ``raised``. Both
+    carry a :attr:`refusal` and are errors; :attr:`ending` says which, and so does the text's head word. A host
+    recording its candidate's refused calls (``CallLedger.record_refusal``) records an outcome whose ``ending`` is
+    ``refused`` and no other: a raised one is the rig's fault, never the candidate's.
+
     Attributes:
         text: The rendering — the result's, a help page's, or a refusal that teaches.
         structured: The result model's JSON form; ``None`` for help and for a refusal.
@@ -426,8 +439,16 @@ class ActionOutcome:
 
     @property
     def is_error(self) -> bool:
-        """Whether the call was refused."""
+        """Whether the call was refused or raised."""
         return self.refusal is not None
+
+    @property
+    def ending(self) -> Literal["ok", "refused", "raised"]:
+        """How the call ended: ``ok`` (a result, or help), ``refused`` (turned away), or ``raised`` (failed by the
+        engine or host)."""
+        if self.refusal is None:
+            return "ok"
+        return "raised" if self.refusal.raised else "refused"
 
 
 @dataclass(frozen=True)

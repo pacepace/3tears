@@ -5,13 +5,16 @@ Pure: nothing here sends or logs. A request is built from the settings the negot
 :class:`Reply`, every count ``None`` where the provider reported none, never ``0``:
 
 * **Anthropic's Messages API**: ``max_tokens`` (required), ``thinking`` as
-  :func:`~threetears.evals.negotiation.anthropic_thinking` says, and one ``output_config`` holding the effort word and
-  a strict schema's ``format``. No JSON mode exists there, so a format it cannot enforce is not sent.
+  :func:`~threetears.evals.negotiation.anthropic_thinking` says (a budget as ``{"type": "enabled",
+  "budget_tokens": N}``, which ``max_tokens`` must exceed), and one ``output_config`` holding the effort word and a
+  strict schema's ``format``. No JSON mode exists there, so a format it cannot enforce is not sent.
 * **OpenAI's chat completions** (and any OpenAI-compatible endpoint): ``reasoning_effort``, a strict
   ``json_schema`` ``response_format``, JSON mode where a schema cannot be enforced; ``max_completion_tokens`` on
-  OpenAI itself, ``max_tokens`` on another endpoint.
-* **OpenRouter**: the OpenAI shape with ``reasoning.effort``, ``provider.require_parameters`` exactly when the
-  request is enforced, and ``usage.include`` so the reply carries its cost.
+  OpenAI itself, ``max_tokens`` on another endpoint. It takes no reasoning budget: the negotiation sends one as its
+  word and names it unsent.
+* **OpenRouter**: the OpenAI shape with ``reasoning.max_tokens`` for a budget or ``reasoning.effort`` for a word
+  (never both: OpenRouter takes one), ``provider.require_parameters`` exactly when the request is enforced, and
+  ``usage.include`` so the reply carries its cost.
 """
 
 from __future__ import annotations
@@ -185,6 +188,12 @@ def request_body(
 
     Returns:
         The JSON body.
+
+    Raises:
+        ValueError: ``sent`` carries a reasoning budget the provider cannot take as built: one at or above
+            Anthropic's ``max_tokens`` (naming both), or one on OpenAI's chat completions, which have no budget
+            parameter. :func:`~threetears.evals.negotiation.closest_settings` never chooses either; refused here
+            rather than clamped or dropped.
     """
     if provider == "anthropic":
         return _anthropic_body(model, system, user, sent, facts, directive)
@@ -196,7 +205,15 @@ def request_body(
         body["max_completion_tokens" if direct_openai else "max_tokens"] = sent.max_tokens
     if sent.temperature is not None:
         body["temperature"] = sent.temperature
-    if sent.reasoning_effort is not None:
+    if sent.reasoning_max_tokens is not None:
+        if provider != "openrouter":
+            raise ValueError(
+                f"OpenAI's chat completions take no reasoning budget, and these settings carry one "
+                f"({sent.reasoning_max_tokens}): send its effort word (closest_settings chooses it)"
+            )
+        # OpenRouter takes a budget or a word, not both: the budget is the bound, so it wins.
+        body["reasoning"] = {"max_tokens": sent.reasoning_max_tokens}
+    elif sent.reasoning_effort is not None:
         if provider == "openrouter":
             body["reasoning"] = {"effort": sent.reasoning_effort}
         else:
@@ -228,6 +245,12 @@ def _anthropic_body(
         body["system"] = system
     if sent.temperature is not None:
         body["temperature"] = sent.temperature
+    budget = sent.reasoning_max_tokens
+    if budget is not None and (sent.max_tokens is None or sent.max_tokens <= budget):
+        raise ValueError(
+            f"Anthropic's max_tokens ({sent.max_tokens}) must exceed the thinking budget ({budget}), which it "
+            "includes: ask for a max_tokens above the budget"
+        )
     if (thinking := anthropic_thinking(sent, facts)) is not None:
         body["thinking"] = thinking
     output_config: dict[str, Any] = {}  # Any: a JSON object

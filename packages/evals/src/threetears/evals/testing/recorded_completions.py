@@ -571,9 +571,15 @@ def _drift(
 ) -> str:
     """How two request settings values differ: each field that differs, the first's value against the second's.
 
-    A value against none names every field the value holds.
+    A value against none names every field the value holds, but ``unsent_reasoning_max_tokens`` while it is unset:
+    a field that says something only when set, which every recording made before it existed holds unset.
     """
-    names = list(ClientRequestSettings.model_fields)
+    held = [settings for settings in (first, second) if settings is not None]
+    names = [
+        name
+        for name in ClientRequestSettings.model_fields
+        if name != "unsent_reasoning_max_tokens" or any(s.unsent_reasoning_max_tokens is not None for s in held)
+    ]
     if first is not None and second is not None:
         names = [name for name in names if getattr(first, name) != getattr(second, name)]
     return f"{labels[0]} {_stated(first, names)}, {labels[1]} {_stated(second, names)}"

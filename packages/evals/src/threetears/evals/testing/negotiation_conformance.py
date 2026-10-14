@@ -14,7 +14,8 @@ not, so the next call goes out as it should at once. This check scripts the rout
 **What the host wires.** ``build_client`` gets a :data:`RouterTransport` and returns the host's client built to send
 each request body through it instead of the network, asking for a temperature, an output cap and a reasoning effort
 word (:func:`~threetears.evals.negotiation.wire_settings_for` over
-:data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` asks for all three), and with a store of learned settings of
+:data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS` and a temperature asks for all three; the judge's settings
+ask by a budget, which a router takes as ``reasoning.max_tokens``), and with a store of learned settings of
 its own (a fresh :class:`~threetears.evals.negotiation.LearnedSettings`), so nothing learned elsewhere decides the
 first request. The transport takes the JSON body the client would POST to a router's chat completions endpoint and
 returns the status and JSON body the router answers with. The check builds one client per scripted router.
@@ -404,7 +405,7 @@ def _setup(router: _Router, body: Mapping[str, object], mistakes: list[str]) -> 
         router.mistake(
             mistakes,
             "the first request carried no reasoning effort word: build the client asking for one "
-            "(wire_settings_for(JUDGE_REQUEST_SETTINGS, ...) asks for all three)",
+            "(wire_settings_for(SIMULATOR_REQUEST_SETTINGS, temperature) asks for all three)",
         )
     if not _enforced(body):
         router.mistake(

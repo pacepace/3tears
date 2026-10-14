@@ -195,6 +195,13 @@ keeps the status it was raised with. The catalogue's own refusals (no action, an
 parameter, a value that does not validate, a help topic that is no action) are the call failing the tool's
 declared input, so they are `validation_failed`. A call that succeeded, and help, carry no refusal.
 
+**Refused or raised.** A refusal at a 5xx status (`provider_refused`, `storage_failed`, a host's own error raised
+with one, a host that is still booting) is not the call turned away: the engine or the host failed to carry it out.
+`ActionOutcome.ending` says which, `ok`, `refused` or `raised` (and `Refusal.raised` on the data), the text is headed
+`raised:` in place of `refused:`, and the MCP transport's structured content carries it as `ending` beside the
+`refusal`. A host recording an agent's refused calls on its ledger (`CallLedger.record_refusal`) records an outcome
+whose `ending` is `refused` and no other: a raised call is the rig's fault, never the agent's.
+
 A handler that raises anything else has a bug. It is not a refusal, and it propagates to the transport.
 
 A job can be refused too, after its call returned the job's id: a provider refusing the account its work calls on,

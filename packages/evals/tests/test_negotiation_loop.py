@@ -148,11 +148,16 @@ async def test_a_request_served_at_once_reports_what_it_carried_and_learns_nothi
 
 
 async def test_the_served_settings_are_the_closest_ones_and_the_notes_say_why() -> None:
-    """A budget on a router is sent as the word its share maps to, and the result reports the word."""
+    """A budget on a router is sent as a budget; on OpenAI as the word its share maps to, the budget named unsent."""
     router = ScriptedRouter(refuse_temperature=False, refuse_enforcement=False)
     asked = WireSettings(max_tokens=10240, reasoning_max_tokens=8192, strict_output=True)
     done = await _negotiate(router, LearnedSettings(), asked=asked)
-    assert done.sent_settings == ClientRequestSettings(max_tokens=10240, reasoning_effort="high", strict_output=True)
+    assert done.sent_settings == asked.reported() and done.notes == ()
+    openai = ScriptedRouter(refuse_temperature=False, refuse_enforcement=False)
+    done = await _negotiate(openai, LearnedSettings(), asked=asked, provider_family="openai")
+    assert done.sent_settings == ClientRequestSettings(
+        max_tokens=10240, reasoning_effort="high", strict_output=True, unsent_reasoning_max_tokens=8192
+    )
     assert len(done.notes) == 1 and "8192" in done.notes[0]
 
 

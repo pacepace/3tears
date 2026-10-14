@@ -56,6 +56,19 @@ tombstoned key is not written: it is reported under ``deleted``, by key, on ever
 operation deletes a template, only the storage port's own ``delete_template``, which writes no
 tombstone, so a template deleted straight from the store still empties its slot.
 
+**Authored judge cases seed through the door every authored case passes.** A ``judge_cases`` slot holds
+:class:`SeedJudgeCase` values: ``judge_case_author``'s arguments with its two templates named by ``name``
+(a corpus cannot know a generated id), plus the author. Each is built through
+:func:`~threetears.evals.run.judge_kind.author_judge_case` (the criterion read from the template that words it, the
+verdict held to its scale) and frozen with :func:`~threetears.evals.run.freeze_judge_cases` (``authored=``) into
+its judge template, so it is the :class:`~threetears.evals.kernel.AuthoredJudgeCase` ``judge_case_author`` writes,
+under the same content-derived id. Its slot is that id: a case already stored is ``already present``, one whose
+words or verdict changed is a new case beside it, never an update. A template is resolved in the store first (the
+store is master, and the template a stored case is judged against) and else in the corpus, which the same seed
+writes. Every case is built before anything is written, and a case authoring would refuse refuses the whole seed,
+naming each. No operation deletes a judge case, so, as for a template, a case deleted straight from the store
+empties its slot.
+
 The seeder creates. It never updates and never deletes.
 
 Corpus files are the same create-ready shape the authoring paths accept — server-owned
@@ -92,12 +105,70 @@ from collections.abc import Callable, Hashable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.kernel.errors import StorageError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
-from threetears.evals.schema.models import CatalogRubricDim, EvalTemplate, JudgeConfig
+from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, AuthoredVerdict
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.models import CatalogRubricDim, EvalTemplate, JudgeConfig, JudgedArtifact
 from threetears.evals.run.authoring import active_judge_config_in, admit_template
+from threetears.evals.run.judge_kind import author_judge_case, freeze_judge_cases
+
+
+class SeedJudgeCase(EvalBaseModel):
+    """One authored judge case a seed corpus writes: ``judge_case_author``'s arguments, its templates named by name.
+
+    A corpus file holds this shape (``judge_cases/*.json``). The templates are named by ``name``, since a corpus
+    cannot know the id a seeded template is given; the criterion is named, never restated, for the reason
+    ``judge_case_author`` names it (its wording is what a judge profile is keyed by). The seed builds it into a
+    :class:`~threetears.evals.kernel.AuthoredJudgeCase` through the same door (``author_judge_case``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    judge_template: str = Field(min_length=1, description="The judge template the case is frozen into, by name.")
+    criterion_template: str = Field(
+        min_length=1, description="The subject template whose rubric dimension the case is judged on, by name."
+    )
+    criterion: str = Field(min_length=1, description="The rubric dimension's name on that template.")
+    output: str = Field(min_length=1, description="The output under review, as the judge reads it.")
+    case_material: str = Field(min_length=1, description="What the output is judged against: its source, or its facts.")
+    expected: AuthoredVerdict = Field(
+        description="The verdict the output must get: 'pass' or 'fail' (or 1 / 0) on pass/fail, 1 to 5 on ordinal."
+    )
+    note: str = Field(min_length=1, description="Why the output must get that verdict, in the author's words.")
+    author: str = Field(min_length=1, description="Who wrote the case, as the host names them: the label's rater.")
+    scenario: str | None = Field(
+        default=None, min_length=1, description="The scenario the judge reads; omitted reads the template's intent."
+    )
+    subject: str | None = Field(
+        default=None, description="Who or what produced the output, as the judge should know it; omitted for none."
+    )
+    judged_artifact: Literal["document", "transcript"] = Field(
+        default="document", description="'document' (judged against its material) or 'transcript'."
+    )
+
+    def authored(self, criterion_template: EvalTemplate) -> AuthoredJudgeCase:
+        """The case, built against the template that words its criterion, as ``judge_case_author`` builds one.
+
+        Raises:
+            ValidationFailedError: The template has no such dimension, or its scale cannot hold the verdict.
+        """
+        return author_judge_case(
+            criterion_template,
+            self.criterion,
+            output=self.output,
+            case_material=self.case_material,
+            expected=self.expected,
+            note=self.note,
+            author=self.author,
+            scenario=self.scenario,
+            subject=self.subject,
+            judged_artifact=JudgedArtifact(self.judged_artifact),
+        )
 
 
 @dataclass(frozen=True)
@@ -112,13 +183,15 @@ class SeedCorpus:
             ``key``, judge config ``(rubric_dim_id, name)``), since the seed would write the first
             and read the second as occupied by it; and two non-archived judge configs for one
             ``rubric_dim_id``, a state no authoring path can produce — archive all but the one a
-            run should inherit, and name the others by id in a launch's ``judge_config_ids``.
+            run should inherit, and name the others by id in a launch's ``judge_config_ids``. And two
+            identical judge cases, which would freeze into one stored case.
     """
 
     scope_id: str
     templates: tuple[EvalTemplate, ...] = ()
     rubric_dims: tuple[CatalogRubricDim, ...] = ()
     judge_configs: tuple[JudgeConfig, ...] = ()
+    judge_cases: tuple[SeedJudgeCase, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a definition built for another scope, and a corpus that cannot be seeded as written."""
@@ -142,6 +215,11 @@ class SeedCorpus:
                 f"more than one non-archived judge config for rubric dim {dim!r} — archive all but the one a run "
                 "should inherit; a launch names the others by id in judge_config_ids"
                 for dim in _repeated(c.rubric_dim_id for c in self.judge_configs if not c.archived)
+            ),
+            *(
+                f"two identical judge cases for {case.criterion!r} of {case.criterion_template!r} in judge template "
+                f"{case.judge_template!r}"
+                for case in _repeated(self.judge_cases)
             ),
         ]
         if defects:
@@ -263,8 +341,8 @@ class SeedOutcome:
         return "; ".join(parts)
 
 
-def _load_dir[M: BaseModel](directory: Path, model: type[M], scope_id: str) -> tuple[M, ...]:
-    """Construct every ``*.json`` in ``directory`` through ``model``, in ``scope_id``.
+def _load_dir[M: BaseModel](directory: Path, model: type[M], scope_id: str | None) -> tuple[M, ...]:
+    """Construct every ``*.json`` in ``directory`` through ``model``, in ``scope_id`` (``None`` for a shape with none).
 
     Sorted so a corpus loads in a stable order and a seeding log is diffable between boots.
 
@@ -278,7 +356,8 @@ def _load_dir[M: BaseModel](directory: Path, model: type[M], scope_id: str) -> t
     loaded: list[M] = []
     for path in sorted(directory.glob("*.json")):
         try:
-            loaded.append(model(**json.loads(path.read_text(encoding="utf-8")), scope_id=scope_id))
+            scoped = {} if scope_id is None else {"scope_id": scope_id}
+            loaded.append(model(**json.loads(path.read_text(encoding="utf-8")), **scoped))
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             raise ValueError(f"seed definition {path} is not a valid {model.__name__}: {e}") from e
     return tuple(loaded)
@@ -292,8 +371,9 @@ def load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus:
     their directory here.
 
     Args:
-        seed_dir: A directory holding ``templates/``, ``rubric_dims/`` and ``judge_configs/``
-            subdirectories of ``*.json`` documents. A missing subdirectory loads as empty.
+        seed_dir: A directory holding ``templates/``, ``rubric_dims/``, ``judge_configs/`` and
+            ``judge_cases/`` subdirectories of ``*.json`` documents (a judge case as :class:`SeedJudgeCase`,
+            which carries no scope). A missing subdirectory loads as empty.
         scope_id: The scope the definitions are built in. A file that names a ``scope_id`` of
             its own does not construct — the field is passed twice — because the scope is the
             host's to choose at load, not the file's.
@@ -315,6 +395,7 @@ def load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus:
         templates=_load_dir(seed_dir / "templates", EvalTemplate, scope_id),
         rubric_dims=_load_dir(seed_dir / "rubric_dims", CatalogRubricDim, scope_id),
         judge_configs=_load_dir(seed_dir / "judge_configs", JudgeConfig, scope_id),
+        judge_cases=_load_dir(seed_dir / "judge_cases", SeedJudgeCase, None),
     )
 
 
@@ -346,6 +427,11 @@ def seed_eval_definitions(
     re-attempts it. A non-archived judge config for a dim the store already holds an active
     config for is not written and is reported under ``conflicted``.
 
+    Authored judge cases (``corpus.judge_cases``) are built through ``author_judge_case`` with
+    the templates, before anything is written, and frozen into their judge templates after the
+    templates are written; each is reported under ``judge_case``, keyed
+    ``<judge template>/<test case id>``.
+
     Args:
         host: The host: the store being seeded, and the profile a template is held to.
         corpus: The definitions to seed and the scope they are seeded into, which the host
@@ -361,8 +447,11 @@ def seed_eval_definitions(
         withheld as conflicting with the store, and the keys withheld as deleted.
 
     Raises:
-        ValidationFailedError: A corpus template fails a gate ``create_template`` applies. Raised
-            before anything is written, naming every refused template and why.
+        ValidationFailedError: A corpus template fails a gate ``create_template`` applies, or a
+            corpus judge case one ``judge_case_author`` applies (a template it names that neither the
+            store nor the corpus holds, a judge template of another kind, a criterion the template's
+            rubric lacks, a verdict its scale cannot hold). Raised before anything is written, naming
+            every refused definition and why.
     """
     templates: list[EvalTemplate] = []
     refusals: list[str] = []
@@ -396,6 +485,8 @@ def seed_eval_definitions(
         )
 
     storage = host.storage
+    stored_templates = storage.query_templates(corpus.scope_id)
+    cases = _authored_cases(corpus, stored_templates, templates)
     outcome = SeedOutcome()
 
     # One archived-inclusive query per type, not one probe per document: the catalogue is
@@ -408,7 +499,7 @@ def seed_eval_definitions(
         outcome,
         "eval_template",
         templates,
-        {(t.name,) for t in storage.query_templates(corpus.scope_id)},
+        {(t.name,) for t in stored_templates},
         lambda t: (t.name,),
         storage.save_template,
     )
@@ -433,8 +524,83 @@ def seed_eval_definitions(
         conflicts=lambda c: not c.archived and c.rubric_dim_id in dims_with_an_active_config,
         deleted={(t.rubric_dim_id, t.name) for t in storage.query_judge_config_tombstones(corpus.scope_id)},
     )
+    if cases:
+        _seed_judge_cases(outcome, host, corpus.scope_id, cases)
 
     return outcome
+
+
+def _authored_cases(
+    corpus: SeedCorpus, stored: Sequence[EvalTemplate], admitted: Sequence[EvalTemplate]
+) -> list[tuple[SeedJudgeCase, AuthoredJudgeCase]]:
+    """Every corpus judge case built through ``author_judge_case``, before anything is written; refused as a whole.
+
+    A template is resolved by name in the store first (the store is master: a corpus template whose name the store
+    holds is never written) and else among the corpus's admitted templates, which the same seed writes.
+
+    Raises:
+        ValidationFailedError: A case names a template neither holds, a judge template not of the judge kind, or a
+            criterion or verdict ``judge_case_author`` would refuse; naming every such case.
+    """
+    by_name = {template.name: template for template in admitted}
+    by_name.update({template.name: template for template in stored})
+    built: list[tuple[SeedJudgeCase, AuthoredJudgeCase]] = []
+    refusals: list[str] = []
+    for case in corpus.judge_cases:
+        where = f"the judge case on {case.criterion!r} of {case.criterion_template!r} in {case.judge_template!r}"
+        judge = by_name.get(case.judge_template)
+        subject = by_name.get(case.criterion_template)
+        missing = [
+            name for name, found in ((case.judge_template, judge), (case.criterion_template, subject)) if not found
+        ]
+        if missing:
+            refusals.append(f"{where}: no template named {', '.join(map(repr, missing))} in the store or the corpus")
+            continue
+        assert judge is not None and subject is not None
+        if judge.candidate_kind != JUDGE_KIND:
+            refusals.append(f"{where}: template {judge.name!r} is of kind {judge.candidate_kind!r}, not {JUDGE_KIND!r}")
+            continue
+        try:
+            built.append((case, case.authored(subject)))
+        except ValidationFailedError as refused:
+            refusals.append(f"{where}: {refused}")
+    if refusals:
+        raise ValidationFailedError(
+            f"the seed corpus for scope {corpus.scope_id!r} carries judge cases authoring would refuse, so nothing "
+            f"was seeded: {'; '.join(refusals)}",
+            remedy="correct each judge case the refusals name in the seed corpus, and seed again",
+        )
+    return built
+
+
+def _seed_judge_cases(
+    outcome: SeedOutcome, host: EvalHost, scope_id: str, cases: Sequence[tuple[SeedJudgeCase, AuthoredJudgeCase]]
+) -> None:
+    """Freeze each authored case into its judge template as ``judge_case_author`` does, recording it under
+    ``judge_case``: created, already present (the same case is stored), or failed (the store refused it, or its
+    judge template, written by this seed, is not stored)."""
+    storage = host.storage
+    created_keys: list[str] = []
+    skipped = failed = 0
+    for case, authored in cases:
+        judge = storage.load_template_by_name(case.judge_template, scope_id)
+        if judge is None:
+            # Its corpus template's write was refused (counted under eval_template): the next boot retries both.
+            failed += 1
+            continue
+        try:
+            frozen = freeze_judge_cases(storage, template=judge, scope_id=scope_id, authored=[authored]).cases[0]
+        except StorageError:
+            failed += 1
+            continue
+        if frozen.created:
+            created_keys.append(f"{case.judge_template}/{frozen.test_case_id}")
+        else:
+            skipped += 1
+    outcome.created["judge_case"] = len(created_keys)
+    outcome.created_keys["judge_case"] = created_keys
+    outcome.skipped["judge_case"] = skipped
+    outcome.failed["judge_case"] = failed
 
 
 def _seed_doc_type[D](
@@ -499,6 +665,7 @@ def _seed_doc_type[D](
 
 __all__ = [
     "SeedCorpus",
+    "SeedJudgeCase",
     "SeedOutcome",
     "load_seed_corpus",
     "seed_eval_definitions",

@@ -20,7 +20,8 @@ something the candidate did, and a candidate whose every call was refused must n
 kind records each refusal with :meth:`CallLedger.record_refusal` (the tool, the parameters, the refusal's own
 reason, and where it fell among the calls), into :attr:`CallLedger.refused`, which ``refused()`` and
 ``refused_count()`` read and nothing else does. A refusal is the candidate's to be graded on; a tool that RAISED
-is the rig's fault and excludes the cell, and is not a refusal.
+is the rig's fault and excludes the cell, and is not a refusal. An eval action's outcome says which it was
+(:attr:`~threetears.evals.actions.ActionOutcome.ending`): only an outcome ending ``refused`` is recorded here.
 
 **A ledger that keeps no refusal record says so.** ``refused`` is ``None`` on a ledger whose kind does not record
 refusals, and on every ledger stored before refusals were recorded (core v15.0); a refusal check reading one

@@ -229,8 +229,11 @@ are built with: an id with a `/` goes to OpenRouter on `OPENROUTER_API_KEY`; a b
 `Model(id, provider="anthropic")` (`ANTHROPIC_API_KEY`) or `provider="openai"` (`OPENAI_API_KEY`), never guessed;
 `base_url=` takes any OpenAI-compatible endpoint. A missing key is refused when the model is built, naming the
 variable. **The judge is built from `JUDGE_REQUEST_SETTINGS`** when given as an id, the request settings a judged run
-records it asked for (`max_tokens=10240`, a reasoning budget of 8192, `strict_output=True`): sent as a thinking budget
-to an Anthropic model and as the effort word its share of the cap reads as (`high`) to every model that takes words;
+records it asked for (`max_tokens=10240`, a reasoning budget of 8192, `strict_output=True`): sent as a budget wherever
+the provider takes one (Anthropic's `thinking.budget_tokens`, OpenRouter's `reasoning.max_tokens`), so the budget binds
+and not only the cap, and as the effort word its share of the cap reads as (`high`) where only words are taken
+(OpenAI's chat completions, a model that refused a budget), which the completion's `sent_settings` names
+(`unsent_reasoning_max_tokens=8192`); a budget not below `max_tokens` is refused naming both, never clamped;
 the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Nothing is retried: the only resends answer a
 provider's refusal of a setting, below. `describe_failure` reads the client's one error type, `ProviderError` (the
 provider, the status and its own message, never the body, and `account` for a refused key or spent credit, which
@@ -407,7 +410,9 @@ class RouterClient:
                 body["max_tokens"] = wire.max_tokens
             if wire.temperature is not None:
                 body["temperature"] = wire.temperature
-            if wire.reasoning_effort is not None:
+            if wire.reasoning_max_tokens is not None:  # a budget, as OpenRouter takes one: never beside a word
+                body["reasoning"] = {"max_tokens": wire.reasoning_max_tokens}
+            elif wire.reasoning_effort is not None:
                 body["reasoning"] = {"effort": wire.reasoning_effort}
             if response_format is not None:
                 body["response_format"] = response_format
@@ -468,17 +473,19 @@ keeps both on its exception, `exc.status_code` and `exc.body`), and `anthropic_t
 `thinking` for the settings sent. **Hold your suite to it** with `check_refusal_negotiation`
 (`threetears.evals.testing`): it scripts routers that refuse the temperature, then enforcement, then an effort word
 and an output cap, and fails naming each mistake unless your client resends in that order, reports what was served,
-sends its next call at once without what a served request proved, and asks for enforcement again on every call:
+sends its next call at once without what a served request proved, and asks for enforcement again on every call. It
+refuses an effort word, so build the client asking for one (the simulator's settings do; the judge's ask by a budget,
+which goes as `reasoning.max_tokens`):
 
 ```python
 from threetears.evals.negotiation import wire_settings_for
-from threetears.evals.run import JUDGE_REQUEST_SETTINGS
+from threetears.evals.run import SIMULATOR_REQUEST_SETTINGS
 from threetears.evals.testing import check_refusal_negotiation
 
 await check_refusal_negotiation(
     lambda transport: RouterClient(
         "openai/gpt-6-luna",
-        asked=wire_settings_for(JUDGE_REQUEST_SETTINGS, 0.0),  # the temperature the engine names
+        asked=wire_settings_for(SIMULATOR_REQUEST_SETTINGS, 0.0),  # an effort word, and a temperature
         post=transport,
         learned=LearnedSettings(),
     )
@@ -1316,6 +1323,19 @@ before any spend, so a template stored before the declaration existed is refused
 its dimensions, and a configured dimension whose config was archived since is refused rather than scored by the
 engine's prompt. A quick-path `Judge` declares its own dimensions, so an `Eval` that grades with one states
 nothing.
+
+**Your boot seed corpus carries authored judge cases too.** Beside `templates/`, `rubric_dims/` and `judge_configs/`,
+`load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (`threetears.evals.run.definition_seed`;
+in memory, `SeedCorpus(judge_cases=...)`): `judge_case_author`'s arguments with its two templates named by `name`
+(`judge_template`, `criterion_template`, since a corpus cannot know a seeded template's id), the `criterion`, the
+`output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`. `seed_eval_definitions`
+builds each through the door `judge_case_author` uses (`author_judge_case`: the criterion read from the template
+that words it, the verdict held to its scale) before anything is written, refusing the whole seed by name for any
+case authoring would refuse, then freezes it into its judge template after the templates are written, as the same
+`AuthoredJudgeCase` under the same content-derived id. A case already stored is reported `already present` under
+`judge_case`, and one whose words or verdict changed is a new case beside it, never an update. A launch naming no
+case set runs every live case of the judge template, so a host boots with its hard negatives in place and no
+authoring tool of its own over `judge_case_author`.
 
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a

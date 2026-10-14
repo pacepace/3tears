@@ -39,6 +39,8 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
     CandidatePreparationFailed,
@@ -57,6 +59,7 @@ from threetears.evals.kernel.judge_cases import (
     JUDGE_LABEL_AGREEMENT_MEASURE,
     JUDGE_PARSE_VALID_MEASURE,
     AuthoredJudgeCase,
+    AuthoredVerdict,
     JudgeCase,
     JudgeCaseLabel,
     JudgeCaseSource,
@@ -110,6 +113,7 @@ log = get_logger(__name__)
 
 __all__ = [
     "FrozenJudgeCase",
+    "author_judge_case",
     "JudgeCaseFreezeReport",
     "JudgeCaseSkip",
     "JudgeKind",
@@ -395,6 +399,67 @@ def _label_skip(rating: CalibrationRating, why: str) -> JudgeCaseSkip:
         rating_id=rating.id,
         reason=f"label {rating.id!r} by {rating.rater!r} on {rating.rubric_dim!r}: {why}{stated}",
     )
+
+
+def author_judge_case(
+    criterion_template: EvalTemplate,
+    criterion: str,
+    *,
+    output: str,
+    case_material: str,
+    expected: AuthoredVerdict,
+    note: str,
+    author: str,
+    scenario: str | None = None,
+    subject: str | None = None,
+    judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT,
+) -> AuthoredJudgeCase:
+    """One hand-written judge case, its criterion read from the template that words it: the one door every authored
+    case passes, ``judge_case_author`` and the definition seed's ``judge_cases`` alike.
+
+    Args:
+        criterion_template: The subject template whose rubric words the criterion.
+        criterion: The rubric dimension's name on it.
+        output: The output under review.
+        case_material: What the output is judged against.
+        expected: The verdict it must get, on the dimension's scale.
+        note: Why it must get that verdict.
+        author: Who wrote it: the label's rater.
+        scenario: The scenario the judge reads; ``None`` reads the template's intent.
+        subject: Who or what produced the output, or ``None``.
+        judged_artifact: A document or a transcript.
+
+    Returns:
+        The case, validated.
+
+    Raises:
+        ValidationFailedError: The template has no such rubric dimension, or its scale cannot hold the verdict (naming
+            both), or the case is otherwise not one a judge reads.
+    """
+    criteria = {dim.name: dim for dim in criterion_template.rubric}
+    dim = criteria.get(criterion)
+    if dim is None:
+        raise ValidationFailedError(
+            f"template {criterion_template.id!r} has no rubric dimension {criterion!r}; its rubric is {sorted(criteria)}",
+            remedy="name a dimension of that template's rubric, as templates_list shows it",
+        )
+    try:
+        return AuthoredJudgeCase(
+            criterion=dim,
+            output=output,
+            case_material=case_material,
+            intent=scenario if scenario is not None else criterion_template.intent,
+            expected=expected,
+            author=author,
+            note=note,
+            subject=subject,
+            judged_artifact=judged_artifact,
+        )
+    except ValidationError as refused:
+        raise ValidationFailedError(
+            "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in refused.errors()),
+            remedy="give a verdict the dimension's scale holds: 'pass' or 'fail' on pass/fail, 1 to 5 on ordinal",
+        ) from refused
 
 
 def freeze_judge_cases(

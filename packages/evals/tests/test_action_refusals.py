@@ -43,6 +43,7 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.ops import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema import CallLedger
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.off_loop import off_loop
 
@@ -139,9 +140,39 @@ async def test_an_engine_refusal_carries_its_kind_and_status(
     outcome = await _call(_tool(error), {"action": "note_refuse", "note": "x"})
     assert outcome.is_error and outcome.refusal == Refusal(kind=kind, status=status)  # type: ignore[arg-type]
     refused = error()
+    ending = "raised" if status >= 500 else "refused"
+    assert outcome.ending == ending, "a 5xx is the engine failing the call, never the call turned away"
     remedy = "" if refused.remedy is None else f"\nremedy: {refused.remedy}"
-    assert outcome.text == f"refused: note_refuse: {refused.message}{remedy}", "the teaching text, then the remedy"
+    assert outcome.text == f"{ending}: note_refuse: {refused.message}{remedy}", "the teaching text, then the remedy"
     assert (outcome.structured, outcome.action) == (None, "note_refuse")
+
+
+@pytest.mark.parametrize(
+    ("status", "kind", "ending"),
+    [(409, "conflict", "refused"), (422, "validation_failed", "refused"), (503, "storage_failed", "raised")],
+)
+async def test_a_raised_call_and_a_refused_one_are_told_apart_in_data_and_in_text(
+    status: int, kind: str, ending: str
+) -> None:
+    """A host recording its candidate's refused calls reads ``ending``: a raised call is the rig's, never recorded.
+
+    The rule is the status alone (``render.raised``): the text's head word and the outcome's ``ending`` cannot
+    disagree, and ``refusal.raised`` says the same of the data a transport serves.
+    """
+    built = {kind_: build for build, kind_, _ in _PUBLIC.values()}[kind]
+    outcome = await _call(_tool(built), {"action": "note_refuse", "note": "x"})
+    assert outcome.refusal is not None and outcome.refusal.status == status
+    assert outcome.ending == ending and outcome.refusal.raised is (ending == "raised")
+    assert outcome.text.startswith(f"{ending}: note_refuse: ")
+    ledger = CallLedger(refused=[])
+    if outcome.ending == "refused":
+        ledger.record_refusal("evals", "note_refuse", {"note": "x"}, reason=outcome.text)
+    assert len(ledger.refused or []) == (1 if ending == "refused" else 0)
+
+
+async def test_a_result_and_help_end_ok() -> None:
+    help_index = await _call(_tool(lambda: ConflictError("unused", remedy="unused")), {"action": "help"})
+    assert help_index.ending == "ok" and not help_index.is_error
 
 
 async def test_a_host_subclass_keeps_the_status_it_was_raised_with() -> None:

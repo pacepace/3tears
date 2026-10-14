@@ -247,7 +247,14 @@ CORE_SCHEMA_VERSION: int = 15
 #:   dim with no score while ``judge_error`` is set, so an older build's re-judge, which scores the dim without
 #:   touching the field, leaves an entry nothing reads.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 1
+#: - **v15.2** — sent request settings name a reasoning budget the request could not carry as one:
+#:   ``ClientRequestSettings.unsent_reasoning_max_tokens`` (default None, never beside ``reasoning_max_tokens``), set
+#:   by a client that sent a budget's effort word where only words are taken (OpenAI's chat completions, a model
+#:   that refused a budget). None reads as "no budget went unsent, or the client did not say", which is what every
+#:   value stored before it holds; the ``judge_request_settings`` and ``judge_sent_settings`` levels leave it out
+#:   while it is None, so no stored level moves.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 2
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
