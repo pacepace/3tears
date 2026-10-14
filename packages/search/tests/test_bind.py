@@ -39,16 +39,18 @@ from threetears.search.testing import FakeBudgetPort, FakeRateLimiterPort, Scrip
 from packages.search.tests.search_instances import CANDIDATE, CANDIDATE_SET, DISPOSITION, SPEND
 from packages.search.tests.searxng_payloads import MALFORMED_BODY, TWO_RESULTS_BODY, ZERO_RESULTS_BODY, body
 
-#: byte-for-byte what ``_format_results`` produced for the two-result fixture.
-#: The old renderer read SearXNG JSON directly; this one reads typed
-#: candidates, and the output must not move.
+#: byte-for-byte what the two-result fixture renders as: the old renderer's
+#: ``title`` / ``URL:`` / snippet blocks, with each result's date and engines
+#: on the line under its URL.
 EXPECTED_PROSE = (
     "1. Capybara\n"
     "   URL: https://example.org/capybara\n"
+    "   published 2026-02-01; found by duckduckgo, brave\n"
     "   The capybara is the largest living rodent.\n"
     "\n"
     "2. Capybara at dusk\n"
-    "   URL: https://images.example.net/page/capy"
+    "   URL: https://images.example.net/page/capy\n"
+    "   no date given; found by bing images"
 )
 
 
@@ -66,8 +68,8 @@ def _searxng(*steps: TransportScript) -> SearxngAdapter:
 # --- prose ----------------------------------------------------------------
 
 
-async def test_prose_is_byte_identical_to_the_renderer_it_replaces() -> None:
-    """The migration is structure-preserving: no consumer's prompt moves."""
+async def test_prose_keeps_the_old_shape_and_adds_each_result_s_date_and_engines() -> None:
+    """Every consumer's prompt moves by one line per result, and only that line."""
     result = await _searxng(TransportScript(body=TWO_RESULTS_BODY)).search(SearchRequest(query="capybara"))
 
     assert render_prose(result) == EXPECTED_PROSE
@@ -78,7 +80,7 @@ def test_an_untitled_candidate_renders_the_old_placeholder() -> None:
     untitled = CANDIDATE.model_copy(update={"title": None, "snippet": None})
     prose = render_prose(CandidateSet(candidates=(untitled,)))
 
-    assert prose == f"1. Untitled\n   URL: {untitled.identity}"
+    assert prose == f"1. Untitled\n   URL: {untitled.identity}\n   published 2026-03-04 09:00 UTC; found by duckduckgo"
 
 
 def test_zero_results_renders_the_success_sentence() -> None:
@@ -376,3 +378,40 @@ def test_bind_candidate_set_and_project_metadata_agree() -> None:
     rendered = bind_candidate_set("capybara habitat range", CANDIDATE_SET)
 
     assert rendered.metadata == project_metadata("capybara habitat range", CANDIDATE_SET)
+
+
+# --- each result's date and engines ---------------------------------------
+
+
+def test_a_day_only_date_is_shown_as_that_day_in_every_zone() -> None:
+    """Midnight UTC is how a provider reports a day; moved west it would read as the day before."""
+    from datetime import UTC, datetime
+
+    from threetears.search.bind import shown_date
+
+    assert shown_date(datetime(2026, 2, 1, tzinfo=UTC), "America/Los_Angeles") == "2026-02-01"
+
+
+def test_a_time_of_day_is_shown_in_the_person_s_zone() -> None:
+    from datetime import UTC, datetime
+
+    from threetears.search.bind import shown_date
+
+    assert shown_date(datetime(2026, 7, 1, 13, 5, tzinfo=UTC), "Europe/Dublin") == "2026-07-01 14:05 IST"
+    assert shown_date(datetime(2026, 7, 1, 13, 5, tzinfo=UTC), None) == "2026-07-01 13:05 UTC"
+    assert shown_date(datetime(2026, 7, 1, 13, 5, tzinfo=UTC), "Not/AZone") == "2026-07-01 13:05 UTC"
+
+
+def test_the_facts_line_names_one_engine_when_only_one_is_reported() -> None:
+    from threetears.search.bind import result_facts
+
+    assert result_facts(CANDIDATE) == "published 2026-03-04 09:00 UTC; found by duckduckgo"
+
+
+def test_a_zone_given_is_named_beside_the_projection() -> None:
+    from threetears.search.bind import DISPLAY_ZONE_METADATA_KEY
+
+    rendered = bind_candidate_set("q", CANDIDATE_SET, zone="Europe/Dublin")
+
+    assert rendered.metadata[DISPLAY_ZONE_METADATA_KEY] == "Europe/Dublin"
+    assert DISPLAY_ZONE_METADATA_KEY not in bind_candidate_set("q", CANDIDATE_SET).metadata

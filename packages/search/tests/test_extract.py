@@ -317,7 +317,9 @@ async def test_unknown_robots_rules_are_honoured_as_deny(robots_reply: Transport
     """RFC 9309's other half, and the reason it is not the convenient default.
 
     Reading "allowed" out of a server error is how a polite fetcher becomes
-    an impolite one for exactly as long as the origin is having a bad day.
+    an impolite one for exactly as long as the origin is having a bad day. The
+    page is not read -- and the record says the rules could not be read, as
+    ``failed``, never that the site refused: it said no such thing.
 
     :param robots_reply: the failing ``robots.txt`` outcome under test
     :ptype robots_reply: TransportResponse | Exception
@@ -326,7 +328,9 @@ async def test_unknown_robots_rules_are_honoured_as_deny(robots_reply: Transport
 
     result = await extract(_candidate(), transport=transport)
 
-    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
+    assert result.facets[EXTRACTION_REASON_FACET].startswith("robots.txt could not be read (")
+    assert result.content is None
     assert transport.requested == [_ROBOTS_URL]
 
 
@@ -394,7 +398,7 @@ async def test_a_page_that_yields_no_text_is_recorded_as_failed(page_reply: Tran
         pytest.param(
             {_ROBOTS_URL: "allow", _PAGE_URL: LocalCapExceeded("body past cap", spend=Spend(), scope="response-bytes")},
             None,
-            "body past cap",
+            "the page is larger than 2 MB, the most a fetch reads",
             id="cap",
         ),
         pytest.param(
@@ -410,7 +414,7 @@ async def test_a_page_that_yields_no_text_is_recorded_as_failed(page_reply: Tran
                 ),
             },
             None,
-            "the server answered 404",
+            "the page was not found (404)",
             id="status",
         ),
         pytest.param({_ROBOTS_URL: "allow", _PAGE_URL: "empty"}, None, "the page has no readable text", id="no-text"),
