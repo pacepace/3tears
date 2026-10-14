@@ -3,7 +3,7 @@
 Two prompts read 30 invoices (clean, multi-currency, noisy OCR); the first is the control.
 ``python -m threetears.evals examples/3-invoices/extract.py`` replays ``recordings/invoices.jsonl`` offline, and
 ``RECORD=1`` with ``OPENROUTER_API_KEY`` set records it again; the block at the end is that run as your own script.
-As recorded on deepseek/deepseek-v4-flash: 180 calls, $0.0103 (the recording's own cost_usd fields, summed).
+As recorded on deepseek/deepseek-v4-flash: 180 calls, $0.0105 (the recording's own cost_usd fields, summed).
 """
 
 import asyncio
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from threetears.evals import Eval, Model, grader
 
-model = Model("deepseek/deepseek-v4-flash", max_tokens=4096, effort="low", recording="recordings/invoices.jsonl")
+model = Model("deepseek/deepseek-v4-flash", max_tokens=8192, effort="low", recording="recordings/invoices.jsonl")
 
 
 class Invoice(BaseModel):

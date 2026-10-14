@@ -101,7 +101,7 @@ expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail d
 fails the run in CI on a regression or a guardrail not shown held. Its closing comment names arms as `k=v` pairs for a
 grid of factors, read against another control with `result.against()`.
 
-Recorded on `deepseek/deepseek-v4-flash`: 180 calls, $0.0103 (`recordings/invoices.jsonl`).
+Recorded on `deepseek/deepseek-v4-flash` at `max_tokens=8192`: 180 calls, $0.0105 (`recordings/invoices.jsonl`).
 
 ### Rung 4: an agent graded on the world it leaves, `4-booking/`
 
