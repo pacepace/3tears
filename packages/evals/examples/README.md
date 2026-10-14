@@ -22,7 +22,7 @@ anywhere in them. Each prints which way it ran, first:
   `rung_zero.py` calls no model either, and prints no such line.
 
 The examples need the `[models]` extra, which brings in `3tears-models` and the Anthropic SDK through it. Outside a
-checkout that is `pip install "3tears-evals[models]"`, which resolves only once 0.67.0 is on PyPI. Until then, use a
+checkout that is `pip install "3tears-evals[models]"`, which resolves only once 0.68.0 is on PyPI. Until then, use a
 checkout of this repo and `uv sync --extra models` at its root.
 
 **In a checkout of this repo**, from the repo root, after `uv sync --extra models`:
@@ -43,7 +43,7 @@ Git ignores `.env` files, so the key stays out of commits. Then pass the file to
 uv run --env-file packages/evals/examples/.env python packages/evals/examples/llm_judge.py
 ```
 
-**Outside a checkout** (once 0.67.0 is on PyPI and you installed `3tears-evals[models]` with pip): the examples are
+**Outside a checkout** (once 0.68.0 is on PyPI and you installed `3tears-evals[models]` with pip): the examples are
 not part of the installed package, so fetch this whole directory from the repository, at the tag you installed (the
 [README's install step](../README.md#first-result-in-10-minutes) names it). This fetches only the examples:
 

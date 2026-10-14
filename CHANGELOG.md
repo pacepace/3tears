@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.67.0 -- 2026-10-13
-
 ### 3tears-evals joins the family: measuring what a change to an LLM-backed feature does
 
 A new package (`pip install 3tears-evals`, import root `threetears.evals`). Run each version of a feature, from a
@@ -233,7 +231,7 @@ v<version>` prints a release's notes).
   as provisional (`AsyncDelivery` and `AsyncExternalSpend`, the `inner_agent` and `external` usage roles,
   `MeteredCallLedger`, triggered world dimensions, `ChartFont`, and `SeedSection`'s zones): a second adopter's use
   decides whether each stays, and one removed later is announced in that release's `MIGRATIONS.toml` notes.
-- **Pre-releases.** `v0.66.0-evaladopt.N` tags (through `.23`) and `v0.67.0-evaladopt.N` tags (from `.24`) were cut on
+- **Pre-releases.** `v0.66.0-evaladopt.N` tags (through `.23`) and `v0.67.0-evaladopt.N` tags (`.24` and `.25`) were cut on
   `feature/eval-adopt` for one adopter and never published. Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold
   that pre-release's notes and the names that moved. **A store written before `v0.66.0-evaladopt.21` is not read:**
   its core documents (schema v8 to v13) are refused by name as pre-release and its regenerable ones by version, so

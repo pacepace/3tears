@@ -7,7 +7,7 @@
 #     uv run python packages/evals/scripts/release_notes.py v<version>
 #
 # Every public name has a stability tier, recorded in api/surface.json and declared in one place, HOST_CONTRACT in
-# scripts/public_surface.py. The promise starts at 0.67.0, the first tagged release:
+# scripts/public_surface.py. The promise starts at 0.68.0, the first tagged release:
 #   host-contract  a name a host writes against. It moves only with a record here AND a deprecation cycle: the
 #                  release that moves it exports the new name beside the old one, which keeps working for that minor
 #                  release and is named in that section's `notes`; the next minor release drops the old name, and its
@@ -22,9 +22,10 @@
 # are history and are not checked against today's surface.
 #
 # Only final releases (tags v<x>.<y>.<z>) count. A pre-release tag, with any suffix, is never followed and never
-# measured from, and has no section here. 0.67.0 is the package's first release: v0.66.0, the release before it,
-# had no 3tears-evals, so nothing can have left a root before 0.67.0 and its section records no names. (The
-# pre-release tags up to v0.66.0-evaladopt.23 were cut while evals was planned for 0.66.0, which shipped without it.)
+# measured from, and has no section here. 0.68.0 is the package's first release: v0.67.0, the release before it,
+# had no 3tears-evals, so nothing can have left a root before 0.68.0 and its section records no names. (The
+# pre-release tags up to v0.66.0-evaladopt.23 were cut while evals was planned for 0.66.0, and those up to
+# v0.67.0-evaladopt.25 while it was planned for 0.67.0; each of those releases shipped without it.)
 #
 # Before tagging a release, rename the first section from "unreleased" to its version; after the tag, the next
 # release's work goes in a new "unreleased" section since that tag. tests/test_api_surface.py fails once the tree
@@ -53,7 +54,7 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.66.0"
+since = "v0.67.0"
 summary = """
 The first release of 3tears-evals. No earlier release shipped the package, so no public name has moved or been
 removed: every name on the surface is new, and api/surface.json is the baseline later releases are measured from.
@@ -77,7 +78,7 @@ notes = [
     "Since `v0.66.0-evaladopt.22`, `threetears.evals.quick` no longer exports `CALLABLE_UNSEATED`, `JUDGED_CALLABLE_UNSEATED`, `JUDGED_CALLABLE_KIND_CONTRACT` or `SHARED_ARM_MODEL`, which no public signature reaches: a host declaring the judged callable kind takes its contract from `callable_kind_contracts()` (the second it returns, which seats the judge and nothing else), and a single-factor `compare`'s shared model is any arm's `EvalSummary.candidate_model`.",
     "`threetears.evals.testing` gains `RecordedCompletions` (host-contract), a completion client that records the calls a host's real client answers into a JSONL file (`record`) and replays them by prompt, model, temperature, request settings and call index with no network (`replay`). `record`, `replay` and `check_covers` each take a required `settings=` keyword, the `ClientRequestSettings` the client is built with or `None` for one built with none, because those settings never reach `generate`: every line carries them, every key covers them, and a replay asked under settings a prompt was not recorded with raises `RecordingRefused` naming each setting that differs, recorded value against asked. A recording is appended to and never overwritten: `record` onto a file that exists numbers its calls after the ones it holds, and only `replace=True` starts afresh. A replay miss, a missing or empty recording, a malformed line (named by its number, a missing or invalid `settings` included) and a line from a newer recording format each raise `RecordingRefused`, an `ApparatusError`, naming the prompt or the line and the command that re-records it, and `RecordedCompletions.check_covers` raises it before a replay starts for every `RecordedPrompt` (host-contract) the recording no longer covers. A replay returns a `ReplayedCompletion`: the ten recorded members, the price as recorded rather than quoted again, and every other attribute the recorded completion's type declared under `extra`. `ClientRequestSettings` (`threetears.evals.schema`) and the judge's `JUDGE_REQUEST_SETTINGS` (`threetears.evals.run`) are host-contract from this release: a host names one to record or replay.",
     "A new public root, `threetears.evals.providers`, ships the one provider adapter: `models_client` turns a chat model 3tears-models builds (Anthropic, OpenAI or OpenRouter) into the completion client, `models_clients` is the role factory a host hands `EvalHost` as `clients`, and `ModelsFailureDescriber` its `failure_describer`; the three are `host-contract` with `ModelsClients` and `ModelsClientRefused` (below), everything else in the root `closure`. Its completion, `ModelsCompletion`, carries `provider_stop_reason` beside the port's members: the stop reason exactly as the provider named it, or `None` when it named none, which is what to look at when `stop_reason` is `truncated`.",
-    "The root needs the new `[models]` extra (`3tears-models>=0.67.0,<0.68.0`, the lockstep bound); the engine never imports it, so a host that brings its own client installs without models.",
+    "The root needs the new `[models]` extra (`3tears-models>=0.68.0,<0.69.0`, the lockstep bound); the engine never imports it, so a host that brings its own client installs without models.",
     "The adapter sends every request once (retries off; its only resends answer a provider's refusal of a setting, below) under a circuit breaker of its own that never opens.",
     "The adapter's prices are loaded at boot: `price_ceiling` is synchronous and answers only from loaded rates, so a host awaits `await clients.load_prices()` (`ModelsClients.load_prices`, returning model id -> why for each default model left unpriced) or `await client.load_prices()` (`ModelsCompletionClient.load_prices`, returning `None` or why) once, before the engine makes an out-of-run call (an analysis, a case generation, a second judge or a rejudge) under an enforced `out_of_run_cap_usd`, which is otherwise refused for want of a ceiling; a model the engine names beyond `defaults` is loaded with `await clients(role, model).load_prices()`.",
     "On OpenRouter the loaded rates come from the same catalogue (its models endpoint prices OpenRouter ids) and serve the ceiling alone: a call's stored cost stays OpenRouter's own reported figure.",
@@ -109,11 +110,11 @@ notes = [
     "Five more names a host writes against are `host-contract`: `StopReason` (the words a host's own client maps its provider's finish reason onto), `CompletionRole` (the key of `CompletionClients` and of `models_clients(defaults=...)`), `ModelsClients` (whose `aclose_all()` a host calls at shutdown), and `RecordingRefused` and `ModelsClientRefused` (what a host catches from the recorder and the adapter).",
     "From `.24` (`v0.67.0-evaladopt.24`), `threetears.evals.__version__` reports `0.67.0`, not `0.66.0`: the family was bumped to 0.67.0 on the line, so a build from a pre-release tag reports the release it prepares, and a host running one records the tag beside it.",
     "The examples that call a model run live by default: with `ANTHROPIC_API_KEY` set they call `claude-haiku-5-5` through `models_client`, recording the run into `examples/recordings/<example>.jsonl` when `RECORD=1` is set too, and without a key they replay that recording; `examples/_live.py` and every scripted stand-in for a model are gone.",
-    "The examples need the `[models]` extra to run, live or replayed: `pip install \"3tears-evals[models]\"` once 0.67.0 is on PyPI, and until then a checkout with `uv sync --extra models`.",
+    "The examples need the `[models]` extra to run, live or replayed: `pip install \"3tears-evals[models]\"` once 0.68.0 is on PyPI, and until then a checkout with `uv sync --extra models`.",
     "Two examples are renamed for what they now compare, since the examples call one model: `compare_two_models.py` is `compare_two_efforts.py` (`low` against `medium` reasoning effort on one model) and `prompt_x_model.py` is `prompt_x_effort.py` (the prompt crossed with the effort).",
     "`llm_analysis.py`'s first draft is canned (`llm_analysis_first_draft.json`), so the refusal it shows does not depend on a model's draft, and the model writes the repair; replayed, the writer reads the bundle the recording was made from (`examples/recordings/llm_analysis.bundle.json`), since a fresh campaign's bundle names fresh run ids and times.",
     "`AnalysisContextBundle` (`threetears.evals.analysis`) is `host-contract`: a host reloads a frozen bundle with `AnalysisContextBundle.from_json` to write over it again, as `llm_analysis.py` does.",
-    "Until 0.67.0 is on PyPI, 3tears-evals installed from a tag is the one package outside a host's family pin: its base install depends on no other 3tears package, so it installs beside a family pinned at another version without a conflict (the `[models]` extra does not: it needs 3tears-models and its family at 0.67.0).",
+    "Until 0.68.0 is on PyPI, 3tears-evals installed from a tag is the one package outside a host's family pin: its base install depends on no other 3tears package, so it installs beside a family pinned at another version without a conflict (the `[models]` extra does not: it needs 3tears-models and its family at 0.68.0).",
     "`threetears.evals.ROOT_EXTRAS` (host-contract) maps each public root that fails to import without an extra to that extra (`transports.fastmcp` to `fastmcp`, `providers` to `models`), so a host's import gate imports `PUBLIC_ROOTS` minus the roots whose extra it does not install instead of keeping its own list; `PUBLIC_ROOTS` is host-contract too.",
     "`threetears.evals.vega` is not in `ROOT_EXTRAS`: it imports on the base install, and only its rasterising calls (`VegaRenderer.png`, `VegaRenderer.svg`) need the `[vega]` extra, raising `ModuleNotFoundError` for `vl_convert` without it.",
     "Since `v0.67.0-evaladopt.25`, the v15 baseline replaces the pre-release v14 baseline `.21` to `.24` wrote, so a host that ran one of them deletes its eval documents again before deploying `.25` (the operator wipe; Discodon: `TRUNCATE evals, eval_runtime;`).",

@@ -1,7 +1,7 @@
 """The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
 
-Install with ``pip install "3tears-evals[models]"`` once 0.67.0 is on PyPI; until then the extra cannot resolve from
-a git tag (it needs 3tears-models and the family packages models depends on at 0.67.0), so install from a checkout
+Install with ``pip install "3tears-evals[models]"`` once 0.68.0 is on PyPI; until then the extra cannot resolve from
+a git tag (it needs 3tears-models and the family packages models depends on at 0.68.0), so install from a checkout
 at the tag with ``uv sync --extra models``. The engine names no provider and imports nothing of this root
 (``tests/test_providers_boundary.py`` holds both directions): a host either brings its own client, implementing
 :class:`~threetears.evals.schema.CompletionClient`, or binds to the three names here. :func:`models_client` builds

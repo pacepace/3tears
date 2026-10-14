@@ -189,10 +189,10 @@ recording still covers its prompts ([the examples' README](../examples/README.md
 both yourself, or bind to the adapter the package ships over 3tears-models (`threetears.evals.providers`, the
 `[models]` extra), which builds Anthropic, OpenAI and OpenRouter chat models through `create_chat_model`.
 
-**The `[models]` extra installs from PyPI once 0.67.0 ships** (`pip install "3tears-evals[models]"`). Until then
+**The `[models]` extra installs from PyPI once 0.68.0 ships** (`pip install "3tears-evals[models]"`). Until then
 it does not install from a git tag the way the base package does
 ([the README's install step](../README.md#first-result-in-10-minutes)): it needs 3tears-models and the family
-packages models depends on at 0.67.0, and none of them is on PyPI yet. Use a checkout of the repository at the tag,
+packages models depends on at 0.68.0, and none of them is on PyPI yet. Use a checkout of the repository at the tag,
 where `uv sync --extra models` at the root installs it.
 
 ```python
@@ -785,7 +785,7 @@ launch (a witnessed session, a run your host assembles) is validated as strictly
 
 ## Stability tiers
 
-**Every public name has a tier, and the tier is what a release promises about it.** From 0.67.0, the first tagged
+**Every public name has a tier, and the tier is what a release promises about it.** From 0.68.0, the first tagged
 release, on:
 
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
@@ -812,14 +812,14 @@ promoted: promoting a name costs nothing, and demoting one is a break.
 When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
 records it under that release: the old name, its new home or `removed`, and why. A `closure` name has no shim at the
 old name; a `host-contract` one keeps working for a minor release first (above). The record starts
-at 0.67.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
+at 0.68.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
 (`https://github.com/pacepace/3tears/blob/<tag>/packages/evals/MIGRATIONS.toml`) or in a checkout. In a checkout,
 the release notes are printed from it, so they hold the full old-to-new map:
 
 ```bash
-uv run python packages/evals/scripts/release_notes.py v0.67.0
+uv run python packages/evals/scripts/release_notes.py v0.68.0
 ```
 
 Each line reads `old → new`, grouped under the reason for the move. Changes that are not a public name, such as
@@ -847,7 +847,7 @@ snapshot:
 - **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
   section to exactly the names that left a root between that tag and this version's. Before the version is
   tagged, it compares against the working tree. `since` is always a final release tag (`v<x>.<y>.<z>`). A tag
-  from before the package existed (`v0.66.0`, for 0.67.0) has an empty surface. A checkout without the tags fails
+  from before the package existed (`v0.67.0`, for 0.68.0) has an empty surface. A checkout without the tags fails
   this check rather than passing it.
 - **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
   it. Two different objects under one name always fail: rename one.
