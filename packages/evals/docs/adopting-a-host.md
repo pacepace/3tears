@@ -1278,7 +1278,7 @@ before each cell and checked after it.
 
 Before building a host for one, try the quick path: `Eval(cases, World(State, tools=[...])(agent), [goal checks])`
 declares a small world, seeds each case's starting state (its `world` key) through this same session, hands the candidate
-tools that act on it and grades the end state with the engine's goal-state checks (`examples/world.py`).
+tools that act on it and grades the end state with the engine's goal-state checks (`examples/4-booking/agent.py`).
 What follows is the host-side contract that path is built on.
 
 **A world, through the cell's session.** A host whose subject lives in a stateful world declares it
@@ -1362,7 +1362,7 @@ in [Cost and budgets: how a result's cost is counted](cost-and-budgets.md#how-a-
 ## Cassettes: recording and replaying tools
 
 A [cassette](concepts.md#cassette) lets two arms face exactly the same tool answers. An `Eval` does the wiring
-below for you (`World(tools=[...], recording=path)`; `examples/cassettes.py`); this section is for a kind of
+below for you (`World(tools=[...], recording=path)`); this section is for a kind of
 your own.
 
 **Cassettes record and replay through seams the kind supplies.** Launch a run with

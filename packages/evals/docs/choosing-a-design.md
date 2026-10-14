@@ -36,8 +36,8 @@ other level. The engine does not test the interaction itself. When those two eff
 matters more than either lever. Each `against` is its own Holm family. The bundle's row for each lever
 (`bundle.coverage`) lists in `confounded_by` every other lever that varied across its runs. While that list
 is non-empty, the row is a comparison averaged over the other levers, not a controlled one.
-[`examples/prompt_x_effort.py`](../examples/prompt_x_effort.py) runs a 2×2, prompt by reasoning effort, and reads both
-effects.
+[`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) names the arms of a 2×2, prompt by reasoning
+effort, in its closing comment.
 
 **The winner of a grid needs a test against the runner-up.** The contrasts test every combination against the
 control, never against each other. To test the leader against the rest, `await comparison.against(leader)`. You

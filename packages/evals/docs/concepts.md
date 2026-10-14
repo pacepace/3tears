@@ -149,7 +149,7 @@ A stateful environment the subject acts in, declared on the profile (`WorldRegis
 cell as a `WorldSession`. Seeded before the first turn and read back after the last. A classifier has none.
 *Example:* for a support *agent* (not the classifier), a ticketing system whose open tickets it can close.
 In an `Eval`, `World(State, tools=[...])` declares one from a pydantic state model, each case carries its starting
-state under the reserved key `world`, and goal checks are graders (`examples/world.py`). Why a subject runs in a seeded
+state under the reserved key `world`, and goal checks are graders (`examples/4-booking/agent.py`). Why a subject runs in a seeded
 world at all: [The world model](world-model.md).
 
 ### What you vary, and what must hold still
@@ -165,8 +165,8 @@ itself, the candidate model (`model`) and the candidate kind (`candidate_kind`);
 more. *Example:* `model` and `ticket_router.prompt_version`.
 With no host of your own, an arm named as `k=v` pairs (`{"prompt=v2": runner}`) states one beside the model, as
 `callable.prompt` (`callable-judged.prompt` on a judged run), and arms named `"model=m1, prompt=v2"` are keyed by
-their level of both (`examples/prompt_x_effort.py` crosses the prompt with a reasoning effort, the
-model named as a factor at its one level).
+their level of both (`examples/3-invoices/extract.py`'s closing comment crosses the prompt with a reasoning
+effort).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is
@@ -285,7 +285,7 @@ A recording of what a candidate's tools answered, kept by a host's own runs. A r
 records one; a run in `"replay"` is served that recording instead of calling the tools live, so two arms can face
 exactly the same tool answers. It records the tools only, never the candidate. An `Eval` keeps its own the same
 way in a file: a world of lookups with `recording=` (`World(tools=[search], recording="search.jsonl")`) records
-its answers once and replays them after (`examples/cassettes.py`). Its stored format has
+its answers once and replays them after. Its stored format has
 its own version (`CASSETTE_SCHEMA_VERSION`), apart from the analyses': a corpus is refused only when the cassette's
 own format changes, and is then re-captured.
 

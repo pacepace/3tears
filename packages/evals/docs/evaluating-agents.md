@@ -83,7 +83,7 @@ model's default; a starting state that leaves a field with no default unset, or 
 before anything runs, and every cell gets a fresh world. Goal checks (step 3) are listed among the graders.
 
 ```python
-async def agent(case, room):  # your agent; examples/world.py runs Claude in a tool loop here
+async def agent(case, room):  # your agent; examples/4-booking/agent.py runs a model in a tool loop here
     seen = await room.view()
     wanted = "on" if seen["daylight"] == "dark" else "off"
     if seen["light"] != wanted:
@@ -224,7 +224,6 @@ replay = await Eval(QUERIES, LOOKUPS(answers_from_search), ["expected"], k=3).ru
 A replay asked something the recording does not hold excludes that cell as a rig failure; it never runs live.
 `RECORD=1` records the file again. A world with state takes no recording. A host's own kind can wire cassettes for its
 lookups next to a world ([cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools)).
-`examples/cassettes.py` is the full example.
 
 ## Step 5: run the conformance kit against your world
 
@@ -266,8 +265,7 @@ passes everything but `ambient_isolation`, which is unavailable. Make the lamp i
 from the agent's own failures.
 
 **Each cell.** Read back what the agent did and where the world ended. These are store reads, which block: from
-async code, run them off the event loop with `await run_blocking(host.blocking_executor, fn, ...)`, as
-[`world.py`](../examples/world.py) does.
+async code, run them off the event loop with `await run_blocking(host.blocking_executor, fn, ...)`.
 
 ```python
 from threetears.evals.run import get_result_trace, get_run, list_results
@@ -311,4 +309,4 @@ the comparison names it as the confound `world:<dimension>`, and a run that reco
 - [Adopting a host](adopting-a-host.md#a-world-through-the-cells-session): wiring a world through the cell's
   session, per-cell worlds and witnessed cells.
 - [Judges and calibration](judges-and-calibration.md): grading what the agent *said*, beside what it did.
-- `examples/world.py`: the quick path with Claude in a tool loop.
+- [`examples/4-booking/agent.py`](../examples/4-booking/agent.py): the quick path with a model in a tool loop.

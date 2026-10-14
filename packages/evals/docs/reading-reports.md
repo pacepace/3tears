@@ -26,7 +26,7 @@ chart printed as the table of its values. `bundle.json` is the evidence bundle t
 `schema_version`; the page names its fingerprint, and `AnalysisContextBundle.from_json(...).fingerprint()` over the
 file returns the same one. **The bundle is the machine form**: there is no published JSON of the report, and a host
 that wants its own pictures reads the bundle. `report_read(format="json")` and the command line's `--format json`
-return it too. [`examples/reports.py`](../examples/reports.py) writes one, offline.
+return it too. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
 
 ### Words a reader is told
 

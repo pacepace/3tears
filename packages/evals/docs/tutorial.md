@@ -71,8 +71,8 @@ the code, one JSON object per line, and load them with
 `CASES = [json.loads(line) for line in open("tickets.jsonl") if line.strip()]`. A test set is data: it outlives
 any one version of the runner, and it grows. When production routes a ticket wrong, add that ticket to the file
 ([Maintaining the set](designing-classifier-evals.md#8-maintaining-the-set)).
-`Eval("tickets.jsonl", ...)` reads such a file itself. [`compare_two_prompts.py`](../examples/compare_two_prompts.py)
-loads its tickets this way, and gives each its kind under the reserved key `stratum` (`"stratum": "lookalike"`),
+`Eval("tickets.jsonl", ...)` reads such a file itself. [`1-triage/triage.py`](../examples/1-triage/triage.py)
+loads its emails this way, and gives each its kind under the reserved key `stratum` (`"stratum": "lookalike"`),
 which turns into results per kind of case
 ([Reading results by kind of case](designing-classifier-evals.md#reading-results-by-kind-of-case)).
 
@@ -533,11 +533,11 @@ Run the file twice. The second run reads the first run's results from the file, 
 | To | Read | Example |
 |---|---|---|
 | run against a real model | [Running the examples](../examples/README.md#running-them) | [`2-replies/replies.py`](../examples/2-replies/replies.py) |
-| hold a guardrail across a real change, to held | [Reading the guardrails](reading-reports.md#reading-the-guardrails) | [`guardrails.py`](../examples/guardrails.py) |
-| weigh accuracy against cost | [Cost and budgets](cost-and-budgets.md) | [`compare_two_efforts.py`](../examples/compare_two_efforts.py) |
-| vary several things at once, such as prompt and effort | [Choosing a campaign design](choosing-a-design.md) | [`prompt_x_effort.py`](../examples/prompt_x_effort.py) |
-| evaluate an agent by what it does, not what it says | [Evaluating a tool-using agent](evaluating-agents.md) | [`world.py`](../examples/world.py) |
-| write reports to files | [Reading reports](reading-reports.md) | [`reports.py`](../examples/reports.py) |
+| hold a guardrail across a real change, to held | [Reading the guardrails](reading-reports.md#reading-the-guardrails) | [`3-invoices/extract.py`](../examples/3-invoices/extract.py) |
+| weigh accuracy against cost | [Cost and budgets](cost-and-budgets.md) | |
+| vary several things at once, such as prompt and effort | [Choosing a campaign design](choosing-a-design.md) | [`3-invoices/extract.py`](../examples/3-invoices/extract.py) |
+| evaluate an agent by what it does, not what it says | [Evaluating a tool-using agent](evaluating-agents.md) | [`4-booking/agent.py`](../examples/4-booking/agent.py) |
+| write reports to files | [Reading reports](reading-reports.md) | [`3-invoices/extract.py`](../examples/3-invoices/extract.py) |
 | build a classifier set worth trusting | [Designing a classifier eval set](designing-classifier-evals.md) | |
 | keep runs in your own database, and launch from your app | [Adopting the engine](adopting-a-host.md) | |
 

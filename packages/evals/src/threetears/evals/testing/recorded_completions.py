@@ -6,7 +6,7 @@ a model's), or call it once and keep what it said. :class:`RecordedCompletions` 
 :meth:`RecordedCompletions.record` wraps the host's real client and appends every completion it returns to a JSONL
 file; :meth:`RecordedCompletions.replay` reads that file and hands the same completions back, in the order they were
 made, with no network. The package's examples run on it: live with a key, recorded with ``RECORD=1``, and otherwise
-replayed from ``examples/recordings/`` (``examples/README.md``).
+replayed from the ``recordings/`` beside each rung (``examples/README.md``).
 
 **What a call is matched on.** A recording holds one model's calls at one temperature. Each line is keyed by the
 sha256 of the canonical JSON of the call's ``system``, ``user`` and ``response_format``, the model and temperature, and
