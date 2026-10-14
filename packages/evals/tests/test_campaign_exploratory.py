@@ -73,14 +73,18 @@ async def _call(tool: MountedTool, fixture: OpsFixture, action: str, **arguments
     return await tool.call({"action": action, **arguments}, host=fixture.host, caller=CALLER)
 
 
-async def _exploratory_campaign(tool: MountedTool, fixture: OpsFixture) -> str:
-    created = await _call(tool, fixture, "campaign_create", **_definition(fixture), exploratory=True)
+#: A campaign holding no run yet: its design is not frozen, so an update may still declare, amend or withdraw it.
+_BEFORE_ITS_FIRST_RUN: dict[str, Any] = {"run_ids": []}
+
+
+async def _exploratory_campaign(tool: MountedTool, fixture: OpsFixture, **fields: Any) -> str:
+    created = await _call(tool, fixture, "campaign_create", **_definition(fixture, **fields), exploratory=True)
     assert not created.is_error, created.text
     return str(created.structured["id"])
 
 
-async def _declared_campaign(tool: MountedTool, fixture: OpsFixture) -> str:
-    created = await _call(tool, fixture, "campaign_create", **_definition(fixture), declared_design=_design())
+async def _declared_campaign(tool: MountedTool, fixture: OpsFixture, **fields: Any) -> str:
+    created = await _call(tool, fixture, "campaign_create", **_definition(fixture, **fields), declared_design=_design())
     assert not created.is_error, created.text
     return str(created.structured["id"])
 
@@ -156,8 +160,9 @@ async def test_the_create_action_takes_either_and_its_line_says_which(evals: Mou
 
 
 async def test_declaring_a_design_on_an_exploratory_campaign_makes_it_declared(evals: MountedTool) -> None:
+    """Before its first run: once one has joined, its design is frozen (``test_campaign_freeze.py``)."""
     fixture = off_loop(ops_fixture)
-    campaign_id = await _exploratory_campaign(evals, fixture)
+    campaign_id = await _exploratory_campaign(evals, fixture, **_BEFORE_ITS_FIRST_RUN)
 
     outcome = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=_design())
 
@@ -171,7 +176,7 @@ async def test_declaring_a_design_on_an_exploratory_campaign_makes_it_declared(e
 
 async def test_withdrawing_a_declaration_without_saying_exploratory_is_refused(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
-    campaign_id = await _declared_campaign(evals, fixture)
+    campaign_id = await _declared_campaign(evals, fixture, **_BEFORE_ITS_FIRST_RUN)
     before = _stored(fixture, campaign_id)
 
     outcome = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=None)
@@ -184,7 +189,7 @@ async def test_withdrawing_a_declaration_saying_exploratory_leaves_the_campaign_
     evals: MountedTool,
 ) -> None:
     fixture = off_loop(ops_fixture)
-    campaign_id = await _declared_campaign(evals, fixture)
+    campaign_id = await _declared_campaign(evals, fixture, **_BEFORE_ITS_FIRST_RUN)
 
     outcome = await _call(
         evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=None, exploratory=True
@@ -257,7 +262,7 @@ async def test_an_exploratory_campaign_may_be_renamed_saying_it_is_exploratory(e
 def test_the_python_update_holds_to_the_same_rule() -> None:
     fixture = off_loop(ops_fixture)
     eval_host = fixture.host.eval_host
-    campaign = _python_create(fixture, declared_design=_design())
+    campaign = _python_create(fixture, declared_design=_design(), **_BEFORE_ITS_FIRST_RUN)
 
     def update(updates: dict[str, Any], **keywords: Any) -> EvalCampaign:
         return off_loop(

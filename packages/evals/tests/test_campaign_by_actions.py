@@ -5,8 +5,9 @@ join it, and a control could be named only at creation. Their refusals sent the 
 (``analysis.add_runs_to_campaign``, ``set_campaign_control``) no action reaches. Pinned here, driven through
 :meth:`MountedTool.call` as every transport drives it:
 
-- **The whole path is actions**: create exploratory, ``campaign_runs_add`` a later run, ``campaign_update`` a design
-  and its control from that run — the key resolved as ``set_campaign_control`` resolves it.
+- **The whole path is actions**: create exploratory, ``campaign_update`` a design before any run joins (a design is
+  frozen once one has: ``test_campaign_freeze.py``), ``campaign_runs_add`` the runs, and ``campaign_update`` its
+  control from one of them, once — the key resolved as ``set_campaign_control`` resolves it.
 - **The design and its control are one write**: a refused control leaves the design unwritten too.
 - **Membership keeps its rules**: a run outside the scope is not added, a run the campaign does not hold is not
   removed, and removing takes nothing but membership.
@@ -83,15 +84,15 @@ async def test_an_operator_using_only_actions_starts_ad_hoc_and_ends_declared_wi
 ) -> None:
     fixture = off_loop(ops_fixture)
     first, later = fixture.campaign.run_ids[0], fixture.campaign.run_ids[1]
-    campaign_id = await _create(evals, fixture, [first])
+    campaign_id = await _create(evals, fixture, [])
 
-    added = await _call(evals, fixture, "campaign_runs_add", campaign_id=campaign_id, run_ids=[later])
-    declared = await _call(
-        evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=_design(), control_from_run_id=later
-    )
+    declared = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=_design())
+    added = await _call(evals, fixture, "campaign_runs_add", campaign_id=campaign_id, run_ids=[first, later])
+    controlled = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, control_from_run_id=later)
 
-    assert not added.is_error and added.structured["run_count"] == 2, added.text
     assert not declared.is_error, declared.text
+    assert not added.is_error and added.structured["run_count"] == 2, added.text
+    assert not controlled.is_error, controlled.text
     assert not CampaignLine.model_validate(declared.structured).exploratory
     stored = _stored(fixture, campaign_id)
     assert stored.run_ids == [first, later]
@@ -99,7 +100,10 @@ async def test_an_operator_using_only_actions_starts_ad_hoc_and_ends_declared_wi
     assert stored.declared_design.control == off_loop(_key_set_campaign_control_resolves, fixture, later)
 
 
-async def test_control_from_run_id_alone_re_names_the_control_of_a_declared_campaign(evals: MountedTool) -> None:
+async def test_control_from_run_id_alone_cannot_re_name_the_control_of_a_campaign_with_runs(
+    evals: MountedTool,
+) -> None:
+    """A control is addressed once: re-pointing it after the runs joined would re-read them against another arm."""
     fixture = off_loop(ops_fixture)
     first, second = fixture.campaign.run_ids[0], fixture.campaign.run_ids[1]
     campaign_id = await _create(evals, fixture, [first, second], declared_design=_design(), control_from_run_id=first)
@@ -107,14 +111,16 @@ async def test_control_from_run_id_alone_re_names_the_control_of_a_declared_camp
 
     outcome = await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, control_from_run_id=second)
 
-    assert not outcome.is_error, outcome.text
+    assert outcome.is_error and "design is frozen" in outcome.text and "re-pointing it" in outcome.text, outcome.text
     after = _stored(fixture, campaign_id)
-    assert after.declared_design is not None and before.declared_design is not None
-    assert after.declared_design.control == off_loop(_key_set_campaign_control_resolves, fixture, second)
-    assert after.declared_design.axes == before.declared_design.axes, "the rest of the declaration is kept"
+    assert after == before, "nothing is written"
+    assert after.declared_design is not None
+    assert after.declared_design.control == off_loop(_key_set_campaign_control_resolves, fixture, first)
 
 
-async def test_a_null_control_clears_it_and_on_an_undeclared_campaign_is_no_refusal(evals: MountedTool) -> None:
+async def test_a_null_control_is_refused_on_a_campaign_with_runs_and_on_an_undeclared_one_is_no_refusal(
+    evals: MountedTool,
+) -> None:
     fixture = off_loop(ops_fixture)
     run = fixture.campaign.run_ids[0]
     declared = await _create(evals, fixture, [run], declared_design=_design(), control_from_run_id=run)
@@ -123,9 +129,10 @@ async def test_a_null_control_clears_it_and_on_an_undeclared_campaign_is_no_refu
     cleared = await _call(evals, fixture, "campaign_update", campaign_id=declared, control_from_run_id=None)
     nothing_to_clear = await _call(evals, fixture, "campaign_update", campaign_id=exploratory, control_from_run_id=None)
 
-    assert not cleared.is_error and not nothing_to_clear.is_error, (cleared.text, nothing_to_clear.text)
+    assert cleared.is_error and "clearing it" in cleared.text, cleared.text
+    assert not nothing_to_clear.is_error, nothing_to_clear.text
     stored = _stored(fixture, declared).declared_design
-    assert stored is not None and stored.control is None
+    assert stored is not None and stored.control is not None, "the control the runs were read against stays"
     assert _stored(fixture, exploratory).declared_design is None
 
 
@@ -159,7 +166,8 @@ async def test_a_control_with_nothing_to_hold_it_is_refused_and_the_design_is_no
     fixture = off_loop(ops_fixture)
     run = fixture.campaign.run_ids[0]
     starting = {"declared_design": _design()} if start == "declared" else {}
-    campaign_id = await _create(evals, fixture, [run], **starting)
+    # With no run yet, so each refusal is the one under test rather than the frozen design's.
+    campaign_id = await _create(evals, fixture, [], **starting)
     before = _stored(fixture, campaign_id)
     values = {"{run}": run, "{design}": _design(), "{typed}": _design(control="a" * 64)}
     resolved = {key: values.get(value, value) if isinstance(value, str) else value for key, value in arguments.items()}

@@ -1611,7 +1611,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="campaign_update",
-            summary="Rename or redescribe a campaign, or declare, amend or withdraw its design.",
+            summary="Rename or redescribe a campaign, or declare, amend or withdraw its design before its first run.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignUpdateParams,
@@ -1642,7 +1642,10 @@ def engine_actions() -> tuple[Action, ...]:
                 "beside a design is refused. control_from_run_id names one of the campaign's runs whose variant "
                 "becomes the control, resolved for you, in the same write as any design sent beside it; null clears "
                 "the control. It needs a declaration — sent here, or already stored — and a design sent here keeps no "
-                "control it does not type or name. Runs join and leave through campaign_runs_add and "
+                "control it does not type or name. Once the campaign holds a run its design is frozen: "
+                "declared_design is refused in any form, and so is re-pointing or clearing the control, which may "
+                "be named once while none is declared; name and description stay editable, and an amended design "
+                "is a new campaign (campaign_create). Runs join and leave through campaign_runs_add and "
                 "campaign_runs_remove."
             ),
         ),
