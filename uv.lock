@@ -717,6 +717,7 @@ name = "3tears-evals"
 version = "0.68.0"
 source = { editable = "packages/evals" }
 dependencies = [
+    { name = "httpx" },
     { name = "pydantic" },
 ]
 
@@ -724,17 +725,14 @@ dependencies = [
 fastmcp = [
     { name = "fastmcp" },
 ]
-models = [
-    { name = "3tears-models" },
-]
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears-models", marker = "extra == 'models'", editable = "packages/models" },
     { name = "fastmcp", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<4" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
-provides-extras = ["fastmcp", "models"]
+provides-extras = ["fastmcp"]
 
 [[package]]
 name = "3tears-geo"

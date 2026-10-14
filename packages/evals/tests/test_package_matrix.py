@@ -36,18 +36,17 @@ Nothing in the engine imports any of the three, ``quick`` included, but ``testin
 runs ``ops`` and ``actions`` from above them (see below): the run summary it prints, the
 report it serializes and the spend it totals live in ``analysis``, below both.
 
-``providers`` is the shipped provider adapter (the ``[models]`` extra): it turns a chat model 3tears-models builds
-into the completion port, so it may import schema, kernel and itself, and ``run`` for the judge's request settings
-(``JUDGE_REQUEST_SETTINGS``, the one value a judged run records and the role factory builds its judge from, so the
-two cannot disagree), and past the stdlib ``threetears.models`` and the provider layer under it (``langchain_core``,
-``anthropic``, ``openai``, ``openrouter``, ``httpx``) and pydantic.
-Its column is empty but its own row: nothing in the engine, and nothing above it, imports it, which
-is what keeps the engine provider-neutral (``tests/test_providers_boundary.py`` holds the same from the adapter's
-side, name by name). It also imports ``negotiation``.
+``providers`` is the shipped completion client: it speaks each provider's HTTP API and implements the completion
+port, so it may import schema, kernel and itself, ``run`` for the request settings a judged run records
+(``JUDGE_REQUEST_SETTINGS``, which its role factory builds a judge from, so the two cannot disagree), ``testing`` for
+the one replay format (``RecordedCompletions``, behind ``recording=``), ``negotiation``, and past the stdlib only
+``httpx`` and pydantic: no SDK, no LangChain, no other 3tears package. Nothing in the engine, and nothing above it,
+imports it, which keeps the engine provider-neutral (``tests/test_providers_boundary.py`` holds the same from the
+client's side, name by name); the package root re-exports its ``Model``, loaded by name on first read.
 
 ``negotiation`` is how a completion client sends the closest request settings a model takes and answers a
-provider's refusal of one: the shipped adapter uses it, and so does a host's own client, which is why it is a base
-root rather than part of the adapter. It may import schema and itself, and nothing past the stdlib: no SDK, no HTTP
+provider's refusal of one: the shipped client uses it, and so does a host's own client, which is why it is a base
+root rather than part of the client. It may import schema and itself, and nothing past the stdlib: no SDK, no HTTP
 client, no pydantic of its own (:func:`test_negotiation_imports_on_a_base_install_with_no_sdk` imports it with every
 provider package made unimportable). Only ``providers`` imports it; the engine never sends a request.
 
@@ -130,7 +129,7 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
     "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
     "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
-    "providers": frozenset({"schema", "kernel", "run", "negotiation", "providers"}),
+    "providers": frozenset({"schema", "kernel", "run", "testing", "negotiation", "providers"}),
     "negotiation": frozenset({"schema", "negotiation"}),
 }
 
@@ -148,11 +147,8 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "ops": frozenset({"pydantic"}),
     "actions": frozenset({"pydantic"}),
     "transports": frozenset({"pydantic"}),
-    # The `[models]` extra's package and the provider layer it is built on, all 3tears-models' own runtime
-    # dependencies: the adapter reads LangChain's messages and the SDKs' exception types directly.
-    "providers": frozenset(
-        {"threetears.models", "langchain_core", "anthropic", "openai", "openrouter", "httpx", "pydantic"}
-    ),
+    # The client's own HTTP, and the pydantic its `json` validates a reply with: no SDK, no other 3tears package.
+    "providers": frozenset({"httpx", "pydantic"}),
     # The stdlib alone: what a host's own client of raw HTTP imports beside its own transport.
     "negotiation": frozenset(),
 }
@@ -165,7 +161,7 @@ THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
 
 #: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
 #: of these. ``kernel.host`` is a root of its own inside a package: the contract a host implements.
-#: ``negotiation`` is what a completion client sends and resends, and ``providers`` the optional provider adapter.
+#: ``negotiation`` is what a completion client sends and resends, and ``providers`` the shipped client.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "schema",
     "kernel",
@@ -579,7 +575,7 @@ def test_each_public_root_imports_first_and_alone(relative: str) -> None:
     assert proc.returncode == 0, f"importing {module} first, in a fresh interpreter, failed:\n{proc.stderr}"
 
 
-#: Every package the ``[models]`` extra brings, made unimportable, then the negotiation root imported and run: a
+#: Every provider SDK and HTTP client, made unimportable, then the negotiation root imported and run: a
 #: closest choice, and a negotiated call whose first request a router refuses (OpenRouter's production 404) and whose
 #: resend without the temperature is served. A host with its own client of raw HTTP installs the base package only,
 #: and is in exactly this state.
@@ -762,7 +758,7 @@ def test_the_matrix_refuses_each_forbidden_edge(
             "threetears/evals/negotiation/settings.py",
             "from threetears.evals.schema.models import M\nfrom . import loop\n",
         ),
-        ("threetears/evals/providers/adapter.py", "from threetears.evals.negotiation.loop import negotiate\n"),
+        ("threetears/evals/providers/model.py", "from threetears.evals.negotiation.loop import negotiate\n"),
     ],
 )
 def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, source: str) -> None:

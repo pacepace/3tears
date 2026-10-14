@@ -26,8 +26,8 @@ def facts_from_router_catalogue(supported_parameters: Collection[str] | None) ->
     strict schema (the request then goes unenforced). A caller passes these as ``declared`` to
     :func:`~threetears.evals.negotiation.negotiate`, under its own registry's facts (:meth:`SettingFacts.over`).
 
-    Read the catalogue once, at a point the caller chooses (the shipped adapter reads it in ``load_prices``, the boot
-    step), and keep it: facts that change mid-run because another client happened to fetch the catalogue make two
+    Read the catalogue once, at a point the caller chooses (the shipped client reads it once per ``Catalogue``, at boot or
+    at its first call), and keep it: facts that change mid-run because another client happened to fetch the catalogue make two
     calls of one run sent differently for no reason the run records.
 
     Args:

@@ -178,6 +178,10 @@ EVAL_ROOT = _REPO_ROOT / "threetears" / "evals"
 #: verbatim. Paths are relative to ``threetears/evals/``. ``analysis`` is a whole tree, so a file
 #: added to it is covered the day it lands rather than the day someone remembers.
 _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
+    # The package's front door: its public roots, its extras map and its lazily loaded exports. It named the
+    # `openrouter` module while `ROOT_EXTRAS` listed the provider adapter's SDKs; the client needs no extra, so it
+    # names no host and is scanned like every other shared module.
+    "__init__.py",
     # `python -m threetears.evals`: hands over to the command line in `quick`, a whole shared tree.
     "__main__.py",
     # The stored analysis shapes, which are kernel rather than analysis (the stored campaign,
@@ -545,12 +549,11 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
 #: Host nouns that, inside one shared-contract tree, name a PROVIDER the tree builds clients for, by tree.
 #:
 #: ``openrouter`` is a host noun because the engine names no provider: the first host's client was the reason it
-#: reached engine code, and everywhere else it still fails. The provider adapter's purpose is naming providers by
-#: the names 3tears-models' registry gives them (its ``SupportedProvider`` vocabulary, each provider's key
-#: variable, the per-provider mapping tables), so there it is the provider's name rather than a host's. A
-#: violation in the tree is exempt only when every noun it carries is listed here, so a ``persona`` or a
-#: ``discord`` in the adapter fails like anywhere else, and :func:`test_every_provider_name_exemption_is_still_needed`
-#: fails on an entry the tree no longer needs.
+#: reached engine code, and everywhere else it still fails. The completion client's purpose is naming the providers
+#: it speaks to (its ``Provider`` vocabulary, each provider's key variable and API root, the per-provider mapping
+#: tables), so there it is the provider's name rather than a host's. A violation in the tree is exempt only when every
+#: noun it carries is listed here, so a ``persona`` or a ``discord`` in the client fails like anywhere else, and
+#: :func:`test_every_provider_name_exemption_is_still_needed` fails on an entry the tree no longer needs.
 _PROVIDER_NAMES: dict[str, frozenset[str]] = {"providers": frozenset({"openrouter"})}
 
 _HOST_NOUN_RE = re.compile(rf"^(?:{'|'.join(HOST_NOUNS)})s?$", re.IGNORECASE)
@@ -812,11 +815,7 @@ def _scan_declared_set() -> list[Violation]:
 #: the module the extraction boundary is defined around, so the scan skipped the one module the
 #: boundary is named after. :func:`test_every_host_coupled_module_still_exhibits_host_coupling` is
 #: the gate that catches that now.
-_HOST_COUPLED_MODULES: frozenset[str] = frozenset(
-    {
-        "__init__.py",
-    }
-)
+_HOST_COUPLED_MODULES: frozenset[str] = frozenset()
 
 
 def _host_module_imports(source: str, path: Path) -> set[str]:
@@ -879,7 +878,7 @@ def _host_module_imports(source: str, path: Path) -> set[str]:
 #: debt decays into, so each entry says which it is and an entry with no reason fails.
 #:
 #: EMPTY today. ``__init__.py`` sat here as the package's front door until ``ROOT_EXTRAS`` began naming
-#: the ``openrouter`` module the ``providers`` root imports; the scan now sees its coupling directly.
+#: the ``openrouter`` module the ``providers`` root imported, and is shared contract now that it names none.
 _HOST_COUPLED_BY_ROLE: dict[str, str] = {}
 
 

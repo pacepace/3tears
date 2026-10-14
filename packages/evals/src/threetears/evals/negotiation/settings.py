@@ -140,7 +140,7 @@ def wire_settings_for(settings: ClientRequestSettings, temperature: float | None
 class SettingFacts:
     """What is known of the request settings one model accepts: each fact ``None`` while nothing says.
 
-    A caller fills what it knows before any request (3tears-models' capability fields of the same names, a router's
+    A caller fills what it knows before any request (a registry's capability fields of the same names, a router's
     catalogue through :func:`~threetears.evals.negotiation.facts_from_router_catalogue`, its own configuration), and
     a refusal the provider answered fills the rest for as long as the caller's
     :class:`~threetears.evals.negotiation.LearnedSettings` lives: the process, or the client factory that keeps it.
