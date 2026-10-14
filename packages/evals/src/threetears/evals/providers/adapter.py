@@ -20,19 +20,36 @@ provider and key. The temperature, the output cap and the reasoning setting are 
 temperature is read back from it, because LangChain drops a temperature some models refuse at construction and
 what the engine records is what was sent.
 
-**A temperature the model refuses is dropped, not failed** (owner ruling, 2026-10-13: a model that lacks a request
-feature never fails the request). 3tears-models' capabilities say nothing of which models take a temperature, so
-the adapter learns it from the provider's own refusal: a request refused for the temperature it carried (Anthropic's
-``invalid_request_error`` naming ``temperature`` as deprecated or unsupported; OpenAI's ``unsupported_parameter`` or
-``unsupported_value`` on ``temperature``; on OpenRouter, a 404 for a call under ``require_parameters``, which
-excludes every upstream that cannot take the temperature) is sent once more without it, and once that is served the
-client sends none for the rest of its life, logged once at WARNING. That is not a hidden retry: the refused request
-was rejected before anything was generated and is not billed. The completion reports ``temperature=None``, as the
-request carried none, and the engine records the model's default. Any other refusal, and a failure of the resend,
-propagates as it was raised.
+**The closest setting the model accepts is sent, and reported** (owner ruling, 2026-10-13: a model that lacks a
+request feature never fails the request). What a client was asked for (its output cap, temperature, reasoning word
+or budget, and per call whether the reply format is enforced) goes through :func:`closest_settings` against what
+is known of the model (:class:`SettingFacts`), and the request carries the result: a word the model lacks as its
+closest word on the same side of the on/off line (ties go lower, so never more than was asked), a budget as the
+effort word its share of the cap maps to on a model that takes words only (:data:`BUDGET_SHARES`), a word as a
+budget on a model that takes budgets only, Anthropic's effort words over adaptive thinking with no temperature
+beside them, a strict reply format the model cannot take as an unenforced one, an output cap above the model's
+known one as that cap. What is known comes, highest first, from what the provider refused in this factory's life
+(:class:`LearnedSettings`), 3tears-models' capabilities (read with ``getattr``, so a models build that declares
+none of these facts leaves every one unknown, and including the facts a provider published for a model the static
+registry does not know), and on OpenRouter its cached catalogue's ``supported_parameters``. Unknown is sent as
+asked. Each completion's ``sent_settings`` is what its request carried, and its ``temperature`` likewise.
 
-**Built per call.** The messages and the bind that carries a ``response_format`` (and, on Anthropic, the effort in
-the same ``output_config``). Nothing about a call is written to the client, so concurrent calls on one instance
+**A setting the provider refuses is learned, once, per factory.** A request refused for a setting it carried, read
+off each SDK's error type and structured fields (Anthropic's ``invalid_request_error`` naming the parameter as
+deprecated or unsupported; OpenAI's ``unsupported_parameter`` or ``unsupported_value`` naming it in ``param``; on
+OpenRouter a 404 for a call under ``require_parameters``, which names nothing), is sent again with the closest
+setting the model then accepts, and once that is served the fact is kept for every client of the factory and
+logged once at WARNING. On OpenRouter the order is fixed: the temperature first, keeping enforcement, and only if
+that still finds no endpoint, enforcement itself (sent ``strict_output=False``). That is not a hidden retry: a
+refused request was rejected before anything was generated and is not billed (an assumption no provider documents,
+which the price ceiling rests on). At most one resend per setting and four per call; any other refusal, and a
+refusal of the resend for a setting already dropped, propagates as it was raised.
+
+**Built per call.** The messages, what to send (:func:`closest_settings` over the facts as they stand, since another
+client of the factory may have learned one since), and the bind that carries a ``response_format`` (and, on
+Anthropic, the effort in the same ``output_config``). A call whose settings differ from those the chat model was
+built with goes through a copy of it at those settings, made once and kept, which shares the original's SDK
+client, config and callbacks. Nothing about a call is written to the client, so concurrent calls on one instance
 each send exactly their own prompt pair, as the port requires.
 
 **Loaded once, at boot: the prices.** A client's rates come from models' price catalogue, which is read over the
@@ -52,22 +69,24 @@ transport error) is logged at ERROR with its traceback, and the paid completion 
 ``pricing_failure`` naming the exception: the call was made and paid for, and the caller is owed its answer.
 
 **Refused, by name, before anything is sent.** A provider the adapter does not support, a model id models'
-registry cannot place, the Claude CLI route, a reasoning word or budget the provider cannot carry, and a provider
-keyword that would bypass what the adapter guarantees (retries, breaker, streaming, reasoning). Each is a
-:class:`ModelsClientRefused` naming the setting and what to do instead. Nothing is dropped and nothing is sent as
-its nearest neighbour, because the host records the request settings it asked for
-(:class:`~threetears.evals.schema.ClientRequestSettings`), and a request quietly sent otherwise makes that record
-false.
+registry cannot place, the Claude CLI route, a provider keyword that would bypass what the adapter guarantees
+(retries, breaker, streaming, reasoning), and the caller's own errors in a reasoning setting: a word and a budget
+together, a word that is not one of the engine's seven, a budget below Anthropic's 1024 floor, a budget not below
+the output cap, and a budget with no cap to take its share of. Each is a :class:`ModelsClientRefused` naming the
+setting and what to pass instead. A setting the model merely does not take is never refused: it is sent as the
+closest one the model accepts, and the completion says so.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any, Final, Literal, Self, get_args
 
 import anthropic
@@ -78,7 +97,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.runnables import RunnableBinding
 from openrouter import errors as openrouter_errors
 
-from threetears.evals.schema import KnownReasoningEffort, StopReason
+import threetears.models as models_api
+from threetears.evals.schema import ClientRequestSettings, KnownReasoningEffort, StopReason
 from threetears.evals.schema.logs import get_logger
 from threetears.models import CircuitBreaker, PriceLookup, create_chat_model, get_capabilities, lookup_price
 from threetears.models.price_lookup import OPENROUTER_MODELS_URL, HttpClient
@@ -86,13 +106,19 @@ from threetears.models.providers.claude_cli import OAUTH_TOKEN_PREFIX, is_subscr
 from threetears.models.providers.structured_output import structured_output_kwargs
 
 __all__ = [
+    "BUDGET_SHARES",
+    "EFFORT_LADDER",
     "PROVIDER_KEY_VARIABLES",
     "SUPPORTED_PROVIDERS",
+    "LearnedSettings",
     "ModelsClientRefused",
     "ModelsCompletion",
     "ModelsCompletionClient",
     "PriceBook",
+    "SettingFacts",
     "SupportedProvider",
+    "WireSettings",
+    "closest_settings",
     "models_client",
     "resolve_provider",
 ]
@@ -117,39 +143,45 @@ PROVIDER_KEY_VARIABLES: Final[Mapping[SupportedProvider, str]] = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
-#: The reasoning words each provider takes, out of the engine's seven
-#: (:data:`~threetears.evals.schema.REASONING_EFFORTS`). Anthropic's ``effort`` has five, and ``none`` is sent as
-#: thinking disabled; OpenAI's ``reasoning_effort`` has no ``max``; OpenRouter's SDK types all seven.
-_EFFORT_WORDS: Final[Mapping[SupportedProvider, frozenset[str]]] = {
-    "anthropic": frozenset({"max", "xhigh", "high", "medium", "low", "none"}),
-    "openai": frozenset({"xhigh", "high", "medium", "low", "minimal", "none"}),
-    "openrouter": frozenset(get_args(KnownReasoningEffort)),
+#: The engine's seven reasoning words (:data:`~threetears.evals.schema.REASONING_EFFORTS`) as a ladder, lowest
+#: first: what "closest" is measured on. ``none`` is the off side of the line, every other word the on side.
+EFFORT_LADDER: Final[tuple[str, ...]] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+#: The share of the output cap each effort word stands for: OpenRouter's documented ratios for turning an effort
+#: into a reasoning budget on a model that takes budgets, so a budget sent to OpenRouter as its word comes back as
+#: about the budget asked (the judge's 8192 of 10240 is 0.80, ``high``, and ``high`` is 0.80 of the cap again).
+#: Read both ways: a budget asked of a model that takes words only is sent as the word whose share is nearest its
+#: own (ties go to the lower word, so the boundaries 0.15, 0.35, 0.65 and 0.875 all go lower), and a word asked of a
+#: model that takes budgets only is sent as that share of the cap. ``max`` has no share of its own above ``xhigh``'s
+#: and is sent as ``xhigh``'s budget; ``none`` is no reasoning, never a budget.
+BUDGET_SHARES: Final[Mapping[str, Fraction]] = {
+    "minimal": Fraction("0.10"),
+    "low": Fraction("0.20"),
+    "medium": Fraction("0.50"),
+    "high": Fraction("0.80"),
+    "xhigh": Fraction("0.95"),
+    "max": Fraction("0.95"),
 }
 
-#: What to ask for instead of a word a provider does not take, by provider and word.
-_EFFORT_INSTEAD: Final[Mapping[tuple[SupportedProvider, str], str]] = {
-    ("anthropic", "minimal"): (
-        "ask for 'low', Anthropic's lowest effort, or 'none' for no reasoning; 'minimal' is not sent as 'low', which "
-        "would record a request that was never made"
-    ),
-    ("openai", "max"): (
-        "ask for 'xhigh', OpenAI's highest reasoning_effort; 'max' is not sent as 'xhigh', which would record a "
-        "request that was never made"
-    ),
-}
-
-#: Why a reasoning token budget cannot be sent, by provider; Anthropic takes one.
-_NO_BUDGET: Final[Mapping[SupportedProvider, str]] = {
-    "openai": "OpenAI takes a reasoning_effort word and no reasoning token budget; pass reasoning_effort instead",
-    "openrouter": (
-        "the OpenRouter SDK's typed request declares reasoning.effort and strips reasoning.max_tokens without an "
-        "error, so the budget would never be sent; pass reasoning_effort, or keep a client of your own until "
-        "3tears-models declares the field"
-    ),
+#: The effort words each provider's API names, which is what a model of it is sent from when nothing narrower is
+#: known of the model. Anthropic's ``none`` is thinking disabled, and its others ride adaptive thinking as
+#: ``output_config.effort``; OpenAI's ``reasoning_effort`` has no ``max``; OpenRouter's SDK types all seven.
+_PROVIDER_EFFORTS: Final[Mapping[SupportedProvider, tuple[str, ...]]] = {
+    "anthropic": ("none", "low", "medium", "high", "xhigh", "max"),
+    "openai": ("none", "minimal", "low", "medium", "high", "xhigh"),
+    "openrouter": EFFORT_LADDER,
 }
 
 #: Anthropic's floor on a thinking budget, in tokens.
 _ANTHROPIC_MIN_THINKING_BUDGET: Final = 1024
+
+#: The most times one call is resent for a setting the provider refused: one per setting the adapter can drop or
+#: move (the temperature, the reasoning parameter, the reply format, enforcement).
+_MAX_RESENDS: Final = 4
+
+#: The chat-model fields a call's settings are built into: what a copy of the client's model is made at, and kept
+#: under (:meth:`ModelsCompletionClient._variant`). A field a provider's model does not have is left alone.
+_BUILT_FIELDS: Final = ("temperature", "max_tokens", "thinking", "reasoning_effort", "reasoning")
 
 #: Provider keywords the adapter sets itself or maps from its own parameters. Passing one through
 #: ``provider_kwargs`` would bypass a guarantee (retries off, the private breaker, streaming off) or the reasoning
@@ -252,10 +284,12 @@ _UNNAMED_STOP: Final[StopReason] = "truncated"
 
 
 class ModelsClientRefused(ValueError):
-    """A setting the adapter cannot carry to the provider, refused before anything is sent.
+    """A setting the adapter refuses by name before anything is sent: the caller's error, never a model's lack.
 
-    Raised at construction for a provider, model, reasoning word or budget, or provider keyword the adapter cannot
-    send as asked; by :meth:`ModelsCompletionClient.generate` for a ``response_format`` it cannot translate; and
+    Raised at construction for a provider or model the adapter cannot build for, a provider keyword that would bypass
+    it, and a reasoning setting that is the caller's error (never for one the model merely does not take, which is
+    sent as the closest setting it accepts); by :meth:`ModelsCompletionClient.generate` for a ``response_format`` it
+    cannot translate; and
     by :class:`ModelsClients` for a role with no model or a provider with no key, at the first call that needs
     one. A ``ValueError``, so a caller already catching one keeps catching it. The message names the setting, why
     it cannot be sent, and what to pass instead.
@@ -281,7 +315,7 @@ class ModelsClientRefused(ValueError):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ModelsCompletion:
-    """One completion as the adapter read it off the chat model's reply: the port's ten members and three of its own.
+    """One completion as the adapter read it off the chat model's reply: the port's members, and three of its own.
 
     Implements :class:`~threetears.evals.schema.CompletionResult` structurally, frozen as the protocol's read-only
     members ask. Every count and the cost are ``None`` where the provider reported nothing, never ``0``. Which
@@ -300,7 +334,9 @@ class ModelsCompletion:
             so those tokens were priced at the plain input rate and the cost is approximate, in either direction.
         model: The model id the client was built for, which is what spend is attributed to.
         served_model: The model the provider's reply named, or ``None`` when it named none.
-        temperature: The temperature the request carried, or ``None`` when it carried none.
+        temperature: The temperature the request carried, or ``None`` when it carried none: dropped because the model
+            takes none (known, or refused and resent without), because Anthropic takes none beside thinking, or
+            because LangChain dropped it.
         stop_reason: The provider's stop reason in the engine's words; an absent or unknown one, and Anthropic's
             ``pause_turn`` and ``model_context_window_exceeded``, is ``truncated``, and only a provider-reported
             error (OpenRouter's ``error``) is ``error``.
@@ -313,6 +349,12 @@ class ModelsCompletion:
         served_provider: The upstream that served an OpenRouter call, as OpenRouter's reply names it; ``None`` on
             a provider called directly, whose reply names no upstream, and on an OpenRouter reply that named none.
         pricing_failure: Why ``cost_usd`` is ``None``, in a sentence; ``None`` when the call was priced.
+        sent_settings: What the served request carried (the port's optional member): its output cap, its reasoning
+            effort word or budget as it went on the wire (after any mapping to the closest setting the model
+            accepts, and any resend), and ``strict_output`` exactly when the request enforced its reply format (a
+            strict schema on Anthropic and OpenAI, ``require_parameters`` on OpenRouter). ``None`` when the request
+            carried no output cap (OpenAI and OpenRouter built without ``max_tokens``), since a settings value
+            names one; the temperature is ``temperature``'s.
     """
 
     content: str
@@ -328,6 +370,7 @@ class ModelsCompletion:
     provider_stop_reason: str | None
     served_provider: str | None
     pricing_failure: str | None
+    sent_settings: ClientRequestSettings | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +390,10 @@ class _CatalogueUnreadable(Exception):
 
 class PriceBook:
     """The price catalogue a client reads, or every client of one :class:`~threetears.evals.providers.ModelsClients`.
+
+    It is also what those clients share of what they learn: the request settings a provider refused
+    (:attr:`learned`), and from OpenRouter's catalogue, once read, which parameters each model takes
+    (:meth:`supported_parameters`).
 
     Two caches. ``threetears.models.price_lookup.lookup_price`` GETs the whole catalogue on every call and caches
     nothing, so this sits between it and the HTTP client and keeps each URL's response once it passed
@@ -370,6 +417,9 @@ class PriceBook:
         self._fetch_lock = asyncio.Lock()
         self._rates: dict[tuple[str, str], PriceLookup | _Unpriced] = {}
         self._rates_lock = asyncio.Lock()
+        self._parameters: dict[str, frozenset[str] | None] | None = None
+        self.learned = LearnedSettings()
+        """The request settings the provider refused, per model, for every client that reads this book."""
 
     async def get(self, url: str, /) -> Any:  # Any: models' HttpClient protocol types the response as Any
         """The response for ``url``, fetched on the first read and kept: the ``HttpClient`` ``lookup_price`` reads.
@@ -400,6 +450,36 @@ class PriceBook:
             return await self._client.get(url)
         async with httpx.AsyncClient(timeout=_CATALOGUE_TIMEOUT_S, follow_redirects=True) as owned:
             return await owned.get(url)
+
+    def supported_parameters(self, model: str) -> frozenset[str] | None:
+        """The parameters OpenRouter's catalogue lists for ``model``, once the catalogue was read; else ``None``.
+
+        Never fetches: the catalogue is read by :meth:`get` (a ``load_prices`` on an OpenRouter client reads it), and
+        until then, or for a model the catalogue lists without ``supported_parameters`` or not at all, nothing is
+        known. Parsed once, on the first ask after the read.
+
+        Args:
+            model: The OpenRouter model id, as the catalogue's ``id`` names it.
+
+        Returns:
+            The listed parameters, or ``None``.
+        """
+        if self._parameters is None:
+            response = self._responses.get(OPENROUTER_MODELS_URL)
+            if response is None:
+                return None
+            payload = response.json()
+            rows = payload.get("data") if isinstance(payload, Mapping) else None
+            self._parameters = {
+                row["id"]: (
+                    frozenset(p for p in row["supported_parameters"] if isinstance(p, str))
+                    if isinstance(row.get("supported_parameters"), list)
+                    else None
+                )
+                for row in (rows if isinstance(rows, list) else [])
+                if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+            }
+        return self._parameters.get(model)
 
     def rates(self, provider: str, model: str) -> PriceLookup | _Unpriced | None:
         """The rates already looked up for ``model`` on ``provider``, why it is unpriced, or ``None`` when not looked up.
@@ -506,13 +586,605 @@ def resolve_provider(model_id: str, provider: str | None) -> SupportedProvider:
     )
 
 
-def _reasoning_build_kwargs(
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WireSettings:
+    """Request settings as a client is asked for them, or as one request carries them.
+
+    The adapter's own shape, beside :class:`~threetears.evals.schema.ClientRequestSettings`, because a client can
+    be built with no output cap and with a temperature, which that shape does not hold. :func:`closest_settings`
+    takes the asked value and returns the sent one; :meth:`reported` is the sent value as a completion's
+    ``sent_settings``.
+
+    Attributes:
+        max_tokens: The output cap, or ``None`` for the provider's default (none is sent).
+        temperature: The sampling temperature, or ``None`` for none.
+        reasoning_effort: An effort word on :data:`EFFORT_LADDER`, or ``None``.
+        reasoning_max_tokens: A reasoning budget in tokens, or ``None``; never beside ``reasoning_effort``.
+        strict_output: Whether the reply format is enforced: a strict schema a direct provider refuses rather than
+            ignores, or OpenRouter's ``require_parameters``.
+    """
+
+    max_tokens: int | None = None
+    temperature: float | None = None
+    reasoning_effort: str | None = None
+    reasoning_max_tokens: int | None = None
+    strict_output: bool = False
+
+    def reported(self) -> ClientRequestSettings | None:
+        """These settings as a completion's ``sent_settings``, or ``None`` when they name no output cap.
+
+        Returns:
+            The settings value; the temperature is not part of it (a completion reports it as ``temperature``).
+        """
+        if self.max_tokens is None:
+            return None
+        return ClientRequestSettings(
+            max_tokens=self.max_tokens,
+            reasoning_max_tokens=self.reasoning_max_tokens,
+            reasoning_effort=self.reasoning_effort,
+            strict_output=self.strict_output,
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SettingFacts:
+    """What is known of the request settings one model accepts: each fact ``None`` while nothing says.
+
+    3tears-models' capability fields of the same names fill them (read with ``getattr``, so a models build without
+    them leaves them unknown), a refusal the provider answered fills them for the factory's life
+    (:class:`LearnedSettings`), and on OpenRouter the catalogue's ``supported_parameters`` does. Unknown is sent as
+    asked.
+
+    Attributes:
+        accepts_temperature: Whether a temperature is taken.
+        reasoning_efforts: The provider-native effort words the model takes; ``()`` when it takes no effort
+            parameter at all. Anthropic's off switch is not a word here but ``reasoning_disable``.
+        refused_efforts: Words the provider refused for this model, whatever ``reasoning_efforts`` says.
+        reasoning_budget: Whether a reasoning token budget is taken (Anthropic's ``thinking.budget_tokens``).
+        adaptive_reasoning: Whether Anthropic's adaptive thinking is taken, which its effort words ride on.
+        reasoning_disable: Whether reasoning can be switched off (Anthropic's thinking disabled, or a provider's
+            ``none``).
+        structured_output: Whether a strict ``json_schema`` reply format is taken.
+        enforcement: Whether OpenRouter finds an endpoint for the model's requests under ``require_parameters``.
+        max_output_tokens: The model's own output cap, or ``None`` when unknown.
+    """
+
+    accepts_temperature: bool | None = None
+    reasoning_efforts: tuple[str, ...] | None = None
+    refused_efforts: frozenset[str] = frozenset()
+    reasoning_budget: bool | None = None
+    adaptive_reasoning: bool | None = None
+    reasoning_disable: bool | None = None
+    structured_output: bool | None = None
+    enforcement: bool | None = None
+    max_output_tokens: int | None = None
+
+    def over(self, lower: SettingFacts) -> SettingFacts:
+        """These facts, each unknown one taken from ``lower``; refused words from both.
+
+        Args:
+            lower: The facts of a source below this one.
+
+        Returns:
+            The combined facts.
+        """
+        return SettingFacts(
+            accepts_temperature=_first(self.accepts_temperature, lower.accepts_temperature),
+            reasoning_efforts=self.reasoning_efforts if self.reasoning_efforts is not None else lower.reasoning_efforts,
+            refused_efforts=self.refused_efforts | lower.refused_efforts,
+            reasoning_budget=_first(self.reasoning_budget, lower.reasoning_budget),
+            adaptive_reasoning=_first(self.adaptive_reasoning, lower.adaptive_reasoning),
+            reasoning_disable=_first(self.reasoning_disable, lower.reasoning_disable),
+            structured_output=_first(self.structured_output, lower.structured_output),
+            enforcement=_first(self.enforcement, lower.enforcement),
+            max_output_tokens=self.max_output_tokens if self.max_output_tokens is not None else lower.max_output_tokens,
+        )
+
+
+def _first(known: bool | None, fallback: bool | None) -> bool | None:
+    """``known`` unless it is unknown, then ``fallback``."""
+    return known if known is not None else fallback
+
+
+def _rung(word: str) -> int:
+    """Where ``word`` stands on :data:`EFFORT_LADDER`."""
+    return EFFORT_LADDER.index(word)
+
+
+def _closest_word(word: str, on: Sequence[str], off: bool) -> str | None:
+    """The accepted word closest to ``word``, on its own side of the on/off line.
+
+    ``none`` asked of a model that cannot switch reasoning off crosses the line to the lowest word that reasons. A
+    reasoning word asked of a model that takes none never crosses to ``none``: no reasoning parameter is sent, which
+    is what such a model does by default, rather than an off switch nobody asked for.
+
+    Args:
+        word: The word asked for, on :data:`EFFORT_LADDER`.
+        on: The accepted words that reason (every one but ``none``).
+        off: Whether reasoning can be switched off (``none`` is accepted).
+
+    Returns:
+        The word to send, the lower of two equally close; ``None`` for no reasoning parameter.
+    """
+    if word == "none":
+        if off:
+            return "none"
+        return min(on, key=_rung) if on else None
+    if not on:
+        return None
+    return min(on, key=lambda candidate: (abs(_rung(candidate) - _rung(word)), _rung(candidate)))
+
+
+def _word_for_share(budget: int, cap: int) -> str:
+    """The effort word whose share of the cap (:data:`BUDGET_SHARES`) is nearest ``budget / cap``; ties go lower."""
+    share = Fraction(budget, cap)
+    return min(
+        (word for word in BUDGET_SHARES if word != "max"),
+        key=lambda word: (abs(BUDGET_SHARES[word] - share), _rung(word)),
+    )
+
+
+def _budget_for_word(word: str, cap: int) -> int | None:
+    """A thinking budget for ``word``: its share of the cap, at least Anthropic's floor and below the cap, if any is."""
+    if cap <= _ANTHROPIC_MIN_THINKING_BUDGET:
+        return None
+    share = BUDGET_SHARES.get(word, BUDGET_SHARES["minimal"])
+    return min(max(round(share * cap), _ANTHROPIC_MIN_THINKING_BUDGET), cap - 1)
+
+
+def _vocabulary(provider: SupportedProvider, facts: SettingFacts) -> tuple[list[str], bool]:
+    """The words the model is sent from: those that reason, lowest first, and whether reasoning can be switched off."""
+    words = facts.reasoning_efforts if facts.reasoning_efforts is not None else _PROVIDER_EFFORTS[provider]
+    on = [word for word in EFFORT_LADDER if word != "none" and word in words and word not in facts.refused_efforts]
+    if provider == "anthropic":
+        # Anthropic's off switch is thinking disabled, which no effort list names.
+        off = facts.reasoning_disable is not False and "none" not in facts.refused_efforts
+    else:
+        off = "none" in words and "none" not in facts.refused_efforts and facts.reasoning_disable is not False
+    return on, off
+
+
+def _closest_reasoning(
     provider: SupportedProvider,
-    effort: KnownReasoningEffort | None,
+    asked: WireSettings,
+    cap: int | None,
+    facts: SettingFacts,
+    notes: list[str],
+) -> tuple[str | None, int | None]:
+    """The reasoning word and budget to send: one, the other, or neither."""
+    takes_budget = provider == "anthropic" and facts.reasoning_budget is not False
+    effort, budget = asked.reasoning_effort, asked.reasoning_max_tokens
+    if budget is not None:
+        if takes_budget:
+            if cap is None or budget < cap:
+                return None, budget
+            if cap - 1 >= _ANTHROPIC_MIN_THINKING_BUDGET:
+                notes.append(f"reasoning budget {budget} sent as {cap - 1}, below the model's output cap {cap}")
+                return None, cap - 1
+        if asked.max_tokens is None:
+            if takes_budget:
+                return None, budget
+            notes.append(f"reasoning budget {budget} sent as no reasoning: there is no max_tokens to take its share of")
+            return None, None
+        effort = _word_for_share(budget, asked.max_tokens)
+        why = "the model takes no reasoning budget" if not takes_budget else f"the model's output cap is {cap}"
+        notes.append(
+            f"reasoning budget {budget} of max_tokens {asked.max_tokens} (share "
+            f"{float(Fraction(budget, asked.max_tokens)):.2f}) taken as effort {effort!r}: {why}"
+        )
+    if effort is None:
+        return None, None
+    on, off = _vocabulary(provider, facts)
+    if provider == "anthropic" and not on and takes_budget and effort != "none":
+        if cap is None:
+            notes.append(
+                f"effort {effort!r} sent as no reasoning: the model takes budgets only, and no max_tokens sizes one"
+            )
+            return None, None
+        sent_budget = _budget_for_word(effort, cap)
+        notes.append(
+            f"effort {effort!r} sent as a thinking budget of {sent_budget} ({float(BUDGET_SHARES[effort]):.2f} of "
+            f"max_tokens {cap}): the model takes budgets, not effort words"
+            if sent_budget is not None
+            else f"effort {effort!r} sent as no reasoning: the model takes budgets only, and max_tokens {cap} leaves "
+            "no room for one"
+        )
+        return None, sent_budget
+    word = _closest_word(effort, on, off)
+    if word is None:
+        notes.append(f"effort {effort!r} sent as no reasoning parameter: the model takes none")
+    elif word != effort:
+        notes.append(f"effort {effort!r} sent as {word!r}, the closest word the model takes")
+    return word, None
+
+
+def closest_settings(
+    asked: WireSettings, facts: SettingFacts, provider: SupportedProvider
+) -> tuple[WireSettings, tuple[str, ...]]:
+    """What to send for ``asked``: the closest settings ``facts`` say the model accepts, and why each one moved.
+
+    Pure: the same inputs give the same answer, and anything ``facts`` leave unknown is sent as asked, for the
+    provider to refuse and the adapter to learn from. The rules, per setting:
+
+    * **Output cap**: above the model's known cap (``max_output_tokens``), that cap.
+    * **Effort word**: the accepted word closest on :data:`EFFORT_LADDER`, on the same side of the on/off line
+      (``none`` is off), crossing it only for ``none`` asked of a model that cannot switch reasoning off, which gets
+      its lowest word; a tie goes to the lower word, which never spends more than was asked. The words a model is
+      sent from are its declared ones, else its provider's (:data:`_PROVIDER_EFFORTS`: ``max`` on OpenAI is
+      ``xhigh``, ``minimal`` on Anthropic is ``low``), less any it refused. A model that takes no effort word is
+      sent none, except an Anthropic model that takes a budget, which is sent the word's share of the cap
+      (:data:`BUDGET_SHARES`), at least 1024 and below the cap.
+    * **Budget**: as asked on an Anthropic model that takes one (lowered below a cap the clamp moved under it);
+      otherwise the effort word its share of ``max_tokens`` maps to (:data:`BUDGET_SHARES`), then as a word. OpenAI
+      takes no budget, and OpenRouter's SDK types none, so there a budget is always a word.
+    * **Temperature**: dropped when the model takes none, and on Anthropic beside any thinking (a budget, or an
+      effort word over adaptive thinking), which the API refuses.
+    * **Strict output**: kept unless the model takes no strict schema, or, on OpenRouter, no endpoint serves its
+      requests under ``require_parameters``; the request then carries the format unenforced.
+
+    Args:
+        asked: What the client was asked for, ``strict_output`` being the call's own.
+        facts: What is known of the model.
+        provider: The provider the request goes to.
+
+    Returns:
+        The settings the request carries, and one sentence per setting that moved, for the log.
+    """
+    notes: list[str] = []
+    cap = asked.max_tokens
+    if cap is not None and facts.max_output_tokens is not None and cap > facts.max_output_tokens:
+        notes.append(f"max_tokens {cap} sent as {facts.max_output_tokens}, the model's output cap")
+        cap = facts.max_output_tokens
+    effort, budget = _closest_reasoning(provider, asked, cap, facts, notes)
+    temperature = asked.temperature
+    if temperature is not None and facts.accepts_temperature is False:
+        notes.append(f"temperature {temperature} sent as none: the model takes no temperature")
+        temperature = None
+    elif temperature is not None and provider == "anthropic" and _anthropic_thinks(effort, budget, facts):
+        notes.append(f"temperature {temperature} sent as none: Anthropic takes no temperature beside thinking")
+        temperature = None
+    strict = asked.strict_output
+    if strict and facts.structured_output is False:
+        notes.append("the reply format sent unenforced: the model takes no strict schema")
+        strict = False
+    elif strict and provider == "openrouter" and facts.enforcement is False:
+        notes.append("the reply format sent without require_parameters: no endpoint serves the model under it")
+        strict = False
+    sent = WireSettings(
+        max_tokens=cap,
+        temperature=temperature,
+        reasoning_effort=effort,
+        reasoning_max_tokens=budget,
+        strict_output=strict,
+    )
+    return sent, tuple(notes)
+
+
+def _anthropic_thinks(effort: str | None, budget: int | None, facts: SettingFacts) -> bool:
+    """Whether an Anthropic request with this reasoning carries thinking: a budget, or a word over adaptive thinking."""
+    return budget is not None or (effort not in (None, "none") and facts.adaptive_reasoning is not False)
+
+
+def _anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, Any] | None:  # Any: the API's JSON
+    """The ``thinking`` an Anthropic request carries for ``sent``, or ``None`` for none."""
+    if sent.reasoning_max_tokens is not None:
+        return {"type": "enabled", "budget_tokens": sent.reasoning_max_tokens}
+    if sent.reasoning_effort == "none":
+        return {"type": "disabled"}
+    if sent.reasoning_effort is not None and facts.adaptive_reasoning is not False:
+        return {"type": "adaptive"}
+    return None
+
+
+def _flag(capabilities: object, name: str) -> bool | None:
+    """A tri-state capability field, or ``None`` when this models build does not declare it.
+
+    Raises:
+        TypeError: The field holds something other than a bool or ``None``: a models defect, not an unknown.
+    """
+    value = getattr(capabilities, name, None)
+    if value is None or isinstance(value, bool):
+        return value
+    raise TypeError(f"3tears-models' capability {name!r} holds a {type(value).__name__}, not a bool or None")
+
+
+def _registry_facts(model_id: str) -> SettingFacts:
+    """What 3tears-models says of ``model_id``'s request settings: its capabilities, else what a provider published.
+
+    ``get_capabilities`` applies the published layer and any override over a static entry; a model with no static
+    entry (``claude-haiku-5-5``) is read from ``get_published_capabilities`` alone, when this models build has it.
+    Each field is read with ``getattr``, so a build that declares none of them leaves every fact unknown.
+
+    Raises:
+        TypeError: A field holds a value of the wrong type.
+    """
+    capabilities: object = models_api.get_capabilities(model_id)
+    if capabilities is None:
+        published = getattr(models_api, "get_published_capabilities", None)
+        capabilities = published(model_id) if callable(published) else None
+    if capabilities is None:
+        return SettingFacts()
+    efforts = getattr(capabilities, "reasoning_efforts", None)
+    if efforts is not None and not (isinstance(efforts, list | tuple) and all(isinstance(w, str) for w in efforts)):
+        raise TypeError(f"3tears-models' capability 'reasoning_efforts' holds {efforts!r}, not a list of words")
+    return SettingFacts(
+        accepts_temperature=_flag(capabilities, "accepts_temperature"),
+        reasoning_efforts=tuple(efforts) if efforts is not None else None,
+        reasoning_budget=_flag(capabilities, "reasoning_budget"),
+        adaptive_reasoning=_flag(capabilities, "adaptive_reasoning"),
+        reasoning_disable=_flag(capabilities, "reasoning_disable"),
+        structured_output=_flag(capabilities, "structured_output"),
+        max_output_tokens=_int_or_none(getattr(capabilities, "max_output_tokens", None)),
+    )
+
+
+def _catalogue_facts(parameters: frozenset[str] | None) -> SettingFacts:
+    """What OpenRouter's catalogue says a model takes: its ``supported_parameters``, or nothing when it lists none."""
+    if parameters is None:
+        return SettingFacts()
+    return SettingFacts(
+        accepts_temperature="temperature" in parameters,
+        reasoning_efforts=None if "reasoning" in parameters else (),
+        structured_output="structured_outputs" in parameters,
+    )
+
+
+#: What a refusal is of: the fact it teaches.
+_Refused = Literal["temperature", "effort_word", "effort", "budget", "adaptive", "disable", "format", "enforcement"]
+
+
+@dataclass(frozen=True, slots=True)
+class _Refusal:
+    """A provider refusing a request for one setting it carried, in the provider's own words."""
+
+    setting: _Refused
+    message: str
+    word: str | None = None
+    accepted: tuple[str, ...] | None = None
+
+    def teach(self, facts: SettingFacts) -> SettingFacts:
+        """``facts`` with what this refusal says added."""
+        if self.setting == "temperature":
+            return replace(facts, accepts_temperature=False)
+        if self.setting == "effort_word":
+            refused = facts.refused_efforts | ({self.word} if self.word else set())
+            efforts = self.accepted if self.accepted is not None else facts.reasoning_efforts
+            return replace(facts, refused_efforts=frozenset(refused), reasoning_efforts=efforts)
+        if self.setting == "effort":
+            return replace(facts, reasoning_efforts=())
+        if self.setting == "budget":
+            return replace(facts, reasoning_budget=False)
+        if self.setting == "adaptive":
+            return replace(facts, adaptive_reasoning=False)
+        if self.setting == "disable":
+            return replace(facts, reasoning_disable=False)
+        if self.setting == "format":
+            return replace(facts, structured_output=False)
+        return replace(facts, enforcement=False)
+
+    @property
+    def label(self) -> str:
+        """The refused setting, as the log names it."""
+        return {
+            "temperature": "a temperature",
+            "effort_word": f"reasoning effort {self.word!r}",
+            "effort": "an effort parameter",
+            "budget": "a thinking budget",
+            "adaptive": "adaptive thinking",
+            "disable": "thinking disabled",
+            "format": "a strict reply format",
+            "enforcement": "require_parameters",
+        }[self.setting]
+
+
+class LearnedSettings:
+    """What providers refused, per provider and model, kept for the life of the clients that share it.
+
+    Every client of one :class:`~threetears.evals.providers.ModelsClients` shares one (through the factory's
+    :class:`PriceBook`), so a refusal one client met is not met again by another client of the same model; a client
+    built alone with :func:`models_client` has its own. Not persisted: a provider may start accepting a setting, and
+    each completion already records what its request carried. A refusal wins over what 3tears-models declared, and
+    a contradiction is logged as the registry error it is.
+    """
+
+    def __init__(self) -> None:
+        """Know nothing yet."""
+        self._facts: dict[tuple[str, str], SettingFacts] = {}
+
+    def facts(self, provider: str, model: str) -> SettingFacts:
+        """What has been learned of ``model`` on ``provider``; every fact unknown until a refusal.
+
+        Args:
+            provider: The provider.
+            model: The model id.
+
+        Returns:
+            The learned facts.
+        """
+        return self._facts.get((provider, model), SettingFacts())
+
+    def learn(
+        self,
+        provider: str,
+        model: str,
+        refusals: Sequence[_Refusal],
+        *,
+        registry: SettingFacts,
+        sent: WireSettings,
+    ) -> None:
+        """Keep what each refusal of a call says, now that the request without those settings was served.
+
+        Logs each fact not already known once, at WARNING, with the provider's message (never the error's text,
+        which on OpenAI and Anthropic repeats the whole body), what the registry said of it, and what the served
+        request carried in its place.
+
+        Args:
+            provider: The provider.
+            model: The model id.
+            refusals: The call's refusals, in the order met.
+            registry: What 3tears-models said of the model, for the log.
+            sent: What the served request carried.
+        """
+        for refusal in refusals:
+            known = self.facts(provider, model)
+            taught = refusal.teach(known)
+            if taught == known:
+                continue
+            self._facts[(provider, model)] = taught
+            log.warning(
+                "eval.providers model refuses %s provider=%s model=%s registry=%s; the request was resent as %s and "
+                "is sent so from now on: %s",
+                refusal.label,
+                provider,
+                model,
+                _registry_said(refusal, registry),
+                _settings_text(sent),
+                refusal.message[:500],
+            )
+
+
+def _registry_said(refusal: _Refusal, registry: SettingFacts) -> str:
+    """What 3tears-models declared of the refused setting: ``unknown``, or a contradiction to fix there."""
+    declared = {
+        "temperature": registry.accepts_temperature,
+        "budget": registry.reasoning_budget,
+        "adaptive": registry.adaptive_reasoning,
+        "disable": registry.reasoning_disable,
+        "format": registry.structured_output,
+        "effort": None if registry.reasoning_efforts is None else bool(registry.reasoning_efforts),
+        "effort_word": None if registry.reasoning_efforts is None else refusal.word in registry.reasoning_efforts,
+        "enforcement": None,
+    }[refusal.setting]
+    if declared is None:
+        return "unknown"
+    return "accepts (a registry error to correct in 3tears-models)" if declared else "refuses"
+
+
+def _settings_text(sent: WireSettings) -> str:
+    """``sent`` as one line for the log."""
+    reasoning = (
+        f"budget {sent.reasoning_max_tokens}"
+        if sent.reasoning_max_tokens is not None
+        else f"effort {sent.reasoning_effort!r}"
+        if sent.reasoning_effort is not None
+        else "no reasoning parameter"
+    )
+    temperature = "no temperature" if sent.temperature is None else f"temperature {sent.temperature}"
+    strict = "enforced" if sent.strict_output else "unenforced"
+    return f"max_tokens={sent.max_tokens}, {reasoning}, {temperature}, {strict}"
+
+
+#: An OpenAI ``unsupported_value`` message's list of what the model does take ("Supported values are: 'low',
+#: 'medium', and 'high'."), read only to fill the accepted words of a refusal already read off ``code``.
+_SUPPORTED_VALUES = re.compile(r"supported values are:(?P<values>[^.]*)", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Carried:
+    """What one request carried, of the settings a provider can refuse: what a refusal may be read as being of."""
+
+    temperature: bool
+    effort: str | None
+    thinking: str | None
+    strict_format: bool
+    enforcement: bool
+
+
+def _refusal(provider: SupportedProvider, exc: Exception, carried: _Carried, facts: SettingFacts) -> _Refusal | None:
+    """Whether ``exc`` is the provider refusing a request for a setting it carried, which, and in what words.
+
+    Read by each SDK's error type and structured fields, never by the exception's text, which on Anthropic and
+    OpenAI repeats the whole body; and only as a refusal of a setting the request carried:
+
+    * Anthropic: a 400 ``invalid_request_error`` whose message says a parameter is not taken (:data:`_NOT_TAKEN_WORDS`)
+      and names one the request carried: ``temperature``; ``thinking.type.enabled`` or ``budget_tokens`` (a budget);
+      ``thinking.type.adaptive``; ``thinking.type.disabled``; ``effort`` (the word, when the message quotes it, else
+      the parameter); ``output_config.format`` or ``structured output``. The one named first is the refused one,
+      since the message goes on to name what to send instead. A value out of range (a budget below 1024) says
+      nothing is unsupported and is the caller's, never resent.
+    * OpenAI: a 400 whose ``code`` is ``unsupported_parameter`` or ``unsupported_value`` and whose ``param`` names
+      ``temperature`` or ``reasoning_effort`` (an ``unsupported_value`` there is the word, and its message's
+      "Supported values are" list fills the words the model takes), or whose ``param`` is ``response_format`` with a
+      message saying the format is not supported.
+    * OpenRouter: by default it drops a parameter the routed upstream does not take, so no refusal arrives; under
+      ``require_parameters`` an upstream that cannot take one is excluded, and when none is left it answers 404,
+      naming no parameter. That is read as the temperature's while the request carried one the facts do not say
+      is taken, and otherwise as enforcement's: the resend settles which.
+
+    Args:
+        provider: The provider the request went to.
+        exc: What the call raised.
+        carried: What the request carried.
+        facts: What was known of the model when the request was built.
+
+    Returns:
+        The refusal, or ``None`` when ``exc`` is anything else.
+    """
+    if provider == "anthropic" and isinstance(exc, anthropic.BadRequestError):
+        error = _mapping(_mapping(exc.body).get("error"))
+        message = _error_message(exc.body)
+        if error.get("type") != "invalid_request_error" or message is None:
+            return None
+        said = message.lower()
+        if not any(word in said for word in _NOT_TAKEN_WORDS):
+            return None
+        named: list[tuple[int, _Refusal]] = []
+
+        def name(tokens: Sequence[str], refusal: _Refusal) -> None:
+            found = [said.find(token) for token in tokens if token in said]
+            if found:
+                named.append((min(found), refusal))
+
+        if carried.temperature:
+            name(("temperature",), _Refusal("temperature", message))
+        if carried.thinking == "enabled":
+            name(("thinking.type.enabled", "budget_tokens"), _Refusal("budget", message))
+        elif carried.thinking == "adaptive":
+            name(("thinking.type.adaptive",), _Refusal("adaptive", message))
+        elif carried.thinking == "disabled":
+            name(("thinking.type.disabled",), _Refusal("disable", message))
+        if carried.effort is not None and carried.effort != "none":
+            quoted = f"'{carried.effort}'" in said or f'"{carried.effort}"' in said or f"`{carried.effort}`" in said
+            name(
+                ("effort",),
+                _Refusal("effort_word", message, word=carried.effort) if quoted else _Refusal("effort", message),
+            )
+        if carried.strict_format:
+            name(("output_config.format", "structured output"), _Refusal("format", message))
+        return min(named, key=lambda found: found[0])[1] if named else None
+    if provider == "openai" and isinstance(exc, openai.BadRequestError):
+        message = _error_message(exc.body) or f"{exc.code}: {exc.param}"
+        if exc.param == "temperature" and carried.temperature and exc.code in _OPENAI_NOT_TAKEN_CODES:
+            return _Refusal("temperature", message)
+        if exc.param == "reasoning_effort" and carried.effort is not None and exc.code in _OPENAI_NOT_TAKEN_CODES:
+            if exc.code == "unsupported_parameter":
+                return _Refusal("effort", message)
+            listed = _SUPPORTED_VALUES.search(message)
+            accepted = (
+                tuple(word for word in EFFORT_LADDER if f"'{word}'" in listed.group("values")) if listed else None
+            )
+            return _Refusal("effort_word", message, word=carried.effort, accepted=accepted or None)
+        if (
+            exc.param == "response_format"
+            and carried.strict_format
+            and (exc.code in _OPENAI_NOT_TAKEN_CODES or "not supported" in message.lower())
+        ):
+            return _Refusal("format", message)
+        return None
+    if provider == "openrouter" and carried.enforcement and isinstance(exc, openrouter_errors.NotFoundResponseError):
+        if carried.temperature and facts.accepts_temperature is not True:
+            return _Refusal("temperature", exc.message)
+        return _Refusal("enforcement", exc.message)
+    return None
+
+
+def _refuse_caller_errors(
+    provider: SupportedProvider,
+    effort: str | None,
     budget: int | None,
     max_tokens: int | None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The build keywords and the per-call ``output_config`` that carry a reasoning setting, or a refusal.
+) -> None:
+    """Refuse, by name, a reasoning setting that is the caller's error whatever the model takes.
 
     Args:
         provider: The provider.
@@ -520,11 +1192,10 @@ def _reasoning_build_kwargs(
         budget: The reasoning token budget asked for, or ``None``.
         max_tokens: The output cap asked for, or ``None`` for the provider's default.
 
-    Returns:
-        The keywords for ``create_chat_model``, and the ``output_config`` entries each call merges into its own.
-
     Raises:
-        ModelsClientRefused: The setting cannot be carried to ``provider`` as asked.
+        ModelsClientRefused: A word and a budget together; a word that is not one of the engine's seven; a budget
+            below Anthropic's floor, or not below the output cap; a budget off Anthropic with no cap to take a share
+            of.
     """
     if effort is not None and budget is not None:
         raise ModelsClientRefused(
@@ -533,38 +1204,35 @@ def _reasoning_build_kwargs(
             "(ClientRequestSettings refuses the pair too); pass reasoning_effort or reasoning_max_tokens",
             provider=provider,
         )
-    if effort is not None:
-        if effort not in _EFFORT_WORDS[provider]:
-            instead = _EFFORT_INSTEAD.get((provider, effort), f"ask for one of {sorted(_EFFORT_WORDS[provider])}")
-            raise ModelsClientRefused(
-                "reasoning_effort", f"{effort!r} is not a word {provider} takes; {instead}", provider=provider
-            )
-        if provider == "anthropic":
-            if effort == "none":
-                return {"thinking": {"type": "disabled"}}, {}
-            return {}, {"effort": effort}
-        if provider == "openai":
-            return {"reasoning_effort": effort}, {}
-        return {"reasoning": {"effort": effort}}, {}
-    if budget is not None:
-        if provider != "anthropic":
-            raise ModelsClientRefused("reasoning_max_tokens", _NO_BUDGET[provider], provider=provider)
-        if budget < _ANTHROPIC_MIN_THINKING_BUDGET:
-            raise ModelsClientRefused(
-                "reasoning_max_tokens",
-                f"Anthropic refuses a thinking budget below {_ANTHROPIC_MIN_THINKING_BUDGET} tokens; ask for at "
-                f"least {_ANTHROPIC_MIN_THINKING_BUDGET}",
-                provider=provider,
-            )
-        if max_tokens is not None and budget >= max_tokens:
-            raise ModelsClientRefused(
-                "reasoning_max_tokens",
-                f"Anthropic refuses a thinking budget ({budget}) that is not below max_tokens ({max_tokens}); raise "
-                "max_tokens or lower the budget",
-                provider=provider,
-            )
-        return {"thinking": {"type": "enabled", "budget_tokens": budget}}, {}
-    return {}, {}
+    if effort is not None and effort not in EFFORT_LADDER:
+        raise ModelsClientRefused(
+            "reasoning_effort",
+            f"{effort!r} is not one of the engine's words ({', '.join(EFFORT_LADDER)})",
+            provider=provider,
+        )
+    if budget is None:
+        return
+    if provider == "anthropic" and budget < _ANTHROPIC_MIN_THINKING_BUDGET:
+        raise ModelsClientRefused(
+            "reasoning_max_tokens",
+            f"Anthropic refuses a thinking budget below {_ANTHROPIC_MIN_THINKING_BUDGET} tokens; ask for at "
+            f"least {_ANTHROPIC_MIN_THINKING_BUDGET}",
+            provider=provider,
+        )
+    if max_tokens is not None and budget >= max_tokens:
+        raise ModelsClientRefused(
+            "reasoning_max_tokens",
+            f"a reasoning budget ({budget}) that is not below max_tokens ({max_tokens}) leaves the answer no room; "
+            "raise max_tokens or lower the budget",
+            provider=provider,
+        )
+    if max_tokens is None and provider != "anthropic":
+        raise ModelsClientRefused(
+            "reasoning_max_tokens",
+            f"{provider} takes an effort word and no reasoning budget, so a budget is sent as the word its share of "
+            "max_tokens maps to, and there is no max_tokens to take a share of; pass max_tokens",
+            provider=provider,
+        )
 
 
 def _int_or_none(value: object) -> int | None:
@@ -659,67 +1327,24 @@ def _requires_parameters(bound: object, call_kwargs: Mapping[str, Any]) -> bool:
     return per_call is True or built is True
 
 
-def _temperature_refusal(provider: SupportedProvider, exc: Exception, *, routing_required: bool) -> str | None:
-    """Whether ``exc`` is the provider refusing a request for the temperature it carried, and in what words.
+@dataclass(frozen=True, slots=True)
+class _Directive:
+    """A call's reply-format directive, checked before anything is sent: its kind, and a schema's parts."""
 
-    Read by each SDK's error type and structured fields, never by the exception's text, which on Anthropic and
-    OpenAI repeats the whole body:
-
-    * Anthropic: a 400 ``invalid_request_error`` whose message names ``temperature`` and says it is not taken
-      (:data:`_NOT_TAKEN_WORDS`: "`temperature` is deprecated for this model.").
-    * OpenAI: a 400 whose ``param`` is ``temperature`` and whose ``code`` is ``unsupported_parameter`` or
-      ``unsupported_value`` (:data:`_OPENAI_NOT_TAKEN_CODES`).
-    * OpenRouter: by default it drops a parameter the routed upstream does not take, so no refusal arrives; under
-      ``require_parameters`` it instead excludes such an upstream, and when that leaves none it answers 404 (no
-      endpoint can take the request's parameters), which names no parameter: a refusal of the temperature only if
-      the same request without it is served, which the resend settles.
-
-    Args:
-        provider: The provider the request went to.
-        exc: What the call raised.
-        routing_required: Whether the request carried OpenRouter's ``require_parameters``.
-
-    Returns:
-        The provider's message, or ``None`` when ``exc`` is anything else.
-    """
-    if provider == "anthropic" and isinstance(exc, anthropic.BadRequestError):
-        error = _mapping(_mapping(exc.body).get("error"))
-        message = _error_message(exc.body)
-        if error.get("type") != "invalid_request_error" or message is None:
-            return None
-        said = message.lower()
-        if "temperature" in said and any(word in said for word in _NOT_TAKEN_WORDS):
-            return message
-        return None
-    if provider == "openai" and isinstance(exc, openai.BadRequestError):
-        if exc.param == "temperature" and exc.code in _OPENAI_NOT_TAKEN_CODES:
-            return _error_message(exc.body) or f"{exc.code}: temperature"
-        return None
-    if provider == "openrouter" and routing_required and isinstance(exc, openrouter_errors.NotFoundResponseError):
-        return exc.message
-    return None
+    kind: Literal["json_schema", "json_object"] | None
+    schema: dict[str, Any] | None = None  # Any: a JSON schema
+    name: str = "response"
+    strict: bool = False
 
 
-def _without_temperature(chat: RunnableBinding[Any, Any]) -> RunnableBinding[Any, Any]:  # Any: LangChain's types
-    """``chat`` with its model copied at no temperature: the same client, config and callbacks, sending none.
+@dataclass(frozen=True, slots=True)
+class _Request:
+    """One request as it goes out: the binding it is sent through, the bind keywords, and what it carried."""
 
-    Each provider's LangChain model leaves a ``None`` temperature out of the request. The copy is shallow, so it
-    shares the SDK client the original owns (OpenRouter's, which :meth:`ModelsCompletionClient.aclose` closes),
-    and the binding keeps its class and config, so models' tracker and the client's breaker still run.
-
-    Args:
-        chat: The binding ``create_chat_model`` returned.
-
-    Returns:
-        A binding of the same model with no temperature.
-
-    Raises:
-        TypeError: The binding holds something other than a LangChain chat model.
-    """
-    model = chat.bound
-    if not isinstance(model, BaseChatModel):
-        raise TypeError(f"create_chat_model's binding holds {type(model).__name__}, not a LangChain chat model")
-    return chat.model_copy(update={"bound": model.model_copy(update={"temperature": None})})
+    chat: RunnableBinding[Any, Any]  # Any: LangChain's types
+    kwargs: dict[str, Any]  # Any: the provider's keyword values
+    sent: WireSettings
+    carried: _Carried
 
 
 class ModelsCompletionClient:
@@ -727,9 +1352,9 @@ class ModelsCompletionClient:
 
     Implements :class:`~threetears.evals.schema.CompletionClient` and
     :class:`~threetears.evals.schema.BoundCompletionClient`. ``generate`` is safe to call concurrently: every call
-    builds its own messages and its own bind, and the only state it writes is the price book's (under its locks),
-    :attr:`last_pricing_failure`, and once, when the model refuses a temperature, the chat model it sends with
-    (:meth:`generate`).
+    builds its own messages, its own settings and its own bind, and the only state it writes is the price book's
+    and the learned facts' (each in one step), :attr:`last_pricing_failure`, and the copies of the chat model it
+    keeps, one per distinct set of built settings.
 
     **Await** :meth:`load_prices` **once after building it**, before the engine makes an out-of-run call on it under
     an enforced cap: :meth:`price_ceiling` answers only from loaded rates.
@@ -745,7 +1370,7 @@ class ModelsCompletionClient:
         model_name: str,
         provider: SupportedProvider,
         chat_model: RunnableBinding[Any, Any],  # Any: LangChain types a chat model's input and output as Any
-        call_output_config: Mapping[str, Any],  # Any: the provider's own output_config values
+        asked: WireSettings,
         prices: HttpClient | None,
     ) -> None:
         """Wrap a built chat model. Build one with :func:`models_client`, which checks every setting first.
@@ -754,23 +1379,26 @@ class ModelsCompletionClient:
             model_name: The model id the chat model was built for.
             provider: Its provider.
             chat_model: The binding ``create_chat_model`` returned.
-            call_output_config: ``output_config`` entries every call sends (Anthropic's effort), merged with a
-                schema's format into one ``output_config``, since a second bind replaces the first.
+            asked: What the client was asked for (``strict_output`` aside, which each call's directive sets): what
+                every call's settings are chosen from (:func:`closest_settings`). The chat model is copied at the
+                settings each call sends, so it is built at the same ones (:func:`models_client` builds both).
             prices: The httpx-like client a price book of the client's own reads the catalogue through, or
                 ``None`` for one that opens a client of its own per fetch; a factory passes its own
-                :class:`PriceBook` (itself such a client), which every client it builds then shares.
+                :class:`PriceBook` (itself such a client), which every client it builds then shares, with the
+                settings its clients learned from refusals.
         """
         self.model_name = model_name
         self.provider: SupportedProvider = provider
         self._chat = chat_model
-        self._call_output_config = dict(call_output_config)
         self._book = prices if isinstance(prices, PriceBook) else PriceBook(prices)
         bound = chat_model.bound
         self._responses_api = provider == "openai" and _routes_to_responses(bound)
-        temperature = getattr(bound, "temperature", None)
-        built = float(temperature) if isinstance(temperature, int | float) else None
-        self._temperature = _responses_temperature(bound, built) if self._responses_api else built
         self._output_cap = _int_or_none(getattr(bound, "max_tokens", None))
+        cap = asked.max_tokens if asked.max_tokens is not None else self._output_cap
+        self._asked = replace(asked, max_tokens=cap, strict_output=False)
+        self._registry = _registry_facts(model_name)
+        self._variants: dict[str, RunnableBinding[Any, Any]] = {self._built_key(bound): chat_model}
+        self._logged_notes: set[tuple[str, ...]] = set()
         self._closed = False
         self.last_pricing_failure: str | None = None
         """Why the most recent completion went unpriced, or ``None`` when it was priced.
@@ -778,28 +1406,31 @@ class ModelsCompletionClient:
         The same sentence as that completion's ``pricing_failure``, kept on the client so a host that reads only
         the engine's records (``cost_usd`` is ``None``) can still ask why. Under concurrent calls it is the last
         one to finish; read a completion's own ``pricing_failure`` when that matters."""
+        self._request(_Directive(None), self._facts())  # logs how a plain call's settings moved, at build
 
     @property
     def chat_model(self) -> RunnableBinding[Any, Any]:  # Any: as in __init__
-        """The LangChain runnable this client calls: ``create_chat_model``'s binding, its model at ``.bound``.
+        """The LangChain runnable this client was built on: ``create_chat_model``'s binding, its model at ``.bound``.
 
-        For a host that wants to see what every request carries (``chat_model.bound.max_retries``,
-        ``.temperature``, ``.max_tokens``) or to make calls of its own on the same model. A call made on it
-        directly bypasses everything this client maps: the stop reason, the served model, the pricing.
+        For a host that wants to see what the client was built with (``chat_model.bound.max_retries``,
+        ``.temperature``, ``.max_tokens``) or to make calls of its own on the same model. A call whose settings
+        moved since (a refusal learned, a catalogue read) goes through a copy at those settings; a call made on this
+        one directly bypasses everything this client maps: the settings, the stop reason, the served model, the
+        pricing.
         """
         return self._chat
 
     @property
     def temperature(self) -> float | None:
-        """The temperature every request is sent with, read back from the built model; ``None`` when none is sent.
+        """The temperature a call with no reply format is sent with now; ``None`` when none is sent.
 
-        Read after construction, never echoed from the argument: LangChain drops a temperature a model refuses at
-        build (OpenAI's ``gpt-5`` family), and again from the request on OpenAI's Responses API for a reasoning
-        ``gpt-5`` model, and on Anthropic a thinking budget is built with none, since the API refuses one beside
-        extended thinking. It turns ``None`` once the provider refused a request for its temperature and the same
-        request without one was served (:meth:`generate`), and stays so for the client's life.
+        Read back from the model the call goes through, never echoed from the argument: LangChain drops a
+        temperature a model refuses at build (OpenAI's ``gpt-5`` family), and again from the request on OpenAI's
+        Responses API for a reasoning ``gpt-5`` model; on Anthropic none is sent beside thinking; and none is sent
+        once the model is known not to take one (declared, or refused and the request without it served, by this
+        client or another of its factory).
         """
-        return self._temperature
+        return self._carried_temperature(self._request(_Directive(None), self._facts()).chat)
 
     async def load_prices(self) -> str | None:
         """Look the model's rates up in the price catalogue, so :meth:`price_ceiling` can answer: the boot step.
@@ -808,7 +1439,8 @@ class ModelsCompletionClient:
         enforced cap (``out_of_run_cap_usd``); a client a factory built shares the factory's book, so a model loaded
         once is loaded for every client of it. Rates found, and a catalogue that prices no row for the model, are
         kept; a failed fetch is not, so awaiting it again tries again. On OpenRouter the rates serve the ceiling
-        alone: a call's stored cost stays OpenRouter's own reported figure.
+        alone: a call's stored cost stays OpenRouter's own reported figure; and the catalogue it read says which
+        parameters the model takes, which every later call's settings follow.
 
         Returns:
             ``None`` when the rates are loaded, else why the model is unpriced (also logged at WARNING), in which
@@ -820,11 +1452,25 @@ class ModelsCompletionClient:
         """
         return await self._book.load(self.provider, self.model_name)
 
-    def _request_kwargs(self, response_format: dict[str, Any] | None) -> dict[str, Any]:  # Any: provider kwargs
-        """The bind keywords for one call: the response format as the provider takes it, and the effort beside it."""
-        kwargs: dict[str, Any] = {}
-        output_config: dict[str, Any] = dict(self._call_output_config)
-        if response_format is not None and self._responses_api:
+    def _facts(self, refusals: Sequence[_Refusal] = ()) -> SettingFacts:
+        """What is known of the model now: learned over registered over catalogued, and this call's own refusals."""
+        facts = self._book.learned.facts(self.provider, self.model_name).over(self._registry)
+        if self.provider == "openrouter":
+            facts = facts.over(_catalogue_facts(self._book.supported_parameters(self.model_name)))
+        for refusal in refusals:
+            facts = refusal.teach(facts)
+        return facts
+
+    def _directive(self, response_format: dict[str, Any] | None) -> _Directive:  # Any: a JSON directive
+        """The call's directive, checked: a translatable kind, and a schema where its kind needs one.
+
+        Raises:
+            ModelsClientRefused: The directive is not one the adapter translates, or the model is on OpenAI's
+                Responses API.
+        """
+        if response_format is None:
+            return _Directive(None)
+        if self._responses_api:
             raise ModelsClientRefused(
                 "response_format",
                 f"{self.model_name!r} is sent to OpenAI's Responses API, which takes a reply format as text.format, "
@@ -833,57 +1479,158 @@ class ModelsCompletionClient:
                 "client of your own",
                 provider=self.provider,
             )
-        if response_format is not None:
-            kind = response_format.get("type")
-            if kind == "json_schema":
-                spec = response_format.get("json_schema")
-                schema = spec.get("schema") if isinstance(spec, dict) else None
-                if not isinstance(spec, dict) or not isinstance(schema, dict):
-                    raise ModelsClientRefused(
-                        "response_format",
-                        "a json_schema directive carries its schema at response_format['json_schema']['schema']",
-                        provider=self.provider,
-                    )
+        kind = response_format.get("type")
+        if kind == "json_schema":
+            spec = response_format.get("json_schema")
+            schema = spec.get("schema") if isinstance(spec, dict) else None
+            if not isinstance(spec, dict) or not isinstance(schema, dict):
+                raise ModelsClientRefused(
+                    "response_format",
+                    "a json_schema directive carries its schema at response_format['json_schema']['schema']",
+                    provider=self.provider,
+                )
+            return _Directive(
+                "json_schema", schema, str(spec.get("name") or "response"), bool(spec.get("strict", True))
+            )
+        if kind == "json_object":
+            return _Directive("json_object")
+        raise ModelsClientRefused(
+            "response_format",
+            f"{kind!r} is not a directive the adapter translates; send a json_schema or a json_object one",
+            provider=self.provider,
+        )
+
+    def _asks_strict(self, directive: _Directive) -> bool:
+        """Whether the call asks for enforcement: a strict schema, and on OpenRouter any schema or built routing.
+
+        On OpenRouter models' structured-output translation puts ``require_parameters`` on every schema call, and a
+        host may have built the model with it (``openrouter_provider``).
+        """
+        if self.provider == "openrouter":
+            built = _mapping(getattr(self._chat.bound, "openrouter_provider", None)).get("require_parameters")
+            return directive.kind == "json_schema" or built is True
+        return directive.kind == "json_schema" and directive.strict
+
+    def _request(self, directive: _Directive, facts: SettingFacts) -> _Request:
+        """The request one call sends under ``facts``: the binding at its settings, and its bind keywords.
+
+        Logs, once per client and distinct outcome at INFO, how the settings moved from what was asked.
+        """
+        asked = replace(self._asked, strict_output=self._asks_strict(directive))
+        sent, notes = closest_settings(asked, facts, self.provider)
+        if notes and notes not in self._logged_notes:
+            self._logged_notes.add(notes)
+            log.info(
+                "eval.providers sends the closest settings the model takes provider=%s model=%s: %s",
+                self.provider,
+                self.model_name,
+                "; ".join(notes),
+            )
+        fields: dict[str, Any] = {"temperature": sent.temperature, "max_tokens": sent.max_tokens}  # Any: field values
+        output_config: dict[str, Any] = {}  # Any: the provider's own output_config values
+        kwargs: dict[str, Any] = {}  # Any: as above
+        thinking = None
+        if self.provider == "anthropic":
+            thinking = _anthropic_thinking(sent, facts)
+            fields["thinking"] = thinking
+            if sent.reasoning_effort not in (None, "none"):
+                output_config["effort"] = sent.reasoning_effort
+        elif self.provider == "openai":
+            fields["reasoning_effort"] = sent.reasoning_effort
+        else:
+            fields["reasoning"] = {"effort": sent.reasoning_effort} if sent.reasoning_effort is not None else None
+        strict_format = False
+        if directive.kind == "json_schema" and directive.schema is not None:
+            if self.provider == "openrouter" or facts.structured_output is not False:
                 built = structured_output_kwargs(
-                    self.provider,
-                    schema,
-                    name=str(spec.get("name") or "response"),
-                    strict=bool(spec.get("strict", True)),
+                    self.provider, directive.schema, name=directive.name, strict=directive.strict
                 )
                 if self.provider == "anthropic":
                     output_config.update(_mapping(built.pop("output_config", None)))
                 kwargs.update(built)
-            elif kind == "json_object":
-                if self.provider == "openai":
-                    # Through extra_body: a top-level response_format diverts ChatOpenAI onto its parse path.
-                    kwargs["extra_body"] = {"response_format": {"type": "json_object"}}
-                elif self.provider == "openrouter":
-                    kwargs["response_format"] = {"type": "json_object"}
-                # Anthropic has no JSON mode, and an empty-object schema would force `{}`: nothing is sent, and the
-                # engine validates the reply on return as it does for every directive.
-            else:
-                raise ModelsClientRefused(
-                    "response_format",
-                    f"{kind!r} is not a directive the adapter translates; send a json_schema or a json_object one",
-                    provider=self.provider,
-                )
+                strict_format = directive.strict
+            elif self.provider == "openai":
+                # The model takes no schema: JSON mode, through extra_body as below, and the engine validates.
+                kwargs["extra_body"] = {"response_format": {"type": "json_object"}}
+            # Anthropic without structured outputs sends no format; the engine validates the reply on return.
+        elif directive.kind == "json_object":
+            if self.provider == "openai":
+                # Through extra_body: a top-level response_format diverts ChatOpenAI onto its parse path.
+                kwargs["extra_body"] = {"response_format": {"type": "json_object"}}
+            elif self.provider == "openrouter":
+                kwargs["response_format"] = {"type": "json_object"}
+            # Anthropic has no JSON mode, and an empty-object schema would force `{}`: nothing is sent, and the
+            # engine validates the reply on return as it does for every directive.
+        if self.provider == "openrouter" and asked.strict_output and not sent.strict_output:
+            # Merged into the model's routing by models' ChatOpenRouter, so it overrides a built require_parameters.
+            kwargs["provider"] = {**_mapping(kwargs.get("provider")), "require_parameters": False}
         if output_config:
             kwargs["output_config"] = output_config
-        return kwargs
+        chat = self._variant(fields)
+        carried = _Carried(
+            temperature=self._carried_temperature(chat) is not None,
+            effort=sent.reasoning_effort,
+            thinking=_mapping(thinking).get("type"),
+            strict_format=strict_format and self.provider != "openrouter",
+            enforcement=self.provider == "openrouter" and _requires_parameters(chat.bound, kwargs),
+        )
+        return _Request(chat=chat, kwargs=kwargs, sent=sent, carried=carried)
+
+    @staticmethod
+    def _built_key(bound: object) -> str:
+        """The settings a built model holds, as the key its copies are kept under."""
+        return json.dumps({name: getattr(bound, name, None) for name in _BUILT_FIELDS}, sort_keys=True, default=str)
+
+    def _variant(self, fields: Mapping[str, Any]) -> RunnableBinding[Any, Any]:  # Any: LangChain's types
+        """The chat model at ``fields``: the one built, or a copy of it made once and kept.
+
+        The copy is shallow, so it shares the SDK client the original owns (OpenRouter's, which :meth:`aclose`
+        closes), and the binding keeps its class and config, so models' tracker and the client's breaker still
+        run. A temperature LangChain dropped at build is never put back on OpenAI: its validator dropped it for the
+        model, and a copy does not run the validator again.
+        """
+        built = self._chat.bound
+        update = {name: value for name, value in fields.items() if hasattr(built, name)}
+        if update.get("max_tokens") is None:
+            update.pop("max_tokens", None)  # no cap asked: the built model's default stands
+        if self.provider == "openai" and update.get("temperature") is not None:
+            update["temperature"] = getattr(built, "temperature", None)
+        key = json.dumps(
+            {name: update.get(name, getattr(built, name, None)) for name in _BUILT_FIELDS}, sort_keys=True, default=str
+        )
+        variant = self._variants.get(key)
+        if variant is None:
+            if not isinstance(built, BaseChatModel):
+                raise TypeError(f"create_chat_model's binding holds {type(built).__name__}, not a LangChain chat model")
+            variant = self._chat.model_copy(update={"bound": built.model_copy(update=update)})
+            self._variants[key] = variant
+        return variant
+
+    def _carried_temperature(self, chat: RunnableBinding[Any, Any]) -> float | None:  # Any: as above
+        """The temperature a request through ``chat`` carries, read back from its model."""
+        bound = chat.bound
+        temperature = getattr(bound, "temperature", None)
+        built = float(temperature) if isinstance(temperature, int | float) else None
+        return _responses_temperature(bound, built) if self._responses_api else built
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
     ) -> ModelsCompletion:
-        """Send the prompt pair once and read the reply into the port's members.
+        """Send the prompt pair with the closest settings the model takes, and read the reply into the port's members.
 
-        **A temperature the model refuses is dropped, once, and remembered.** When the provider refuses the request
-        for the temperature it carried (read by each SDK's error type and fields, as the module docstring lists), the
-        same request is sent again without it, and once that is served the client sends no temperature for the rest of its life
-        (:attr:`temperature` reads ``None``), logging it at WARNING once with the provider's message. This is not a
-        hidden retry: the provider refused the first request before generating anything, and a refusal is not
-        billed, so the call costs what the one served request costs and :meth:`price_ceiling` holds. The completion
-        reports ``temperature=None``, which the engine records as the model's default. Any other failure, and a
-        failure of the resend, propagates as it was raised.
+        **What is sent.** The settings the client was asked for, moved to the closest the model accepts as far as
+        is known now (:func:`closest_settings`; the module docstring lists the sources), and the completion's
+        ``sent_settings`` and ``temperature`` say what the served request carried.
+
+        **A setting the model refuses is dropped or moved, once, and remembered.** When the provider refuses the
+        request for a setting it carried (read by each SDK's error type and fields, as the module docstring lists),
+        the request is sent again with the closest setting the model then accepts; once that is served, every
+        client of the factory sends so for the rest of its life, logged once at WARNING with the provider's
+        message. On OpenRouter, whose refusal (a 404 under ``require_parameters``) names nothing, the temperature
+        goes first, and only if the request without it is refused too, enforcement (``strict_output=False``). This
+        is not a hidden retry: the provider refused before generating anything, and a refusal is not billed, so
+        the call costs what the one served request costs and :meth:`price_ceiling` holds. Any other failure, and a
+        refusal of a resend for a setting already dropped, propagates as it was raised, and nothing is learned.
 
         Args:
             system: The system message.
@@ -891,10 +1638,12 @@ class ModelsCompletionClient:
             response_format: ``None``; a ``json_schema`` directive, sent through models' structured-output
                 translation for the provider (Anthropic's ``output_config.format``, OpenAI's
                 ``extra_body.response_format``, OpenRouter's ``response_format`` with ``require_parameters``, so
-                an upstream that cannot honour it is refused rather than answering in prose); or a
-                ``json_object`` one, sent as OpenAI and OpenRouter take it and not at all on Anthropic, which has
-                no JSON mode. Either way the content is the reply's raw text. Refused on a model ``ChatOpenAI``
-                sends to OpenAI's Responses API, which takes neither in that shape.
+                an upstream that cannot honour it is refused rather than answering in prose), or, on a model that
+                takes no strict schema, unenforced (JSON mode on OpenAI, no format on Anthropic, no
+                ``require_parameters`` on OpenRouter); or a ``json_object`` one, sent as OpenAI and OpenRouter take
+                it and not at all on Anthropic, which has no JSON mode. Either way the content is the reply's raw
+                text. Refused on a model ``ChatOpenAI`` sends to OpenAI's Responses API, which takes neither in that
+                shape.
 
         Returns:
             The completion. Its price never costs it: a pricing failure after the call returns it unpriced.
@@ -904,26 +1653,34 @@ class ModelsCompletionClient:
                 OpenAI's Responses API.
             TypeError: The chat model returned something other than an ``AIMessage``.
             Exception: The provider SDK's own error for a refused or failed request, as it was raised (for a
-                refused temperature, the resend's, when that fails too).
+                refused setting, the resend's, when that fails too).
         """
-        kwargs = self._request_kwargs(response_format)
+        directive = self._directive(response_format)
         messages: list[BaseMessage] = [SystemMessage(content=system), HumanMessage(content=user)]
-        chat, temperature = self._chat, self._temperature
-        try:
-            reply = await self._send(chat, kwargs, messages)
-        except (anthropic.BadRequestError, openai.BadRequestError, openrouter_errors.NotFoundResponseError) as exc:
-            refused = (
-                _temperature_refusal(self.provider, exc, routing_required=_requires_parameters(chat.bound, kwargs))
-                if temperature is not None
-                else None
+        refusals: list[_Refusal] = []
+        request = self._request(directive, self._facts())
+        while True:
+            try:
+                reply = await self._send(request.chat, request.kwargs, messages)
+                break
+            except (anthropic.BadRequestError, openai.BadRequestError, openrouter_errors.NotFoundResponseError) as exc:
+                refusal = _refusal(self.provider, exc, request.carried, self._facts(refusals))
+                if (
+                    refusal is None
+                    or len(refusals) >= _MAX_RESENDS
+                    or any((r.setting, r.word) == (refusal.setting, refusal.word) for r in refusals)
+                ):
+                    raise
+                resend = self._request(directive, self._facts([*refusals, refusal]))
+                if resend.chat is request.chat and resend.kwargs == request.kwargs:
+                    raise  # nothing closer to send: the refusal stands
+                refusals.append(refusal)
+                request = resend
+        if refusals:
+            self._book.learned.learn(
+                self.provider, self.model_name, refusals, registry=self._registry, sent=request.sent
             )
-            if refused is None:
-                raise
-            without = _without_temperature(chat)
-            reply = await self._send(without, kwargs, messages)
-            self._forget_temperature(without, refused)
-            temperature = None
-        return await self._read(reply, temperature)
+        return await self._read(reply, self._carried_temperature(request.chat), request.sent.reported())
 
     async def _send(
         self,
@@ -934,8 +1691,8 @@ class ModelsCompletionClient:
         """One request: ``chat`` bound with the call's keywords, given the prompt pair.
 
         Args:
-            chat: The binding to send through: the client's, or its copy at no temperature.
-            kwargs: The call's bind keywords (:meth:`_request_kwargs`).
+            chat: The binding to send through: the client's, or its copy at the call's settings.
+            kwargs: The call's bind keywords (:meth:`_request`).
             messages: The system and human messages.
 
         Returns:
@@ -950,26 +1707,10 @@ class ModelsCompletionClient:
             raise TypeError(f"{self.provider} chat model returned {type(reply).__name__}, not an AIMessage")
         return reply
 
-    def _forget_temperature(self, without: RunnableBinding[Any, Any], refusal: str) -> None:  # Any: as in __init__
-        """Send no temperature from now on: the model refused one, and the request without it was served.
-
-        Logged once per client: concurrent calls refused together each resend, and only the first to be served
-        swaps the chat model and logs.
-        """
-        if self._temperature is None:
-            return
-        self._chat = without
-        self._temperature = None
-        log.warning(
-            "eval.providers model refuses a temperature provider=%s model=%s; the request was resent without one "
-            "and none is sent from now on: %s",
-            self.provider,
-            self.model_name,
-            refusal,
-        )
-
-    async def _read(self, reply: AIMessage, temperature: float | None) -> ModelsCompletion:
-        """The reply's members, per provider; ``temperature`` is what the served request carried."""
+    async def _read(
+        self, reply: AIMessage, temperature: float | None, sent: ClientRequestSettings | None
+    ) -> ModelsCompletion:
+        """The reply's members, per provider; ``temperature`` and ``sent`` are what the served request carried."""
         meta = _mapping(reply.response_metadata)
         usage = _mapping(reply.usage_metadata)
         input_tokens = _int_or_none(usage.get("input_tokens"))
@@ -1007,6 +1748,7 @@ class ModelsCompletionClient:
             provider_stop_reason=provider_stop_reason,
             served_provider=served_provider if isinstance(served_provider, str) and served_provider else None,
             pricing_failure=unpriced,
+            sent_settings=sent,
         )
 
     async def _price(
@@ -1119,9 +1861,10 @@ class ModelsCompletionClient:
 
         The client's catalogue rates applied to a bound on the prompt's tokens (its UTF-8 bytes, which no
         byte-level tokenizer exceeds, plus an allowance for the framing the provider adds) and to the output cap
-        the model was built with, reasoning included. One served request per call, since the adapter retries
-        nothing: the one resend it makes, without a temperature the model refused (:meth:`generate`), follows a
-        refusal that was not billed, so the ceiling is the same with or without it.
+        the model was built with, reasoning included (the cap a call sends is never above it). One served request
+        per call, since the adapter retries nothing: a resend it makes with a setting the model refused dropped or
+        moved (:meth:`generate`) follows a refusal that was not billed, so the ceiling is the same with or without
+        it.
 
         ``None`` until the rates are loaded: **await** :meth:`load_prices` **once at boot** (on Anthropic and OpenAI a
         first priced call also loads them; on OpenRouter only ``load_prices`` does, since its calls are priced by
@@ -1226,21 +1969,29 @@ def models_client(
     One client per model, temperature and reasoning setting, which is how the engine's role factory asks for
     them; :func:`models_clients` builds and keeps them per role.
 
-    **Reasoning, per provider.** ``reasoning_effort`` is one of the engine's seven words:
+    **Reasoning, per provider, as the closest setting the model takes** (:func:`closest_settings`; unknown is sent as
+    asked, and a refusal is learned from). ``reasoning_effort`` is one of the engine's seven words, and
+    ``reasoning_max_tokens`` a budget in tokens:
 
-    * Anthropic: ``max``, ``xhigh``, ``high``, ``medium`` and ``low`` go as ``output_config.effort`` (merged into
-      the same ``output_config`` as a schema's format on each call); ``none`` builds thinking disabled;
-      ``minimal`` is refused, since Anthropic has no such level and sending ``low`` in its place would record a
-      request that was not made. ``reasoning_max_tokens`` goes as ``thinking={"type": "enabled",
-      "budget_tokens": N}``, at least 1024 and below ``max_tokens``, and the model is then built with no
-      temperature (the API refuses one beside thinking), so completions report ``temperature=None``.
-    * OpenAI: ``reasoning_effort`` as the word; ``max`` is refused (OpenAI's highest is ``xhigh``, which is not
-      sent in its place), and so is any ``reasoning_max_tokens``: OpenAI takes no reasoning budget.
-    * OpenRouter: ``reasoning={"effort": word}``, all seven words; ``reasoning_max_tokens`` is refused, because
-      the OpenRouter SDK strips ``reasoning.max_tokens`` from the typed request without an error.
+    * Anthropic: a word goes as ``output_config.effort`` over adaptive thinking (``thinking={"type": "adaptive"}``;
+      the effort alone on a model that takes no adaptive thinking), merged into the same ``output_config`` as a
+      schema's format on each call; ``minimal`` is sent as ``low``, its lowest; ``none`` builds thinking disabled
+      (``low`` on a model that cannot turn thinking off). A budget goes as ``thinking={"type": "enabled",
+      "budget_tokens": N}``, at least 1024 and below ``max_tokens``; on a model that takes no budget, as the effort
+      word its share of ``max_tokens`` maps to (:data:`BUDGET_SHARES`), and a word on a model that takes only budgets
+      as that share of the cap. No temperature is sent beside any thinking (the API refuses one), so completions
+      report ``temperature=None`` there.
+    * OpenAI: ``reasoning_effort`` as the word; ``max`` is sent as ``xhigh``, OpenAI's highest, and a budget as the
+      word its share of ``max_tokens`` maps to: OpenAI takes no reasoning budget.
+    * OpenRouter: ``reasoning={"effort": word}``, all seven words (narrowed only by what is known of the model); a
+      budget as the word its share maps to, because the OpenRouter SDK's typed request strips
+      ``reasoning.max_tokens`` without an error. OpenRouter maps a word back onto a budget for an upstream that
+      takes one by the same shares, so a budget comes back about as asked.
 
     Asking by a word and by a budget at once is refused, as
-    :class:`~threetears.evals.schema.ClientRequestSettings` refuses it.
+    :class:`~threetears.evals.schema.ClientRequestSettings` refuses it; so are a budget below 1024 on Anthropic, a
+    budget not below ``max_tokens``, and a budget off Anthropic with no ``max_tokens`` to take its share of. What a
+    request carried is each completion's ``sent_settings`` (``None`` when it carried no output cap).
 
     **The Claude CLI route is refused.** Models routes an Anthropic subscription token (``sk-ant-oat…``) to the
     Claude CLI, whose wrapper reports every completion as finished (it synthesises ``stop``), and drops the served
@@ -1255,13 +2006,15 @@ def models_client(
         provider: The provider, overriding models' capability registry; required for an id the registry does not
             know (every OpenRouter route beyond the few models registers).
         temperature: The sampling temperature to build with, or ``None`` for the provider's default. What a
-            completion reports is what the built model sends (:attr:`ModelsCompletionClient.temperature`), and
-            ``None`` once the provider refused a request for it: that request is sent again without it, and none is
-            sent after (:meth:`ModelsCompletionClient.generate`).
+            completion reports is what its request carried (:attr:`ModelsCompletionClient.temperature`): ``None``
+            beside Anthropic thinking, on a model known to take none, and once the provider refused a request for
+            it, which is sent again without it, with none sent after (:meth:`ModelsCompletionClient.generate`).
         reasoning_effort: The reasoning level, one of the engine's seven words, or ``None`` to send none.
-        reasoning_max_tokens: The reasoning token budget, or ``None`` to send none; Anthropic only.
+        reasoning_max_tokens: The reasoning token budget, or ``None`` to send none; sent as a budget where the
+            model takes one, else as the effort word its share of ``max_tokens`` maps to.
         max_tokens: The output cap, or ``None`` for the provider's default (Anthropic's is the model profile's;
-            OpenAI and OpenRouter send none). The price ceiling needs one.
+            OpenAI and OpenRouter send none, and their completions then report no ``sent_settings``); above the
+            model's known output cap, that cap. The price ceiling needs one.
         prices: An httpx-like client (``threetears.models.price_lookup.HttpClient``: one async ``get``) the
             catalogue is read through, or ``None`` for the adapter to open its own per fetch. Anthropic and OpenAI
             calls are priced from ``threetears.models.price_lookup.lookup_price``, read once per client (a host's
@@ -1275,8 +2028,8 @@ def models_client(
         The client.
 
     Raises:
-        ModelsClientRefused: The provider, the model, the key's route, a reasoning setting or a provider keyword
-            cannot be carried as asked.
+        ModelsClientRefused: The provider, the model or the key's route cannot be built for, a provider keyword
+            would bypass the adapter, or a reasoning setting is the caller's error (above).
     """
     resolved = resolve_provider(model_id, provider)
     if resolved == "anthropic" and is_subscription_token(api_key):
@@ -1290,12 +2043,30 @@ def models_client(
     for keyword in sorted(provider_kwargs):
         if keyword in _RESERVED_KWARGS:
             raise ModelsClientRefused(keyword, _RESERVED_KWARGS[keyword], provider=resolved)
-    build, call_output_config = _reasoning_build_kwargs(resolved, reasoning_effort, reasoning_max_tokens, max_tokens)
-    thinking_on = _mapping(build.get("thinking")).get("type") == "enabled"
-    if temperature is not None and not thinking_on:
-        build["temperature"] = temperature
-    if max_tokens is not None:
-        build["max_tokens"] = max_tokens
+    _refuse_caller_errors(resolved, reasoning_effort, reasoning_max_tokens, max_tokens)
+    asked = WireSettings(
+        max_tokens=max_tokens,
+        temperature=temperature,
+        reasoning_effort=reasoning_effort,
+        reasoning_max_tokens=reasoning_max_tokens,
+    )
+    # Built at the settings a call with no reply format sends, as far as is known before the model exists; a call
+    # whose settings differ (a cap known only once built, a refusal learned) goes through a copy at its own.
+    facts = _registry_facts(model_id)
+    if isinstance(prices, PriceBook):
+        facts = prices.learned.facts(resolved, model_id).over(facts)
+    planned, _ = closest_settings(asked, facts, resolved)
+    build: dict[str, Any] = {}  # Any: create_chat_model's keyword values
+    if planned.temperature is not None:
+        build["temperature"] = planned.temperature
+    if planned.max_tokens is not None:
+        build["max_tokens"] = planned.max_tokens
+    if resolved == "anthropic" and (thinking := _anthropic_thinking(planned, facts)) is not None:
+        build["thinking"] = thinking
+    elif resolved == "openai" and planned.reasoning_effort is not None:
+        build["reasoning_effort"] = planned.reasoning_effort
+    elif resolved == "openrouter" and planned.reasoning_effort is not None:
+        build["reasoning"] = {"effort": planned.reasoning_effort}
     if resolved == "openrouter":
         build["model_kwargs"] = _openrouter_model_kwargs(provider_kwargs.pop("model_kwargs", None))
     chat = create_chat_model(
@@ -1311,18 +2082,17 @@ def models_client(
     if not isinstance(chat, RunnableBinding):
         raise TypeError(f"create_chat_model returned {type(chat).__name__}, not the binding it documents")
     built_cap = _int_or_none(getattr(chat.bound, "max_tokens", None))
-    if thinking_on and reasoning_max_tokens is not None and built_cap is not None and reasoning_max_tokens >= built_cap:
+    if (
+        max_tokens is None
+        and reasoning_max_tokens is not None
+        and built_cap is not None
+        and reasoning_max_tokens >= built_cap
+    ):
         # max_tokens was not given, so the cap is the model profile's default, known only once built.
         raise ModelsClientRefused(
             "reasoning_max_tokens",
-            f"Anthropic refuses a thinking budget ({reasoning_max_tokens}) that is not below the model's default "
-            f"output cap ({built_cap}); pass a max_tokens above the budget",
+            f"a reasoning budget ({reasoning_max_tokens}) that is not below the model's default output cap "
+            f"({built_cap}) leaves the answer no room; pass a max_tokens above the budget",
             provider=resolved,
         )
-    return ModelsCompletionClient(
-        model_name=model_id,
-        provider=resolved,
-        chat_model=chat,
-        call_output_config=call_output_config,
-        prices=prices,
-    )
+    return ModelsCompletionClient(model_name=model_id, provider=resolved, chat_model=chat, asked=asked, prices=prices)

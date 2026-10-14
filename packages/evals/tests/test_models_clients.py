@@ -147,6 +147,7 @@ async def test_a_judge_with_no_settings_of_its_own_is_built_from_judge_request_s
     assert JUDGE_REQUEST_SETTINGS.reasoning_effort == "high" and JUDGE_REQUEST_SETTINGS.reasoning_max_tokens is None
     assert body["max_tokens"] == JUDGE_REQUEST_SETTINGS.max_tokens
     assert body["output_config"] == {"effort": JUDGE_REQUEST_SETTINGS.reasoning_effort}
+    assert body["thinking"] == {"type": "adaptive"} and "temperature" not in body
 
 
 async def test_a_judge_s_own_settings_are_kept(net: ProviderTransport) -> None:
@@ -160,7 +161,8 @@ async def test_a_judge_s_own_settings_are_kept(net: ProviderTransport) -> None:
     )
     await _generate(clients("judge", None, temperature=0.0))
     body = net.last(ANTHROPIC_HOST)
-    assert body["max_tokens"] == 2048 and "thinking" not in body and body["output_config"] == {"effort": "low"}
+    assert body["max_tokens"] == 2048 and body["output_config"] == {"effort": "low"}
+    assert body["thinking"] == {"type": "adaptive"}, "an Anthropic effort word rides adaptive thinking"
 
 
 def test_a_default_judge_on_openai_is_built_with_the_judge_s_effort_word(net: ProviderTransport) -> None:

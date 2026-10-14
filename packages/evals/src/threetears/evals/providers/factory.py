@@ -8,6 +8,11 @@ handed. Building a chat model per unit of work would rebuild an SDK client each 
 its own life and hands the engine a lease on it, whose ``aclose`` releases nothing; :meth:`ModelsClients.aclose_all`
 closes what the factory built, once, when the host shuts down.
 
+**What one client learns, every client of the factory knows.** A provider's refusal of a setting a request carried
+(a temperature, a thinking budget, an effort word, a strict format, OpenRouter's ``require_parameters``) is answered
+by the adapter with the closest setting the model then accepts, and kept in the factory's one price book, which every
+client it builds reads, so another client of the same model sends that way from its first call.
+
 **At boot, the host awaits** ``await clients.load_prices()``: it looks up the price catalogue's rates for every
 role's default model, in the one price book every client of the factory reads, so each client's synchronous
 ``price_ceiling`` can answer before the engine makes an out-of-run call (an analysis, a case generation, a second
@@ -18,9 +23,11 @@ loaded the rates (never, on OpenRouter), and the engine refuses every such call.
 **The judge is built as the run asks it.** A run launched with a judge records
 :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS` as its ``judge_asked_settings``, so a ``judge`` role given no
 request settings of its own (no ``max_tokens``, ``reasoning_max_tokens`` or ``reasoning_effort``) is built from
-those values: its output cap and its reasoning effort word, which every provider the adapter supports takes. Their
-``strict_output`` is the strict structured directive the judge already sends on every call. A host that passes the
-judge's settings explicitly asks for those instead, and the run's asked settings do not describe them.
+those values: its output cap and its reasoning effort word. A model that takes no effort word, or not that one, is
+sent the closest setting it accepts (a budget by the word's share of the cap, a neighbouring word), and each
+completion's ``sent_settings`` says what was sent. Their ``strict_output`` is the strict structured directive the
+judge already sends on every call. A host that passes the judge's settings explicitly asks for those instead, and
+the run's asked settings do not describe them.
 """
 
 from __future__ import annotations

@@ -55,14 +55,21 @@ v<version>` prints a release's notes).
   model 3tears-models builds for Anthropic, OpenAI or OpenRouter into the completion client, `models_clients` is
   the role factory a host hands `EvalHost` as `clients` (keys from `api_keys=` or each provider's environment
   variable, refused by name at first use), and `ModelsFailureDescriber` maps each SDK's errors onto the failure
-  port without repeating a payload. Every request is sent once, under a breaker of the adapter's own, except that a
-  request the provider refused for its temperature (unbilled) is sent again without one, and that client then sends
-  none and reports `temperature=None`, so a model that takes no temperature never fails the call; a reply's
-  served model, stop reason, reasoning tokens and the temperature actually sent are read per provider, and which
-  members each provider exposes is pinned by a test, so a LangChain or models upgrade that moves one fails by
-  name. Anthropic and OpenAI calls are priced from models' price catalogue, OpenRouter calls by OpenRouter's own
-  figure, and an unpriced call is `None` with its reason. A reasoning setting a provider cannot carry, and the
-  Claude CLI route (whose completions read as finished whatever stopped them), are refused by name. The engine
+  port without repeating a payload. A setting a model does not take never fails the call: the adapter sends the
+  closest one it accepts (`closest_settings`: a word as the closest word, never more than asked; a budget as the
+  effort word its share of the cap maps to where only words are taken, and a word as that share where only budgets
+  are; an Anthropic effort word over adaptive thinking with no temperature beside it; a strict format a model cannot
+  take, unenforced), from what a provider refused, 3tears-models' capabilities and OpenRouter's catalogue, and each
+  completion reports what its request carried as `sent_settings`. Every request is sent once, under a breaker of
+  the adapter's own, except that a request the provider refused (unbilled) for a setting it carried is sent again
+  with the closest setting the model then takes, learned for every client of the factory; on OpenRouter, whose 404
+  under `require_parameters` names nothing, the temperature goes first and enforcement last (`strict_output=False`).
+  A reply's served model, stop reason, reasoning tokens and the temperature actually sent are read per provider,
+  and which members each provider exposes is pinned by a test, so a LangChain or models upgrade that moves one
+  fails by name. Anthropic and OpenAI calls are priced from models' price catalogue, OpenRouter calls by
+  OpenRouter's own figure, and an unpriced call is `None` with its reason. A reasoning setting that is the caller's
+  error (a word and a budget together, a budget not below the cap), and the Claude CLI route (whose completions
+  read as finished whatever stopped them), are refused by name. The engine
   never imports it. A stop the provider did not name (no finish reason, an unknown one, Anthropic's `pause_turn`)
   reads as `truncated`, output cut short for an unnamed cause, and only a provider-reported failure as `error`; a
   host mapping its own client onto `StopReason` follows the same split. The adapter logs each `truncated` reply's
@@ -70,7 +77,7 @@ v<version>` prints a release's notes).
   synchronous `price_ceiling` can price an out-of-run call under an enforced cap. A pricing failure never costs a
   paid answer (it is logged and the completion returned unpriced), and a cached prompt's cost is marked approximate
   (`;cache-approximate`). The `judge` role is built from `JUDGE_REQUEST_SETTINGS`, what a judged run records it asked:
-  an output cap and the effort word `high`, which every provider the adapter supports takes.
+  an output cap and the effort word `high`, sent as the closest setting the judge model takes.
 - **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names
