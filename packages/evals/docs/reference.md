@@ -126,7 +126,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>values: `'max_turns'`, `'user_done'`, `'participants_ended'`, `'simulator_error'`, `'apparatus_error'`, `'candidate_error'`, `'budget_stopped'`
 - **`CoreDocumentModel`** · model · A stored document in the evidence core: kept across releases, upgraded when read at an older major, and kept whole when read at a newer minor.
 - **`CoreShapeModel`** · model · A model the evidence core stores: a core document, or a shape one embeds, at any depth.
-- **`CoreUpgrader`** · dataclass · One step of the core's upgrade chain: a document at `from_version` rewritten to `from_version + 1`.
+- **`CoreUpgrader`** · dataclass · One step of a kept space's upgrade chain (the durable space's: the core has none): `from_version` to the next.
 - **`DocTypeFacts`** · dataclass · The facts of one stored document type.
 - **`DocumentStore`** · *host contract* · protocol · A narrow document store over one `(scope_id, doc_type, id)`-keyed collection.
 - **`DSLError`** · exception · Raised when a DSL expression is malformed or disallowed.
@@ -322,15 +322,14 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 1`
 - **`CELL_TIMEOUT_ORIGINS`** · *host contract* · constant (tuple) · The values of `CellTimeoutOrigin` this build knows, in the order its readers list them.
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
-- **`CORE_BASELINE_VERSION`** · *host contract* · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
+- **`CORE_BASELINE_VERSION`** · *host contract* · constant (int) · The oldest core major this build reads: always `CORE_SCHEMA_VERSION`, since the core ships no upgrader and a core major is a baseline reset that moves both.
   <br>`= 15`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
   <br>`= 1`
-- **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
+- **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
-- **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
@@ -1159,10 +1158,6 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`quote_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, case_count: int | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None) -> LaunchQuote`
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str) -> CalibrationRating`
-- **`recheck_goal_states`** · function · Re-grade every result of one stored run from what its cells stored, and optionally store the new verdicts.
-  <br>`recheck_goal_states(store: RecheckStore, run_id: str, scope_id: str, *, world: WorldRegistry | None, apply: bool) -> RunRecheck`
-- **`recheck_result`** · function · Re-grade one stored result's goal checks against what its cell stored.
-  <br>`recheck_result(result: EvalResult, *, ledger: CallLedger | None, end_state: Mapping[str, Any] | None, variation: Mapping[str, Any] | None, world: WorldRegistry | None, provenance: ApparatusProvenance) -> tuple[ResultRecheck, list[GoalStateOutcome] | None]`
 - **`record_witnessed_cell`** · async function · Record one cell a host observed — a session it witnessed, not one the engine ran — as a result and its trace.
   <br>`record_witnessed_cell(host: EvalHost, run: EvalRun, test_case: EvalTestCase, output: CandidateOutput, *, k_iteration: int, result_id: str, scored_at: str, judged_artifact: JudgedArtifact, external_rates: ExternalRateTable | None = None, spans: CellTrace | None = None, world_events: Sequence[WorldEvent] | None = None, end_state: Mapping[str, Any] | None = None, judging: WitnessedJudging | None = None) -> tuple[EvalResult, EvalTrace]`
 - **`refuse_ignored_template_fields`** · function · Refuse a template stating a field its kind never acts on (`LaunchableKind.ignored_template_fields`).
@@ -1215,8 +1210,6 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`start_job_work(manager: EvalJobManager, work: JobWork[R], *, store: JobRecordStore, executor: Executor | None, key: str | None = None) -> R`
 - **`start_run`** · *host contract* · async function · Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
   <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> list[EvalRun]`
-- **`start_universal_battery`** · async function · Launch the operator-curated boundary battery against one subject.
-  <br>`start_universal_battery(host: LaunchHost, subject_id: str, *, scope_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, preflight: BatteryPreflight, measure_latency: bool = False) -> list[str]`
 - **`sweep_abandoned_runs`** · function · Write lost every run left not ended by a process that has gone, in the scopes the host names.
   <br>`sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> AbandonedRunSweepReport`
 - **`update_judge_config`** · function · Re-author a judge config via archive-and-recreate (immutable versioning).
@@ -1246,7 +1239,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`CellContext`** · dataclass · What the runner knows about one cell when it asks a kind's factory for the cell's kind.
 - **`CellExecutor`** · protocol · Runs a run's cells, at most `width` at once, starting them in the order given.
 - **`CellMeter`** · class · One cell's own slice of its run's metered calls, counted as each call is admitted or refused.
-- **`CheckFlip`** · model · One goal check whose verdict a re-grade changes.
 - **`CurationStore`** · protocol · Everything the curation family reads, writes and destroys — and nothing else.
 - **`ErrorLedger`** · dataclass · Accumulates a cell's errors, categorized candidate-vs-infra at the source.
 - **`EvalActionJob`** · model · A job whose work has no domain record of its own: what it was, how it ended, and the result it produced.
@@ -1274,7 +1266,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`JudgeRequest`** · class · One judge call as it is sent: what `JudgeService._score` hands the client.
 - **`JudgeService`** · class · Stateless single-dim judge. See module docstring for the contract.
 - **`JudgeTemperatureEstimate`** · model · What comparing a run's judge at the two temperatures would be priced at, against its cap — no call made.
-- **`KeptOutcome`** · model · One stored outcome a re-check left as it was, and why.
 - **`KindFactory`** · *host contract* · protocol · Builds the candidate kind for one cell.
 - **`KindWiring`** · *host contract* · dataclass · What one kind's launcher resolved for its arm — everything `launch_run` cannot know itself.
 - **`LaunchableKind`** · *host contract* · dataclass · One entry of the launch registry a host hands `start_run`: how a kind launches, and what it refuses.
@@ -1289,15 +1280,12 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`PlannedJudge`** · dataclass · The judge one arm will be scored by, resolved before anything is built: what `plan_judge` returns.
 - **`PreparedJudge`** · dataclass · One cell's judge: the model it binds, and the cell's tracing windows.
 - **`RatingStore`** · protocol · The calls a rating makes: read the rated result, its run and what its judge read, and write the rating.
-- **`RecheckStore`** · protocol · The reads and the one rewrite a re-check makes, and no more.
 - **`ReclaimStore`** · protocol · What `sweep_abandoned_runs` reads and writes: the boot scan of runs not ended, and the job records.
 - **`ReproducibleJudgeInputs`** · class · The stored records a result's judge calls are rebuilt from, each the one its run recorded.
-- **`ResultRecheck`** · model · What a re-check found for one stored result.
 - **`RunCallbacks`** · dataclass · Optional progress / persistence hooks for the run loop.
 - **`RunEndHook`** · protocol · What a host hands the job manager to hear that a run's terminal status was recorded.
 - **`RunJudge`** · dataclass · A judged run's judge, as `build_judge_service` resolved it from one config load.
 - **`RunnerOptions`** · *host contract* · dataclass · The run's own knobs that don't fit on the run document — per-run values, never host wiring.
-- **`RunRecheck`** · model · What a re-check of one run found, and whether it was written.
 - **`SecondJudgeEstimate`** · model · What asking a second judge about a run would be priced at, against the cap it would be held to — no call made.
 - **`SecondJudgeReport`** · model · What a second judge's pass did, what it spent apart from the candidate's cost, and what it read.
 - **`SecondJudgeSkip`** · model · A result of the run that the second judge is not asked about, and why.
@@ -1315,8 +1303,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 - **`ArmOutcome`** · literal · What the one pricing rule made of an arm: admitted under its cap; refused (predicted above it, or unpriceable under an inherited one); unpriceable and run under a cap its launch named; or not held to any cap, the host enforcing none.
   <br>`'admitted'` | `'refused'` | `'unpriced-under-chosen-cap'` | `'uncapped'`
-- **`BatteryPreflight`** · type alias · Prepares a battery's pre-flight for one subject and the battery's models, once, and returns the per-template check.
-  <br>`Callable[[str, Sequence[str]], Awaitable[TemplatePreflight]]`
 - **`CellWork`** · type alias · One cell of a run, as the runner hands it to an executor: it runs the cell, records it and reports it.
   <br>`Callable[[], Awaitable[None]]`
 - **`JobOutcome`** · literal · Where a job's record stands: `running` (started, not ended), or how it ended — `completed` (its work ran to its end), `failed` (refused or broken part-way; `detail` says which), `cancelled` (asked to stop, shut down, or lost — which the record's `lost` says) or `timed_out` (its own wall-clock budget ran out; `detail` names it).
@@ -1335,8 +1321,6 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`Callable[[str, str], UnknownSubject | None]`
 - **`TemplateField`** · literal · The fields of a template a kind may never act on: what it states about tools, the cases it generates, a conversation, the world (its seed, what it presumes, the checks graded against it) and the rubric a judge scores.
   <br>`'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'`
-- **`TemplatePreflight`** · type alias · Checks one of a battery's templates the way its launch would, before any template launches.
-  <br>`Callable[['EvalTemplate', str], Awaitable[None]]`
 - **`WorkFn`** · type alias · A job's work: an async function handed its progress callback.
   <br>`Callable[[ProgressFn], Awaitable[None]]`
 
@@ -1886,10 +1870,12 @@ The engine's generation package: the prompts and expanders that author test mate
 
 **Functions**
 
+- **`default_system_prompt`** · function · The shipped default system prompt for `axis`'s proposal, as `plan_draft` sends it when handed none.
+  <br>`default_system_prompt(axis: RubricAxis) -> str`
 - **`generate_variations`** · async function · Generate up to `n_variations` test cases for a template.
   <br>`generate_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, generation: AdmittedGeneration | None = None, rng: random.Random | None = None, preview: bool = False) -> GeneratedVariations`
 - **`plan_draft`** · function · The one call a rubric proposal sends, on either axis, built before anything is priced or made.
-  <br>`plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str, reset: str) -> PlannedCall`
+  <br>`plan_draft(*, axis: RubricAxis, subject_feed: str, catalog_feed: str, system_prompt: str | None = None, reset: str | None = None) -> PlannedCall`
 - **`price_variations`** · async function · Price the calls `generate_variations` would make, refusing exactly as it would — and make none.
   <br>`price_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, llm: VariationLLM, budget: OutOfRunBudget) -> list[float | None]`
 - **`propose_draft`** · async function · Make an admitted rubric proposal on `axis` and read its draft.
@@ -1950,12 +1936,9 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
   <br>`check_refusal_negotiation(build_client: Callable[[RouterTransport], CompletionClient]) -> None`
 - **`jobs_conformance_cases`** · *host contract* · function · Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
   <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0, call_return_timeout_s: float = 10.0) -> tuple[JobsConformanceCase, ...]`
-- **`nonpublic_evals_imports`** · function · Every reach into `threetears.evals` under `sources` that goes below a public root's declared names.
-  <br>`nonpublic_evals_imports(*sources: Path | str) -> tuple[BoundaryFinding, ...]`
 
 **Classes**
 
-- **`BoundaryFinding`** · dataclass · One reach into `threetears.evals` that does not go through a public root's declared names.
 - **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or holds a stop reason or sent settings eval cannot read.
 - **`CompletionGuard`** · *host contract* · dataclass · The kit's watch on a host's completion clients: what was asked outside a job, and how often inside one.
 - **`CompletionOutsideJob`** · exception · A completion request made outside any job's work, refused by the kit's guarded client before it was sent.
@@ -1976,8 +1959,6 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 **Types**
 
-- **`BoundaryRule`** · literal · Which rule a `BoundaryFinding` breaks — a stable identifier a host may filter or count on. The module docstring states each.
-  <br>`'static_import'` | `'dynamic_import'` | `'attribute_reach'` | `'private_reach'` | `'patch'`
 - **`BuildConformanceHost`** · type alias · Builds a fresh host for one case, its completion clients wrapped by the guard it is handed.
   <br>`Callable[[CompletionGuard], JobsConformanceHost]`
 - **`RouterTransport`** · *host contract* · type alias · A scripted router: the JSON body a client would POST in, the status and JSON body the router answers with out.
@@ -1985,7 +1966,6 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 **Constants**
 
-- **`BOUNDARY_RULES`** · constant (tuple) · Every `BoundaryRule`, in the order the module docstring states them.
 - **`DEFAULT_CALL_RETURN_TIMEOUT_S`** · constant (float) · How long a job's request waits, while the call that started its job runs, for that call to return, in seconds.
   <br>`= 10.0`
 - **`DEFAULT_JOB_CONFORMANCE_TIMEOUT_S`** · constant (float) · How long a happy path's jobs are polled for before the case gives up on them, in seconds.
@@ -2560,7 +2540,7 @@ The host's launch settings, as one snapshot of values.
 | `enforcement_enabled` | `bool` | required | Whether the cost and metered-call ceilings are enforced at all. |
 | `max_cost_usd` | `float` | required | The run cost ceiling a run inherits when its launch names none. |
 | `max_metered_calls` | `int \| None` | required | The metered-call ceiling a run inherits when its launch names none, or `None` for a host that declares it has NO metered tools: its runs record a ceiling of `0` (origin `none_declared`), a metered call on one is refused and counted, and a launch naming a ceiling is refused, since it would bound nothing. |
-| `max_out_of_run_cost_usd` | `float` | required | The most a launch's out-of-run calls — its case generation, which runs before any run exists and so under no run's cap — may together be priced at before they are made (`OutOfRunBudget`). Enforced exactly when `enforcement_enabled` is. Per LAUNCH, as `max_cost_usd` is per run: a battery is one launch per template, so a battery of N generating templates may spend up to N times this out of run, as its runs may spend up to their count times their cap. An analysis generation is held to it too, per generation (`analysis_generate`): its calls run after the runs it reads, under no run's cap. |
+| `max_out_of_run_cost_usd` | `float` | required | The most a launch's out-of-run calls — its case generation, which runs before any run exists and so under no run's cap — may together be priced at before they are made (`OutOfRunBudget`). Enforced exactly when `enforcement_enabled` is. Per LAUNCH, as `max_cost_usd` is per run: N launches may spend up to N times this out of run, as their runs may spend up to their count times their cap. An analysis generation is held to it too, per generation (`analysis_generate`): its calls run after the runs it reads, under no run's cap. |
 | `judge_alternate_model` | `str \| None` | `None` | The judge a launch's arms are scored by instead of the judge role's default when that default IS one of the launch's candidate models — a model grading its own output — provided it is itself none of them (`resolve_judge_pin`), spelled as the host's clients name the model they resolve. It never overrides a judge the launch named, nor a model a judge config pins per dim: those are choices. `None` substitutes nothing, and a run judged on a candidate's model says so on every surface that lists its judges (`judges_sharing_a_candidate_model`). |
 | `max_cell_timeout_s` | `float \| None` | `None` | The longest per-cell deadline a launch may name (`cell_timeout_s`), in seconds. `None` declares no ceiling of the host's own: a launch may then only LOWER its kind's deadline (the one the kind's launcher wires, or `DEFAULT_CELL_TIMEOUT_S`), so a host that declares nothing cannot be overridden upward. |
 | `setting_names` | `dict[str, str]` | `{}` | What the host calls each of the fields above, keyed by field name, so a refusal names the knob an operator turns. A field the host does not name here is called by its own name; the engine names no host setting of its own. |

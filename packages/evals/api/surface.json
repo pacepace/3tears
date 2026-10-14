@@ -246,11 +246,6 @@
       "signature": "",
       "tier": "host-contract"
     },
-    "threetears.evals.schema.CORE_UPGRADERS": {
-      "kind": "constant (tuple)",
-      "signature": "",
-      "tier": "closure"
-    },
     "threetears.evals.schema.CoreDocumentModel": {
       "kind": "model",
       "signature": "CoreDocumentModel(schema_minor: CoreSchemaMinor = 1)",
@@ -3271,11 +3266,6 @@
       "signature": "assert_preconditions(template: EvalTemplate, test_case: EvalTestCase, seeded: Mapping[str, Any], *, world: WorldRegistry | None) -> list[PreconditionOutcome]",
       "tier": "closure"
     },
-    "threetears.evals.run.BatteryPreflight": {
-      "kind": "type alias",
-      "signature": "Callable[[str, Sequence[str]], Awaitable[TemplatePreflight]]",
-      "tier": "closure"
-    },
     "threetears.evals.run.borderline_dims": {
       "kind": "function",
       "signature": "borderline_dims(result: EvalResult) -> set[str]",
@@ -3344,11 +3334,6 @@
     "threetears.evals.run.CellWork": {
       "kind": "type alias",
       "signature": "Callable[[], Awaitable[None]]",
-      "tier": "closure"
-    },
-    "threetears.evals.run.CheckFlip": {
-      "kind": "model",
-      "signature": "CheckFlip(expression: str, was: bool, now: bool)",
       "tier": "closure"
     },
     "threetears.evals.run.create_judge_config": {
@@ -3686,11 +3671,6 @@
       "signature": "JudgeTemperatureEstimate(run_id: str, judge_model: str, selection: TemperatureSelection, repeats: int, results: int, cases: int, max_calls: int, ceiling_usd: float | None, cap_usd: float | None, would_start: bool, refusal: str | None = None, skipped: list[TemperatureSkip])",
       "tier": "closure"
     },
-    "threetears.evals.run.KeptOutcome": {
-      "kind": "model",
-      "signature": "KeptOutcome(expression: str, reason: str)",
-      "tier": "closure"
-    },
     "threetears.evals.run.KindFactory": {
       "kind": "protocol",
       "signature": "KindFactory{__call__(self, context: CellContext) -> CandidateKind}",
@@ -3896,21 +3876,6 @@
       "signature": "RatingStore{load_eval_result(self, result_id: str, scope_id: str, /) -> EvalResult | None; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None; load_judge_config(self, config_id: str, scope_id: str, /) -> JudgeConfig | None; load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None; load_test_case(self, test_case_id: str, scope_id: str, /) -> EvalTestCase | None; save_calibration_rating(self, rating: CalibrationRating, /) -> None}",
       "tier": "closure"
     },
-    "threetears.evals.run.recheck_goal_states": {
-      "kind": "function",
-      "signature": "recheck_goal_states(store: RecheckStore, run_id: str, scope_id: str, *, world: WorldRegistry | None, apply: bool) -> RunRecheck",
-      "tier": "closure"
-    },
-    "threetears.evals.run.recheck_result": {
-      "kind": "function",
-      "signature": "recheck_result(result: EvalResult, *, ledger: CallLedger | None, end_state: Mapping[str, Any] | None, variation: Mapping[str, Any] | None, world: WorldRegistry | None, provenance: ApparatusProvenance) -> tuple[ResultRecheck, list[GoalStateOutcome] | None]",
-      "tier": "closure"
-    },
-    "threetears.evals.run.RecheckStore": {
-      "kind": "protocol",
-      "signature": "RecheckStore{load_eval_result_with_etag(self, result_id: str, scope_id: str, /) -> tuple[EvalResult | None, str | None]; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None; load_test_case(self, test_case_id: str, scope_id: str, /) -> EvalTestCase | None; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None}",
-      "tier": "closure"
-    },
     "threetears.evals.run.ReclaimStore": {
       "kind": "protocol",
       "signature": "ReclaimStore{load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None, create_only: bool = False) -> None; store_time(self) -> datetime}",
@@ -3991,11 +3956,6 @@
       "signature": "resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str",
       "tier": "closure"
     },
-    "threetears.evals.run.ResultRecheck": {
-      "kind": "model",
-      "signature": "ResultRecheck(result_id: str, flips: list[CheckFlip] = list(), regraded: int = 0, kept_as_stored: list[KeptOutcome] = list(), not_rechecked: str | None = None)",
-      "tier": "closure"
-    },
     "threetears.evals.run.RUBRIC_DIM_SERVER_FIELDS": {
       "kind": "constant (tuple)",
       "signature": "",
@@ -4035,11 +3995,6 @@
       "kind": "dataclass",
       "signature": "RunnerOptions(judge_concurrency: int = 4, cell_timeout_s: float = 600.0, concurrent_eval_jobs_probe: Callable[[], int] | None = None, external_rates: ExternalRateTable | None = None, metered_calls: MeteredCallLedger | None = None, cell_order_rng: random.Random | None = None, candidate_kinds: Mapping[str, KindFactory] = dict(), max_concurrent_cells: int = 1, cell_executor: CellExecutor | None = None)",
       "tier": "host-contract"
-    },
-    "threetears.evals.run.RunRecheck": {
-      "kind": "model",
-      "signature": "RunRecheck(run_id: str, applied: bool, results: list[ResultRecheck], write_conflicts: list[str] = list())",
-      "tier": "closure"
     },
     "threetears.evals.run.sample_concurrent_eval_jobs": {
       "kind": "function",
@@ -4171,11 +4126,6 @@
       "signature": "start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> list[EvalRun]",
       "tier": "host-contract"
     },
-    "threetears.evals.run.start_universal_battery": {
-      "kind": "async function",
-      "signature": "start_universal_battery(host: LaunchHost, subject_id: str, *, scope_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, preflight: BatteryPreflight, measure_latency: bool = False) -> list[str]",
-      "tier": "closure"
-    },
     "threetears.evals.run.SubjectResolver": {
       "kind": "type alias",
       "signature": "Callable[[str, str], UnknownSubject | None]",
@@ -4199,11 +4149,6 @@
     "threetears.evals.run.TemplateField": {
       "kind": "literal",
       "signature": "'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'",
-      "tier": "closure"
-    },
-    "threetears.evals.run.TemplatePreflight": {
-      "kind": "type alias",
-      "signature": "Callable[['EvalTemplate', str], Awaitable[None]]",
       "tier": "closure"
     },
     "threetears.evals.run.TurnDriver": {
@@ -5896,6 +5841,11 @@
       "signature": "'verified'` | `'differs'",
       "tier": "closure"
     },
+    "threetears.evals.gen.default_system_prompt": {
+      "kind": "function",
+      "signature": "default_system_prompt(axis: RubricAxis) -> str",
+      "tier": "closure"
+    },
     "threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT": {
       "kind": "constant (SeedTemplate)",
       "signature": "",
@@ -5923,7 +5873,7 @@
     },
     "threetears.evals.gen.plan_draft": {
       "kind": "function",
-      "signature": "plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str, reset: str) -> PlannedCall",
+      "signature": "plan_draft(*, axis: RubricAxis, subject_feed: str, catalog_feed: str, system_prompt: str | None = None, reset: str | None = None) -> PlannedCall",
       "tier": "closure"
     },
     "threetears.evals.gen.price_variations": {
@@ -6006,21 +5956,6 @@
       "signature": "SqliteDocumentStore(path: str | os.PathLike[str]) -> None",
       "tier": "host-contract"
     },
-    "threetears.evals.testing.BOUNDARY_RULES": {
-      "kind": "constant (tuple)",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.testing.BoundaryFinding": {
-      "kind": "dataclass",
-      "signature": "BoundaryFinding(path: Path, line: int, rule: BoundaryRule, target: str, reason: str)",
-      "tier": "closure"
-    },
-    "threetears.evals.testing.BoundaryRule": {
-      "kind": "literal",
-      "signature": "'static_import'` | `'dynamic_import'` | `'attribute_reach'` | `'private_reach'` | `'patch'",
-      "tier": "closure"
-    },
     "threetears.evals.testing.BuildConformanceHost": {
       "kind": "type alias",
       "signature": "Callable[[CompletionGuard], JobsConformanceHost]",
@@ -6091,11 +6026,6 @@
       "signature": "NegotiationConformanceFailure(mistakes: list[str]) -> None",
       "tier": "host-contract"
     },
-    "threetears.evals.testing.nonpublic_evals_imports": {
-      "kind": "function",
-      "signature": "nonpublic_evals_imports(*sources: Path | str) -> tuple[BoundaryFinding, ...]",
-      "tier": "closure"
-    },
     "threetears.evals.testing.READER_CONFORMANCE_CASES": {
       "kind": "constant (tuple)",
       "signature": "",
@@ -6118,7 +6048,7 @@
     },
     "threetears.evals.testing.RecordedCompletions": {
       "kind": "class",
-      "signature": "RecordedCompletions(path: Path, *, inner: CompletionClient | None, settings: ClientRequestSettings | None, recorded: Mapping[str, tuple[ClientRequestSettings | None, Sequence[ReplayedCompletion]]], model: str | None = None, temperature: float | None | Literal['any'] = 'any', rerecord: str | None = None) -> None",
+      "signature": "RecordedCompletions(path: Path, *, inner: CompletionClient | None, settings: ClientRequestSettings | None, recorded: Mapping[str, tuple[ClientRequestSettings | None, Sequence[ReplayedCompletion]]], rerecord: str | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.testing.RecordedPrompt": {
@@ -6453,7 +6383,7 @@
     },
     "threetears.evals.ops.AnalysisGeneration": {
       "kind": "dataclass",
-      "signature": "AnalysisGeneration(prompt_id: str, resolve_prompt: Callable[[], Awaitable[str]], max_output_tokens: int, budget_s: float)",
+      "signature": "AnalysisGeneration(prompt_id: str = 'eval_analysis_gen', resolve_prompt: Callable[[], Awaitable[str]] | None = None, max_output_tokens: int, budget_s: float)",
       "tier": "closure"
     },
     "threetears.evals.ops.AnalysisGenerationEstimate": {
