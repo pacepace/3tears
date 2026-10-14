@@ -4101,6 +4101,11 @@
       "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = ())",
       "tier": "stable"
     },
+    "threetears.evals.run.SeedJudgeCase": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.run.SeedOutcome": {
       "kind": "dataclass",
       "signature": "SeedOutcome(created: dict[str, int] = dict(), skipped: dict[str, int] = dict(), failed: dict[str, int] = dict(), created_keys: dict[str, list[str]] = dict(), conflicted: dict[str, list[str]] = dict(), deleted: dict[str, list[str]] = dict())",

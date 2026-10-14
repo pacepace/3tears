@@ -205,8 +205,9 @@ def request_body(
         body["max_completion_tokens" if direct_openai else "max_tokens"] = sent.max_tokens
     if sent.temperature is not None:
         body["temperature"] = sent.temperature
+    routed = provider == "openrouter"
     if sent.reasoning_max_tokens is not None:
-        if provider != "openrouter":
+        if not routed:
             raise ValueError(
                 f"OpenAI's chat completions take no reasoning budget, and these settings carry one "
                 f"({sent.reasoning_max_tokens}): send its effort word (closest_settings chooses it)"
@@ -214,7 +215,7 @@ def request_body(
         # OpenRouter takes a budget or a word, not both: the budget is the bound, so it wins.
         body["reasoning"] = {"max_tokens": sent.reasoning_max_tokens}
     elif sent.reasoning_effort is not None:
-        if provider == "openrouter":
+        if routed:
             body["reasoning"] = {"effort": sent.reasoning_effort}
         else:
             body["reasoning_effort"] = sent.reasoning_effort
@@ -226,7 +227,7 @@ def request_body(
     elif directive.kind is not None and (provider == "openai" or json_mode):
         # A schema the model cannot take, or JSON mode asked: JSON mode, never the same schema unenforced.
         body["response_format"] = {"type": "json_object"}
-    if provider == "openrouter":
+    if routed:
         if directive.asks_strict(provider):
             body["provider"] = {"require_parameters": sent.strict_output}
         body["usage"] = {"include": True}

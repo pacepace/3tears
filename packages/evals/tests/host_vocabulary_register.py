@@ -237,7 +237,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "providers/catalogue.py": {"openrouter": 4},
     "providers/failures.py": {"openrouter": 3},
     "providers/model.py": {"openrouter": 12},
-    "providers/wire.py": {"openrouter": 15},
+    "providers/wire.py": {"openrouter": 14},
     # The negotiation every completion client shares names no provider in its mapping, loop or store: OpenRouter's
     # request shape is the `router` family there. Only its readers name the provider whose answers they read.
     "negotiation/__init__.py": {},
