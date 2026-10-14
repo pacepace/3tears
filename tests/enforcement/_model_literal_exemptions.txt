@@ -49,3 +49,10 @@ packages/evals/tests/test_paid_analysis_generation.py::paid-lane price table key
 # the evals examples' model pin: the owner ruled every example calls claude-haiku-5-5 and nothing else, and the
 # test holds the examples to that exact id; a canonical DEFAULT_* constant would let them drift with the family default.
 packages/evals/tests/test_examples.py::pins the owner's ruling that every evals example calls claude-haiku-5-5 and no other model
+packages/evals/tests/fixtures/generate_analysis/llm_analysis.py::generate_analysis test fixture moved from the examples; names the real id its recording was made against, per the same owner ruling; not a default
+
+# the evals completion client's provider quirk table: a pattern for the Claude 5.5 ids that refuse `temperature`
+# (_NO_TEMPERATURE), matched against whatever id a caller passes; it selects a request shape, never a default model.
+packages/evals/src/threetears/evals/providers/wire.py::provider-quirk regex for Claude ids that refuse temperature; matches caller-supplied ids, picks no default model
+# provider-shape tests: each id is the input whose request shape, routing or dated-suffix handling is under test.
+packages/evals/tests/test_providers_model.py::provider-shape tests naming real and malformed claude ids as the subject under test; not a default
