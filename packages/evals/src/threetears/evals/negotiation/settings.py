@@ -26,6 +26,7 @@ __all__ = [
     "WireSettings",
     "anthropic_thinking",
     "closest_settings",
+    "wire_settings_for",
 ]
 
 #: The request shape a client speaks, which decides how a setting goes on the wire: ``anthropic`` (Anthropic's
@@ -109,16 +110,47 @@ class WireSettings:
         )
 
 
+def wire_settings_for(settings: ClientRequestSettings, temperature: float | None) -> WireSettings:
+    """What a client asks for when it is asked for ``settings`` at ``temperature``: the engine's values, as wire ones.
+
+    A host's own client is built from the request settings the engine stamps on a run for a role
+    (:data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`, :data:`~threetears.evals.run.SIMULATOR_REQUEST_SETTINGS`)
+    and the temperature the engine names on each request for a client; this builds what
+    :func:`~threetears.evals.negotiation.negotiate` takes as ``asked`` from them, so a host never hand-copies the
+    engine's constants and never drifts from what the run records as asked. ``strict_output`` is the role's asked
+    enforcement; a client whose calls differ (one without a reply format) replaces it per call.
+
+    Args:
+        settings: The request settings the client is asked for.
+        temperature: The temperature it is asked for, or ``None`` for none.
+
+    Returns:
+        The asked settings, every field as ``settings`` holds it.
+    """
+    return WireSettings(
+        max_tokens=settings.max_tokens,
+        temperature=temperature,
+        reasoning_effort=settings.reasoning_effort,
+        reasoning_max_tokens=settings.reasoning_max_tokens,
+        strict_output=settings.strict_output,
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SettingFacts:
     """What is known of the request settings one model accepts: each fact ``None`` while nothing says.
 
     A caller fills what it knows before any request (3tears-models' capability fields of the same names, a router's
-    catalogue, its own configuration), and a refusal the provider answered fills the rest for as long as the
-    caller's :class:`~threetears.evals.negotiation.LearnedSettings` lives. Unknown is sent as asked.
+    catalogue through :func:`~threetears.evals.negotiation.facts_from_router_catalogue`, its own configuration), and
+    a refusal the provider answered fills the rest for as long as the caller's
+    :class:`~threetears.evals.negotiation.LearnedSettings` lives: the process, or the client factory that keeps it.
+    Unknown is sent as asked.
 
     Attributes:
         accepts_temperature: Whether a temperature is taken.
+        temperature_beside_reasoning: Whether a temperature is taken beside reasoning (an effort word other than
+            ``none``, or a budget). A temperature refused only while the request reasoned is learned here, not as
+            ``accepts_temperature``, so a call that does not reason still sends one.
         reasoning_efforts: The provider-native effort words the model takes; ``()`` when it takes no effort
             parameter at all. Anthropic's off switch is not a word here but ``reasoning_disable``.
         refused_efforts: Words the provider refused for this model, whatever ``reasoning_efforts`` says.
@@ -132,6 +164,7 @@ class SettingFacts:
     """
 
     accepts_temperature: bool | None = None
+    temperature_beside_reasoning: bool | None = None
     reasoning_efforts: tuple[str, ...] | None = None
     refused_efforts: frozenset[str] = frozenset()
     reasoning_budget: bool | None = None
@@ -152,6 +185,7 @@ class SettingFacts:
         """
         return SettingFacts(
             accepts_temperature=_first(self.accepts_temperature, lower.accepts_temperature),
+            temperature_beside_reasoning=_first(self.temperature_beside_reasoning, lower.temperature_beside_reasoning),
             reasoning_efforts=self.reasoning_efforts if self.reasoning_efforts is not None else lower.reasoning_efforts,
             refused_efforts=self.refused_efforts | lower.refused_efforts,
             reasoning_budget=_first(self.reasoning_budget, lower.reasoning_budget),
@@ -300,8 +334,9 @@ def closest_settings(
     * **Budget**: as asked on an Anthropic model that takes one (lowered below a cap the clamp moved under it);
       otherwise the effort word its share of ``max_tokens`` maps to (:data:`BUDGET_SHARES`), then as a word. OpenAI
       takes no budget, and a router's request types none, so there a budget is always a word.
-    * **Temperature**: dropped when the model takes none, and on Anthropic beside any thinking (a budget, or an
-      effort word over adaptive thinking), which the API refuses.
+    * **Temperature**: dropped when the model takes none; beside reasoning (an effort word other than ``none``, or a
+      budget) when it takes none there (``temperature_beside_reasoning``); and on Anthropic beside any thinking (a
+      budget, or an effort word over adaptive thinking), which the API refuses.
     * **Strict output**: kept unless the model takes no strict schema, or, on a router, no endpoint serves its
       requests under ``require_parameters``; the request then carries the format unenforced.
 
@@ -323,6 +358,9 @@ def closest_settings(
     if temperature is not None and facts.accepts_temperature is False:
         notes.append(f"temperature {temperature} sent as none: the model takes no temperature")
         temperature = None
+    elif temperature is not None and facts.temperature_beside_reasoning is False and reasons(effort, budget):
+        notes.append(f"temperature {temperature} sent as none: the model takes no temperature beside reasoning")
+        temperature = None
     elif temperature is not None and provider_family == "anthropic" and _anthropic_thinks(effort, budget, facts):
         notes.append(f"temperature {temperature} sent as none: Anthropic takes no temperature beside thinking")
         temperature = None
@@ -341,6 +379,19 @@ def closest_settings(
         strict_output=strict,
     )
     return sent, tuple(notes)
+
+
+def reasons(effort: str | None, budget: int | None) -> bool:
+    """Whether a request with this reasoning word and budget reasons: a budget, or a word other than ``none``.
+
+    Args:
+        effort: The effort word the request carries, or ``None``.
+        budget: The reasoning budget it carries, or ``None``.
+
+    Returns:
+        Whether it reasons.
+    """
+    return budget is not None or effort not in (None, "none")
 
 
 def _anthropic_thinks(effort: str | None, budget: int | None, facts: SettingFacts) -> bool:

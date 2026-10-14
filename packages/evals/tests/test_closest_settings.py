@@ -25,7 +25,10 @@ from threetears.evals.negotiation import (
     SettingFacts,
     WireSettings,
     closest_settings,
+    facts_from_router_catalogue,
+    wire_settings_for,
 )
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS
 from threetears.evals.schema import REASONING_EFFORTS, ClientRequestSettings
 
 #: The judge's asked settings (``JUDGE_REQUEST_SETTINGS``), as the adapter is asked them, with the judge temperature.
@@ -352,3 +355,37 @@ def test_learned_facts_win_over_declared_ones() -> None:
     assert combined.accepts_temperature is False and combined.reasoning_efforts == ("low", "max")
     sent, _ = closest_settings(WireSettings(temperature=0.2, reasoning_effort="max"), combined, "openai")
     assert sent == WireSettings(reasoning_effort="low")
+
+
+@pytest.mark.parametrize(
+    ("effort", "budget", "sent"),
+    [("high", None, None), (None, 4096, None), ("none", None, 0.0), (None, None, 0.0)],
+    ids=["a word", "a budget", "none", "no reasoning"],
+)
+def test_a_temperature_refused_beside_reasoning_is_dropped_only_beside_reasoning(
+    effort: str | None, budget: int | None, sent: float | None
+) -> None:
+    asked = WireSettings(max_tokens=10240, temperature=0.0, reasoning_effort=effort, reasoning_max_tokens=budget)
+    wire, notes = closest_settings(asked, SettingFacts(temperature_beside_reasoning=False), "router")
+    assert wire.temperature == sent
+    if sent is None:
+        assert any("the model takes no temperature beside reasoning" in note for note in notes)
+
+
+def test_a_router_catalogue_states_only_what_no_endpoint_takes() -> None:
+    """``supported_parameters`` is a union over endpoints: a listed parameter is unknown, an unlisted one not taken."""
+    assert facts_from_router_catalogue(None) == SettingFacts()
+    listed = facts_from_router_catalogue(["temperature", "reasoning", "structured_outputs", "max_tokens"])
+    assert listed == SettingFacts(), "listed says only that SOME endpoint takes it"
+    assert facts_from_router_catalogue(["max_tokens"]) == SettingFacts(
+        accepts_temperature=False, reasoning_efforts=(), structured_output=False
+    )
+
+
+@pytest.mark.parametrize("settings", [JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS], ids=["judge", "simulator"])
+def test_wire_settings_for_carries_the_engine_s_asked_settings_and_the_temperature(
+    settings: ClientRequestSettings,
+) -> None:
+    asked = wire_settings_for(settings, 0.2)
+    assert asked.temperature == 0.2 and asked.reported() == settings, "every field as the engine stamps it"
+    assert wire_settings_for(settings, None).temperature is None

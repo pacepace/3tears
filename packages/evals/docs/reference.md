@@ -1968,7 +1968,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 - **`check_completion_conformance`** · *host contract* · function · Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
   <br>`check_completion_conformance(completion: object, *, require_sent_settings: bool = False) -> None`
-- **`check_refusal_negotiation`** · *host contract* · async function · Fail, naming each mistake, unless the client answers the router's refusals in order and reports what was served.
+- **`check_refusal_negotiation`** · *host contract* · async function · Fail, naming each mistake, unless the client answers a router's refusals in order and reports what was served.
   <br>`check_refusal_negotiation(build_client: Callable[[RouterTransport], CompletionClient]) -> None`
 - **`jobs_conformance_cases`** · *host contract* · function · Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
   <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0, call_return_timeout_s: float = 10.0) -> tuple[JobsConformanceCase, ...]`
@@ -2550,6 +2550,8 @@ Request negotiation: a client that never fails a request because a model lacks a
   <br>`anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str | int] | None`
 - **`closest_settings`** · *host contract* · function · What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved.
   <br>`closest_settings(asked: WireSettings, facts: SettingFacts, provider_family: ProviderFamily) -> tuple[WireSettings, tuple[str, ...]]`
+- **`facts_from_router_catalogue`** · *host contract* · function · The facts a router's catalogue row states of a model: each parameter it does not list, as not taken.
+  <br>`facts_from_router_catalogue(supported_parameters: Collection[str] | None) -> SettingFacts`
 - **`negotiate`** · *host contract* · async function · Send the closest settings the model is known to take; on a recognised refusal, learn it and send again.
   <br>`negotiate(asked: WireSettings, *, provider_family: ProviderFamily, model: str, provider: str | None = None, send: Callable[[WireSettings, SettingFacts], Awaitable[R]], read_refusal: Callable[[Exception], SettingRefusal | None], learned: LearnedSettings, declared: SettingFacts | None = None) -> Negotiated[R]`
 - **`read_anthropic_refusal`** · *host contract* · function · Whether Anthropic's answer refuses a request for a setting it carried, which, and in what words.
@@ -2558,6 +2560,8 @@ Request negotiation: a client that never fails a request because a model lacks a
   <br>`read_openai_refusal(status: int, body: object) -> SettingRefusal | None`
 - **`read_router_refusal`** · *host contract* · function · Whether OpenRouter's answer refuses a request for a setting it carried, which, and in what words.
   <br>`read_router_refusal(status: int, body: object) -> SettingRefusal | None`
+- **`wire_settings_for`** · *host contract* · function · What a client asks for when it is asked for `settings` at `temperature`: the engine's values, as wire ones.
+  <br>`wire_settings_for(settings: ClientRequestSettings, temperature: float | None) -> WireSettings`
 
 **Classes**
 
@@ -2572,7 +2576,7 @@ Request negotiation: a client that never fails a request because a model lacks a
 - **`ProviderFamily`** · *host contract* · literal · The request shape a client speaks, which decides how a setting goes on the wire: `anthropic` (Anthropic's Messages API: thinking budgets, adaptive thinking with effort words, no temperature beside thinking), `openai` (OpenAI's `reasoning_effort`, no budget) and `router` (a router's chat completions: `reasoning.effort` with all seven words, no budget, and enforcement as `provider.require_parameters`, under which a router that finds no endpoint taking every parameter refuses the request).
   <br>`'anthropic'` | `'openai'` | `'router'`
 - **`RefusedSetting`** · literal · What a provider refused:
-  <br>`'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'enforcement'`
+  <br>`'temperature'` | `'effort_word'` | `'effort'` | `'budget'` | `'adaptive'` | `'disable'` | `'format'` | `'max_tokens'` | `'enforcement'`
 
 **Constants**
 

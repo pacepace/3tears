@@ -20,11 +20,12 @@ wraps its client factory in (:mod:`threetears.evals.testing.jobs_conformance`). 
 recorded completions, :class:`RecordedCompletions`, which records the calls a host's real completion client answers
 into a JSONL file once and replays them exactly with no network, refusing by name a prompt the recording does not hold
 (:mod:`threetears.evals.testing.recorded_completions`). The negotiation check: :func:`check_refusal_negotiation` scripts
-a router that refuses a host's own client for its temperature and then its enforcement, and raises
-:class:`NegotiationConformanceFailure` naming each mistake unless the client resends in that order, reports what the
-served request carried and remembers it (:mod:`threetears.evals.testing.negotiation_conformance`). All of it is plain Python and imports no test runner. See
-:mod:`threetears.evals.testing.store_conformance` and :mod:`threetears.evals.testing.reader_conformance` for
-an example under pytest.
+three routers that refuse a host's own client (its temperature under enforcement; any enforced request; its output
+cap and effort word, naming what is taken), and raises :class:`NegotiationConformanceFailure` naming each mistake
+unless the client resends in order, reports what the served request carried, and remembers what it proved and
+nothing else (:mod:`threetears.evals.testing.negotiation_conformance`). All of it is plain Python and imports no
+test runner. See :mod:`threetears.evals.testing.store_conformance` and
+:mod:`threetears.evals.testing.reader_conformance` for an example under pytest.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.

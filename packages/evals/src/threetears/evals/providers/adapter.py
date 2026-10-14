@@ -32,24 +32,29 @@ closest word on the same side of the on/off line (ties go lower, so never more t
 effort word its share of the cap maps to on a model that takes words only
 (:data:`~threetears.evals.negotiation.BUDGET_SHARES`), a word as a
 budget on a model that takes budgets only, Anthropic's effort words over adaptive thinking with no temperature
-beside them, a strict reply format the model cannot take as an unenforced one, an output cap above the model's
-known one as that cap. What is known comes, highest first, from what the provider refused in this factory's life
+beside them, a strict reply format the model cannot take as a looser one (JSON mode on OpenAI and OpenRouter, no
+format on Anthropic, the engine validating the reply on return), an output cap above the model's known one as that
+cap. What is known comes, highest first, from what the provider refused in this factory's life
 (:class:`LearnedSettings`), 3tears-models' capabilities (read with ``getattr``, so a models build that declares
 none of these facts leaves every one unknown, and including the facts a provider published for a model the static
-registry does not know), and on OpenRouter its cached catalogue's ``supported_parameters``. Unknown is sent as
-asked. Each completion's ``sent_settings`` is what its request carried, and its ``temperature`` likewise.
+registry does not know), and on OpenRouter its catalogue's ``supported_parameters`` as read at this book's own
+``load_prices`` (:func:`~threetears.evals.negotiation.facts_from_router_catalogue`: only a parameter no endpoint
+takes, which is then not sent; a listed one says nothing). Unknown is sent as asked. Each completion's
+``sent_settings`` is what its request carried, and its ``temperature`` likewise.
 
-**A setting the provider refuses is learned, once, per factory.** A request refused for a setting it carried, read
-off the SDK error's status and body by the shared readers (Anthropic's ``invalid_request_error`` naming the parameter as
-deprecated or unsupported; OpenAI's ``unsupported_parameter`` or ``unsupported_value`` naming it in ``param``; on
-OpenRouter a 404 for a call under ``require_parameters``, which names nothing, and a 400 it relays from an upstream,
-read by that upstream's own shape), is sent again with the closest
-setting the model then accepts, and once that is served the fact is kept for every client of the factory and
-logged once at WARNING. On OpenRouter the order is fixed: the temperature first, keeping enforcement, and only if
-that still finds no endpoint, enforcement itself (sent ``strict_output=False``). That is not a hidden retry: a
-refused request was rejected before anything was generated and is not billed (an assumption no provider documents,
-which the price ceiling rests on). At most one resend per setting and four per call; any other refusal, and a
-refusal of the resend for a setting already dropped, propagates as it was raised.
+**A setting the provider refuses is learned, once, for the factory's life.** A request refused for a setting it
+carried, read off the SDK error's status and body by the shared readers (Anthropic's ``invalid_request_error`` naming
+the parameter as deprecated or unsupported, listing the effort words it takes, or naming the model's output cap;
+OpenAI's ``unsupported_parameter`` or ``unsupported_value`` naming it in ``param``; on OpenRouter a 404 for a call
+under ``require_parameters``, which names nothing, and a 400 it relays from an upstream, read by that upstream's own
+shape), is sent again with the closest setting the model then accepts, and once that is served what it proved is
+kept for every client of the factory and logged once at WARNING. On OpenRouter the order is fixed, whatever the
+catalogue lists: the temperature first, keeping enforcement, and only if that still finds no endpoint, enforcement
+itself (sent ``strict_output=False``, with the temperature put back), for that call alone: enforcement is never
+learned, since a 404 can be an outage, and the temperature is learned only when dropping it alone was served. That
+is not a hidden retry: a refused request was rejected before anything was generated and is not billed (an
+assumption no provider documents, which the price ceiling rests on). At most one resend per setting and four per
+call; any other refusal, and a refusal of the resend for a setting already dropped, propagates as it was raised.
 
 **Built per call.** The messages, what to send (:func:`closest_settings` over the facts as they stand, since another
 client of the factory may have learned one since), and the bind that carries a ``response_format`` (and, on
@@ -112,6 +117,7 @@ from threetears.evals.negotiation import (
     WireSettings,
     anthropic_thinking,
     closest_settings,
+    facts_from_router_catalogue,
     negotiate,
     read_anthropic_refusal,
     read_openai_refusal,
@@ -432,11 +438,13 @@ class PriceBook:
             return await owned.get(url)
 
     def supported_parameters(self, model: str) -> frozenset[str] | None:
-        """The parameters OpenRouter's catalogue lists for ``model``, once the catalogue was read; else ``None``.
+        """The parameters OpenRouter's catalogue lists for ``model``, once :meth:`load` read it; else ``None``.
 
-        Never fetches: the catalogue is read by :meth:`get` (a ``load_prices`` on an OpenRouter client reads it), and
-        until then, or for a model the catalogue lists without ``supported_parameters`` or not at all, nothing is
-        known. Parsed once, on the first ask after the read.
+        Never fetches, and never reads a catalogue this book holds only because a call was priced: the parameters
+        are taken from the catalogue at a :meth:`load` (the boot step, a client's or the factory's ``load_prices``),
+        so what every later call is sent does not change mid-run because some other client of the book happened to
+        price a call. Until then, or for a model the catalogue lists without ``supported_parameters`` or not at all,
+        nothing is known.
 
         Args:
             model: The OpenRouter model id, as the catalogue's ``id`` names it.
@@ -444,10 +452,14 @@ class PriceBook:
         Returns:
             The listed parameters, or ``None``.
         """
+        return self._parameters.get(model) if self._parameters is not None else None
+
+    def _read_parameters(self) -> None:
+        """Take each model's ``supported_parameters`` from the OpenRouter catalogue this book holds, once."""
         if self._parameters is None:
             response = self._responses.get(OPENROUTER_MODELS_URL)
             if response is None:
-                return None
+                return
             payload = response.json()
             rows = payload.get("data") if isinstance(payload, Mapping) else None
             self._parameters = {
@@ -459,7 +471,6 @@ class PriceBook:
                 for row in (rows if isinstance(rows, list) else [])
                 if isinstance(row, Mapping) and isinstance(row.get("id"), str)
             }
-        return self._parameters.get(model)
 
     def rates(self, provider: str, model: str) -> PriceLookup | _Unpriced | None:
         """The rates already looked up for ``model`` on ``provider``, why it is unpriced, or ``None`` when not looked up.
@@ -516,6 +527,9 @@ class PriceBook:
     async def load(self, provider: str, model: str) -> str | None:
         """Look the model's rates up (:meth:`look_up`), and say why it is unpriced, or ``None`` when it is priced.
 
+        The boot step (a client's or the factory's ``load_prices``), and the one point at which the book takes
+        OpenRouter's ``supported_parameters`` from the catalogue it holds (:meth:`supported_parameters`).
+
         Args:
             provider: The provider, as models' registry names it.
             model: The model id.
@@ -524,6 +538,7 @@ class PriceBook:
             ``None`` when the rates are loaded, else why the model is unpriced (already logged at WARNING).
         """
         rates = await self.look_up(provider, model)
+        self._read_parameters()
         return rates.reason if isinstance(rates, _Unpriced) else None
 
     @staticmethod
@@ -605,17 +620,6 @@ def _registry_facts(model_id: str) -> SettingFacts:
         reasoning_disable=_flag(capabilities, "reasoning_disable"),
         structured_output=_flag(capabilities, "structured_output"),
         max_output_tokens=_int_or_none(getattr(capabilities, "max_output_tokens", None)),
-    )
-
-
-def _catalogue_facts(parameters: frozenset[str] | None) -> SettingFacts:
-    """What OpenRouter's catalogue says a model takes: its ``supported_parameters``, or nothing when it lists none."""
-    if parameters is None:
-        return SettingFacts()
-    return SettingFacts(
-        accepts_temperature="temperature" in parameters,
-        reasoning_efforts=None if "reasoning" in parameters else (),
-        structured_output="structured_outputs" in parameters,
     )
 
 
@@ -852,7 +856,7 @@ class ModelsCompletionClient:
         once is loaded for every client of it. Rates found, and a catalogue that prices no row for the model, are
         kept; a failed fetch is not, so awaiting it again tries again. On OpenRouter the rates serve the ceiling
         alone: a call's stored cost stays OpenRouter's own reported figure; and the catalogue it read says which
-        parameters the model takes, which every later call's settings follow.
+        parameters no endpoint of the model takes, which no later call then sends (read here and nowhere else).
 
         Returns:
             ``None`` when the rates are loaded, else why the model is unpriced (also logged at WARNING), in which
@@ -867,7 +871,7 @@ class ModelsCompletionClient:
     def _declared(self) -> SettingFacts:
         """What is declared of the model before any request: 3tears-models' capabilities over OpenRouter's catalogue."""
         if self.provider == "openrouter":
-            return self._registry.over(_catalogue_facts(self._book.supported_parameters(self.model_name)))
+            return self._registry.over(facts_from_router_catalogue(self._book.supported_parameters(self.model_name)))
         return self._registry
 
     def _closest(self, directive: _Directive) -> tuple[WireSettings, SettingFacts]:
@@ -970,7 +974,7 @@ class ModelsCompletionClient:
         else:
             fields["reasoning"] = {"effort": sent.reasoning_effort} if sent.reasoning_effort is not None else None
         if directive.kind == "json_schema" and directive.schema is not None:
-            if self.provider == "openrouter" or facts.structured_output is not False:
+            if facts.structured_output is not False:
                 built = structured_output_kwargs(
                     self.provider, directive.schema, name=directive.name, strict=directive.strict
                 )
@@ -980,7 +984,11 @@ class ModelsCompletionClient:
             elif self.provider == "openai":
                 # The model takes no schema: JSON mode, through extra_body as below, and the engine validates.
                 kwargs["extra_body"] = {"response_format": {"type": "json_object"}}
-            # Anthropic without structured outputs sends no format; the engine validates the reply on return.
+            elif self.provider == "openrouter" and self._takes_json_mode():
+                # The model takes no schema (refused, or no endpoint lists one): JSON mode, never the same schema.
+                kwargs["response_format"] = {"type": "json_object"}
+            # Anthropic without structured outputs, and an OpenRouter model no endpoint of which takes a reply format,
+            # are sent no format; the engine validates the reply on return.
         elif directive.kind == "json_object":
             if self.provider == "openai":
                 # Through extra_body: a top-level response_format diverts ChatOpenAI onto its parse path.
@@ -995,6 +1003,11 @@ class ModelsCompletionClient:
         if output_config:
             kwargs["output_config"] = output_config
         return _Request(chat=self._variant(fields), kwargs=kwargs, sent=sent)
+
+    def _takes_json_mode(self) -> bool:
+        """Whether an OpenRouter model may be sent JSON mode: unless the loaded catalogue lists no response_format."""
+        listed = self._book.supported_parameters(self.model_name)
+        return listed is None or "response_format" in listed
 
     @staticmethod
     def _built_key(bound: object) -> str:
@@ -1048,7 +1061,9 @@ class ModelsCompletionClient:
         the request is sent again with the closest setting the model then accepts; once that is served, every
         client of the factory sends so for the rest of its life, logged once at WARNING with the provider's
         message. On OpenRouter, whose refusal (a 404 under ``require_parameters``) names nothing, the temperature
-        goes first, and only if the request without it is refused too, enforcement (``strict_output=False``). This
+        goes first, and only if the request without it is refused too, enforcement (``strict_output=False``, the
+        temperature put back), for this call alone; the temperature is learned only when dropping it alone was
+        served, and enforcement never is. This
         is not a hidden retry: the provider refused before generating anything, and a refusal is not billed, so
         the call costs what the one served request costs and :meth:`price_ceiling` holds. Any other failure, and a
         refusal of a resend for a setting already dropped, propagates as it was raised, and nothing is learned.
@@ -1060,8 +1075,10 @@ class ModelsCompletionClient:
                 translation for the provider (Anthropic's ``output_config.format``, OpenAI's
                 ``extra_body.response_format``, OpenRouter's ``response_format`` with ``require_parameters``, so
                 an upstream that cannot honour it is refused rather than answering in prose), or, on a model that
-                takes no strict schema, unenforced (JSON mode on OpenAI, no format on Anthropic, no
-                ``require_parameters`` on OpenRouter); or a ``json_object`` one, sent as OpenAI and OpenRouter take
+                takes no strict schema, unenforced and looser (JSON mode on OpenAI, and on OpenRouter without
+                ``require_parameters`` unless its loaded catalogue lists no ``response_format`` for the model, then no
+                format; no format on Anthropic), never the same schema; or a ``json_object`` one, sent as OpenAI and
+                OpenRouter take
                 it and not at all on Anthropic, which has no JSON mode. Either way the content is the reply's raw
                 text. Refused on a model ``ChatOpenAI`` sends to OpenAI's Responses API, which takes neither in that
                 shape.

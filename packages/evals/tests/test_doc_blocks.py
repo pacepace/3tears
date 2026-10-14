@@ -131,7 +131,9 @@ async def test_the_host_guide_s_own_client_never_fails_a_request_and_passes_the_
     """The guide's minimal router client over raw HTTP, and the check it shows, run as written.
 
     The second block is ``check_refusal_negotiation`` over the first block's client, so the canonical client a host
-    copies is held to the same check the host runs; a completion it returns also conforms, ``sent_settings`` and all.
+    copies is held to the same check the host runs; a completion it returns also conforms, ``sent_settings`` and all,
+    and its stop reasons map the router's ``error`` finish reason, and a 200 with no choices, onto ``error``. A
+    catalogue row the client is given is followed: a parameter no endpoint lists is never sent.
     """
     from threetears.evals.testing import check_completion_conformance
 
@@ -140,16 +142,25 @@ async def test_the_host_guide_s_own_client_never_fails_a_request_and_passes_the_
     namespace: dict[str, Any] = {}
     await run_in_order(blocks, namespace, page="adopting-a-host.md")
 
+    finish: list[str | None] = ["length", "error", None]
+    bodies: list[Mapping[str, object]] = []
+
     async def served(body: Mapping[str, object]) -> tuple[int, Mapping[str, object]]:
-        choice = {"message": {"content": "{}"}, "finish_reason": "length"}
-        return 200, {"model": "openai/gpt-6-luna-0901", "choices": [choice], "usage": {"prompt_tokens": 3}}
+        bodies.append(body)
+        reason = finish.pop(0)
+        choices = [] if reason is None else [{"message": {"content": "{}"}, "finish_reason": reason}]
+        return 200, {"model": "openai/gpt-6-luna-0901", "choices": choices, "usage": {"prompt_tokens": 3}}
 
     client = namespace["RouterClient"](
         "openai/gpt-6-luna",
-        asked=namespace["WireSettings"](max_tokens=512),
+        asked=namespace["WireSettings"](max_tokens=512, temperature=0.0),
         post=served,
         learned=namespace["LearnedSettings"](),
+        supported_parameters=["max_tokens", "response_format", "structured_outputs"],
     )
     completion = await client.generate(system="s", user="u", response_format={"type": "json_object"})
     check_completion_conformance(completion, require_sent_settings=True)
     assert completion.stop_reason == "max_tokens" and completion.served_model == "openai/gpt-6-luna-0901"
+    assert "temperature" not in bodies[0] and completion.temperature is None, "the catalogue lists no temperature"
+    stops = [(await client.generate(system="s", user="u")).stop_reason for _ in range(2)]
+    assert stops == ["error", "error"], "the router's error finish reason, then a 200 with no choices"

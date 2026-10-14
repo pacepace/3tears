@@ -85,9 +85,16 @@ v<version>` prints a release's notes).
   `LearnedSettings`, and returns what the served request carried (`Negotiated.sent_settings`, `.temperature`).
   `read_router_refusal` (OpenRouter's 404 and the 400s it relays), `read_anthropic_refusal` and
   `read_openai_refusal` read a refusal off a status and a JSON body, so a host's client of raw HTTP and the adapter
-  read the same. The host guide carries a minimal OpenRouter client built on it, and
-  `testing.check_refusal_negotiation` scripts a router that refuses a temperature and then enforcement, naming each
-  mistake a host's client makes in resending, reporting or remembering.
+  read the same. Only what a served request proved is learned, for the store's life (the process, or the factory):
+  never enforcement (each call starts enforced and drops it for itself alone, since a 404 can be an outage), a
+  router 404's temperature only when dropping it alone was served, and a temperature refused beside reasoning only
+  beside reasoning; an effort refusal steps at most once before sending no effort word, and an output cap the
+  provider names is resent and kept. `facts_from_router_catalogue` reads a catalogue's `supported_parameters` as
+  only what no endpoint takes, `wire_settings_for` builds a client's asked settings from the engine's, and
+  `models_clients` builds the simulator from `SIMULATOR_REQUEST_SETTINGS` as it builds the judge. The host guide
+  carries a minimal OpenRouter client built on it, and `testing.check_refusal_negotiation` scripts three routers (a
+  temperature refused under enforcement, no endpoint under enforcement, an upstream refusing the cap and the effort
+  word), naming each mistake a host's client makes in resending, reporting or remembering.
 - **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names
