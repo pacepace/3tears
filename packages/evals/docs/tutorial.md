@@ -114,7 +114,7 @@ How to read it:
 - **`"queue"`**, a field name in the grader list, makes this a classifier eval: code compares each answer with
   the case's `queue`. That is the special case. Most answers can't be checked by code, and step 6 grades those
   with a judge. A **grader** is any of them: a field name, a `(case, answer) -> bool | float` function, or a
-  judge, listed after the runner ([`rung_zero.py`](../examples/rung_zero.py) has a function).
+  judge, listed after the runner ([`1-triage/triage.py`](../examples/1-triage/triage.py) has a function).
 - **A result** is one play of one case. **Scored** results were graded. When there are any, the line also counts
   results **failed by the runner** (your function raised; they count against it) and **excluded** ones (a
   fault of the measuring setup, such as a grader that raised; they count for nothing).
@@ -321,7 +321,7 @@ as a `RubricDim` states its own scale, and the one below asks for 1 to 5.
 A `Judge` is a grader: list it with the others. Give it a completion client that names the model it calls
 (`model_name`), the rubric, and the material each answer is judged against. The client below is an offline stand-in that looks for an apology. A real one calls your model
 provider: `Model` from `threetears.evals.providers` (on the base install) is the shipped one, which
-[`llm_judge.py`](../examples/llm_judge.py) hands to its judge, replaying a recording of it when no key is set. A
+[`2-replies/replies.py`](../examples/2-replies/replies.py) hands to its judge, replaying a recording of it offline. A
 stand-in of your own returns what a model would:
 a JSON reply with a string `reasoning` and `criteria_scores`, an object whose one key is the dimension asked
 about by its stored name (`answer.acknowledges` here, the key the engine's prompt names), mapped to a score
@@ -532,7 +532,7 @@ Run the file twice. The second run reads the first run's results from the file, 
 
 | To | Read | Example |
 |---|---|---|
-| run against a real model | [Running the examples](../examples/README.md#running-them) | [`llm_judge.py`](../examples/llm_judge.py) |
+| run against a real model | [Running the examples](../examples/README.md#running-them) | [`2-replies/replies.py`](../examples/2-replies/replies.py) |
 | hold a guardrail across a real change, to held | [Reading the guardrails](reading-reports.md#reading-the-guardrails) | [`guardrails.py`](../examples/guardrails.py) |
 | weigh accuracy against cost | [Cost and budgets](cost-and-budgets.md) | [`compare_two_efforts.py`](../examples/compare_two_efforts.py) |
 | vary several things at once, such as prompt and effort | [Choosing a campaign design](choosing-a-design.md) | [`prompt_x_effort.py`](../examples/prompt_x_effort.py) |

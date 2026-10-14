@@ -130,6 +130,19 @@ def test_the_run_replays_offline_and_says_its_judge_is_uncalibrated_with_the_nex
     ), "the shipped to_label.csv is not what a replayed run writes"
 
 
+async def test_the_judge_s_spend_is_its_own_and_its_model_judged_none_of_its_own_answers(replies_dir: Path) -> None:
+    module = _load(replies_dir / "replies.py")
+
+    result = await module.replies_eval.run(store=":memory:")
+
+    summary = result.summary
+    assert (summary.n_cases, summary.k_runs, summary.n_results, summary.n_scored) == (20, 2, 40, 40)
+    assert summary.measures == [], "the judge is the only grade"
+    assert summary.role_spend("judge").calls == 120, "20 emails x 2 repeats x 3 dimensions, one call each"
+    assert summary.judge_shares_candidate_model == [] and summary.self_judging_warning is None
+    assert result.calibration_lines() == [UNCALIBRATED]
+
+
 def test_a_filled_in_to_label_is_read_back_as_the_judge_s_calibration(
     replies_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -32,8 +32,8 @@ def _settings_of(module: ModuleType) -> list[ClientRequestSettings]:
 
 
 def test_every_example_reaches_the_engine_only_through_public_roots() -> None:
-    examples = [(path.name, path) for path in sorted(EXAMPLES.glob("*.py"))]
-    assert len(examples) >= 10
+    examples = [(path.relative_to(EXAMPLES).as_posix(), path) for path in sorted(EXAMPLES.rglob("*.py"))]
+    assert {"1-triage/triage.py", "2-replies/replies.py"} <= {name for name, _ in examples}
     assert public_root_violations(SOURCE_ROOT, examples, consumer_root=REPO_ROOT) == []
 
 

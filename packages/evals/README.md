@@ -30,15 +30,16 @@ the open tickets it closed, the meeting it booked, the light it switched on.
    The completion client (`threetears.evals.providers`, `Model`) is on the base install: it speaks each provider's
    HTTP API over `httpx`, with no SDK and no other 3tears package.
 
-2. **Run the first example.** It grades a small sentiment classifier on six cases, offline and free. In a
-   checkout:
+2. **Run the first example.** It triages 30 support emails with one TOML file and no Python, replaying a
+   recorded model, so it is offline and free. In a checkout:
 
    ```bash
-   uv run python packages/evals/examples/rung_zero.py
+   cd packages/evals/examples/1-triage && uv run python -m threetears.evals triage.toml
    ```
 
    After a pip install, copy the [`examples/`](examples/) directory from the repository and run
-   `python rung_zero.py` inside it; [examples/README.md](examples/README.md) says how, and what a live run needs.
+   `python -m threetears.evals triage.toml` inside `1-triage/`; [examples/README.md](examples/README.md) says how,
+   and what a live run needs.
 
 3. **Point it at your own function.** Any async function from a case to an answer works. Put your prompt and
    model call where the comment says:
@@ -164,7 +165,7 @@ you installed.
 | Cost against quality | `Answer`, `max_cost_usd=`, the frontier | [Cost and budgets](docs/cost-and-budgets.md), [The frontier](docs/choosing-a-design.md#the-frontier-passk-against-cost) | [`compare_two_efforts.py`](examples/compare_two_efforts.py) |
 | The analysis bundle and reports | `inspect_campaign_bundle`, `AnalysisContextBundle`, `report_markdown`, `report_html` | [Reading reports](docs/reading-reports.md) | [`reports.py`](examples/reports.py) |
 | Analysis written by a model over frozen evidence | `generate_analysis` | [Having a model write the analysis](docs/reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence) | [`llm_analysis.py`](examples/llm_analysis.py) |
-| Judge calibration and evidence tiers | `rate_result`, `judge_agreement`, `JudgeEvidenceTier` | [Judges and calibration](docs/judges-and-calibration.md) | [`llm_judge.py`](examples/llm_judge.py) |
+| Judge calibration and evidence tiers | `rate_result`, `judge_agreement`, `JudgeEvidenceTier` | [Judges and calibration](docs/judges-and-calibration.md) | [`2-replies/`](examples/2-replies/replies.py) |
 | MCP | `threetears.evals.actions`, `mount_fastmcp` (extra `fastmcp`) | [Driving it from an agent](docs/agents-and-mcp.md) | |
 | Keeping runs | `Eval(...).run(store=path)` (by default `.evals/evals.sqlite`); any `DocumentStore`, proven with `STORE_CONFORMANCE_CASES` | [Keep your runs](docs/tutorial.md#8-keep-your-runs), [The store](docs/adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it), [What is kept](docs/adopting-a-host.md#stored-data-what-is-kept) | |
 | A complete host | `EvalHost`, `HostProfile`, `CandidateKind` | [Adopting the engine](docs/adopting-a-host.md#read-the-reference-hosts-in-this-order) | [`courierhost`](tests/fixtures/courierhost/__init__.py), then [`toyhost`](tests/fixtures/toyhost/README.md) |

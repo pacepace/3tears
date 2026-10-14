@@ -89,8 +89,8 @@ Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 120 judge
 
 ## Running them
 
-The examples that call a model run **live by default**: with `ANTHROPIC_API_KEY` set they call Claude
-(`claude-haiku-5-5`, the only model they use) through the package's own completion client,
+The single-file examples below the ladder that call a model run **live by default**: with `ANTHROPIC_API_KEY` set
+they call Claude (`claude-haiku-5-5`, the only model they use) through the package's own completion client,
 [`threetears.evals.providers`](../src/threetears/evals/providers/__init__.py). Without a key they replay
 `recordings/<example>.jsonl`, what Claude answered when the run was last recorded, so they call nothing and cost
 nothing, and their output is a real model's, as of that recording. There is no scripted stand-in for a model
@@ -102,7 +102,6 @@ anywhere in them. Each prints which way it ran, first:
   means no model is called: every answer is the recorded one. A prompt the recording does not hold is refused by
   name with the command that records it again, never sent live.
 - `No model is called: ...` means the example never calls one, live or not (`cassettes.py`, `reports.py`).
-  `rung_zero.py` calls no model either, and prints no such line.
 
 The examples need nothing beyond the base install: the client speaks Anthropic's API over `httpx`, which the
 package depends on.
@@ -110,7 +109,7 @@ package depends on.
 **In a checkout of this repo**, from the repo root, after `uv sync`:
 
 ```bash
-uv run python packages/evals/examples/llm_judge.py
+uv run python packages/evals/examples/compare_two_prompts.py
 ```
 
 To run live, put an Anthropic API key in `packages/evals/examples/.env`:
@@ -122,7 +121,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 Git ignores `.env` files, so the key stays out of commits. Then pass the file to `uv run`:
 
 ```bash
-uv run --env-file packages/evals/examples/.env python packages/evals/examples/llm_judge.py
+uv run --env-file packages/evals/examples/.env python packages/evals/examples/compare_two_prompts.py
 ```
 
 **Outside a checkout** (once 0.68.0 is on PyPI and you installed `3tears-evals` with pip): the examples are
@@ -135,8 +134,8 @@ cd 3tears && git sparse-checkout set packages/evals/examples && cd packages/eval
 ```
 
 Keep all of it together: the examples replay `recordings/` and read `tickets.jsonl` and
-`llm_analysis_first_draft.json` from beside themselves. Then, from inside it, `python rung_zero.py`, or with
-`export ANTHROPIC_API_KEY=sk-ant-...` first, any example live.
+`llm_analysis_first_draft.json` from beside themselves. Then, from inside it, `cd 1-triage && python -m
+threetears.evals triage.py`, or with `export ANTHROPIC_API_KEY=sk-ant-...` first, any single-file example live.
 
 **How an example builds its client.** Each model-calling example has the same few lines, so read any one: with the
 key, `Model("claude-haiku-5-5", api_key=..., provider="anthropic", max_tokens=..., effort=...)` from
@@ -144,8 +143,7 @@ key, `Model("claude-haiku-5-5", api_key=..., provider="anthropic", max_tokens=..
 per arm); without it, `RecordedCompletions.replay(recording, settings=...)` from
 `threetears.evals.testing`, given the same settings, since a recording serves only a client built the way it was.
 No temperature is sent: `claude-haiku-5-5` takes none, so the model's own sampling applies. The candidates ask for
-`low` effort; `compare_two_efforts.py` and `prompt_x_effort.py` compare `low` with `medium`, and `llm_judge.py`'s
-judge is asked as a judged run records it (`JUDGE_REQUEST_SETTINGS`: an output cap and `high` effort).
+`low` effort; `compare_two_efforts.py` and `prompt_x_effort.py` compare `low` with `medium`.
 
 **Your own client.** A client of your own, for another provider or a gateway, is anything with an async
 `generate(*, system, user, response_format=None)` that returns an object carrying ten attributes: `content`,
@@ -169,7 +167,6 @@ A recording is made once, live, with the key set, and replaces the example's fil
 (`RECORD=1` records afresh; it never appends to an old recording). From this directory:
 
 ```bash
-RECORD=1 python llm_judge.py            # recordings/llm_judge.jsonl
 RECORD=1 python compare_two_prompts.py  # recordings/compare_two_prompts.jsonl
 RECORD=1 python compare_two_efforts.py  # recordings/compare_two_efforts.jsonl
 RECORD=1 python prompt_x_effort.py      # recordings/prompt_x_effort.jsonl
@@ -178,11 +175,11 @@ RECORD=1 python llm_analysis.py         # recordings/llm_analysis.jsonl and reco
 RECORD=1 python guardrails.py           # recordings/guardrails.jsonl
 ```
 
-The whole ladder, in a checkout, from the repo root:
+Every single-file example, in a checkout, from the repo root:
 
 ```bash
-cd packages/evals/examples && for example in llm_judge compare_two_prompts compare_two_efforts prompt_x_effort \
-  world llm_analysis guardrails; do RECORD=1 uv run --env-file .env python "$example.py" || break; done
+cd packages/evals/examples && for example in compare_two_prompts compare_two_efforts prompt_x_effort world \
+  llm_analysis guardrails; do RECORD=1 uv run --env-file .env python "$example.py" || break; done
 ```
 
 `RECORD=1` with no key is refused: a recording is of a live run. Record again whenever an example's prompt, cases or
@@ -195,12 +192,10 @@ Every example that grades ends by reading what it measured, not only the rate: `
 why), or, in a comparison, where the arms disagree (`comparison.results(arm)`). Read them before you trust the
 numbers. `cassettes.py`, `reports.py` and `llm_analysis.py` grade nothing new: they show what to do with a run.
 
-## The ladder
+## The single-file examples
 
 | # | File | The question it answers | What's new |
 |---|---|---|---|
-| 0 | [`rung_zero.py`](rung_zero.py) | Does my function give the right answer on my cases? | `Eval(cases, runner, grader)`; a field grader and a function; `summary.misses()` |
-| 1 | [`llm_judge.py`](llm_judge.py) | Is each answer helpful, and does it say only what its source supports? | `Judge`, among the graders: a model grades each answer against a rubric |
 | 2 | [`compare_two_prompts.py`](compare_two_prompts.py) | What does the new prompt change, and is the difference real or noise? | a mapping of runners: arms, the first the control, delta, its interval, a verdict; each arm per kind of case (each case's `stratum`, `comparison.strata()`); the cases kept as a file, [`tickets.jsonl`](tickets.jsonl), that every prompt version runs against |
 | 3 | [`compare_two_efforts.py`](compare_two_efforts.py) | Is less effort good enough for this prompt, given what it saves? Two arms that differ in one setting, `low` against `medium` reasoning effort | `Answer` (each arm's spend), `grader("label", margin=...)`: only `equivalent` says "good enough"; typed verdicts |
 | 4 | [`prompt_x_effort.py`](prompt_x_effort.py) | What does changing the prompt do at each effort? | arms named by `k=v` factors, and `Result.against` for a second control |
@@ -210,8 +205,9 @@ numbers. `cassettes.py`, `reports.py` and `llm_analysis.py` grade nothing new: t
 | 8 | [`llm_analysis.py`](llm_analysis.py) | Can a model write the analysis from a frozen copy of the evidence? | `generate_analysis` over a fingerprinted bundle; a canned first draft the check refuses, and the model's repair |
 | 9 | [`guardrails.py`](guardrails.py) | The new prompt answers more questions. Does it still keep the customer's card private? | `grader(..., guard=...)`: a guardrail with its margin, held / breached / undecided per arm, apart from the contrasts |
 
-The [tutorial](../docs/tutorial.md) covers rungs 0 to 3 and 9 (in its own order, the judge after the comparison),
-and keeping your runs in a file. The other rungs are here alone.
+The [tutorial](../docs/tutorial.md) covers what ladder rungs 1 and 2 teach, `compare_two_prompts.py`,
+`compare_two_efforts.py` and `guardrails.py` (in its own order, the judge after the comparison), and keeping your runs
+in a file. The other examples are here alone.
 
 ## Not covered by an example yet
 

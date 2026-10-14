@@ -10,7 +10,7 @@ The snippets run top to bottom as one script, in one async context (`python -m a
 `async def main()`). A store call blocks, so a snippet makes it off the event loop with
 `await run_blocking(host.blocking_executor, fn, ...)`. `client` is any `CompletionClient` (an async
 `generate(system=, user=, response_format=)` and an `aclose()`); `Model` from `threetears.evals.providers` is the
-shipped one, which `examples/llm_judge.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
+shipped one, which `examples/2-replies/replies.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
 directive (the criterion's answers, "can't tell" among them); pass it to a provider that enforces structured output,
 or send the nearest mode yours has. The reply is read and refused on return either way. Every enum in it is a string
 enum, the one form every provider's strict mode enforces (a Gemini model accepted an integer one and left the score
@@ -800,4 +800,5 @@ template was edited after the run was created, has an unknown criterion and read
 - [Reading the guardrails](reading-reports.md#reading-the-guardrails): held, breached and undecided in a report.
 - [Principles](principles.md): code checks facts, a judge assesses judgment, people check the judge.
 - [Evaluating a tool-using agent](evaluating-agents.md): grading what an agent *did*, with no judge.
-- `examples/llm_judge.py`: a judged run with a Claude client.
+- `examples/2-replies/replies.py`: a judged run on a judge of another family, recorded with no person's labels,
+  and how a person's labels calibrate it.

@@ -30,7 +30,6 @@ MODEL_CALLING = (
     "compare_two_prompts.py",
     "guardrails.py",
     "llm_analysis.py",
-    "llm_judge.py",
     "prompt_x_effort.py",
     "world.py",
 )
@@ -40,7 +39,7 @@ def load_example(name: str) -> ModuleType:
     """Execute ``examples/<name>`` as a fresh module.
 
     Args:
-        name: The file's name, ``"llm_judge.py"``.
+        name: The file's name, ``"guardrails.py"``.
 
     Returns:
         The module, its ``main`` not yet run.
