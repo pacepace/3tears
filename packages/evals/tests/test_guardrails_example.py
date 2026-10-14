@@ -33,7 +33,7 @@ async def test_with_no_api_key_it_replays_and_an_arm_that_breached_is_never_the_
         for prompt in module.PROMPTS.values()
         for case in module.CASES
     ]
-    check_covers(module, asked, settings=module.SETTINGS, model=module.MODEL)
+    check_covers(module, asked, settings=module.SETTINGS)
     replay = replaying(module, monkeypatch)
 
     comparison = await module.main()

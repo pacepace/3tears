@@ -190,9 +190,10 @@ replay as the `k` answers they were. A prompt the recording does not hold, or on
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
 changed under its recording before a replay starts, hand
-`RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. One file can hold
-several clients' calls (two models answering one prompt, or one model under two settings): each replays its own,
-with `replay(path, settings=..., model=...)`.
+`RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
+model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays
+its own with `replay(path, settings=...)`; record a second model into a file of its own, since recording it onto
+the first is refused.
 
 Recording onto a file that exists appends to it, and only `replace=True` starts afresh. A replayed price
 (`cost_usd`, `price_source`) is what the call cost when it was recorded, not a quote at today's rates. Every

@@ -114,20 +114,15 @@ def replaying(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Replay:
     return replay
 
 
-def check_covers(
-    module: ModuleType, prompts: Iterable[RecordedPrompt], *, settings: ClientRequestSettings, model: str
-) -> None:
+def check_covers(module: ModuleType, prompts: Iterable[RecordedPrompt], *, settings: ClientRequestSettings) -> None:
     """Refuse, naming each prompt, when ``module``'s recording no longer covers ``prompts``, before anything runs.
 
     Args:
         module: A loaded model-calling example.
         prompts: The calls it will make that are known before it runs (each repeat listed once per repeat).
         settings: The request settings the client making them is built with.
-        model: The model it calls.
 
     Raises:
         RecordingRefused: The recording does not exist, or no longer covers one of the prompts.
     """
-    RecordedCompletions.check_covers(
-        module.RECORDING, list(prompts), settings=settings, model=model, rerecord=module.RERECORD
-    )
+    RecordedCompletions.check_covers(module.RECORDING, list(prompts), settings=settings, rerecord=module.RERECORD)

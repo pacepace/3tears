@@ -33,7 +33,7 @@ async def test_with_no_api_key_it_replays_both_efforts_and_decides_by_the_typed_
     module = _load()
     asked = [RecordedPrompt(module.PROMPT, case["email"]) for case in module.CASES for _ in range(2)]
     for settings in module.EFFORTS.values():
-        check_covers(module, asked, settings=settings, model=module.MODEL)
+        check_covers(module, asked, settings=settings)
     replay = replaying(module, monkeypatch)
 
     comparison = await module.main()

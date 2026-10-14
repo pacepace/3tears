@@ -33,7 +33,7 @@ async def test_with_no_api_key_it_replays_four_arms_keyed_by_every_factor(
     module = _load()
     asked = [RecordedPrompt(text, case["ticket"]) for text in module.PROMPTS.values() for case in module.CASES] * 2
     for settings in module.EFFORTS.values():
-        check_covers(module, asked, settings=settings, model=module.MODEL)
+        check_covers(module, asked, settings=settings)
     replay = replaying(module, monkeypatch)
 
     comparison = await module.main()

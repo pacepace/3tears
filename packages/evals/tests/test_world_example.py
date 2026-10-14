@@ -42,7 +42,7 @@ async def test_with_no_api_key_the_example_replays_its_recording_and_says_so(
         for case in module.CASES
         for _ in range(2)
     ]
-    check_covers(module, first_turns, settings=module.SETTINGS, model=module.MODEL)
+    check_covers(module, first_turns, settings=module.SETTINGS)
     replay = replaying(module, monkeypatch)
     host = _host_of(module, monkeypatch)
 

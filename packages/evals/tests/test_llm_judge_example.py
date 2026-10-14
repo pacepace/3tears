@@ -23,7 +23,7 @@ async def test_with_no_api_key_the_example_replays_its_recording_and_prints_each
 ) -> None:
     module = load_example("llm_judge.py")
     answers = [RecordedPrompt(module.SYSTEM, case["question"]) for case in module.CASES for _ in range(2)]
-    check_covers(module, answers, settings=module.SETTINGS, model=module.MODEL)
+    check_covers(module, answers, settings=module.SETTINGS)
     replay = replaying(module, monkeypatch)
 
     summary = await module.main()

@@ -96,7 +96,7 @@ def client(model: str, settings: ClientRequestSettings) -> Any:
     if not key:
         if recording:
             raise SystemExit("RECORD=1 records a live run, which needs ANTHROPIC_API_KEY")
-        return RecordedCompletions.replay(RECORDING, settings=settings, model=model, rerecord=RERECORD)
+        return RecordedCompletions.replay(RECORDING, settings=settings, rerecord=RERECORD)
     live = models_client(
         model,
         api_key=key,

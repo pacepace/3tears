@@ -59,7 +59,7 @@ Keep all of it together: the examples replay `recordings/` and read `tickets.jso
 **How an example builds its client.** Each model-calling example has the same few lines, so read any one: with the
 key, `models_client("claude-haiku-5-5", api_key=..., provider="anthropic", max_tokens=..., reasoning_effort=...)`
 from `threetears.evals.providers`, built from the `ClientRequestSettings` the example declares (`SETTINGS`, or one
-per arm); without it, `RecordedCompletions.replay(recording, settings=..., model=...)` from
+per arm); without it, `RecordedCompletions.replay(recording, settings=...)` from
 `threetears.evals.testing`, given the same settings, since a recording serves only a client built the way it was.
 No temperature is sent: `claude-haiku-5-5` refuses one, so the model's own sampling applies. The candidates ask for
 `low` effort; `compare_two_efforts.py` and `prompt_x_effort.py` compare `low` with `medium`, and `llm_judge.py`'s

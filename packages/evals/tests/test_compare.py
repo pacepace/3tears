@@ -229,7 +229,7 @@ async def test_the_example_replays_its_recording_and_prints_the_verdict(
         for case in module.CASES
         for _ in range(2)
     ]
-    check_covers(module, asked, settings=module.SETTINGS, model=module.MODEL)
+    check_covers(module, asked, settings=module.SETTINGS)
     replay = replaying(module, monkeypatch)
 
     comparison = await module.main()
