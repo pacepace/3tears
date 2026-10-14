@@ -6,8 +6,9 @@ real. For an agent, it measures what the agent did to a world your application d
 the open tickets it closed, the meeting it booked, the light it switched on.
 
 > **The public API is still changing.** This package was extracted from a production app's eval engine. From
-> 0.68.0 only its host contract is promised: a name on it moves with a deprecation cycle, and any other public name
-> may change in any release, recorded in `MIGRATIONS.toml`
+> 0.68.0 only its host contract is promised: a name on it moves with a deprecation cycle, and any other declared
+> name may change in any release, recorded in `MIGRATIONS.toml`. About 450 names are declared, [mapped by
+> rung](docs/surface.md); the rest a root exports are provisional
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 
 ## First result in 10 minutes
@@ -147,7 +148,8 @@ you installed.
 
 **Reference**
 
-- [Reference](docs/reference.md): every public name, setting, report field, goal-check builtin and action, generated from the code.
+- [The surface](docs/surface.md): the declared names on one page, by rung.
+- [Reference](docs/reference.md): every declared name, setting, report field, goal-check builtin and action, generated from the code.
 
 ## For experts
 
