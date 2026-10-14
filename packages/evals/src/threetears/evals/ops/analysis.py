@@ -607,7 +607,7 @@ async def analysis_estimate(
         campaign_id,
         scope_id,
         model=model,
-        resolve_prompt=generation.resolve_prompt,
+        resolve_prompt=generation.prompt,
         out_of_run_cap_usd=host.out_of_run_cap(),
     )
 
@@ -668,7 +668,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         campaign_id,
         scope_id,
         model=model,
-        resolve_prompt=generation.resolve_prompt,
+        resolve_prompt=generation.prompt,
         out_of_run_cap_usd=host.out_of_run_cap(),
     )
 

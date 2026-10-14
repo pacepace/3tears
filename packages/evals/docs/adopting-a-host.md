@@ -1093,7 +1093,7 @@ releases the client on every path that does not reach `make`. Work of any other 
 ```python
 async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
     budget = my_budget(host, caller.scope_id)
-    call = plan_draft(axis=params.axis, system_prompt=..., subject_feed=..., catalog_feed=..., reset=...)
+    call = plan_draft(axis=params.axis, subject_feed=..., catalog_feed=...)   # the shipped prompt
 
     async def draft(client: BoundCompletionClient, admitted: AdmittedCall) -> RubricProposal:
         async with client:                                    # the job's work owns the client from here
@@ -1190,80 +1190,52 @@ launcher reads every one off `request.apparatus_settings` with no default of its
 the rig as set up (`EvalRun.apparatus_settings`), a component of its measurement context — a launch naming
 a default and one leaving it out are one condition.
 
-## The engine's prompts: seeded into your registry
+## The engine's prompts: shipped defaults, optional overrides
 
-The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`,
-one string), the capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`),
-both sectioned templates (`SeedSection`'s zones are [provisional](#provisional-mechanisms)). Each is store-master. Your prompt registry holds the copy that runs, an operator
-tunes it with no deploy, and the engine ships only the default a fresh deployment starts from.
+The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`), the
+capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`). **A new host does
+nothing here.** Each call runs the default the package ships (`EVAL_ANALYSIS_GEN_DEFAULT` in `analysis`,
+`EVAL_PROPOSER_TEMPLATE_DEFAULT` and `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt
+of your own: an `AnalysisGeneration` with no `resolve_prompt`, and `plan_draft(axis=..., subject_feed=...,
+catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
 
-`SEED_PROMPTS` (from `threetears.evals.kernel`) is that list, one `SeedPrompt` per prompt. Each names its id
-(`prompt_type`), which registry seeds it (`kind`: `template` or `text`), and where the default lives:
-`seed_ref` is the `(module, constant)` to import it from. Seed an empty slot from each entry and never overwrite a
-stored one:
+**An override is yours to keep.** If an operator tunes a prompt without a deploy, keep the copy in your own
+registry and hand it in: `AnalysisGeneration(resolve_prompt=..., prompt_id=...)` (the id is recorded on every
+analysis as its provenance), and `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
+`threetears.evals.kernel`) lists the three, one `SeedPrompt` each: its id (`prompt_type`), its registry kind
+(`template` or `text`) and `seed_ref`, the `(module, constant)` its default is imported from. Seed an empty slot
+from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
+other name.
 
-```python
-for entry in SEED_PROMPTS:
-    module, constant = entry.seed_ref
-    default = getattr(importlib.import_module(module), constant)
-    registry.seed_if_empty(entry.prompt_type, entry.kind, default)  # your registry's own call
-```
+**A proposer override states the draft shape it was written for, and the engine checks it.** Each shipped
+proposer default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
+(`gen.RUBRIC_PROPOSAL_CONTRACT.line`): the digest of the draft's schema as the call sends it, its field
+documentation aside, and of a revision for the rules the schema cannot state. `plan_draft` reads an override
+before anything is priced and raises `PromptContractError` (a `ConflictError`, status 409) when it carries
+another fingerprint (`outdated`) or none (`undeclared`). The error names the prompt and the remedy: reset the slot
+to the shipped default, or rewrite the edit's output instructions for the current shape and make its line read the
+current one. The registry is yours, so name your reset as `reset=` (an action or a command your operator can
+run), which an override requires. An edited copy that carries the current line passes: the line is the editor's
+statement that the edit was written for this shape. The analysis generator's prompt states no shape (its schema is
+sent and its grammar appended by code), so it binds no contract.
 
-Key the slots by the exported constants rather than by the strings. Declare your own prompts with the
-same `SeedPrompt` type and seed from both lists. The engine's ids start with `eval_`, so your own can use
-any other name. A `SeedPrompt` refuses an unknown `kind` or a blank field when it is constructed.
-
-**See a stored copy the package has moved past, before you pay for it.** A slot seeded from an older default
-keeps being sent after an upgrade changes the default, and if the change is one the package's own validation
-depends on, every call it steers can fail. Record `seed_digest(default)` when you seed a slot, and on start-up
-read each slot with `prompt_drift`:
+**The drift check is opt-in.** A stored copy seeded from an older default keeps being sent after an upgrade
+changes the default. To see that before you pay for it, record `seed_digest(default)` when you seed a slot and read
+each slot with `prompt_drift` on start-up:
 
 ```python
 drift = prompt_drift(entry, shipped=default, stored=stored_copy, seeded_digest=recorded_digest,
                      reset=f"call prompt_reset with prompt_type={entry.prompt_type!r}",  # your own reset
                      customized=operator_owns_it)
-if drift.stale:
-    log.warning("%s: %s", drift.prompt_type, drift.remedy)
-```
-
-A stored copy reads `current` when it is the shipped default, `customized` when it changed since you seeded it
-or you say it is deliberately yours (`customized=True`), and `stale` otherwise: untouched since seeding, or with
-no record of its seeding, and not the default. Pass a template's stored copy as
-`SeedTemplate.from_dict(payload)` and a text prompt's as its string. The digest names content, not the revision
-number. A copy you tune is never reported stale. A provenance stamp does the same job as a recorded digest: if your registry marks a slot as
-the system's seed until someone edits it, pass `customized=True` for an edited slot and `seeded_digest=None`, and an
-untouched slot the package has moved past reads `stale`.
-
-**A proposer prompt states the draft shape it was written for, and the engine checks it.** A tuned copy is
-never stale, but it can still teach a draft shape the engine no longer reads. So each shipped proposer
-default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
-(`gen.RUBRIC_PROPOSAL_CONTRACT.line`). The fingerprint is the digest of the draft's schema as the call sends
-it, its field documentation aside, and of a revision for the rules the schema cannot state. `plan_draft`
-reads the rendered prompt you hand it, before anything is priced, and raises `PromptContractError` (a
-`ConflictError`, status 409) when the prompt carries another fingerprint (`outdated`) or none
-(`undeclared`, which is every copy seeded before the line existed). The error names the prompt
-(`prompt_type`) and the remedy: reset the slot to the shipped default, or keep an edit by rewriting its
-output instructions for the current shape and making its line read the current one. The registry is yours,
-so the engine cannot name your reset: pass it as `reset=` (an action or a command your operator can run), and
-the remedy names it. `prompt_drift` takes the same `reset=`. An edited copy that carries the current line passes:
-the line is the editor's statement that the edit was written for this shape, and the strict response
-format and the draft's validation still stand behind it. The analysis generator's prompt states no shape
-(its schema is sent and its grammar appended by code), so it binds no contract.
-
-`prompt_drift` reads the same thing before any call. Each reading carries `contract` (`current`,
-`outdated`, `undeclared`, or `unbound` for a prompt with no contract), `expected_contract` (the line the
-shipped default carries) and `refused`, which is true when a call the copy steers is refused, whether the
-copy is stale or customized. Show `refused` readings with their `remedy` wherever you list your prompts,
-so an operator sees a copy that will be refused before a call is.
-
-```python
 if drift.stale or drift.refused:
     log.warning("%s: %s", drift.prompt_type, drift.remedy)
 ```
 
-After an upgrade that moves a contract's fingerprint, every stored copy of that prompt is refused until it
-is reset or its line updated. Check `prompt_drift` on start-up, so the reset happens before the first call
-is refused.
+A stored copy reads `current` when it is the shipped default, `customized` when it changed since you seeded it or
+you say it is deliberately yours (`customized=True`), and `stale` otherwise. `refused` is true when `plan_draft`
+would refuse the copy (`contract` is `outdated` or `undeclared`). Pass a template's stored copy as
+`SeedTemplate.from_dict(payload)` and a text prompt's as its string. A host that keeps no copies has nothing to
+check.
 
 ### Launching the analysis reporter
 
@@ -1487,6 +1459,5 @@ so it goes through the deprecation cycle, never straight out in one release's no
   can ask what `fired(...)` ([A world](#a-world-through-the-cells-session)).
 - **`SeedSection`'s zones** (`primacy`, `reference`, `recency`, in `kernel`). The sectioned prompt template the
   two proposer prompts are declared in, ordered by zone, each section with its own condition, formatter and
-  cache class. Without a registry for sectioned templates, you render those sections into the system prompt
-  you hand the proposer yourself (`plan_draft` reads the rendered prompt;
-  [The engine's prompts](#the-engines-prompts-seeded-into-your-registry)).
+  cache class. A host with no registry for sectioned templates never meets them: `plan_draft` sends the shipped
+  default when handed no prompt ([The engine's prompts](#the-engines-prompts-shipped-defaults-optional-overrides)).

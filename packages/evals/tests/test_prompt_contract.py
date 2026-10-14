@@ -28,6 +28,7 @@ from threetears.evals.gen import (
     EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT,
     EVAL_PROPOSER_TEMPLATE_DEFAULT,
     RUBRIC_PROPOSAL_CONTRACT,
+    default_system_prompt,
     plan_draft,
 )
 from threetears.evals.schema.models import RubricAxis
@@ -263,6 +264,28 @@ def test_a_shipped_default_declaring_two_contracts_is_refused_as_a_defect() -> N
     )
     with pytest.raises(ValueError, match="2 output contracts"):
         prompt_drift(_entry("eval_proposer"), shipped=shipped, stored=shipped, reset=_RESET, seeded_digest=None)
+
+
+@pytest.mark.parametrize(
+    ("axis", "default"),
+    [("capability", EVAL_PROPOSER_TEMPLATE_DEFAULT), ("boundary", EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT)],
+)
+def test_a_host_handing_no_prompt_sends_the_shipped_default(axis: RubricAxis, default: SeedTemplate) -> None:
+    """A host that keeps no prompt registry passes nothing: the call runs the axis's default, contract line and all."""
+    call = plan_draft(axis=axis, subject_feed="F", catalog_feed="C")
+    assert call.system == template_text(default.sections) == default_system_prompt(axis)
+    assert RUBRIC_PROPOSAL_CONTRACT.line in call.system
+
+
+def test_an_override_naming_no_reset_is_refused() -> None:
+    """A stale override's refusal names the host's reset, so an override that names none is refused for that."""
+    with pytest.raises(ValueError, match="needs reset="):
+        plan_draft(
+            axis="capability",
+            system_prompt=template_text(EVAL_PROPOSER_TEMPLATE_DEFAULT.sections),
+            subject_feed="F",
+            catalog_feed="C",
+        )
 
 
 def test_a_blank_reset_is_refused_before_the_prompt_is_read() -> None:

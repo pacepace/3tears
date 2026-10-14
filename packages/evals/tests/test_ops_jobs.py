@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.kernel import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel import ANALYSIS_GEN_PROMPT, ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.ops import (
     AnalysisGeneration,
     CampaignDefinition,
@@ -49,7 +49,7 @@ from threetears.evals.ops import (
     run_job_id,
     run_launch,
 )
-from threetears.evals.analysis import AnalysisContextBundle, judge_agreement
+from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, AnalysisContextBundle, judge_agreement
 from threetears.evals.run import LAUNCH_CANCEL_REASON
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
@@ -327,6 +327,21 @@ def test_generation_settings_that_cannot_bound_a_generation_are_refused(fields: 
     AnalysisGeneration(**valid)
     with pytest.raises(ValueError, match=message):
         AnalysisGeneration(**(valid | fields))
+
+
+async def test_a_generation_naming_no_prompt_runs_the_shipped_default() -> None:
+    """A host with no prompt registry names no prompt: the generator runs the default under the engine's id."""
+    generation = AnalysisGeneration(max_output_tokens=10, budget_s=1.0)
+
+    assert generation.prompt_id == ANALYSIS_GEN_PROMPT
+    assert await generation.prompt() == EVAL_ANALYSIS_GEN_DEFAULT
+
+
+async def test_a_generation_naming_a_prompt_runs_the_override() -> None:
+    async def prompt() -> str:
+        return "tuned"
+
+    assert await AnalysisGeneration(resolve_prompt=prompt, max_output_tokens=10, budget_s=1.0).prompt() == "tuned"
 
 
 # =============================================================================

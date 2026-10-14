@@ -13,7 +13,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
 from threetears.evals.run.launch import LaunchHost
 
 
@@ -23,8 +25,10 @@ class AnalysisGeneration:
 
     Attributes:
         prompt_id: The registry key the generator prompt resolves under, recorded on every analysis as
-            its provenance.
-        resolve_prompt: Resolves the generator prompt; awaited once a generation's bundle has evidence.
+            its provenance; :data:`~threetears.evals.kernel.ANALYSIS_GEN_PROMPT` unless the host names its own.
+        resolve_prompt: The host's override of the generator prompt, awaited once a generation's bundle has
+            evidence; ``None`` (the default) runs the shipped default,
+            :data:`~threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT`.
         max_output_tokens: The output cap the host's generator clients are built with, for the
             pre-spend disclosure.
         budget_s: The job's wall-clock ceiling on its generator calls; a generation that outruns it is recorded
@@ -34,10 +38,20 @@ class AnalysisGeneration:
             its cap, after both calls were billed.
     """
 
-    prompt_id: str
-    resolve_prompt: Callable[[], Awaitable[str]]
+    prompt_id: str = ANALYSIS_GEN_PROMPT
+    resolve_prompt: Callable[[], Awaitable[str]] | None = None
     max_output_tokens: int
     budget_s: float
+
+    async def prompt(self) -> str:
+        """The generator prompt a generation runs: the host's override when it registered one, else the shipped default.
+
+        Returns:
+            The prompt text.
+        """
+        if self.resolve_prompt is None:
+            return EVAL_ANALYSIS_GEN_DEFAULT
+        return await self.resolve_prompt()
 
     def __post_init__(self) -> None:
         """Refuse an empty prompt id, and a cap or budget that is not positive.
