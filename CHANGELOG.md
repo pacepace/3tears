@@ -890,6 +890,7 @@ two deprecation warnings.
   `nats_container` fixture and every live NATS test use them.
 - **Changed, the workspace pytest config:** a `DeprecationWarning` from testcontainers is an error,
   and discord.py 2.7.1's own `asyncio.iscoroutinefunction` call in `Client.event` is ignored.
+
 ## v0.67.0 -- 2026-10-13
 
 ### Datasources: a pod can list its own recorded exports
