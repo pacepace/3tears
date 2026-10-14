@@ -349,7 +349,7 @@ booking = Eval(
 What it printed:
 
 ```text
-booking: agent
+booking: 9/12 cases passed; 3 misses: r08, r09, r10
 36 result(s): 36 scored
   in_window: mean 1 (n=36, min 1, max 1)
   goal check (state.booked.length >= 1) == (variation.expect == "book"): passed 32/36 — unproven: no control shows it tells acting from doing nothing; a candidate that did nothing passes it in 4 of 12 case(s)
@@ -372,7 +372,9 @@ An eval's runs are kept in its store, so anyone can read them back without runni
 command line:
 
 ```bash
-cd examples/4-booking && python -m threetears.evals ls --host serve:host --scope booking
+cd examples/4-booking  # serve.py imports agent.py as a module, so both run from here, where the runs are stored
+uv run python -m threetears.evals agent.py
+uv run python -m threetears.evals ls --host serve:host --scope booking
 ```
 
 The store is any `DocumentStore`: the SQLite file by default, or your own database to share it.

@@ -27,7 +27,7 @@ uv run python -m threetears.evals examples/3-invoices/extract.py   # rung 3
 uv run python -m threetears.evals examples/4-booking/agent.py      # rung 4
 ```
 
-Rung 4's [`serve.py`](4-booking/serve.py) imports `agent.py` beside it, so it runs from its own directory.
+The one exception is rung 4's [`serve.py`](4-booking/serve.py), which runs from `examples/4-booking/` because it imports `agent.py` as a module.
 
 A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
 again, live (`RECORD=1 uv run python -m threetears.evals examples/1-triage/triage.py`). A recording holds one model at one
