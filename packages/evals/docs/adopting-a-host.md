@@ -259,10 +259,13 @@ OpenRouter's catalogue (once this factory's own `load_prices` read it, and only 
 takes); unknown is sent as asked. A provider's refusal of a setting the
 request carried (an Anthropic model on which `temperature` is deprecated or a thinking budget unsupported, an OpenAI
 model that takes only its default temperature or fewer effort words) is answered by sending the request once more
-with the closest setting the model then takes: the refused request generated nothing and is not billed. What a served
-resend proved the model refuses is learned: every client of the factory sends that way for the rest of its life,
-logged once at WARNING. On OpenRouter, a strict call whose `require_parameters` leaves no endpoint (a 404 naming no
-parameter) is resent without its temperature, keeping enforcement, and only if that still finds none, without
+with the closest setting the model then takes: the refused request generated nothing and is not billed, so the
+price ceiling is one request's; but a refused send can take up to one request timeout, so a call can take up to
+`MAX_RESENDS + 1` of them (`threetears.evals.negotiation.MAX_RESENDS`, 4), and a wall-clock ceiling of your own
+around a call allows for that. What a served resend proved the model refuses is learned: every client of the
+factory sends that way for the rest of its life, logged once at WARNING. On OpenRouter, a strict call whose
+`require_parameters` leaves no endpoint (a 404 naming no parameter) is resent without its temperature, keeping
+enforcement, and only if that still finds none, without
 enforcement, which its `sent_settings` records as `strict_output=False`. Enforcement is never learned: the next call
 asks for it again, since a router's "no endpoint" can be an outage. Any other refusal, and a refusal of a resend for
 a setting already dropped, is raised as before.
@@ -364,10 +367,12 @@ never does, and neither should your own client, so the logic is one public root,
 (`threetears.evals.negotiation`, no SDK and no HTTP client): `negotiate` sends the closest settings the model is
 known to take (`closest_settings`), hands any failure to your refusal reader, and on a refusal of a setting the
 request carried learns it and sends again, in a fixed order (a refused temperature first, keeping enforcement, and
-only then enforcement), at most once per setting and four times per call; anything else is raised as your transport
-raised it. It returns what the served request carried, which is what your completion reports. You write the
-request and the parsing; you never write the logic. A minimal OpenRouter client over raw HTTP (OpenRouter's request
-shape is the `router` family; `read_router_refusal` reads its 404 and the 400s it relays from an upstream):
+only then enforcement), at most once per setting and `MAX_RESENDS` (4) times per call; anything else is raised as
+your transport raised it. Each refused send costs nothing but can cost up to your request timeout, so a wall-clock
+ceiling you hold around a call allows `MAX_RESENDS` × that timeout past the served request's. It returns what the
+served request carried, which is what your completion reports. You write the request and the parsing; you never
+write the logic. A minimal OpenRouter client over raw HTTP (OpenRouter's request shape is the `router` family;
+`read_router_refusal` reads its 404 and the 400s it relays from an upstream):
 
 ```python
 from dataclasses import dataclass, replace

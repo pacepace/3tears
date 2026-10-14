@@ -745,6 +745,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # values it reads and passes, the readers it hands a failure to, and the check its suite runs over it.
         "threetears.evals.negotiation.negotiate",
         "threetears.evals.negotiation.Negotiated",
+        # The resend bound a host's wall-clock ceiling around a call is sized from.
+        "threetears.evals.negotiation.MAX_RESENDS",
         "threetears.evals.negotiation.LearnedSettings",
         "threetears.evals.negotiation.WireSettings",
         "threetears.evals.negotiation.SettingFacts",

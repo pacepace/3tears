@@ -2602,6 +2602,8 @@ Request negotiation: a client that never fails a request because a model lacks a
   <br>`= 1024`
 - **`BUDGET_SHARES`** · constant (dict) · The share of the output cap each effort word stands for: the `router` family's documented ratios for turning an effort into a reasoning budget on a model that takes budgets, so a budget sent to a router as its word comes back as about the budget asked (the judge's 8192 of 10240 is 0.80, `high`, and `high` is 0.80 of the cap again).
 - **`EFFORT_LADDER`** · constant (tuple) · The engine's seven reasoning words (`REASONING_EFFORTS`) as a ladder, lowest first: what "closest" is measured on.
+- **`MAX_RESENDS`** · *host contract* · constant (int) · The most times one call is resent for a refused setting: one per setting a client can drop or move (the temperature, the reasoning parameter, the reply format, enforcement).
+  <br>`= 4`
 
 <a id="api-providers"></a>
 ### `threetears.evals.providers`

@@ -7711,6 +7711,11 @@
       "signature": "LearnedSettings(*, client: str = 'eval.negotiation', declared_by: str = 'declared', contradiction: str = 'a declared fact the provider contradicts; correct where it was declared') -> None",
       "tier": "host-contract"
     },
+    "threetears.evals.negotiation.MAX_RESENDS": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "host-contract"
+    },
     "threetears.evals.negotiation.negotiate": {
       "kind": "async function",
       "signature": "negotiate(asked: WireSettings, *, provider_family: ProviderFamily, model: str, provider: str | None = None, send: Callable[[WireSettings, SettingFacts], Awaitable[R]], read_refusal: Callable[[Exception], SettingRefusal | None], learned: LearnedSettings, declared: SettingFacts | None = None) -> Negotiated[R]",
