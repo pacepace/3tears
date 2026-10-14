@@ -409,7 +409,15 @@ DURABLE_SCHEMA_VERSION: int = 15
 #:   template, in the catalogue or as a rating's criterion, may declare its judge: ``RubricDim.judge`` (default None;
 #:   core v15.1 says what it means), so a dimension stored at v15.0 reads as declared before the field existed.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 1
+#: - **v15.2** — a judge test case may be authored rather than frozen from a stored result: the judge case a judge
+#:   template's test case carries in its ``host_payload`` (``JudgeCase``) may name an author in place of a run and
+#:   result (``JudgeCaseSource.authored``, a ``JudgeCaseAuthoring``, default None, left out of the case's content
+#:   digest while None; ``run_id`` and ``result_id`` None only beside it), and its one label is then the author's
+#:   expected verdict, read from no rating (``JudgeCaseLabel.rating_id`` None only there). Every case frozen before
+#:   reads, and digests, as it did. A build at v15.1 refuses an authored case by name when its judge kind reads it,
+#:   and keeps the test case's payload verbatim on every write. An older build that ignores this field reads the
+#:   document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 2
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 #: The registered durable steps, oldest first: ``[s.from_version for s in DURABLE_UPGRADERS]`` is

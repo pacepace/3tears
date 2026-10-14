@@ -340,7 +340,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 1`
+  <br>`= 2`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 15`
 - **`DURABLE_UPGRADERS`** · constant (tuple) · The registered durable steps, oldest first: `[s.from_version for s in DURABLE_UPGRADERS]` is `range(DURABLE_BASELINE_VERSION, DURABLE_SCHEMA_VERSION)`.
@@ -535,6 +535,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`AdmittedGeneration`** · dataclass · A case generation's calls, admitted in the call that asked for it, for the job that makes them.
 - **`ArmGuardrails`** · class · Where one arm stands on every guardrail checked against the control, under any rig.
 - **`AuthoredAnalysis`** · model · A decision memo over one campaign's evidence.
+- **`AuthoredJudgeCase`** · model · A calibration case written by hand: an output, the criterion it is judged on, and the verdict it must get.
 - **`BarAdjudication`** · model · One bar the campaign is held to, adjudicated against every cell.
 - **`BarName`** · dataclass · A bar name a result can carry: which kind it is, and the descriptor that says which way it runs.
 - **`BarOverride`** · model · A standard this campaign holds itself to, tighter than the registered one.
@@ -607,8 +608,9 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`JobStore`** · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
 - **`JobTimeoutFactory`** · protocol · Builds the context manager a single job runs inside.
 - **`JudgeCase`** · model · One output and the criterion it is judged on, frozen from a stored result — and what people said about it.
+- **`JudgeCaseAuthoring`** · model · Who wrote an authored judge case, and why its verdict is what it is: the case's provenance in place of a result.
 - **`JudgeCaseLabel`** · model · One person's rating of the frozen output on the case's criterion, as it stood when the case was frozen.
-- **`JudgeCaseSource`** · model · Where a judge case's output came from: the stored result, and what its own judge answered.
+- **`JudgeCaseSource`** · model · Where a judge case's output came from: the stored result and what its own judge answered, or its author.
 - **`JudgedDimensionFacts`** · model · What one judged dimension IS, frozen beside its scores — `MeasureFacts`' judged sibling.
 - **`JudgedReading`** · model · One judged dimension's scores in one cell.
 - **`JudgeEvidenceTier`** · model · The evidence tier of one judge's readings on one dimension, and the two measurements that decided it.
@@ -696,6 +698,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'running'` | `'stored'` | `'refused'` | `'failed'` | `'cancelled'` | `'timed_out'`
 - **`AttributionScope`** · literal · Whether a measure isolates one `subsystem` or reflects the whole `end_to_end` run.
   <br>`'subsystem'` | `'end_to_end'`
+- **`AuthoredVerdict`** · type alias · An expected verdict as its author states it: a score on the criterion's scale (1-5 ordinal; 1 pass, 0 fail), or `"pass"` / `"fail"` on a pass/fail criterion.
+  <br>`Annotated[int, Field(strict=True)] | Literal['pass', 'fail']`
 - **`BarDecision`** · literal · What a bar's verdict on one cell came to — see `BarVerdict.decision`.
   <br>`'cleared'` | `'missed'` | `'undecided'` | `'no_interval'` | `'no_data'`
 - **`BarNameKind`** · literal · The three kinds of name a bar may carry, each read from a different place on a result.
@@ -1102,8 +1106,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`execute_run(host: EvalHost, *, run: EvalRun, template: EvalTemplate, test_cases: list[EvalTestCase], judge_service: JudgeService | None, options: RunnerOptions, callbacks: RunCallbacks | None = None, budget_gate: Callable[[float | None], CapBreach | None] | None = None, on_cost: Callable[[float | None], None] | None = None, cell_sink: list[CellSummary] | None = None) -> list[CellSummary]`
 - **`fold_metered_cell`** · function · Fold one cell's action-seam tally into the external role's rows.
   <br>`fold_metered_cell(external_usage: RoleUsageLedger, cell: MeteredCallTally | None) -> None`
-- **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results into a judge template.
-  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False) -> JudgeCaseFreezeReport`
+- **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
+  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = ()) -> JudgeCaseFreezeReport`
 - **`get_judge_config`** · function · Load a judge config by id within a scope.
   <br>`get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) -> JudgeConfig`
 - **`get_result`** · function · Load one eval result by id within its scope.

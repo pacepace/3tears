@@ -17,7 +17,9 @@ What a judge case is, what a trial records and the kind's contract are declared 
   under the one check a re-judge and a second judge rebuild it under
   (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`). With ``from_labels=True`` it freezes from the
   durable labels alone, reading no result: each label carries what its rater read, so a judge is calibrated on
-  people's labels after a core baseline reset has deleted every run they were given on.
+  people's labels after a core baseline reset has deleted every run they were given on. With ``authored=`` it also
+  freezes hand-written cases (:class:`~threetears.evals.kernel.AuthoredJudgeCase`) — the hard negatives no run
+  stored — each labelled by its expected verdict.
 - :func:`judge_case_labels` — the labels a frozen case carries: the person ratings keyed to the result, and those
   keyed to what was read (output-bound labels, #628), so a label follows a byte-identical output into its case.
 - :func:`launchable_judge_kind` — the kind's launch-registry entry, for a host that launches judge campaigns
@@ -54,6 +56,7 @@ from threetears.evals.kernel.judge_cases import (
     JUDGE_KIND_ROLE,
     JUDGE_LABEL_AGREEMENT_MEASURE,
     JUDGE_PARSE_VALID_MEASURE,
+    AuthoredJudgeCase,
     JudgeCase,
     JudgeCaseLabel,
     JudgeCaseSource,
@@ -183,12 +186,16 @@ class FrozenJudgeCase(EvalBaseModel):
     """One case a freeze produced: the test case, the output and criterion it replays, and how many labels it has."""
 
     test_case_id: str
-    source_run_id: str
-    source_result_id: str
+    source_run_id: str | None
+    """The run whose result the case replays; ``None`` for an authored case, which no run produced."""
+    source_result_id: str | None
+    """The result the case replays; ``None`` for an authored case, which replays none."""
     dim: str
     labels: int
     created: bool = False
     """Whether this freeze wrote the case; ``False`` when an identical case was already stored."""
+    authored_by: str | None = None
+    """The author of an authored case, whose one label is its expected verdict; ``None`` for a frozen one."""
 
 
 class JudgeCaseSkip(EvalBaseModel):
@@ -284,22 +291,28 @@ def _cases_of_result(
     return frozen
 
 
+#: What an authored case's id is derived under in place of a source result's id, which it has none of. Not an id:
+#: a result's id is a uuid, so no result's derivation can collide with it.
+_AUTHORED_SOURCE = "authored"
+
+
 def _store_case(
     storage: EvalStorage,
     template: EvalTemplate,
     scope_id: str,
-    source_result_id: str,
+    source_result_id: str | None,
     dim: str,
     case: JudgeCase,
     seen: set[str],
 ) -> FrozenJudgeCase | None:
     """Write one frozen case as a test case of ``template`` unless it is stored already; ``None`` for a repeat.
 
-    The id is derived from the template, the source result, the dim and the case's content, so freezing the same
-    thing twice names the stored case.
+    The id is derived from the template, the source result (an authored case: :data:`_AUTHORED_SOURCE`), the dim
+    and the case's content, so freezing or authoring the same thing twice names the stored case.
     """
     digest = case.content_digest()
-    case_id = str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source_result_id}|{dim}|{digest}"))
+    source = _AUTHORED_SOURCE if source_result_id is None else source_result_id
+    case_id = str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source}|{dim}|{digest}"))
     if case_id in seen:
         return None
     seen.add(case_id)
@@ -324,6 +337,7 @@ def _store_case(
         dim=dim,
         labels=len(case.labels),
         created=stored is None,
+        authored_by=case.source.authored.author if case.source.authored is not None else None,
     )
 
 
@@ -393,8 +407,9 @@ def freeze_judge_cases(
     result_ids: Collection[str] | None = None,
     case_set: str | None = None,
     from_labels: bool = False,
+    authored: Sequence[AuthoredJudgeCase] = (),
 ) -> JudgeCaseFreezeReport:
-    """Freeze (output, criterion, labels) cases from stored judged results into a judge template.
+    """Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
 
     One case per judged dim of each result: the evidence the result's judge read, rebuilt from what its run
     recorded (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs` — a result whose template was edited
@@ -409,6 +424,12 @@ def freeze_judge_cases(
     deleted them all. A label whose content was withheld (written before ratings carried it, or rated when its run
     could not be reproduced) is skipped by name with its stated reason.
 
+    **Authored** (``authored``, beside runs, labels, or alone): each hand-written case — a hard negative that must
+    fail its criterion, an output that looks wrong and must pass — is frozen as written
+    (:meth:`~threetears.evals.kernel.JudgeCase.from_authored`), its expected verdict its one label, reading nothing
+    stored. Authoring the same case twice names the stored case; one whose verdict or note changed is a new case.
+    The authored cases come first in the receipt and in the case set.
+
     With ``case_set``, the freeze then mints the next version of that case set listing exactly this freeze's cases,
     in order — the set a launch targets, so cases a later freeze superseded are not run by it. A freeze whose cases
     the latest version already lists exactly is answered with that version.
@@ -422,13 +443,16 @@ def freeze_judge_cases(
         result_ids: The results to freeze; ``None`` for every result of the runs.
         case_set: The case set to mint over the frozen cases, or ``None`` for none.
         from_labels: Freeze from the scope's durable person labels instead of from runs.
+        authored: Hand-written cases to freeze beside whatever else is frozen, each validated when it was built (its
+            verdict on its criterion's scale).
 
     Returns:
         The cases, the set, and every result skipped with why.
 
     Raises:
-        ValidationFailedError: The template is not of the judge kind; no run is named (or, from labels, a run or a
-            result is); ``result_ids`` names a result outside the runs; or nothing could be frozen.
+        ValidationFailedError: The template is not of the judge kind; no run, no labels and no authored case are
+            named (or, from labels, a run or a result is); ``result_ids`` names a result outside the runs; or
+            nothing could be frozen.
         NotFoundError: A run does not load.
         StorageError: A case or the set could not be persisted.
     """
@@ -438,16 +462,24 @@ def freeze_judge_cases(
             "a freeze from labels reads no run or result, and this one names some",
             remedy="freeze from labels alone, or from the named runs without from_labels",
         )
-    if not run_ids and not from_labels:
+    if not run_ids and not from_labels and not authored:
         raise ValidationFailedError(
-            "a freeze was named no judged run",
-            remedy=f"name at least one judged run whose results to freeze ({FIND_RUN}), or freeze from labels",
+            "a freeze was named no judged run, no labels and no authored case",
+            remedy=(
+                f"name at least one judged run whose results to freeze ({FIND_RUN}), freeze from labels, or author a "
+                "case"
+            ),
         )
     cases: list[FrozenJudgeCase] = []
     skipped: list[JudgeCaseSkip] = []
     seen: set[str] = set()
     wanted = None if result_ids is None else set(result_ids)
     found: set[str] = set()
+    for written in authored:
+        case = JudgeCase.from_authored(written)
+        minted_case = _store_case(storage, template, scope_id, None, case.dim, case, seen)
+        if minted_case is not None:
+            cases.append(minted_case)
     if from_labels:
         labelled, skipped = _cases_of_labels(storage, scope_id, dims)
         for source_result_id, case in labelled:
@@ -502,10 +534,12 @@ def freeze_judge_cases(
                 storage, scope_id=scope_id, name=case_set, template_id=template.id, test_case_ids=ids
             ).ref
     log.info(
-        "eval.judge_cases_freeze template=%s from_labels=%s runs=%d cases=%d created=%d skipped=%d case_set=%s",
+        "eval.judge_cases_freeze template=%s from_labels=%s runs=%d authored=%d cases=%d created=%d skipped=%d "
+        "case_set=%s",
         template.id,
         from_labels,
         len(run_ids),
+        len(authored),
         len(cases),
         sum(1 for case in cases if case.created),
         len(skipped),

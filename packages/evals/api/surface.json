@@ -73,7 +73,7 @@
     },
     "threetears.evals.schema.CalibrationRating": {
       "kind": "model",
-      "signature": "CalibrationRating(schema_minor: DurableSchemaMinor = 1, doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: DurableSchemaVersion = 15, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None, rated: RatedOutput | None = None, rated_withheld: str | None = None)",
+      "signature": "CalibrationRating(schema_minor: DurableSchemaMinor = 2, doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: DurableSchemaVersion = 15, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None, rated: RatedOutput | None = None, rated_withheld: str | None = None)",
       "tier": "closure"
     },
     "threetears.evals.schema.CallLedger": {
@@ -108,7 +108,7 @@
     },
     "threetears.evals.schema.CaseSet": {
       "kind": "model",
-      "signature": "CaseSet(schema_minor: DurableSchemaMinor = 1, id: str = '', doc_type: Literal['case_set'] = 'case_set', schema_version: DurableSchemaVersion = 15, scope_id: str, name: str, version: int, template_id: str, test_case_ids: list[str], tracked: bool = True, created_at: str = utc_now_iso())",
+      "signature": "CaseSet(schema_minor: DurableSchemaMinor = 2, id: str = '', doc_type: Literal['case_set'] = 'case_set', schema_version: DurableSchemaVersion = 15, scope_id: str, name: str, version: int, template_id: str, test_case_ids: list[str], tracked: bool = True, created_at: str = utc_now_iso())",
       "tier": "closure"
     },
     "threetears.evals.schema.CaseSetRef": {
@@ -133,7 +133,7 @@
     },
     "threetears.evals.schema.CatalogRubricDim": {
       "kind": "model",
-      "signature": "CatalogRubricDim(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['rubric_dim'] = 'rubric_dim', schema_version: DurableSchemaVersion = 15, scope_id: str, key: str, dim: RubricDim, axis: RubricAxis = 'capability', universal: bool = False, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
+      "signature": "CatalogRubricDim(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['rubric_dim'] = 'rubric_dim', schema_version: DurableSchemaVersion = 15, scope_id: str, key: str, dim: RubricDim, axis: RubricAxis = 'capability', universal: bool = False, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
       "tier": "closure"
     },
     "threetears.evals.schema.CELL_TIMEOUT_ORIGINS": {
@@ -398,12 +398,12 @@
     },
     "threetears.evals.schema.EvalTemplate": {
       "kind": "model",
-      "signature": "EvalTemplate(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['eval_template'] = 'eval_template', schema_version: DurableSchemaVersion = 15, scope_id: str, name: str, description: str = '', intent: str, candidate_kind: str, tools_required: list[str] = list(), universal: bool = False, tools_allowed: list[str] | None = None, variation_axes: list[VariationAxis] = list(), conversation: ConversationSpec | None = None, world_seed: WorldSeed = WorldSeed(), kind_spec: dict[str, Any] = dict(), preconditions: list[Precondition] = list(), goal_state_checks: list[str] = list(), goal_check_controls: GoalCheckControls | None = None, rubric: list[RubricDim] = list(), archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
+      "signature": "EvalTemplate(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['eval_template'] = 'eval_template', schema_version: DurableSchemaVersion = 15, scope_id: str, name: str, description: str = '', intent: str, candidate_kind: str, tools_required: list[str] = list(), universal: bool = False, tools_allowed: list[str] | None = None, variation_axes: list[VariationAxis] = list(), conversation: ConversationSpec | None = None, world_seed: WorldSeed = WorldSeed(), kind_spec: dict[str, Any] = dict(), preconditions: list[Precondition] = list(), goal_state_checks: list[str] = list(), goal_check_controls: GoalCheckControls | None = None, rubric: list[RubricDim] = list(), archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalTestCase": {
       "kind": "model",
-      "signature": "EvalTestCase(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['eval_test_case'] = 'eval_test_case', schema_version: DurableSchemaVersion = 15, scope_id: str, template_id: str | None, variation_params: dict[str, str] = dict(), host_payload: VerbatimObject = dict(), stratum: str | None = None, content_hash: str | None = None, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
+      "signature": "EvalTestCase(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['eval_test_case'] = 'eval_test_case', schema_version: DurableSchemaVersion = 15, scope_id: str, template_id: str | None, variation_params: dict[str, str] = dict(), host_payload: VerbatimObject = dict(), stratum: str | None = None, content_hash: str | None = None, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalTrace": {
@@ -538,12 +538,12 @@
     },
     "threetears.evals.schema.JudgeConfig": {
       "kind": "model",
-      "signature": "JudgeConfig(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['judge_config'] = 'judge_config', schema_version: DurableSchemaVersion = 15, scope_id: str, name: str, description: str = '', rubric_dim_id: DimName, prompt_template: str, model: str = '', temperature: float = 0.0, archived: bool = False, created_at: str = utc_now_iso())",
+      "signature": "JudgeConfig(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['judge_config'] = 'judge_config', schema_version: DurableSchemaVersion = 15, scope_id: str, name: str, description: str = '', rubric_dim_id: DimName, prompt_template: str, model: str = '', temperature: float = 0.0, archived: bool = False, created_at: str = utc_now_iso())",
       "tier": "closure"
     },
     "threetears.evals.schema.JudgeConfigTombstone": {
       "kind": "model",
-      "signature": "JudgeConfigTombstone(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['judge_config_tombstone'] = 'judge_config_tombstone', schema_version: DurableSchemaVersion = 15, scope_id: str, rubric_dim_id: str, name: str, deleted_config_id: str, deleted_at: str = utc_now_iso())",
+      "signature": "JudgeConfigTombstone(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['judge_config_tombstone'] = 'judge_config_tombstone', schema_version: DurableSchemaVersion = 15, scope_id: str, rubric_dim_id: str, name: str, deleted_config_id: str, deleted_at: str = utc_now_iso())",
       "tier": "closure"
     },
     "threetears.evals.schema.JudgeCutShort": {
@@ -943,7 +943,7 @@
     },
     "threetears.evals.schema.RubricDimTombstone": {
       "kind": "model",
-      "signature": "RubricDimTombstone(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['rubric_dim_tombstone'] = 'rubric_dim_tombstone', schema_version: DurableSchemaVersion = 15, scope_id: str, key: str, deleted_dim_id: str, deleted_at: str = utc_now_iso())",
+      "signature": "RubricDimTombstone(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['rubric_dim_tombstone'] = 'rubric_dim_tombstone', schema_version: DurableSchemaVersion = 15, scope_id: str, key: str, deleted_dim_id: str, deleted_at: str = utc_now_iso())",
       "tier": "closure"
     },
     "threetears.evals.schema.RubricProposal": {
@@ -1189,6 +1189,16 @@
     "threetears.evals.kernel.AuthoredAnalysis": {
       "kind": "model",
       "signature": "AuthoredAnalysis(headline: ModelProse, headline_rests_on: list[int] = list(), summary: ModelProse, summary_rests_on: list[list[int]] = list(), findings: list[Finding], decisions: list[Decision], questions: list[QuestionAnswer], next: list[NextStep])",
+      "tier": "closure"
+    },
+    "threetears.evals.kernel.AuthoredJudgeCase": {
+      "kind": "model",
+      "signature": "AuthoredJudgeCase(criterion: RubricDim, output: str, case_material: str, intent: str, expected: AuthoredVerdict, author: str, note: str, subject: str | None = None, judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT)",
+      "tier": "closure"
+    },
+    "threetears.evals.kernel.AuthoredVerdict": {
+      "kind": "type alias",
+      "signature": "Annotated[int, Field(strict=True)] | Literal['pass', 'fail']",
       "tier": "closure"
     },
     "threetears.evals.kernel.BarAdjudication": {
@@ -1991,14 +2001,19 @@
       "signature": "JudgeCase(dim: DimName, scale: RubricScale, criterion: RubricDim | None = None, intent: str, variation: dict[str, str] = dict(), goal_outcomes: list[GoalStateOutcome] = list(), judged_artifact: JudgedArtifact, evidence: JudgeEvidence, labels: list[JudgeCaseLabel] = list(), source: JudgeCaseSource)",
       "tier": "closure"
     },
+    "threetears.evals.kernel.JudgeCaseAuthoring": {
+      "kind": "model",
+      "signature": "JudgeCaseAuthoring(author: str, note: str)",
+      "tier": "closure"
+    },
     "threetears.evals.kernel.JudgeCaseLabel": {
       "kind": "model",
-      "signature": "JudgeCaseLabel(rater: str, score: int, reason: str, rating_id: str)",
+      "signature": "JudgeCaseLabel(rater: str, score: int, reason: str, rating_id: str | None)",
       "tier": "closure"
     },
     "threetears.evals.kernel.JudgeCaseSource": {
       "kind": "model",
-      "signature": "JudgeCaseSource(run_id: str, result_id: str, test_case_id: str | None = None, first_score: int | None = None, first_served_model: str | None = None, first_judge_config_id: str | None = None, first_judge_temperature: JudgeTemperature | None = None, first_judge_sent_settings: ClientRequestSettings | None = None)",
+      "signature": "JudgeCaseSource(run_id: str | None = None, result_id: str | None = None, test_case_id: str | None = None, first_score: int | None = None, first_served_model: str | None = None, first_judge_config_id: str | None = None, first_judge_temperature: JudgeTemperature | None = None, first_judge_sent_settings: ClientRequestSettings | None = None, authored: JudgeCaseAuthoring | None = None)",
       "tier": "closure"
     },
     "threetears.evals.kernel.JUDGED_TIER_RULE": {
@@ -2068,7 +2083,7 @@
     },
     "threetears.evals.kernel.JudgeTrial": {
       "kind": "model",
-      "signature": "JudgeTrial(test_case_id: str, dim: DimName, scale: RubricScale, axis: RubricAxis, criterion_digest: str, case_digest: str, source_result_id: str, labels: list[JudgeCaseLabel] = list(), outcome: JudgeTrialOutcome, score: int | None = None, reasoning: str | None = None, cannot_tell: str | None = None, error: str | None = None, served_model: str | None = None, judge_config_id: str | None = None, judge_temperature: JudgeTemperature | None = None, judge_sent_settings: ClientRequestSettings | None = None)",
+      "signature": "JudgeTrial(test_case_id: str, dim: DimName, scale: RubricScale, axis: RubricAxis, criterion_digest: str, case_digest: str, source_result_id: str | None, labels: list[JudgeCaseLabel] = list(), outcome: JudgeTrialOutcome, score: int | None = None, reasoning: str | None = None, cannot_tell: str | None = None, error: str | None = None, served_model: str | None = None, judge_config_id: str | None = None, judge_temperature: JudgeTemperature | None = None, judge_sent_settings: ClientRequestSettings | None = None)",
       "tier": "closure"
     },
     "threetears.evals.kernel.JudgeTrialOutcome": {
@@ -3543,12 +3558,12 @@
     },
     "threetears.evals.run.freeze_judge_cases": {
       "kind": "function",
-      "signature": "freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False) -> JudgeCaseFreezeReport",
+      "signature": "freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = ()) -> JudgeCaseFreezeReport",
       "tier": "closure"
     },
     "threetears.evals.run.FrozenJudgeCase": {
       "kind": "model",
-      "signature": "FrozenJudgeCase(test_case_id: str, source_run_id: str, source_result_id: str, dim: str, labels: int, created: bool = False)",
+      "signature": "FrozenJudgeCase(test_case_id: str, source_run_id: str | None, source_result_id: str | None, dim: str, labels: int, created: bool = False, authored_by: str | None = None)",
       "tier": "closure"
     },
     "threetears.evals.run.get_judge_config": {
