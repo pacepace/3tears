@@ -38,10 +38,11 @@ cross-tenant key.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel
+from threetears.core.security.door_request import omit_absent_proof
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
 from threetears.media.contracts import ObjectHandle
 from threetears.core.security.delegated_token import OBJECT_RESOLVE_DOOR
 from threetears.core.security.door_request import OBJECT_RESOLVE_OP, DoorCredential
@@ -98,6 +99,17 @@ class ObjectResolveRequestModel(BaseModel):
     identity_proof: str | None = None
     correlation_id: UUID
     object_id: UUID
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_proof(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``identity_proof`` off the wire when there is none, for a hub that predates it.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        return omit_absent_proof(handler(self))
 
 
 class ObjectResolveResponseModel(BaseModel):

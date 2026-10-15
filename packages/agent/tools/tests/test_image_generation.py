@@ -210,8 +210,8 @@ async def test_img2img_loads_attached_image() -> None:
 
 
 @pytest.mark.asyncio
-async def test_img2img_no_source_returns_tool_error() -> None:
-    """img2img when no attached image is available is an LLM-facing error."""
+async def test_img2img_no_source_changes_nothing() -> None:
+    """img2img with no attached image makes nothing, and says so as a no-change, not a failure."""
     backend = _StubBackend()
     context = _StubContext(attached=None)
     tool = create_image_generation_tool(
@@ -226,8 +226,8 @@ async def test_img2img_no_source_returns_tool_error() -> None:
             "use_attached_image": True,
         }
     )
-    assert "[TOOL ERROR]" in result
-    assert "attach an image first" in result
+    assert result.startswith("[NO CHANGE] image_generation:")
+    assert "Ask the person to attach one" in result
     assert len(backend.calls) == 0
 
 
@@ -355,3 +355,190 @@ async def test_custom_description_override() -> None:
         description=custom,
     )
     assert tool.description == custom
+
+
+# ---------------------------------------------------------------------------
+# A source by id, a model that cannot edit, and options a model cannot apply
+# ---------------------------------------------------------------------------
+
+
+from threetears.agent.tools import SourceImage, SourceImageContext, SourceImageRefused  # noqa: E402
+from threetears.media.contracts import GENERATION_IGNORED, GENERATION_SOURCE_USED  # noqa: E402
+
+
+class _EditingBackend:
+    """A backend that takes a source, a size and a seed, and says what it did with them."""
+
+    takes_source_image = True
+
+    def __init__(self, *, source_used: bool | None = True, ignored: dict[str, str] | None = None) -> None:
+        self.calls: list[dict] = []
+        self._source_used = source_used
+        self._ignored = ignored or {}
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        style: str | None = None,
+        source_image: bytes | None = None,
+        source_mime_type: str | None = None,
+        size: str | None = None,
+        aspect: str | None = None,
+        seed: int | None = None,
+    ) -> GeneratedImage:
+        self.calls.append({"source_image": source_image, "size": size, "aspect": aspect, "seed": seed})
+        metadata: dict = {GENERATION_IGNORED: dict(self._ignored)}
+        if source_image is not None and self._source_used is not None:
+            metadata[GENERATION_SOURCE_USED] = self._source_used
+        return GeneratedImage(data=b"img", mime_type="image/png", metadata=metadata)
+
+
+class _WordsOnlyBackend(_StubBackend):
+    """A backend that says it cannot change an image."""
+
+    takes_source_image = False
+
+
+class _SourceContext(_StubContext):
+    """A host that hands over a source by id, or refuses it with why."""
+
+    def __init__(self, *, sources: dict[str, SourceImage], **kw) -> None:
+        super().__init__(persist_returns="Made an image [media:new-1].\n![x](/m/new-1)", **kw)
+        self._sources = sources
+        self.asked: list[str] = []
+
+    async def load_source_image(self, media_id: str) -> SourceImage:
+        self.asked.append(media_id)
+        if media_id not in self._sources:
+            raise SourceImageRefused(f"{media_id} is not an image in this conversation.")
+        return self._sources[media_id]
+
+
+def test_a_host_that_loads_by_id_is_a_source_image_context() -> None:
+    assert isinstance(_SourceContext(sources={}), SourceImageContext)
+    assert not isinstance(_StubContext(), SourceImageContext)
+
+
+@pytest.mark.asyncio
+async def test_a_source_by_id_reaches_the_backend_and_is_named_to_the_host() -> None:
+    backend = _EditingBackend()
+    context = _SourceContext(sources={"m1": SourceImage(b"cat-bytes", "image/png", "cat.png")})
+    tool = create_image_generation_tool({"edit": backend}, context, default_model="edit")
+
+    result = await tool.ainvoke({"prompt": "give the cat a hat", "source_media_id": "m1"})
+
+    assert context.asked == ["m1"]
+    assert backend.calls[0]["source_image"] == b"cat-bytes"
+    image = context.persist_calls[0]["image"]
+    assert image.metadata["source_label"] == "cat.png"
+    assert image.metadata[GENERATION_SOURCE_USED] is True
+    assert result == "Made an image [media:new-1].\n![x](/m/new-1)"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_source_changes_nothing_and_says_why() -> None:
+    backend = _EditingBackend()
+    context = _SourceContext(sources={})
+    tool = create_image_generation_tool({"edit": backend}, context, default_model="edit")
+
+    result = await tool.ainvoke({"prompt": "x", "source_media_id": "pdf-9"})
+
+    assert result.startswith("[NO CHANGE] image_generation: pdf-9 is not an image in this conversation.")
+    assert backend.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_host_that_cannot_load_by_id_changes_nothing() -> None:
+    backend = _EditingBackend()
+    tool = create_image_generation_tool({"edit": backend}, _StubContext(), default_model="edit")
+
+    result = await tool.ainvoke({"prompt": "x", "source_media_id": "m1"})
+
+    assert result.startswith("[NO CHANGE] image_generation:")
+    assert backend.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_makes_images_from_words_only_is_refused_an_edit_naming_one_that_can() -> None:
+    words = _WordsOnlyBackend()
+    edit = _EditingBackend()
+    context = _SourceContext(sources={"m1": SourceImage(b"cat", "image/png", "cat.png")})
+    tool = create_image_generation_tool({"words": words, "editor": edit}, context, default_model="words")
+
+    result = await tool.ainvoke({"prompt": "give the cat a hat", "source_media_id": "m1"})
+
+    assert result.startswith("[NO CHANGE] image_generation: words makes images from words only")
+    assert "Models that can: editor." in result
+    assert words.calls == [] and edit.calls == [] and context.asked == []
+
+
+@pytest.mark.asyncio
+async def test_a_words_only_model_still_makes_an_image_from_words() -> None:
+    """the guard's good traffic: no source asked, so the words-only model makes the image."""
+    words = _WordsOnlyBackend()
+    context = _StubContext()
+    tool = create_image_generation_tool({"words": words}, context, default_model="words")
+
+    result = await tool.ainvoke({"prompt": "a lighthouse"})
+
+    assert result == "[image:test-id]"
+    assert len(words.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_edit_that_used_no_source_says_so_on_the_line_after_the_statement() -> None:
+    backend = _EditingBackend(source_used=False)
+    context = _SourceContext(sources={"m1": SourceImage(b"cat", "image/png", "cat.png")})
+    tool = create_image_generation_tool({"edit": backend}, context, default_model="edit")
+
+    result = await tool.ainvoke({"prompt": "give the cat a hat", "source_media_id": "m1"})
+
+    lines = result.split("\n")
+    assert lines[0] == "Made an image [media:new-1]."
+    assert lines[1] == "No source was used: edit made this from the words alone, not from cat.png."
+
+
+@pytest.mark.asyncio
+async def test_an_edit_that_used_its_source_carries_no_such_note() -> None:
+    backend = _EditingBackend(source_used=True)
+    context = _SourceContext(sources={"m1": SourceImage(b"cat", "image/png", "cat.png")})
+    tool = create_image_generation_tool({"edit": backend}, context, default_model="edit")
+
+    result = await tool.ainvoke({"prompt": "give the cat a hat", "source_media_id": "m1"})
+
+    assert "No source was used" not in result
+
+
+@pytest.mark.asyncio
+async def test_size_aspect_and_seed_reach_a_backend_that_takes_them() -> None:
+    backend = _EditingBackend()
+    tool = create_image_generation_tool({"edit": backend}, _StubContext(), default_model="edit")
+
+    await tool.ainvoke({"prompt": "x", "size": "1024x1536", "aspect": "portrait", "seed": 7})
+
+    assert backend.calls[0] == {"source_image": None, "size": "1024x1536", "aspect": "portrait", "seed": 7}
+
+
+@pytest.mark.asyncio
+async def test_an_option_a_backend_does_not_take_is_not_sent_and_is_named() -> None:
+    old = _StubBackend()  # its generate takes no size or seed
+    context = _StubContext()
+    tool = create_image_generation_tool({"old": old}, context, default_model="old")
+
+    result = await tool.ainvoke({"prompt": "x", "seed": 7, "size": "512x512"})
+
+    assert len(old.calls) == 1
+    assert (
+        result.split("\n")[1] == "Not applied: seed (this model does not take it); size (this model does not take it)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_what_a_backend_says_it_ignored_is_named() -> None:
+    backend = _EditingBackend(ignored={"seed": "OpenAI takes no seed"})
+    tool = create_image_generation_tool({"edit": backend}, _StubContext(), default_model="edit")
+
+    result = await tool.ainvoke({"prompt": "x", "seed": 7})
+
+    assert "Not applied: seed (OpenAI takes no seed)." in result

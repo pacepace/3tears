@@ -104,7 +104,7 @@ async def _in_transaction(pool: asyncpg.Pool, step: Any) -> Any:
 
 
 async def _write(held: _Held, scopes: set[str]) -> int:
-    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    version: int = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
     await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, scopes, conn=conn))
     return version
 
@@ -129,7 +129,7 @@ async def test_a_write_begun_is_in_progress_until_it_commits(held: _Held) -> Non
     await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, {"state:VA", "race:va-sen"}, conn=conn))
 
     settled = await held.epochs.settled()
-    assert settled is not None
+    assert isinstance(settled, EpochSnapshot)
     assert (settled.version, settled.writing) == (1, None)
     assert dict(settled.epochs) == {"state:VA": 1, "race:va-sen": 1}
 
@@ -348,7 +348,7 @@ async def test_a_superseded_writers_late_data_write_is_refused_and_leaves_nothin
     pending = await held.pool.fetch(f"SELECT scope FROM {_TABLE} WHERE pending IS NOT NULL")
     assert pending == []
     settled = await held.epochs.settled()
-    assert settled is not None and settled.epoch("state:VA") == 0
+    assert isinstance(settled, EpochSnapshot) and settled.epoch("state:VA") == 0
 
 
 async def test_a_write_in_progress_far_too_long_is_logged_as_stalled_and_described(

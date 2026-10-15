@@ -51,12 +51,17 @@ import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final, Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar, runtime_checkable
 
 from threetears.observe import get_logger
 
-from threetears.core.cache.base import quote_identifier
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
+from threetears.core.keyset import read_keyset_pages
+from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.core.fingerprint import KeyFingerprint, key_fingerprint, postgres_fingerprint_sql
+
+if TYPE_CHECKING:
+    from threetears.core.backends.protocol import L3Reader
 
 __all__ = [
     "DEFAULT_PAGE_SIZE",
@@ -74,8 +79,8 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: rows per page: under the L3 rail's thousand-row answer, with one row to spare that says more follow
-DEFAULT_PAGE_SIZE: Final = 999
+#: rows per page: one under the L3 rail's cap, so a page asks for the row that says more follow
+DEFAULT_PAGE_SIZE: Final = L3_RAIL_ROW_CAP - 1
 
 #: what a copy that has not been warmed says
 _NEVER_WARMED: Final = "it has not been warmed"
@@ -255,18 +260,16 @@ def _filtered(where: Mapping[str, Any] | None, first: int) -> tuple[str, list[An
     :return: the conditions joined by ``AND`` (empty without filters), and their values
     :rtype: tuple[str, list[Any]]
     """
-    filters = dict(where or {})
-    conditions = " AND ".join(f"{quote_identifier(column)} = ${first + index}" for index, column in enumerate(filters))
-    return conditions, list(filters.values())
+    return equality_conditions(where, first=first)
 
 
 async def l3_fingerprint(
-    l3: Any, table: str, columns: Sequence[str], *, where: Mapping[str, Any] | None = None
+    l3: L3Reader, table: str, columns: Sequence[str], *, where: Mapping[str, Any] | None = None
 ) -> KeyFingerprint:
     """count an L3 table (or the part ``where`` names) and fingerprint ``columns`` of every row, in one statement.
 
     :param l3: the L3 backend
-    :ptype l3: L3Backend
+    :ptype l3: L3Reader
     :param table: the table, a TRUSTED identifier
     :ptype table: str
     :param columns: the columns the digest covers, TRUSTED identifiers
@@ -285,7 +288,7 @@ async def l3_fingerprint(
 
 
 async def read_l3_rows(
-    l3: Any,
+    l3: L3Reader,
     table: str,
     columns: Sequence[str],
     key: Sequence[str],
@@ -295,12 +298,20 @@ async def read_l3_rows(
 ) -> list[dict[str, Any]]:
     """every row of an L3 table (or the part ``where`` names), in key order, a page at a time.
 
-    The L3 rail answers at most a thousand rows a statement and does not say when it cut, so a read
-    that did not page would be silently short: this asks for one row more than a page and pages on
-    the key until a page comes back without it.
+    The L3 rail answers at most :data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP` rows a
+    statement and does not say when it cut, so a read that did not page would be silently short:
+    this pages through :func:`~threetears.core.keyset.read_keyset_pages`, asking for one row more
+    than a page until a page comes back without it.
+
+    **A whole-table read, not a bounded one.** Each page is ``ORDER BY`` the whole key, which a
+    btree key answers in order but a YugabyteDB hash-sharded key answers by reading and sorting
+    every row the filters leave, once a page. Fine for a table copied whole that is small enough
+    to copy; for the rows some leading-key values hold, read
+    :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.read_rows_led_by`,
+    every statement of which the key leads.
 
     :param l3: the L3 backend
-    :ptype l3: L3Backend
+    :ptype l3: L3Reader
     :param table: the table, a TRUSTED identifier
     :ptype table: str
     :param columns: the columns to read, TRUSTED identifiers
@@ -309,34 +320,16 @@ async def read_l3_rows(
     :ptype key: Sequence[str]
     :param where: equality filters naming the rows; every row when None
     :ptype where: Mapping[str, Any] | None
-    :param page_size: rows per page; under the rail's thousand
+    :param page_size: rows per page; under the rail's cap
     :ptype page_size: int
     :return: the rows
     :rtype: list[dict[str, Any]]
+    :raises ValueError: when ``page_size`` is under one
     """
     selected = ", ".join(quote_identifier(c) for c in columns)
-    order = ", ".join(quote_identifier(c) for c in key)
-    head = f"SELECT {selected} FROM {quote_identifier(table)}"  # noqa: S608 - trusted identifiers
-    tail = f" ORDER BY {order} LIMIT {page_size + 1}"
-    filters, values = _filtered(where, 1)
-    rows: list[dict[str, Any]] = []
-    cursor: Sequence[Any] | None = None
-    more = True
-    while more:
-        conditions = [filters] if filters else []
-        params = list(values)
-        if cursor is not None:
-            marks = ", ".join(f"${len(values) + index}" for index in range(1, len(key) + 1))
-            conditions.append(f"({order}) > ({marks})")
-            params += list(cursor)
-        where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        page = await l3.fetch(f"{head}{where_sql}{tail}", *params)
-        kept = [dict(row) for row in page[:page_size]]
-        rows.extend(kept)
-        more = len(page) > page_size and bool(kept)
-        if more:
-            cursor = tuple(kept[-1][column] for column in key)
-    return rows
+    select_from = f"SELECT {selected} FROM {quote_identifier(table)}"  # noqa: S608 - trusted identifiers
+    read = await read_keyset_pages(l3, select_from, key, where=where, page_size=page_size)
+    return read.rows
 
 
 def _held_differs(
@@ -369,7 +362,7 @@ def _held_differs(
 
 
 async def copy_table(
-    l3: Any, table: str, key: Sequence[str], target: WholeTableL1, *, page_size: int = DEFAULT_PAGE_SIZE
+    l3: L3Reader, table: str, key: Sequence[str], target: WholeTableL1, *, page_size: int = DEFAULT_PAGE_SIZE
 ) -> CopyProof:
     """read an L3 table whole into ``target`` and prove the copy, or raise.
 
@@ -378,7 +371,7 @@ async def copy_table(
     ``target`` then holds exactly those keys.
 
     :param l3: the L3 backend
-    :ptype l3: L3Backend
+    :ptype l3: L3Reader
     :param table: the table
     :ptype table: str
     :param key: its key

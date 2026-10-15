@@ -67,6 +67,7 @@ __all__ = [
     "COORDINATION_BUCKET_SUFFIX_GRAMMAR",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
+    "KV_STREAM_PREFIX",
     "MAX_COORDINATION_BUCKETS",
     "MAX_COORDINATION_BUCKET_SUFFIX_CHARS",
     "SERVER_USER_INFO_SUBJECT",
@@ -165,6 +166,10 @@ TOOL_POD_OBJECTS_BUCKET_SUFFIX: Final[str] = "objects"
 #: naming which objects are current, watched by every replica of the pod. Declared with the Object
 #: Store, in the uniform pod-bucket shape.
 TOOL_POD_POINTERS_BUCKET_SUFFIX: Final[str] = "pointers"
+
+#: the prefix of the JetStream stream backing a KV bucket: a bucket ``<b>`` is the stream ``KV_<b>``, as
+#: NATS (and nats-py's ``create_key_value``) names it. Compose the name with :func:`kv_stream_name`.
+KV_STREAM_PREFIX: Final[str] = "KV_"
 
 #: the server's own answer to "what is my credential": a connection that publishes here gets its
 #: OWN user, account, permissions and remaining credential lifetime back on its inbox, and nothing
@@ -484,7 +489,7 @@ class JsResource:
         :rtype: str
         """
         if self.kind is JsResourceKind.KV_BUCKET:
-            return f"KV_{self.name}"
+            return kv_stream_name(self.name)
         if self.kind is JsResourceKind.OBJECT_STORE:
             return f"OBJ_{self.name}"
         return self.name
@@ -1222,10 +1227,31 @@ def _deadletters(subscribe: Sequence[str], *, inbox: str) -> tuple[str, ...]:
     :ptype subscribe: Sequence[str]
     :param inbox: the principal's scoped inbox prefix
     :ptype inbox: str
-    :return: one dead-letter subject per subscribed subject, in subscribe order
+    A subject kept on subscribe only for an older release, which nothing publishes any more (the
+    acl invalidation subjects), gets no dead-letter: there is no message to fail, and its
+    dead-letter would be a publish grant on a retired subject.
+
+    :return: one dead-letter subject per live subscribed subject, in subscribe order
     :rtype: tuple[str, ...]
     """
-    return tuple(str(Subjects.deadletter(subject)) for subject in subscribe if not subject.startswith(f"{inbox}."))
+    retired = retired_subscriptions()
+    return tuple(
+        str(Subjects.deadletter(subject))
+        for subject in subscribe
+        if not subject.startswith(f"{inbox}.") and subject not in retired
+    )
+
+
+def retired_subscriptions() -> frozenset[str]:
+    """the subjects still granted on subscribe for an older release that nothing publishes any more.
+
+    The one list: the dead-letter derivation and the grants gate both read it. The acl invalidation
+    subjects go at the contract step, once no SDK pod older than 0.66.0 runs, and with them this list.
+
+    :return: the acl invalidation subjects, under the current namespace
+    :rtype: frozenset[str]
+    """
+    return frozenset(str(Subjects.acl_invalidate(kind)) for kind in ("membership", "assignment", "role"))
 
 
 def build_permissions(
@@ -1458,6 +1484,22 @@ def coordination_bucket_name(scope: str, suffix: str, *, ns: str | None = None) 
     return f"{ns if ns is not None else _ns()}-{scope}-{suffix}"
 
 
+def kv_stream_name(bucket: str) -> str:
+    """the JetStream stream backing a KV bucket, ``KV_{bucket}``.
+
+    The ONE composition, beside the bucket-name composers, so code that addresses a bucket's stream
+    (a stream-info read, a purge, a withdraw, a grant on the stream's API subjects) names the stream
+    the bucket really is instead of spelling the prefix by hand.
+
+    :param bucket: the fully-qualified bucket name, namespace prefix included (as
+        :func:`coordination_bucket_name` and :func:`tool_pod_pointers_bucket_name` return it)
+    :ptype bucket: str
+    :return: the stream's name
+    :rtype: str
+    """
+    return f"{KV_STREAM_PREFIX}{bucket}"
+
+
 def tool_pod_object_store_name(pod_id: str | UUID, *, ns: str | None = None) -> str:
     """the full name of a tool pod's own Object Store bucket, ``{ns}-{pod scope}-objects``.
 
@@ -1663,6 +1705,11 @@ def _agent_pod(
         # calls. the ``{instance}`` tail keeps replicas of the same agent independently routable.
         str(Subjects.tools_internal_agent_subtree(a)),  # proxied calls to its own in-process tools
         str(Subjects.tools_probe_agent_subtree(a)),  # the registry's reachability probe for its own pods
+        # nothing publishes the acl invalidation subjects any more (epoch-task-06 contract: the access
+        # tables' row broadcasts and write generations are the only invalidation). Still granted to an
+        # agent pod, and to nobody else, for one reason: an SDK pod a release back still subscribes at
+        # start, and a refused subscribe is logged at ERROR on every connect. Remove these three once
+        # no agent pod older than the contract release runs; nothing is lost when they go.
         str(Subjects.acl_invalidate("membership")),
         str(Subjects.acl_invalidate("assignment")),
         str(Subjects.acl_invalidate("role")),
@@ -1862,6 +1909,11 @@ def _tool_pod(
         # authority: the hub verifies the forwarded token names a tool pod and moves a layer's tile
         # version only when the pod owns the provider namespace the layer is registered under.
         str(Subjects.hub_geo_layers_reloaded()),
+        # purging the keys this pod retired from its own scope of the shared collections bucket: a
+        # KV delete leaves a marker a filtered stream purge would not, and the purge is the hub's
+        # verb. The request names keys relative to the pod's scope and the hub composes each subject
+        # from the VERIFIED token, so this buys reach and never authority over another pod's keys.
+        str(Subjects.hub_collection_keys_purge()),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
         # key (forwarding the invoking agent's identity token; the hub verifies
         # + tenant-scopes). NOT hub_object_commit -- commit is agent-side.
@@ -1965,6 +2017,19 @@ def _tool_pod(
             # that reason, since a refused ``STREAM.CREATE`` is never answered and costs a
             # JetStream deadline at every startup before falling through to the bind anyway.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
+            # the epoch bucket, READ ONLY, exactly as an agent pod holds it and for the same reason:
+            # its keys are platform-shared counters, and among them are the write generations of
+            # the collection tables a pod FOLLOWS (``{ns}.collections.{table}.epoch``) -- the four
+            # access tables behind its per-caller cache. A pod watches those keys
+            # (``threetears.epoch.follow_generation_key``) or reads them in a catch-up pass, to
+            # learn that it missed a row broadcast. It writes nothing here, and must not: a pod
+            # that could write could fake an advance every follower acts on. The hub's L3 broker
+            # advances a table's generation after it commits the pod's write.
+            #
+            # The whole bucket rather than the four keys, because nothing narrower is expressible
+            # today: ``KV_KEY_READ`` names one key that is one subject token, and a generation key
+            # is four; and its read is the direct get, which this bucket is not declared for.
+            JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
             # the pod's OWN data-version entry, read and watched while it waits for an upgrade of
             # the tables it owns to finish. keyed on ``tool_pods.id`` -- pinned from the verified
             # key id, as the collections scope above is -- so replicas share one key and no pod can
@@ -2031,9 +2096,6 @@ def _registry(
         str(Subjects.tools_discover()),  # queue-grouped: registry
         str(Subjects.tools_register()),
         str(Subjects.tools_heartbeat_wildcard()),
-        str(Subjects.acl_invalidate("membership")),
-        str(Subjects.acl_invalidate("assignment")),
-        str(Subjects.acl_invalidate("role")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(
@@ -2062,6 +2124,13 @@ def _registry(
             # This grant takes effect the moment that static user is narrowed
             # (``coll-task-05b``) or the registry moves onto the callout.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
+            # the epoch bucket, READ ONLY, as an agent pod and a tool pod hold it (owner,
+            # 2026-10-08): the registry's ``AclCache`` is derived from the four access tables, so
+            # it follows their write generations (``{ns}.collections.{table}.epoch``) by watching
+            # the keys, to learn that it missed a row broadcast. It writes nothing here; the hub
+            # advances every generation. The whole bucket, for the reason the tool pod's grant
+            # gives: nothing narrower can name a four-token key.
+            JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
             # the registry is on BOTH sides of durable delivery: it consumes each pod's result and
             # publishes each agent's reply, so it needs the JetStream control-plane grant for this
             # stream in both roles. it is also the process that DECLARES the stream at startup,
@@ -2095,9 +2164,6 @@ def _hub(
         f"{ns}.agents.reregister_request.*.*",  # nudges any agent's pod to re-register ({agent_id}.{pod_id})
         str(Subjects.gateway_completion()),  # hub-side completions (e.g. summarization)
         str(Subjects.gateway_embedding()),
-        str(Subjects.acl_invalidate("membership")),
-        str(Subjects.acl_invalidate("assignment")),
-        str(Subjects.acl_invalidate("role")),
         str(Subjects.gateway_catalog_epoch()),
         str(Subjects.mcp_rbac_epoch()),
         f"{ns}.hub.channel.installs.changed",  # notifies channel adapters of install changes
@@ -2147,6 +2213,8 @@ def _hub(
         # a tool pod's own Object Store: responds to its asks to declare the bucket and retire objects
         str(Subjects.hub_object_store_declare()),
         str(Subjects.hub_object_store_retire()),
+        # a tool pod's retired collection keys: responds to its asks to purge them from its own scope
+        str(Subjects.hub_collection_keys_purge()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),
@@ -2161,9 +2229,6 @@ def _hub(
         str(Subjects.knowledge_draft()),
         str(Subjects.hub_usage_track()),
         str(Subjects.audit_wildcard()),  # unified audit consumer
-        str(Subjects.acl_invalidate("membership")),
-        str(Subjects.acl_invalidate("assignment")),
-        str(Subjects.acl_invalidate("role")),
         f"{ns}.hub.stream.*.*",  # subscribes to agent token streams it dispatched ({agent_id}.{correlation_id})
         str(Subjects.gateway_catalog_epoch()),
         str(Subjects.mcp_rbac_epoch()),
@@ -2280,9 +2345,6 @@ def _gateway(
         str(Subjects.gateway_embedding()),  # queue-grouped: ai-gateway
         str(Subjects.gateway_health()),
         str(Subjects.gateway_catalog_epoch()),
-        str(Subjects.acl_invalidate("membership")),
-        str(Subjects.acl_invalidate("assignment")),
-        str(Subjects.acl_invalidate("role")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(

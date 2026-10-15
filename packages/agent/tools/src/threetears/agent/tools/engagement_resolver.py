@@ -41,10 +41,11 @@ A tool must never proceed on an unresolved or cross-tenant scope.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel
+from threetears.core.security.door_request import omit_absent_proof
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
 from threetears.core.security.delegated_token import ENGAGEMENT_DOOR
 from threetears.core.security.door_request import ENGAGEMENT_SCOPE_OP, DoorCredential
 from threetears.nats import NatsClient, RequestError, Subjects
@@ -149,6 +150,17 @@ class EngagementScopeRequestModel(BaseModel):
     identity_proof: str | None = None
     correlation_id: UUID
     engagement_id: UUID | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_proof(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``identity_proof`` off the wire when there is none, for a hub that predates it.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        return omit_absent_proof(handler(self))
 
 
 class EngagementScopeResponseModel(BaseModel):

@@ -137,6 +137,7 @@ __all__ = [
     "DEFAULT_MAX_REDIRECTS",
     "DEFAULT_MAX_RESPONSE_BYTES",
     "DEFAULT_TIMEOUT_SECONDS",
+    "DEFAULT_TRANSPORT_USER_AGENT",
     "MINIMUM_RETRY_SECONDS",
     "RESPONSE_BYTES_SCOPE",
     "StandaloneTransport",
@@ -147,6 +148,10 @@ _logger = get_logger(__name__)
 #: default per-call timeout, in seconds. A default rather than a constant:
 #: every call can override it (SR-G1, SR-G2).
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 20.0
+
+#: The ``User-Agent`` sent when a deployment names none. A deployment that fetches
+#: pages passes its own name, which robots rules are written against.
+DEFAULT_TRANSPORT_USER_AGENT: Final[str] = "3tears-search/standalone"
 
 #: default attempt ceiling. Finite, because forever-retry is wrong for a
 #: request -- the caller is waiting (SR-G4).
@@ -351,7 +356,7 @@ class StandaloneTransport:
         allow_private_addresses: bool = False,
         allowed_hosts: Sequence[str] = (),
         verify_tls: bool = True,
-        user_agent: str = "3tears-search/standalone",
+        user_agent: str = DEFAULT_TRANSPORT_USER_AGENT,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         resolve: Callable[[str], Awaitable[tuple[str, ...]]] = _resolve,

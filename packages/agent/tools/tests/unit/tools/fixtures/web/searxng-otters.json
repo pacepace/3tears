@@ -1,0 +1,4 @@
+{"query": "otters river", "number_of_results": 0, "results": [
+ {"url": "https://news.example.org/otters-return", "title": "Otters return to the river", "content": "Otters have returned to the lower river for the first time in forty years.", "engine": "duckduckgo", "engines": ["duckduckgo", "bing news"], "positions": [1, 2], "score": 3.0, "category": "news", "template": "default.html", "publishedDate": "2026-09-14T08:30:00"},
+ {"url": "https://en.wikipedia.org/wiki/Eurasian_otter", "title": "Eurasian otter", "content": "The Eurasian otter is a semiaquatic mammal native to Eurasia.", "engine": "wikipedia", "engines": ["wikipedia"], "positions": [1], "score": 1.0, "category": "general", "template": "default.html"}
+], "answers": [], "corrections": [], "infoboxes": [], "suggestions": [], "unresponsive_engines": []}

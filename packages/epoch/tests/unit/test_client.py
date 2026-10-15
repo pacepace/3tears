@@ -13,6 +13,7 @@ while every other epoch positively benefits from one that does.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -20,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch.client import DurableEpoch, EpochClient
+from threetears.epoch.listener import EpochListener
+from threetears.epoch.tick import catchup_tick
 from threetears.epoch.wire import EpochBumpMessage
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject, Subjects
@@ -504,3 +507,403 @@ class TestBucketIdentityFailsSafe:
         # three attempts: the documented bound on the create/read retry, asserted as a number so a
         # change to the bound is a visible decision here rather than one the test follows silently.
         assert bucket.create.await_count == 3
+
+
+def _versions_pool(*answers: Any) -> Any:
+    """a pool whose ``fetchrow`` answers each call in turn: a row, ``None``, or an exception to raise."""
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(side_effect=list(answers))
+    pool.fetchval = AsyncMock(return_value=None)
+    return pool
+
+
+async def _heard(epoch: int, payload: dict[str, object] | None) -> None:
+    """a consumer callback with nothing to do."""
+
+
+async def _following(pool: Any, subject: Subject, *, primed_epoch: int = 0) -> tuple[EpochClient, EpochListener, Any]:
+    """a client whose listener is subscribed to ``subject``, with the broker both share.
+
+    :param pool: the pool stub the client reads
+    :ptype pool: Any
+    :param subject: the subject to subscribe, concrete or wildcard
+    :ptype subject: Subject
+    :param primed_epoch: the epoch the listener starts from
+    :ptype primed_epoch: int
+    :return: the client, its listener and the fake broker
+    :rtype: tuple[EpochClient, EpochListener, Any]
+    """
+    nats = FakeNatsClient()
+    client = EpochClient(pool, nats)
+    listener = EpochListener(nats, client)
+    await listener.subscribe(subject, _heard, primed_epoch=primed_epoch)
+    return client, listener, nats
+
+
+class TestCachedVersions:
+    """``versions(subject, cached=True)``: one pool read per followed subject until it moves.
+
+    the hub reads a tile subject's versions on every TileJSON and tile request. a value this
+    process already holds answers it until the epoch system says the subject moved -- this
+    process's own move, a broadcast, or the catch-up that repairs a missed one -- and never until
+    a clock says so.
+    """
+
+    async def test_two_cached_reads_of_a_followed_subject_are_one_pool_call(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2})
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        first = await client.versions(subject, cached=True)
+        second = await client.versions(subject, cached=True)
+
+        assert first == second == DurableEpoch(epoch=3, previous=2)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_subjects_are_cached_separately(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 9, "previous_epoch": 8})
+        client, listener, _nats = await _following(pool, _durable_subject("a"))
+        await listener.subscribe(_durable_subject("b"), _heard, primed_epoch=0)
+
+        assert await client.versions(_durable_subject("a"), cached=True) == DurableEpoch(epoch=3, previous=2)
+        assert await client.versions(_durable_subject("b"), cached=True) == DurableEpoch(epoch=9, previous=8)
+        assert await client.versions(_durable_subject("a"), cached=True) == DurableEpoch(epoch=3, previous=2)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_without_cached_every_read_is_a_pool_call(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        await client.versions(subject)
+        assert await client.versions(subject) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_a_subject_nothing_follows_is_read_from_the_row_every_time(self) -> None:
+        # no listener on this client is subscribed, so no broadcast could ever drop a copy: none is
+        # kept, and the cached read answers the row as it stands each time
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=3, previous=2)
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2
+        assert client.cached_subjects == ()
+
+    async def test_an_advance_on_a_subject_nothing_follows_keeps_no_copy(self) -> None:
+        pool = _versions_pool({"epoch": 5, "previous_epoch": 3}, {"epoch": 6, "previous_epoch": 5})
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+
+        await client.advance_to(subject, 5)
+
+        assert client.cached_subjects == ()
+        # another process has moved the row since; the read sees it
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=6, previous=5)
+
+    async def test_a_subscription_to_another_subject_does_not_follow_this_one(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        client, _listener, _nats = await _following(pool, _durable_subject("roads"))
+        subject = _durable_subject("parcels")
+
+        await client.versions(subject, cached=True)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=4, previous=3)
+        assert client.cached_subjects == ()
+
+    async def test_a_wildcard_subscription_follows_every_subject_it_hears(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        subject = _durable_subject("parcels")
+        tokens = subject.path.split(".")
+        # the subject's own shape with its datasource and layer segments wildcarded
+        pattern = Subject(
+            path=".".join("*" if token in ("ds1", "parcels") else token for token in tokens), kind="wildcard"
+        )
+        client, _listener, _nats = await _following(pool, pattern)
+
+        await client.versions(subject, cached=True)
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=3, previous=2)
+        assert pool.fetchrow.await_count == 1
+        assert client.cached_subjects == (subject,)
+
+        # the listener hands a broadcast heard through the pattern to the client by its own path
+        client.observe_broadcast(EpochBumpMessage(subject_path=subject.path, epoch=4))
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=4, previous=3)
+
+    async def test_a_wildcard_does_not_follow_a_subject_of_another_length(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        subject = _durable_subject("parcels")
+        # one token short of the subject: the broker would not deliver it
+        pattern = Subject(path=".".join(["*"] * (len(subject.path.split(".")) - 1)), kind="wildcard")
+        client, _listener, _nats = await _following(pool, pattern)
+
+        await client.versions(subject, cached=True)
+        await client.versions(subject, cached=True)
+
+        assert pool.fetchrow.await_count == 2
+        assert client.cached_subjects == ()
+
+    async def test_a_full_wildcard_follows_everything_below_it(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2})
+        subject = _durable_subject("parcels")
+        pattern = Subject(path=f"{subject.path.split('.')[0]}.>", kind="wildcard")
+        client, _listener, _nats = await _following(pool, pattern)
+
+        await client.versions(subject, cached=True)
+        await client.versions(subject, cached=True)
+
+        assert pool.fetchrow.await_count == 1
+
+    async def test_this_process_advancing_updates_the_cache_with_no_pool_read(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 5, "previous_epoch": 3})
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        await client.versions(subject, cached=True)
+        await client.advance_to(subject, 5)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 2, "the read after advance_to went to the pool"
+
+    async def test_an_advance_seeds_a_followed_subject_never_read(self) -> None:
+        pool = _versions_pool({"epoch": 5, "previous_epoch": 3})
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        await client.advance_to(subject, 5)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_a_bump_drops_the_cached_value(self) -> None:
+        # a bump returns the new epoch only, not the one it replaced, so the next read asks the row
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4}, {"epoch": 4, "previous_epoch": 3})
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject, primed_epoch=4)
+
+        await client.versions(subject, cached=True)
+        await client.bump(subject)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 3
+
+    async def test_another_process_advancing_invalidates_it_through_the_listener(self) -> None:
+        nats = FakeNatsClient()
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        client = EpochClient(pool, nats)
+        subject = _durable_subject()
+        bumps: list[int] = []
+
+        async def _on_bump(epoch: int, payload: dict[str, object] | None) -> None:
+            bumps.append(epoch)
+
+        await EpochListener(nats, client).subscribe(subject, _on_bump, primed_epoch=3)
+        await client.versions(subject, cached=True)
+        # another pod's advance_to, as its broadcast arrives here
+        await nats.publish(subject=subject, message=EpochBumpMessage(subject_path=subject.path, epoch=4))
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2
+        assert bumps == [4]
+
+    async def test_this_process_hearing_its_own_advance_keeps_the_cache(self) -> None:
+        # the broadcast of an advance reaches the process that made it too; the cache already holds
+        # that epoch, so dropping it would only cost a read
+        pool = _versions_pool({"epoch": 5, "previous_epoch": 3})
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject, primed_epoch=3)
+
+        await client.advance_to(subject, 5)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_an_older_broadcast_keeps_the_cache(self) -> None:
+        pool = _versions_pool({"epoch": 5, "previous_epoch": 3})
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        await client.versions(subject, cached=True)
+        client.observe_broadcast(EpochBumpMessage(subject_path=subject.path, epoch=4))
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_a_missed_broadcast_is_repaired_by_the_listeners_catch_up(self) -> None:
+        # another process moved the row and its broadcast never arrived. the copy has no age to
+        # lapse; the catch-up's read of the row is what finds it stale and drops it
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        subject = _durable_subject()
+        client, listener, _nats = await _following(pool, subject, primed_epoch=3)
+        await client.versions(subject, cached=True)
+
+        pool.fetchval = AsyncMock(return_value=4)
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=3, previous=2), "nothing said so yet"
+        await listener.catch_up(subject, _heard)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_a_catch_up_pass_over_the_cached_subjects_repairs_each(self) -> None:
+        # a process subscribed to a wildcard learns its concrete subjects as it answers for them;
+        # ``cached_subjects`` is what its pass covers
+        pool = _versions_pool(
+            {"epoch": 3, "previous_epoch": 2},
+            {"epoch": 7, "previous_epoch": 6},
+            {"epoch": 4, "previous_epoch": 3},
+        )
+        moved, steady = _durable_subject("parcels"), _durable_subject("roads")
+        pattern = Subject(path=f"{moved.path.split('.')[0]}.>", kind="wildcard")
+        client, listener, _nats = await _following(pool, pattern)
+        await client.versions(moved, cached=True)
+        await client.versions(steady, cached=True)
+        assert set(client.cached_subjects) == {moved, steady}
+
+        # the row of one moved with no broadcast heard; the other's stands where the copy says
+        pool.fetchval = AsyncMock(side_effect=lambda _sql, path: 4 if path == moved.path else 7)
+        await catchup_tick(listener, [(subject, _heard) for subject in client.cached_subjects])
+
+        assert client.cached_subjects == (steady,)
+        assert await client.versions(moved, cached=True) == DurableEpoch(epoch=4, previous=3)
+        assert await client.versions(steady, cached=True) == DurableEpoch(epoch=7, previous=6)
+        assert pool.fetchrow.await_count == 3
+
+    async def test_a_catch_up_that_finds_the_row_unmoved_keeps_the_copy(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2})
+        subject = _durable_subject()
+        client, listener, _nats = await _following(pool, subject, primed_epoch=3)
+        await client.versions(subject, cached=True)
+
+        pool.fetchval = AsyncMock(return_value=3)
+        await listener.catch_up(subject, _heard)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=3, previous=2)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_a_failed_read_raises_and_is_never_answered_from_a_dropped_copy(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, ConnectionError("connection was closed"))
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        await client.versions(subject, cached=True)
+        client.observe_broadcast(EpochBumpMessage(subject_path=subject.path, epoch=4))
+
+        with pytest.raises(ConnectionError):
+            await client.versions(subject, cached=True)
+
+    async def test_a_failed_read_without_cached_raises(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, ConnectionError("connection was closed"))
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        await client.versions(subject)
+        with pytest.raises(ConnectionError):
+            await client.versions(subject)
+
+    async def test_a_failed_read_with_nothing_cached_raises(self) -> None:
+        pool = _versions_pool(ConnectionError("connection was closed"))
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        with pytest.raises(ConnectionError):
+            await client.versions(subject, cached=True)
+
+    async def test_a_read_racing_an_advance_does_not_cache_the_older_value(self) -> None:
+        # a read that left for the pool before this process advanced, and answers after, holds the
+        # row as it stood before the advance; caching it would undo the advance's update
+        release = asyncio.Event()
+
+        async def _fetchrow(sql: str, *args: Any) -> Any:
+            if "SELECT" in sql:
+                await release.wait()
+                return {"epoch": 3, "previous_epoch": 2}
+            return {"epoch": 5, "previous_epoch": 3}
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject, primed_epoch=5)
+
+        slow_read = asyncio.create_task(client.versions(subject, cached=True))
+        await asyncio.sleep(0)
+        await client.advance_to(subject, 5)
+        release.set()
+        assert await slow_read == DurableEpoch(epoch=3, previous=2)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_an_ephemeral_subject_is_still_refused(self) -> None:
+        client = EpochClient(_versions_pool(), _nats_mock())
+        with pytest.raises(ValueError, match="durable"):
+            await client.versions(_subject(), cached=True)
+        with pytest.raises(ValueError, match="durable"):
+            await client.versions(_subject())
+
+    async def test_a_read_racing_a_broadcast_with_nothing_cached_does_not_cache(self) -> None:
+        # nothing cached (a fresh process, or right after a bump): a read leaves for the pool, another
+        # process's advance commits and its broadcast arrives, then the read answers the row as it
+        # stood before. caching that would answer a superseded epoch until the next catch-up.
+        release = asyncio.Event()
+        answers = [{"epoch": 3, "previous_epoch": 2}, {"epoch": 5, "previous_epoch": 3}]
+
+        async def _fetchrow(sql: str, *args: Any) -> Any:
+            answer = answers.pop(0)
+            if answer["epoch"] == 3:
+                await release.wait()
+            return answer
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        subject = _durable_subject()
+        client, _listener, _nats = await _following(pool, subject)
+
+        slow_read = asyncio.create_task(client.versions(subject, cached=True))
+        await asyncio.sleep(0)
+        client.observe_broadcast(EpochBumpMessage(subject_path=subject.path, epoch=5))
+        release.set()
+        assert await slow_read == DurableEpoch(epoch=3, previous=2)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 2, "the read that raced the broadcast was cached"
+
+    async def test_a_read_in_flight_when_the_subscription_starts_is_not_cached(self) -> None:
+        # the read left before the subscription could hear a move, so what it brings back may
+        # already be replaced with nothing to say so
+        release = asyncio.Event()
+        answers = [{"epoch": 3, "previous_epoch": 2}, {"epoch": 5, "previous_epoch": 3}]
+
+        async def _fetchrow(sql: str, *args: Any) -> Any:
+            answer = answers.pop(0)
+            if answer["epoch"] == 3:
+                await release.wait()
+            return answer
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        nats = FakeNatsClient()
+        client = EpochClient(pool, nats)
+        subject = _durable_subject()
+
+        slow_read = asyncio.create_task(client.versions(subject, cached=True))
+        await asyncio.sleep(0)
+        await EpochListener(nats, client).subscribe(subject, _heard, primed_epoch=5)
+        release.set()
+        assert await slow_read == DurableEpoch(epoch=3, previous=2)
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 2, "the read that left before the subscription was cached"
+
+    async def test_a_broadcast_naming_no_subject_invalidates_the_subscribed_one(self) -> None:
+        # the listener keys a broadcast with an empty subject path by the subject it subscribed; the
+        # cached versions must be keyed the same way, or such a broadcast drops nothing
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        subject = _durable_subject()
+        client, _listener, nats = await _following(pool, subject, primed_epoch=3)
+
+        await client.versions(subject, cached=True)
+        await nats.publish(subject=subject, message=EpochBumpMessage(subject_path="", epoch=4))
+
+        assert await client.versions(subject, cached=True) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2

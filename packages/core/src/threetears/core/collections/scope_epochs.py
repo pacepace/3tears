@@ -73,7 +73,7 @@ from typing import Any, Final
 import asyncpg
 from threetears.observe import get_logger
 
-from threetears.core.cache.base import quote_identifier
+from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, read_l3_rows
 from threetears.core.collections.schema_backed import (

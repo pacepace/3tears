@@ -19,7 +19,7 @@ from threetears.core.collections.scoped_snapshot import (  # noqa: E402
     ("scope", "token"),
     [("TX", "TX"), ("state-1_a", "state-1_a"), ("a b", "a=20b"), ("a.b", "a=2Eb"), ("x=y", "x=3Dy")],
 )
-def test_a_scope_becomes_one_literal_token(scope: str | None, token: str) -> None:
+def test_a_scope_becomes_one_literal_token(scope: str, token: str) -> None:
     assert scope_token(scope) == token
 
 
@@ -42,8 +42,8 @@ def test_a_snapshot_name_is_one_token(name: str) -> None:
             name=name,
             tables=[SnapshotTable(name="t", scope_column="s", key=("k",))],
             backend=None,  # type: ignore[arg-type]
-            store=None,
-            pointers=None,
-            l3=None,
+            store=None,  # type: ignore[arg-type]
+            pointers=None,  # type: ignore[arg-type]
+            l3=None,  # type: ignore[arg-type]
             epochs=None,  # type: ignore[arg-type]
         )

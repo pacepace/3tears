@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import time
 from datetime import timedelta
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID, uuid7
 
+from pydantic import BaseModel, ConfigDict, Field
 from threetears.core.security import (
     PopKey,
     build_jwks,
@@ -80,4 +81,17 @@ async def test_a_batch_is_proven_over_its_own_body() -> None:
 async def test_a_caller_without_a_key_sends_the_token_alone() -> None:
     nats = _Answering()
     await request_audit_anonymization(nats, identity_token="bearer", agent_id=_AGENT, actor_user_ids=[uuid7()])  # type: ignore[arg-type]
-    assert nats.sent[0]["identity_proof"] is None
+    assert "identity_proof" not in nats.sent[0]
+    # a hub from before the door proofs reads the request strictly, and reads this one
+    _Release066Request.model_validate(nats.sent[0])
+
+
+class _Release066Request(BaseModel):
+    """the anonymization request as a 0.66.0 to 0.68.0 hub reads it: every unknown field refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    identity_token: Annotated[str, Field(min_length=1)]
+    correlation_id: UUID
+    agent_id: UUID
+    actor_user_ids: Annotated[list[UUID], Field(min_length=1)]

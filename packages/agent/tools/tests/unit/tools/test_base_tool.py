@@ -12,6 +12,8 @@ import pytest
 from threetears.agent.tools.base_tool import (
     CONFLICT,
     MALFORMED_REQUEST,
+    PERMISSION_DENIED,
+    TOOL_AUTHORIZATION_UNAVAILABLE,
     TOOL_NOT_READY,
     TOOL_RESULT_ERROR_CODES,
     MCPToolDefinition,
@@ -231,6 +233,16 @@ class TestToolResultErrorCode:
         assert {MALFORMED_REQUEST, TOOL_NOT_READY} <= TOOL_RESULT_ERROR_CODES
         refused = ToolResult(success=False, content="", error="no such report", error_code=MALFORMED_REQUEST)
         assert refused.error_code == "MALFORMED_REQUEST"
+
+    def test_a_part_the_callers_grants_do_not_reach_and_an_unconfirmed_caller_are_declared_codes(self) -> None:
+        """a tool refusing a caller part of its data (403), or unable to confirm what they may have (503)."""
+        assert (PERMISSION_DENIED, TOOL_AUTHORIZATION_UNAVAILABLE) == (
+            "PERMISSION_DENIED",
+            "TOOL_AUTHORIZATION_UNAVAILABLE",
+        )
+        assert {PERMISSION_DENIED, TOOL_AUTHORIZATION_UNAVAILABLE} <= TOOL_RESULT_ERROR_CODES
+        refused = ToolResult(success=False, content="", error="not your state", error_code=PERMISSION_DENIED)
+        assert refused.error_code == "PERMISSION_DENIED"
 
     def test_a_lowercase_spelling_is_refused_and_the_message_names_the_canonical_one(self) -> None:
         """one condition, one code: ``conflict`` and ``CONFLICT`` must never both reach the wire."""

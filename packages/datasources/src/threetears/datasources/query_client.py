@@ -51,14 +51,26 @@ import asyncio
 import random
 import re
 from collections.abc import Callable, Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from threetears.core.security.delegated_token import DATASOURCE_DOOR
-from threetears.core.security.door_request import DoorCredential, datasource_query_op
+from threetears.core.security.door_request import DoorCredential, datasource_query_op, omit_absent_proof
+from threetears.core.sql_fragments import as_written, equality_conditions
 from threetears.core.wire import TolerantWireModel
+from threetears.datasources.export import ExportResult, check_destination
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger, traced
@@ -74,6 +86,20 @@ __all__ = [
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
     "RESULT_TOO_LARGE",
     "QUERY_STATEMENT_TIMEOUT_SECONDS",
+    "EXPORT_LIST_MAX_PAGES",
+    "EXPORT_LIST_UNSUPPORTED",
+    "EXPORT_NOT_GRANTED",
+    "EXPORT_REFUSED",
+    "EXPORT_UNSUPPORTED",
+    "FINGERPRINT_GROUPS_UNSUPPORTED",
+    "RelationFingerprintGroup",
+    "DatasourceExportDeleteRequest",
+    "DatasourceExportListRequest",
+    "DatasourceExportListResult",
+    "DatasourceExportListUnsupportedError",
+    "DatasourceExportRecord",
+    "DatasourceExportRequest",
+    "DatasourceExportResult",
     "DatasourceQueryClient",
     "DatasourceQueryError",
     "DatasourceQueryRequest",
@@ -109,6 +135,10 @@ DEFAULT_QUERY_TIMEOUT_SECONDS: float = 120.0
 #: beside the client deadline so the two cannot drift apart; the hub's responder
 #: imports it rather than choosing its own.
 QUERY_STATEMENT_TIMEOUT_SECONDS: int = 100
+
+#: how many pages ``list_own_exports`` follows before it refuses: 200 000 exports at the hub's
+#: page of 200, far past any pod's
+EXPORT_LIST_MAX_PAGES: Final = 1000
 
 #: one unquoted SQL identifier, the shape every admitted engine accepts unquoted.
 #:
@@ -151,6 +181,74 @@ class RelationFingerprintRequest(TolerantWireModel):
     #: equality filters, column -> value: the fingerprint describes only the matching rows.
     #: columns are identifiers (interpolated); values are bound as parameters, never as text
     where: dict[str, str] = Field(default_factory=dict)
+    #: set filters, column -> the values it may hold, bound as parameters as ``where``'s are
+    where_in: dict[str, list[str]] = Field(default_factory=dict)
+    #: fingerprint every value of this column apart, in one ask (answered as ``fingerprint_groups``).
+    #: A hub that predates it refuses the field as unknown (``MALFORMED_REQUEST``), so it is left off
+    #: the wire when not asked for, with ``where_in``
+    group_by: str | None = None
+
+    @field_validator("where_in")
+    @classmethod
+    def _where_in_columns_are_identifiers(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        """refuse a set-filter column that is not a plain identifier; values are parameters.
+
+        :param value: the filters
+        :ptype value: dict[str, list[str]]
+        :return: the value unchanged
+        :rtype: dict[str, list[str]]
+        :raises ValueError: if any column is not a plain identifier
+        """
+        bad = [c for c in value if not _IDENTIFIER_GRAMMAR.match(c)]
+        if bad:
+            raise ValueError(f"where_in columns {bad!r} are not plain SQL identifiers")
+        return value
+
+    @field_validator("group_by")
+    @classmethod
+    def _group_by_is_an_identifier(cls, value: str | None) -> str | None:
+        """refuse a grouping column that is not a plain identifier: it is interpolated.
+
+        :param value: the column
+        :ptype value: str | None
+        :return: the value unchanged
+        :rtype: str | None
+        :raises ValueError: if it is not a plain identifier
+        """
+        if value is not None and not _IDENTIFIER_GRAMMAR.match(value):
+            raise ValueError(f"group_by {value!r} is not a plain SQL identifier")
+        return value
+
+    @model_validator(mode="after")
+    def _set_filters_only_with_groups(self) -> "RelationFingerprintRequest":
+        """refuse set filters on an ungrouped ask: a hub answers ``where_in`` only beside ``group_by``.
+
+        :return: the request
+        :rtype: RelationFingerprintRequest
+        :raises ValueError: when ``where_in`` is set and ``group_by`` is not
+        """
+        if self.where_in and self.group_by is None:
+            raise ValueError("where_in is answered only by a grouped fingerprint; name group_by too")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_grouping(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``group_by`` and ``where_in`` off the wire when they are not asked for.
+
+        A hub that predates them forbids unknown fields; omitted, a plain fingerprint is what that
+        hub knows, and the two upgrade in either order.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        if self.group_by is None:
+            data.pop("group_by", None)
+        if not self.where_in:
+            data.pop("where_in", None)
+        return data
 
     @field_validator("where")
     @classmethod
@@ -248,6 +346,185 @@ class RelationFingerprintResult(TolerantWireModel):
     digest: str
 
 
+class RelationFingerprintGroup(BaseModel):
+    """one group's fingerprint, in answer to a fingerprint asked ``group_by``.
+
+    :param value: the group's value, as text; ``None`` for NULL
+    :ptype value: str | None
+    :param row_count: rows in the group
+    :ptype row_count: int
+    :param digest: the group's digest, as :class:`RelationFingerprintResult` holds one
+    :ptype digest: str
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    value: str | None
+    row_count: int
+    digest: str
+
+
+class DatasourceExportRequest(BaseModel):
+    """ask the hub to have the warehouse write a ``SELECT``'s rows to the datasource's export bucket.
+
+    A separate ask from a query, granted on its own: the hub runs it only for a caller it would let
+    run the ``SELECT`` on the read rail AND that an operator recorded may export from this
+    datasource. The caller never sends the ``UNLOAD``, a bucket or a role; the hub builds the
+    statement around the ``SELECT`` from an allow-list and the datasource's own export
+    configuration (:mod:`threetears.datasources.export`).
+
+    :param select: a plain ``SELECT``; it binds no parameters (the warehouse's export cannot), so a
+        value it filters by is written in as a literal
+        (:func:`~threetears.datasources.export.sql_string_literal`)
+    :ptype select: str
+    :param destination: where under the datasource's export prefix, a short relative path; files
+        already there are never replaced, so each export names a fresh one
+    :ptype destination: str
+    :raises ValueError: when the destination is not a plain relative path
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    select: str
+    destination: str
+    #: divide the files by this column, one directory per value (``column=value/``). A hub that
+    #: predates it refuses the field as unknown, so it is left off the wire when not asked for
+    partition_by: str | None = None
+
+    @field_validator("partition_by")
+    @classmethod
+    def _partition_by_is_an_identifier(cls, value: str | None) -> str | None:
+        """refuse a partition column that is not a plain identifier.
+
+        :param value: the column
+        :ptype value: str | None
+        :return: the value unchanged
+        :rtype: str | None
+        :raises ValueError: if it is not a plain identifier
+        """
+        if value is not None and not _IDENTIFIER_GRAMMAR.match(value):
+            raise ValueError(f"partition_by {value!r} is not a plain SQL identifier")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_partition(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``partition_by`` off the wire when it is not asked for, for a hub that predates it.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        if self.partition_by is None:
+            data.pop("partition_by", None)
+        return data
+
+    @field_validator("destination")
+    @classmethod
+    def _destination_is_relative(cls, value: str) -> str:
+        """refuse a destination that could leave the configured prefix.
+
+        :param value: the destination
+        :ptype value: str
+        :return: the value unchanged
+        :rtype: str
+        :raises ValueError: when it does not match the destination grammar
+        """
+        check_destination(value)
+        return value
+
+
+#: where an export's files are and how many rows the warehouse wrote: the one model the driver returns
+#: and the wire carries (:class:`threetears.datasources.export.ExportResult`). The reader checks every
+#: field (:mod:`threetears.datasources.export_read`).
+DatasourceExportResult = ExportResult
+
+
+class DatasourceExportDeleteRequest(BaseModel):
+    """ask the hub to delete an export the caller has read and proven: every version under its destination.
+
+    Admitted on the export's record, not on a grant: the hub deletes only an export it recorded
+    running for this very tool pod, at exactly this destination, and asks neither
+    ``datasource.read`` nor the export grant, so a pod can delete what it was let write after its
+    grant is withdrawn. Only under the datasource's export prefix. The hub deletes with a
+    delete-only grant of its own, so the reader's keys stay read-only.
+
+    :param destination: the destination the export was written to
+    :ptype destination: str
+    :raises ValueError: when the destination is not a plain relative path
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    destination: str
+
+    @field_validator("destination")
+    @classmethod
+    def _destination_is_relative(cls, value: str) -> str:
+        """refuse a destination that could leave the configured prefix.
+
+        :param value: the destination
+        :ptype value: str
+        :return: the value unchanged
+        :rtype: str
+        :raises ValueError: when it does not match the destination grammar
+        """
+        check_destination(value)
+        return value
+
+
+class DatasourceExportListRequest(BaseModel):
+    """ask the hub which exports it holds a record of for the caller, on this datasource: one page.
+
+    It names no pod. The hub answers for the pod its verified identity token names and for no
+    other, so there is nothing here by which a caller could ask about another pod's exports. What
+    comes back is what :class:`DatasourceExportDeleteRequest` needs: each export's destination.
+
+    :param cursor: where the page starts: the ``next_cursor`` of the page before, as the hub gave
+        it, or ``None`` for the first page
+    :ptype cursor: str | None
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cursor: str | None = None
+
+
+class DatasourceExportRecord(BaseModel):
+    """one export the hub ran for the caller and has not deleted, as the hub recorded it.
+
+    :param destination: the destination the caller chose for it, which names it to
+        :meth:`DatasourceQueryClient.delete_export`
+    :ptype destination: str
+    :param object_prefix: the key prefix its files sit under in the datasource's export bucket
+    :ptype object_prefix: str
+    :param date_created: when the hub recorded it, before the warehouse wrote a file
+    :ptype date_created: datetime
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    destination: str
+    object_prefix: str
+    date_created: datetime
+
+
+class DatasourceExportListResult(BaseModel):
+    """one page of the caller's recorded exports, in destination order.
+
+    :param exports: the page's exports
+    :ptype exports: list[DatasourceExportRecord]
+    :param next_cursor: the cursor that asks for the page after this one; ``None`` on the last
+    :ptype next_cursor: str | None
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    exports: list[DatasourceExportRecord]
+    next_cursor: str | None = None
+
+
 class DatasourceQueryRequest(TolerantWireModel):
     """one datasource query, carrying the caller's identity as a forwarded token.
 
@@ -301,10 +578,19 @@ class DatasourceQueryRequest(TolerantWireModel):
     query: str | None = None
     params: list[Any] = Field(default_factory=list)
     fingerprint: RelationFingerprintRequest | None = None
+    #: an export instead of a query. A hub that predates exports refuses the field as unknown
+    #: (``MALFORMED_REQUEST``) rather than running anything
+    export: DatasourceExportRequest | None = None
+    #: the deletion of an export the caller read and proved, in place of a query
+    export_delete: DatasourceExportDeleteRequest | None = None
+    #: a page of the exports recorded for the caller, in place of a query. A hub that predates the
+    #: ask refuses the field as unknown (``MALFORMED_REQUEST``), which the client reports as
+    #: :class:`DatasourceExportListUnsupportedError`
+    export_list: DatasourceExportListRequest | None = None
 
     @model_validator(mode="after")
     def _exactly_one_operation(self) -> "DatasourceQueryRequest":
-        """require exactly one of ``query`` and ``fingerprint``.
+        """require exactly one of ``query``, ``fingerprint``, ``export``, ``export_delete`` and ``export_list``.
 
         The two are alternative asks on one subject, and the alternative to this
         check is a model that can represent a request meaning nothing (neither
@@ -313,21 +599,58 @@ class DatasourceQueryRequest(TolerantWireModel):
 
         Reusing the subject rather than minting a second one is deliberate: a new
         subject is a new NATS grant on a security surface, and it would buy
-        nothing -- the hub verifies the forwarded identity and evaluates
-        ``datasource.read`` on the same namespace for either ask.
+        nothing -- the hub verifies the forwarded identity on every ask. A query, a
+        fingerprint and an export are then authorized on ``datasource.read`` on the
+        datasource's namespace (an export on its own grant besides); an export delete
+        and an export list are not, being admitted on the verified tool pod and its own
+        export records alone.
 
         :return: the validated request
         :rtype: DatasourceQueryRequest
         :raises ValueError: when neither or both are set
         """
         asked = [
-            name for name, value in (("query", self.query), ("fingerprint", self.fingerprint)) if value is not None
+            name
+            for name, value in (
+                ("query", self.query),
+                ("fingerprint", self.fingerprint),
+                ("export", self.export),
+                ("export_delete", self.export_delete),
+                ("export_list", self.export_list),
+            )
+            if value is not None
         ]
         if len(asked) != 1:
             raise ValueError(
-                f"a datasource request carries exactly one of query or fingerprint, got {asked or 'neither'}"
+                "a datasource request carries exactly one of query, fingerprint, export, export_delete or "
+                f"export_list, got {asked or 'none'}"
             )
+        if (self.export is not None or self.export_delete is not None) and self.params:
+            raise ValueError("an export binds no parameters; write the values into its SELECT as literals")
+        if self.export_list is not None and self.params:
+            raise ValueError("an export list binds no parameters")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_export(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``export``, ``export_delete``, ``export_list`` and an absent proof off the wire.
+
+        A hub that predates exports forbids unknown fields, so a query or fingerprint carrying
+        ``"export": null`` would be refused there as malformed: every read of a newer caller would
+        fail against an older hub. Omitted, the request is byte-for-byte what that hub knows, and
+        the two upgrade in either order. An absent ``identity_proof`` likewise
+        (:func:`~threetears.core.security.door_request.omit_absent_proof`).
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        for name in ("export", "export_delete", "export_list"):
+            if getattr(self, name) is None:
+                data.pop(name, None)
+        return omit_absent_proof(data)
 
     @field_serializer("identity_token", "user_identity_token", when_used="json")
     def _emit_token_on_the_wire(self, value: SecretStr | None) -> str | None:
@@ -381,6 +704,14 @@ class DatasourceQueryResponse(BaseModel):
     #: comparing two readings must not have to know which column the digest landed in
     #: or what the driver called it.
     fingerprint: RelationFingerprintResult | None = None
+    #: set only in answer to a ``fingerprint`` request asked ``group_by``: every group's fingerprint
+    fingerprint_groups: list[RelationFingerprintGroup] | None = None
+    #: set only in answer to an ``export`` request
+    export: DatasourceExportResult | None = None
+    #: set only in answer to an ``export_delete`` request: the versions and delete markers deleted
+    export_deleted: int | None = None
+    #: set only in answer to an ``export_list`` request: one page of the caller's recorded exports
+    export_list: DatasourceExportListResult | None = None
 
 
 class DatasourceQueryResult(BaseModel):
@@ -440,6 +771,37 @@ class DatasourceQueryError(RuntimeError):
         self.error_code = error_code
 
 
+class DatasourceExportListUnsupportedError(DatasourceQueryError):
+    """the hub does not know the ask for a caller's own recorded exports.
+
+    It answered the ask ``MALFORMED_REQUEST``: a hub on a release before the ask cannot parse it,
+    and one on the ask's release with no handler for it parses it and finds nothing to run. A hub
+    that serves the ask never answers it with that code. Its own type because it is neither an answer nor a fault. The hub named no export, so it is
+    not an empty list; and the bus, the grant and the request are all sound, so it is not a
+    failure to retry or to page anyone about. A caller that lists its exports to delete the ones a
+    killed run left catches this, logs it and carries on with nothing to clear: against such a hub
+    those exports stay for the operator's surface, as they did before the ask existed.
+    :attr:`error_code` is :data:`EXPORT_LIST_UNSUPPORTED`.
+
+    :param datasource_name: the datasource asked about
+    :ptype datasource_name: str
+    """
+
+    def __init__(self, datasource_name: str) -> None:
+        """name the datasource whose hub could not answer.
+
+        :param datasource_name: the datasource asked about
+        :ptype datasource_name: str
+        """
+        super().__init__(
+            EXPORT_LIST_UNSUPPORTED,
+            f"the hub serving {datasource_name!r} does not know the export list ask (it answered MALFORMED_REQUEST, as "
+            "a hub that predates the ask, or has its models and no handler for it, does); it named no export, so "
+            "none can be cleared through it",
+        )
+        self.datasource_name = datasource_name
+
+
 class DatasourceQueryClient:
     """publishes datasource queries on the hub's subject and returns the rows.
 
@@ -460,6 +822,13 @@ class DatasourceQueryClient:
     :param pop_key: zero-arg provider of the key the identity token binds; with it each request
         carries a proof of possession over its body. ``None`` sends the token alone
     :ptype pop_key: Callable[[], PopKey | None] | None
+    :param max_concurrent_asks: how many asks this client has out at once, each of the rest waiting
+        its turn; ``None`` sends every ask as it is made. The hub runs at most a datasource's cap at
+        once and refuses the rest ``DATASOURCE_BUSY``, so a caller that reads side by side (a bulk
+        read's pages, several tables at once) sets this to that cap and keeps under it as a whole.
+        Every ask of every operation takes the one turn, and holds it while a busy hub is asked again
+    :ptype max_concurrent_asks: int | None
+    :raises ValueError: when ``max_concurrent_asks`` is less than one
     """
 
     def __init__(
@@ -469,8 +838,9 @@ class DatasourceQueryClient:
         identity_token: Callable[[], str | None],
         timeout: timedelta | float = DEFAULT_QUERY_TIMEOUT_SECONDS,
         pop_key: Callable[[], PopKey | None] | None = None,
+        max_concurrent_asks: int | None = None,
     ) -> None:
-        """bind the transport, the identity provider and the deadline.
+        """bind the transport, the identity provider, the deadline and the limit on asks at once.
 
         :param nats_client: the connected canonical NATS wrapper client
         :ptype nats_client: NatsClient
@@ -482,12 +852,19 @@ class DatasourceQueryClient:
             send; with it each request carries a proof of possession over its body
             (:mod:`threetears.core.security.door_request`). ``None`` sends the token alone
         :ptype pop_key: Callable[[], PopKey | None] | None
+        :param max_concurrent_asks: how many asks are out at once; ``None`` for no limit
+        :ptype max_concurrent_asks: int | None
+        :raises ValueError: when ``max_concurrent_asks`` is less than one
         """
+        if max_concurrent_asks is not None and max_concurrent_asks < 1:
+            raise ValueError(f"max_concurrent_asks must be at least 1, got {max_concurrent_asks}")
         self._nats_client = nats_client
         self._identity_token = identity_token
         self._pop_key = pop_key
         self._unproven_logged = False
         self._timeout = timeout if isinstance(timeout, timedelta) else timedelta(seconds=float(timeout))
+        # the one way to the bus (_ask) takes its turn here, so no operation can go round the limit
+        self._turns = None if max_concurrent_asks is None else asyncio.Semaphore(max_concurrent_asks)
 
     def forwarded_identity_token(self) -> str:
         """the CURRENT hub-minted identity token to forward on a query.
@@ -514,6 +891,28 @@ class DatasourceQueryClient:
         return token
 
     async def _ask(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
+        """send the request at this client's turn, when it limits its asks at once.
+
+        The turn is held until the answer is in hand, the waits on a busy hub included: an ask
+        that let its turn go while it waited would let another out to be refused busy too.
+
+        :param subject: the datasource's query subject
+        :ptype subject: Subject
+        :param request: the request
+        :ptype request: DatasourceQueryRequest
+        :return: the hub's answer
+        :rtype: DatasourceQueryResponse
+        :raises RequestError: when the bus fails to deliver or answer
+        """
+        response: DatasourceQueryResponse
+        if self._turns is None:
+            response = await self._send(subject, request)
+        else:
+            async with self._turns:
+                response = await self._send(subject, request)
+        return response
+
+    async def _send(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
         """send the request, and ask again while the hub answers ``DATASOURCE_BUSY``, a bounded number of times.
 
         A busy refusal means nothing ran, so asking again is safe; the waits grow and are jittered so
@@ -641,6 +1040,327 @@ class DatasourceQueryClient:
                 f"relation fingerprint on {datasource_name!r} returned success with no fingerprint",
             )
         return response.fingerprint
+
+    async def relation_fingerprint_groups(
+        self,
+        datasource_name: str,
+        *,
+        relation: str,
+        key: Sequence[str],
+        group_by: str,
+        where: Mapping[str, str] | None = None,
+        where_in: Mapping[str, Sequence[str]] | None = None,
+        correlation_id: UUID | None = None,
+    ) -> dict[str | None, RelationFingerprintResult]:
+        """count and fingerprint every value of ``group_by`` in a relation, in one ask.
+
+        Each group's fingerprint is the one :meth:`relation_fingerprint` answers for the rows
+        ``group_by = value`` (with the same filters), so the two compare equal. A value with no rows
+        is not named.
+
+        :param datasource_name: the datasource
+        :ptype datasource_name: str
+        :param relation: schema-qualified relation name
+        :ptype relation: str
+        :param key: the columns the digest covers
+        :ptype key: Sequence[str]
+        :param group_by: the column whose values are the groups
+        :ptype group_by: str
+        :param where: equality filters
+        :ptype where: Mapping[str, str] | None
+        :param where_in: set filters, column -> the values it may hold
+        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :param correlation_id: trace id to carry; generated when omitted
+        :ptype correlation_id: UUID | None
+        :return: each group's value (``None`` for NULL) -> its fingerprint
+        :rtype: dict[str | None, RelationFingerprintResult]
+        :raises DatasourceQueryError: on a refusal (``FINGERPRINT_GROUPS_UNSUPPORTED`` from an engine
+            that cannot, ``MALFORMED_REQUEST`` from a hub that predates grouping), a transport failure,
+            or a success carrying no groups
+        """
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id if correlation_id is not None else uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            fingerprint=RelationFingerprintRequest(
+                relation=relation,
+                key_columns=list(key),
+                where=dict(where or {}),
+                where_in={column: list(values) for column, values in (where_in or {}).items()},
+                group_by=group_by,
+            ),
+        )
+        subject = Subjects.datasource_query(datasource_name)
+        try:
+            response = await self._ask(subject, request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"grouped fingerprint on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"grouped fingerprint on {datasource_name!r} was refused",
+            )
+        if response.fingerprint_groups is None:
+            # a hub that answered a grouped ask without groups did not group: taking none as every
+            # group's answer would read as a relation with no rows
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"grouped fingerprint on {datasource_name!r} returned success with no groups"
+            )
+        return {
+            group.value: RelationFingerprintResult(row_count=group.row_count, digest=group.digest)
+            for group in response.fingerprint_groups
+        }
+
+    @traced
+    async def export(
+        self,
+        datasource_name: str,
+        select: str,
+        *,
+        destination: str,
+        partition_by: str | None = None,
+        correlation_id: UUID | None = None,
+    ) -> DatasourceExportResult:
+        """have the warehouse write ``select``'s rows to the datasource's export bucket, as parquet.
+
+        Granted apart from reads: the hub runs it only for a caller that may run ``select`` on the
+        read rail AND that an operator recorded may export from this datasource. A tool pod asks on
+        its own identity; there is no user side to an export.
+
+        :param datasource_name: the datasource's name as the hub holds it
+        :ptype datasource_name: str
+        :param select: a plain ``SELECT`` with no bind parameters (values written in as literals)
+        :ptype select: str
+        :param destination: where under the datasource's export prefix; a fresh path per export,
+            because files already there are never replaced
+        :ptype destination: str
+        :param partition_by: divide the files by this column, one directory per value; a hub that
+            predates it refuses the ask (``MALFORMED_REQUEST``)
+        :ptype partition_by: str | None
+        :param correlation_id: trace id to carry; generated when omitted
+        :ptype correlation_id: UUID | None
+        :return: how many rows the warehouse wrote and where the files are
+        :rtype: DatasourceExportResult
+        :raises DatasourceQueryError: on a refusal (``EXPORT_NOT_GRANTED``, ``EXPORT_UNSUPPORTED``,
+            ``SQL_SAFETY_VIOLATION``, ``EXPORT_REFUSED``, ...), a transport failure, or a success
+            carrying no result
+        """
+        if not datasource_name:
+            raise DatasourceQueryError(
+                "INVALID_DATASOURCE_NAME",
+                "an export needs the datasource's name; an empty name composes no subject",
+            )
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id if correlation_id is not None else uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            export=DatasourceExportRequest(select=select, destination=destination, partition_by=partition_by),
+        )
+        subject = Subjects.datasource_query(datasource_name)
+        try:
+            response = await self._ask(subject, request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"export on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"export on {datasource_name!r} was refused",
+            )
+        if response.export is None:
+            # a hub that answered success without an export did not run one; taking it as an export
+            # of nothing would read as a relation with no rows
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"export on {datasource_name!r} returned success with no export"
+            )
+        log.info(
+            "datasource export written",
+            extra={
+                "extra_data": {
+                    "datasource": datasource_name,
+                    "correlation_id": f"{request.correlation_id}",
+                    "row_count": response.export.row_count,
+                    "object_prefix": response.export.object_prefix,
+                }
+            },
+        )
+        return response.export
+
+    @traced
+    async def delete_export(self, datasource_name: str, *, destination: str) -> int:
+        """have the hub delete an export this caller read and proved: every version under its destination.
+
+        :param datasource_name: the datasource the export was taken from
+        :ptype datasource_name: str
+        :param destination: the destination it was written to
+        :ptype destination: str
+        :return: the versions and delete markers deleted
+        :rtype: int
+        :raises DatasourceQueryError: on a refusal or a transport failure, or a success saying nothing
+            was deleted (a hub that does not know the ask)
+        """
+        request = DatasourceQueryRequest(
+            correlation_id=uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            export_delete=DatasourceExportDeleteRequest(destination=destination),
+        )
+        try:
+            response = await self._ask(Subjects.datasource_query(datasource_name), request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"export delete on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"export delete on {datasource_name!r} was refused",
+            )
+        if response.export_deleted is None:
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"export delete on {datasource_name!r} returned success with no count"
+            )
+        return response.export_deleted
+
+    @traced
+    async def list_own_exports(
+        self,
+        datasource_name: str,
+        *,
+        correlation_id: UUID | None = None,
+        max_pages: int = EXPORT_LIST_MAX_PAGES,
+    ) -> list[DatasourceExportRecord]:
+        """every export the hub holds a record of for this caller on a datasource, read to the last page.
+
+        For a pod that deletes each export once its load has proven it: a run that was killed left
+        its exports recorded at the hub and nowhere else, and the next run finds them here and
+        deletes each through :meth:`delete_export` by its ``destination``. The hub answers for the
+        pod its verified identity token names, so the ask names no pod and returns no other pod's.
+
+        :param datasource_name: the datasource's name as the hub holds it
+        :ptype datasource_name: str
+        :param correlation_id: trace id every page carries; generated when omitted
+        :ptype correlation_id: UUID | None
+        :param max_pages: refuse rather than follow cursors past this many pages
+        :ptype max_pages: int
+        :return: the caller's recorded exports, in destination order; empty when it has none
+        :rtype: list[DatasourceExportRecord]
+        :raises DatasourceExportListUnsupportedError: when the hub cannot place the ask (it answers
+            ``MALFORMED_REQUEST``); nothing was listed, which is not the same as nothing recorded
+        :raises DatasourceQueryError: on a refusal, a transport failure, a success carrying no page,
+            a cursor the hub has already given, or more than ``max_pages`` pages (the list cannot
+            be shown to end). ``ACCESS_DENIED`` comes only from a hub that has these models but no
+            handler for the ask and read it as a read on a pod with no ``datasource.read``: a hub
+            that serves the ask never asks that grant (see the package README)
+        :raises ValueError: when ``max_pages`` is less than one
+        """
+        if max_pages < 1:
+            raise ValueError(f"max_pages must be at least 1, got {max_pages}")
+        if not datasource_name:
+            raise DatasourceQueryError(
+                "INVALID_DATASOURCE_NAME",
+                "an export list needs the datasource's name; an empty name composes no subject",
+            )
+        trace = correlation_id if correlation_id is not None else uuid7()
+        subject = Subjects.datasource_query(datasource_name)
+        exports: list[DatasourceExportRecord] = []
+        given: set[str] = set()
+        cursor: str | None = None
+        more = True
+        pages = 0
+        while more:
+            if pages == max_pages:
+                # a hub minting cursor after new cursor would be followed forever; stopping here would
+                # pass off a prefix as the whole list
+                raise DatasourceQueryError(
+                    "MALFORMED_RESPONSE",
+                    f"export list on {datasource_name!r} still had a next page after {max_pages} pages "
+                    f"({len(exports)} exports)",
+                )
+            pages += 1
+            page = await self._own_exports_page(subject, datasource_name, cursor, trace)
+            exports.extend(page.exports)
+            cursor = page.next_cursor
+            more = cursor is not None
+            if cursor is not None:
+                if cursor in given:
+                    # the hub is handing back a page it already gave: following it would never end,
+                    # and stopping here would pass off a prefix as the whole list
+                    raise DatasourceQueryError(
+                        "MALFORMED_RESPONSE",
+                        f"export list on {datasource_name!r} repeated a cursor after {len(exports)} exports",
+                    )
+                given.add(cursor)
+        log.info(
+            "datasource exports listed for the caller",
+            extra={
+                "extra_data": {
+                    "datasource": datasource_name,
+                    "correlation_id": f"{trace}",
+                    "exports": len(exports),
+                }
+            },
+        )
+        return exports
+
+    async def _own_exports_page(
+        self, subject: Subject, datasource_name: str, cursor: str | None, correlation_id: UUID
+    ) -> DatasourceExportListResult:
+        """ask the hub for one page of the caller's recorded exports.
+
+        :param subject: the datasource's query subject
+        :ptype subject: Subject
+        :param datasource_name: the datasource, for the messages
+        :ptype datasource_name: str
+        :param cursor: the page's cursor, or ``None`` for the first page
+        :ptype cursor: str | None
+        :param correlation_id: the listing's trace id
+        :ptype correlation_id: UUID
+        :return: the page
+        :rtype: DatasourceExportListResult
+        :raises DatasourceExportListUnsupportedError: when the hub refuses the request as malformed
+        :raises DatasourceQueryError: on any other refusal, a transport failure, or a success
+            carrying no page
+        """
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id,
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            export_list=DatasourceExportListRequest(cursor=cursor),
+        )
+        try:
+            response = await self._ask(subject, request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"export list on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            if response.error_code == _MALFORMED_REQUEST:
+                # what a hub answers when it cannot read the ask: one that predates it forbids the
+                # unknown field. This client builds the request from its own validated models, so
+                # nothing else in it is unreadable, and a hub that knows the ask never answers it
+                # with this code
+                log.warning(
+                    "the hub does not know the export list ask; no export was listed",
+                    extra={"extra_data": {"datasource": datasource_name, "correlation_id": f"{correlation_id}"}},
+                )
+                raise DatasourceExportListUnsupportedError(datasource_name)
+            if response.error_code == _ACCESS_DENIED:
+                # a hub that serves the ask admits it on the verified pod alone; one that refuses it on
+                # the read grant has these models and no handler, and took the ask for a read
+                log.warning(
+                    "the hub refused the export list on the read grant; no export was listed",
+                    extra={"extra_data": {"datasource": datasource_name, "correlation_id": f"{correlation_id}"}},
+                )
+                raise DatasourceQueryError(
+                    _ACCESS_DENIED,
+                    f"the hub serving {datasource_name!r} refused the export list on datasource.read, which a hub "
+                    "that serves the ask never asks: it has no handler for the ask, and this pod holds no read "
+                    "grant there. Nothing was listed. Restoring the grant lets that hub answer the ask as one it "
+                    "cannot place (EXPORT_LIST_UNSUPPORTED); a hub with the handler answers it",
+                )
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"export list on {datasource_name!r} was refused",
+            )
+        if response.export_list is None:
+            # a hub that answered success without a page listed nothing; taking it as a caller
+            # with no exports would leave them in the bucket unlooked for
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"export list on {datasource_name!r} returned success with no page"
+            )
+        return response.export_list
 
     async def query(
         self,
@@ -786,6 +1506,34 @@ RESULT_TOO_LARGE: Final = "RESULT_TOO_LARGE"
 #: running and waiting as it bears, or this one waited too long for its turn. nothing ran; ask again
 #: later (a refresh that meets it fails, and the next one runs)
 DATASOURCE_BUSY: Final = "DATASOURCE_BUSY"
+
+#: the hub's refusal of an export from a caller no operator granted one to (``aibots datasource
+#: export-grant``); its reads are unaffected
+EXPORT_NOT_GRANTED: Final = "EXPORT_NOT_GRANTED"
+
+#: the hub's refusal of an export from a datasource that cannot export: no ``export`` on its connection
+#: config, or an engine with none. A reader that treats the export as optional falls back to the rail
+EXPORT_UNSUPPORTED: Final = "EXPORT_UNSUPPORTED"
+
+#: the hub's refusal of a fingerprint asked ``group_by`` that the datasource's engine cannot answer in
+#: one statement; the caller asks group by group. A hub that predates grouping answers
+#: ``MALFORMED_REQUEST`` instead (the field is unknown to it)
+FINGERPRINT_GROUPS_UNSUPPORTED: Final = "FINGERPRINT_GROUPS_UNSUPPORTED"
+
+#: the hub's refusal of an export whose ``SELECT`` cannot sit in a quoted literal, or whose destination
+#: would leave the configured prefix
+EXPORT_REFUSED: Final = "EXPORT_REFUSED"
+
+#: the client's own code for a hub that predates the export list ask, carried by
+#: :class:`DatasourceExportListUnsupportedError`. No hub sends it
+EXPORT_LIST_UNSUPPORTED: Final = "EXPORT_LIST_UNSUPPORTED"
+
+#: the hub's refusal of a request it could not read or place: a body that did not parse, a field its
+#: model forbids, or an ask it reads and has no handler for -- how a hub answers an ask newer than it
+_MALFORMED_REQUEST: Final = "MALFORMED_REQUEST"
+
+#: the hub's refusal of a caller with no ``datasource.read`` on the datasource's namespace
+_ACCESS_DENIED: Final = "ACCESS_DENIED"
 
 #: how many times the client asks again after a ``DATASOURCE_BUSY`` refusal before raising it
 BUSY_RETRIES: Final = 3
@@ -960,7 +1708,7 @@ async def read_all(
 
     size = page_size
     for _ in range(max_pages):
-        predicate, params = _filtered(filters, *_keyset_predicate(key, cursor))
+        predicate, params = _filtered(filters, key, cursor)
         # LIMIT size + 1: the extra row is a SENTINEL, not data. Getting it
         # back proves more rows exist; not getting it proves they do not. That is
         # the has-more signal, and it is computed HERE from a row count we asked
@@ -1127,74 +1875,96 @@ async def _proven(
     return rows
 
 
-def _filtered(where: Mapping[str, str], predicate: str, params: list[Any]) -> tuple[str, list[Any]]:
-    """the ``WHERE`` fragment that keeps only ``where``'s rows, and after them the keyset predicate.
+def _filtered(where: Mapping[str, str], key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:
+    """the ``WHERE`` fragment that keeps only ``where``'s rows, and of them those after ``cursor``.
 
-    The filters' values are bound first, as ``$1..$n``, and the keyset predicate's placeholders
-    are renumbered after them, so each placeholder still names its own parameter.
+    The filters' values are bound first, as ``$1..$n``, and the keyset condition is numbered from
+    ``$n+1`` as it is built, so each placeholder names its own parameter.
 
     :param where: equality filters, column -> value; columns are TRUSTED identifiers
     :ptype where: Mapping[str, str]
-    :param predicate: the keyset fragment (`` WHERE ...``) or empty
-    :ptype predicate: str
-    :param params: the keyset fragment's parameters
-    :ptype params: list[Any]
-    :return: the combined fragment and parameters
+    :param key: the ordering columns, TRUSTED identifiers
+    :ptype key: Sequence[str]
+    :param cursor: the last key read, or ``None`` for the first page
+    :ptype cursor: tuple[Any, ...] | None
+    :return: the fragment (empty when there is nothing to keep out) and its parameters
     :rtype: tuple[str, list[Any]]
     """
-    if not where:
-        return predicate, params
-    filters = " AND ".join(f"{column} = ${index + 1}" for index, column in enumerate(where))
-    shift = len(where)
-    keyset = re.sub(r"\$(\d+)", lambda m: f"${int(m.group(1)) + shift}", predicate.removeprefix(" WHERE "))
-    combined = f" WHERE ({filters}) AND ({keyset})" if keyset else f" WHERE {filters}"
-    return combined, [*where.values(), *params]
+    # unquoted, as the relation and key columns in the same statement are (sql_fragments.as_written)
+    filters, values = equality_conditions(where, quote=as_written) if where else ("", [])
+    keyset, params = _keyset_predicate(key, cursor, first=len(values) + 1)
+    if filters and keyset:
+        return f" WHERE ({filters}) AND ({keyset})", [*values, *params]
+    if filters or keyset:
+        return f" WHERE {filters or keyset}", [*values, *params]
+    return "", []
 
 
-def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:
-    """build the ``WHERE`` fragment selecting rows strictly after ``cursor``.
+def keyset_condition(
+    key: Sequence[str], values: Sequence[Any], *, earlier: str, last: str, first: int = 1
+) -> tuple[str, list[Any]]:
+    """the condition comparing a row's key with ``values`` column by column: the one keyset builder.
 
-    Nested OR rather than a row constructor, for portability across every
-    datasource type the platform admits. For key ``(a, b)`` the shape is::
+    Nested OR rather than a row constructor, for portability across every datasource type the
+    platform admits. For key ``(a, b)``, ``earlier=">"`` and ``last=">="`` the shape is::
 
-        WHERE (a > $1) OR (a = $2 AND b > $3)
+        (a > $1) OR (a = $2 AND b >= $3)
 
-    Values bind as parameters, so a cursor value never reaches the SQL as text.
+    Values bind as parameters, so a key value never reaches the SQL as text. Every page read --
+    :func:`read_all`'s next page, a partitioned read's page bounds -- builds its keyset here, so a
+    rule about the shape reaches all of them at once.
 
-    **``$N``, not ``?``, and the distinction is the whole reason page two
-    executes.** Every driver normalises placeholders through
-    :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`, which
-    recognises ``$N`` alone -- rewriting it to ``%s``, ``:N`` or ``@pN`` for the
-    engine in front of it. A ``?`` is not a placeholder to any of them, so it
-    travels to the engine verbatim and the bound values arrive with nothing to
-    bind to.
+    **``$N``, not ``?``, and the distinction is the whole reason page two executes.** Every driver
+    normalises placeholders through
+    :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`, which recognises
+    ``$N`` alone -- rewriting it to ``%s``, ``:N`` or ``@pN`` for the engine in front of it. A ``?``
+    is not a placeholder to any of them, so it travels to the engine verbatim and the bound values
+    arrive with nothing to bind to.
 
-    Page one hid that for as long as it existed: with no cursor this returns no
-    fragment and no parameters, so single-page reads and every relation smaller
-    than one page succeed. The failure arms on the day a relation outgrows a
+    :param key: the ordering columns, TRUSTED identifiers
+    :ptype key: Sequence[str]
+    :param values: the key values compared against, one per column
+    :ptype values: Sequence[Any]
+    :param earlier: the comparison for every column but the last (``>`` after, ``<`` before)
+    :ptype earlier: str
+    :param last: the comparison for the last column (``>``, ``>=``, ``<``)
+    :ptype last: str
+    :param first: the first placeholder's number, after any parameters bound before it
+    :ptype first: int
+    :return: the condition (no ``WHERE``, no outer parentheses) and its parameters, in placeholder order
+    :rtype: tuple[str, list[Any]]
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    for index, column in enumerate(key):
+        operator = last if index == len(key) - 1 else earlier
+        # numbered in emission order, so the Nth placeholder names the Nth parameter appended
+        # just below and the two cannot drift apart
+        terms = [f"{prior} = ${first + len(params) + offset}" for offset, prior in enumerate(key[:index])]
+        params.extend(values[:index])
+        terms.append(f"{column} {operator} ${first + len(params)}")
+        params.append(values[index])
+        clauses.append(f"({' AND '.join(terms)})")
+    return " OR ".join(clauses), params
+
+
+def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None, *, first: int = 1) -> tuple[str, list[Any]]:
+    """the condition selecting rows strictly after ``cursor``: :func:`keyset_condition`, every column ``>``.
+
+    Page one hid the placeholder-style failure (see :func:`keyset_condition`) for as long as it
+    existed: with no cursor this returns no condition and no parameters, so single-page reads and
+    every relation smaller than one page succeed. The failure arms on the day a relation outgrows a
     page.
 
     :param key: the ordering columns, TRUSTED identifiers
     :ptype key: Sequence[str]
     :param cursor: the last key read, or ``None`` for the first page
     :ptype cursor: tuple[Any, ...] | None
-    :return: the ``WHERE`` fragment (empty for page one) and its parameters
+    :param first: the first placeholder's number
+    :ptype first: int
+    :return: the condition (empty for page one) and its parameters
     :rtype: tuple[str, list[Any]]
     """
     if cursor is None:
         return "", []
-
-    clauses: list[str] = []
-    params: list[Any] = []
-    for index, column in enumerate(key):
-        # numbered in emission order, so the Nth placeholder names the Nth
-        # parameter appended just below and the two cannot drift apart.
-        equalities = " AND ".join(
-            f"{earlier} = ${len(params) + offset + 1}" for offset, earlier in enumerate(key[:index])
-        )
-        comparison = f"{column} > ${len(params) + index + 1}"
-        clauses.append(f"({equalities} AND {comparison})" if equalities else f"({comparison})")
-        params.extend(cursor[:index])
-        params.append(cursor[index])
-
-    return f" WHERE {' OR '.join(clauses)}", params
+    return keyset_condition(key, cursor, earlier=">", last=">", first=first)

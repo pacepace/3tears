@@ -16,6 +16,8 @@ Factories:
 - :func:`load_skill_delete_tool` -- ``skill_delete``
 - :func:`load_skill_invoke_tool` -- ``skill_invoke``
 - :func:`load_skill_introspect_tool` -- ``skill_introspect``
+- :func:`load_skill_report_outcome_tool` -- ``skill_report_outcome``
+- :func:`load_skill_history_tool` -- ``skill_history``
 
 Every factory closes over ``(agent_id, user_id)`` and the Collections so
 the LLM never sees identity fields in the input schema -- the runtime
@@ -32,9 +34,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any, Protocol, get_args
 from uuid import UUID
 
@@ -48,13 +50,16 @@ from threetears.agent.skills.collections import (
     merged_skill_shape,
     skill_shape_error,
 )
-from threetears.agent.skills.entities import AgentSkillEntity
+from threetears.agent.skills.entities import AgentSkillEntity, AgentSkillInvocationEntity
+from threetears.agent.skills.rendering import render_skill_body_block
 from threetears.agent.skills.types import PromptMode, SkillKindFilter, SkillOutcome
+from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.observe import get_logger
 
 __all__ = [
     "ActiveSkillProbe",
     "ActiveSkillSetter",
+    "BindableTools",
     "ConversationIdResolver",
     "SkillCreateInput",
     "TOOL_SKILLS_NOT_OFFERED",
@@ -63,6 +68,7 @@ __all__ = [
     "SkillDeleteInput",
     "SkillEligibleTool",
     "SkillGetInput",
+    "SkillHistoryInput",
     "SkillIntrospectInput",
     "SkillInvokeInput",
     "SkillListInput",
@@ -73,6 +79,7 @@ __all__ = [
     "load_skill_create_tool",
     "load_skill_delete_tool",
     "load_skill_get_tool",
+    "load_skill_history_tool",
     "load_skill_introspect_tool",
     "load_skill_invoke_tool",
     "load_skill_list_tool",
@@ -136,6 +143,12 @@ ConversationIdResolver = Callable[[], UUID | None]
 # a non-``None`` value.
 ActiveSkillProbe = Callable[[], UUID | None]
 ActiveSkillSetter = Callable[[UUID], None]
+
+# The tools the turn can bind, by name, for ``skill_invoke`` to name only those.
+# ``None`` from the probe (or no probe) means the consumer cannot say, and then
+# the result names no tool at all: a skill naming a tool the agent does not hold
+# sends it calling one that is not there.
+BindableTools = Callable[[], Collection[str] | None]
 
 
 @dataclass(frozen=True)
@@ -389,6 +402,14 @@ class SkillInvokeInput(BaseModel):
         default=None,
         description="Optional one line on why, kept with the record of this use.",
     )
+
+
+class SkillHistoryInput(BaseModel):
+    """Input schema for the ``skill_history`` tool."""
+
+    skill_id: str = Field(description="The [skill:<id>] or name of the skill.")
+    limit: int = Field(default=20, ge=1, le=100, description="Most uses to list, newest first.")
+    offset: int = Field(default=0, ge=0, description="Uses to skip, for the next page.")
 
 
 class SkillReportOutcomeInput(BaseModel):
@@ -758,23 +779,182 @@ def _format_skill_summary(entity: AgentSkillEntity) -> str:
     return f"[skill:{entity.skill_id}] {entity.name}{enabled_marker} -- {entity.summary}"
 
 
-def _render_skill_invoke_block(
-    entity: AgentSkillEntity,
-) -> str:
-    """Render the ``[ACTIVE SKILL: ...]`` tool-result block per spec.
+def _skill_tool_lines(entity: AgentSkillEntity, bindable: Collection[str] | None) -> list[str]:
+    """What a skill does to the agent's tools, naming only tools the turn can bind.
 
-    Format defined in shard-02 "skill_invoke output format".
+    A tool the skill adds is named when the turn holds it, and is bound from the
+    agent's next step; one it does not hold is counted and not named, because a
+    name it cannot call reads as one it can. A tool the skill puts away is
+    named when the turn held it.
+
+    :param entity: the skill
+    :ptype entity: AgentSkillEntity
+    :param bindable: the tools the turn can bind, or ``None`` when the consumer cannot say
+    :ptype bindable: Collection[str] | None
+    :return: the lines, none when the skill changes no tool
+    :rtype: list[str]
+    """
+    additions = list(entity.tool_additions)
+    restrictions = list(entity.tool_restrictions)
+    if bindable is None:
+        named = len(additions) + len(restrictions)
+        return [f"It changes {named} of your tools; your next step shows which you hold."] if named else []
+    lines: list[str] = []
+    held = [name for name in additions if name in bindable]
+    if held:
+        lines.append(f"Tools it adds, yours from your next step: {', '.join(held)}.")
+    missing = len(additions) - len(held)
+    if missing:
+        lines.append(f"{missing} more tool(s) it names cannot be used on this turn.")
+    put_away = [name for name in restrictions if name in bindable]
+    if put_away:
+        lines.append(f"Tools it puts away until the turn ends: {', '.join(put_away)}.")
+    return lines
+
+
+def _render_skill_invoke_block(entity: AgentSkillEntity, bindable: Collection[str] | None = None) -> str:
+    """The ``skill_invoke`` result: the skill in use, its tools as the turn holds them, and its steps whole.
+
+    The steps are rendered as a wake renders them (:func:`render_skill_body_block`),
+    so the agent reads the same block however the skill arrived.
+
+    :param entity: the skill
+    :ptype entity: AgentSkillEntity
+    :param bindable: the tools the turn can bind, or ``None`` when the consumer cannot say
+    :ptype bindable: Collection[str] | None
+    :return: the result text
+    :rtype: str
     """
     parts: list[str] = [
-        f"[ACTIVE SKILL: {entity.name}]",
+        f"[ACTIVE SKILL: {entity.name}] in use for the rest of this turn.",
         f"prompt_mode: {entity.prompt_mode}",
-        f"tool_additions: {list(entity.tool_additions)}",
-        f"tool_restrictions: {list(entity.tool_restrictions)}",
+        *_skill_tool_lines(entity, bindable),
         "",
+        render_skill_body_block(entity) or f'The skill "{entity.name}" has no written steps.',
     ]
-    body = entity.body or ""
-    parts.append(body)
     return "\n".join(parts)
+
+
+def _times_used(count: int) -> str:
+    return "once" if count == 1 else f"{count} times"
+
+
+def _render_skill_usage(entity: AgentSkillEntity, zone: tzinfo | None) -> list[str]:
+    """How often a skill was used and how it went, times in the reader's zone.
+
+    :param entity: the skill
+    :ptype entity: AgentSkillEntity
+    :param zone: the reader's zone, or ``None`` for UTC
+    :ptype zone: tzinfo | None
+    :return: the lines
+    :rtype: list[str]
+    """
+    used = int(entity.use_count or 0)
+    last = entity.last_used_at
+    lines = [
+        f"used: {_times_used(used)}" + (f", last {render_local_time(last, zone)}" if used and last else "")
+        if used
+        else "used: never",
+    ]
+    worked, failed = int(entity.success_count or 0), int(entity.failure_count or 0)
+    outcome = f"reported: worked {worked}, failed {failed}"
+    if failed and entity.last_failure_at is not None:
+        outcome += f" (last failure {render_local_time(entity.last_failure_at, zone)})"
+    lines.append(outcome)
+    lines.append(f"written: {render_local_time(entity.date_created, zone)}")
+    lines.append(f"last changed: {render_local_time(entity.date_updated, zone)}")
+    if used:
+        lines.append("skill_history lists each use.")
+    return lines
+
+
+#: The fields ``skill_update`` can change, in the order its result names them.
+_EDITABLE_FIELDS: tuple[str, ...] = (
+    "name",
+    "summary",
+    "body",
+    "tool",
+    "arguments",
+    "prompt_mode",
+    "tool_additions",
+    "tool_restrictions",
+    "trigger_keywords",
+    "tags",
+    "enabled",
+)
+
+#: A text this long or shorter is shown whole on both sides of a change; a longer
+#: one by its length and the first line that differs, so a 32 KB body edit does not
+#: print the body twice.
+_SHOWN_WHOLE_CHARS = 200
+
+
+def _skill_fields(entity: AgentSkillEntity) -> dict[str, Any]:
+    """The editable fields of a skill as they stand, copied so a later edit cannot change them.
+
+    :param entity: the skill
+    :ptype entity: AgentSkillEntity
+    :return: field name to value
+    :rtype: dict[str, Any]
+    """
+    fields: dict[str, Any] = {}
+    for name in _EDITABLE_FIELDS:
+        value = getattr(entity, name)
+        if isinstance(value, list):
+            value = list(value)
+        elif isinstance(value, dict):
+            value = json.loads(json.dumps(value))
+        fields[name] = value
+    return fields
+
+
+def _shown(value: Any) -> str:
+    """One side of a change, as the agent reads it."""
+    if value is None or value == "":
+        return "(none)"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(str(v) for v in value) + "]" if value else "(none)"
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _first_difference(before: str, after: str) -> str:
+    """Where two long texts first part, by line: the line before and the line now."""
+    old_lines, new_lines = before.splitlines(), after.splitlines()
+    for index in range(max(len(old_lines), len(new_lines))):
+        old = old_lines[index] if index < len(old_lines) else None
+        new = new_lines[index] if index < len(new_lines) else None
+        if old != new:
+            was = _shown(old[:_SHOWN_WHOLE_CHARS] if old is not None else None)
+            now = _shown(new[:_SHOWN_WHOLE_CHARS] if new is not None else None)
+            return f"first change at line {index + 1}: {was} -> {now}"
+    return "the lines are the same; only the spacing differs"
+
+
+def _change_line(field: str, before: Any, after: Any) -> str:
+    """One changed field, before -> after.
+
+    :param field: the field
+    :ptype field: str
+    :param before: its value before
+    :ptype before: Any
+    :param after: its value now
+    :ptype after: Any
+    :return: the line
+    :rtype: str
+    """
+    long_text = isinstance(before, str) and isinstance(after, str) and max(len(before), len(after)) > _SHOWN_WHOLE_CHARS
+    long_text = long_text or (
+        (isinstance(before, str) and len(before) > _SHOWN_WHOLE_CHARS and after is None)
+        or (isinstance(after, str) and len(after) > _SHOWN_WHOLE_CHARS and before is None)
+    )
+    if long_text:
+        old, new = before or "", after or ""
+        return f"- {field}: {len(old):,} -> {len(new):,} characters; {_first_difference(old, new)}"
+    return f"- {field}: {_shown(before)} -> {_shown(after)}"
 
 
 def _render_prose_introspect(entity: AgentSkillEntity) -> str:
@@ -1198,8 +1378,14 @@ def load_skill_get_tool(
     agent_id: UUID,
     user_id: UUID,
     skills_collection: AgentSkillCollection,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
-    """Build a ``skill_get`` tool that reads one prose-skill by id.
+    """Build a ``skill_get`` tool that reads one prose-skill by id, whole.
+
+    Shows everything the skill is -- its steps, settings and tools -- and how
+    it has gone: how often it was used and when last, how often it worked and
+    failed, when it was written and last changed. ``skill_introspect`` shows
+    the skill without its use, for choosing one.
 
     Cross-user isolation: a skill belonging to another user surfaces as
     "not found" (SK-13).
@@ -1210,9 +1396,13 @@ def load_skill_get_tool(
     :ptype user_id: UUID
     :param skills_collection: three-tier skills collection
     :ptype skills_collection: AgentSkillCollection
+    :param tz: the zone the times are said in; ``None`` says them in UTC
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
+    :raises ValueError: when ``tz`` is a name that is not a known zone
     """
+    zone = resolve_zone(tz)
 
     @tool("skill_get", args_schema=SkillGetInput)
     async def skill_get(skill_id: str) -> str:
@@ -1229,9 +1419,12 @@ def load_skill_get_tool(
         )
         if entity is None:
             return _tool_error("skill_get", "skill not found")
-        return _render_prose_introspect(entity)
+        return "\n".join([_render_prose_introspect(entity), *_render_skill_usage(entity, zone)])
 
-    skill_get.description = "Read a skill you wrote: its steps, settings and tools. Use it before skill_update."
+    skill_get.description = (
+        "Read a skill you wrote, whole: its steps, settings and tools, how often it was used and how it went. "
+        "Use it before skill_update."
+    )
 
     return [skill_get]
 
@@ -1401,6 +1594,8 @@ def load_skill_update_tool(
                 if err is not None:
                     return _tool_error("skill_update", err)
 
+        before = _skill_fields(entity)
+
         # Apply changes via entity setters so the framework records
         # them on the change-tracking path.
         if name is not None:
@@ -1424,6 +1619,14 @@ def load_skill_update_tool(
             entity.tags = list(tags)
         if enabled is not None:
             entity.enabled = enabled
+        after = _skill_fields(entity)
+        changed = [field for field in _EDITABLE_FIELDS if before[field] != after[field]]
+        if not changed:
+            # Nothing differs: nothing is written, and the date it last changed stays true.
+            return (
+                f"[NO CHANGE] skill_update: [skill:{entity.skill_id}] {entity.name} already reads that way; "
+                "nothing was written."
+            )
         entity.date_updated = datetime.now(UTC)
 
         try:
@@ -1435,9 +1638,14 @@ def load_skill_update_tool(
             )
             return _tool_error("skill_update", f"persist failed: {exc}")
 
-        return _format_skill_summary(entity)
+        lines = [f"Changed [skill:{entity.skill_id}] {entity.name}, was -> now:"]
+        lines += [_change_line(field, before[field], after[field]) for field in changed]
+        return "\n".join(lines)
 
-    skill_update.description = "Change a skill you wrote. Pass only what changes. Returns its summary line."
+    skill_update.description = (
+        "Change a skill you wrote. Pass only what changes. Returns each field it changed, was -> now; "
+        "a change to nothing says so and writes nothing."
+    )
 
     return [skill_update]
 
@@ -1525,6 +1733,7 @@ def load_skill_invoke_tool(
     conversation_id_resolver: ConversationIdResolver,
     active_skill_probe: ActiveSkillProbe,
     active_skill_setter: ActiveSkillSetter,
+    bindable_tools: BindableTools | None = None,
 ) -> list[BaseTool]:
     """Build a ``skill_invoke`` tool with first-invoke-wins-per-turn semantics.
 
@@ -1558,9 +1767,21 @@ def load_skill_invoke_tool(
     :param active_skill_setter: callable that marks ``skill_id`` as the
         turn's active skill
     :ptype active_skill_setter: ActiveSkillSetter
+    :param bindable_tools: the tools the turn can bind, so the result names
+        only those (:data:`BindableTools`); without it no tool is named
+    :ptype bindable_tools: BindableTools | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+
+    def _bindable() -> Collection[str] | None:
+        if bindable_tools is None:
+            return None
+        try:
+            return bindable_tools()
+        except Exception as exc:  # the result still carries the steps; it names no tool
+            log.warning("skill_invoke bindable_tools raised", extra={"extra_data": {"error": str(exc)}})
+            return None
 
     @tool("skill_invoke", args_schema=SkillInvokeInput)
     async def skill_invoke(skill_id: str, rationale: str | None = None) -> str:
@@ -1698,11 +1919,11 @@ def load_skill_invoke_tool(
                 }
             },
         )
-        return _render_skill_invoke_block(entity)
+        return _render_skill_invoke_block(entity, _bindable())
 
     skill_invoke.description = (
         "Use a skill for the rest of this turn. One skill per turn: a second call fails.\n"
-        "Returns the skill's steps and tools."
+        "Returns the skill's steps, whole, and the tools it adds that you can use."
     )
 
     return [skill_invoke]
@@ -1792,14 +2013,21 @@ def load_skill_report_outcome_tool(
                 "no active invocation found for this turn's skill; nothing to report",
             )
         invocation_id = recent[0].invocation_id
+        kept_notes = notes.strip() if notes and notes.strip() else None
 
-        await invocations_collection.set_outcome(
+        recorded = await invocations_collection.record_outcome(
             agent_id,
             invocation_id,
+            skill_id=active_skill_id,
             outcome=outcome,
             source="agent_tool",
+            notes=kept_notes,
         )
-        await skills_collection.increment_outcome_counts(agent_id, active_skill_id, outcome)
+        if not recorded.found:
+            return _tool_error(
+                "skill_report_outcome",
+                "no active invocation found for this turn's skill; nothing to report",
+            )
 
         log_invocation_id = str(invocation_id)
         log.info(
@@ -1809,19 +2037,143 @@ def load_skill_report_outcome_tool(
                     "skill_id": str(active_skill_id),
                     "invocation_id": log_invocation_id,
                     "outcome": outcome,
-                    "notes": notes,
+                    "previous": recorded.previous,
+                    "counted": recorded.counted,
+                    "notes": kept_notes,
                 }
             },
         )
-        return f"Recorded {outcome} for [skill:{active_skill_id}]."
+        if recorded.counted:
+            # the counts moved in the same statement; the cached skill row is stale
+            await skills_collection.invalidate_cache((agent_id, active_skill_id))
+        skill = await skills_collection.get((agent_id, active_skill_id))
+        tag = f"[skill:{active_skill_id}]" + (f" {skill.name}" if skill is not None else "")
+        tally = (
+            f" It has worked {int(skill.success_count or 0)} and failed {int(skill.failure_count or 0)} time(s)."
+            if skill is not None
+            else ""
+        )
+        if recorded.previous == outcome:
+            if kept_notes is None or kept_notes == recorded.previous_notes:
+                return (
+                    f"[NO CHANGE] skill_report_outcome: this use of {tag} was already recorded as {outcome}; "
+                    "it is counted once."
+                )
+            return f"Kept {outcome} for this use of {tag}, counted once. Its note now reads: {kept_notes}"
+        why = f" ({json.dumps(kept_notes, ensure_ascii=False)})" if kept_notes else ""
+        if recorded.previous is not None:
+            return f"Changed this use of {tag} from {recorded.previous} to {outcome}{why}.{tally}"
+        return f"Recorded {outcome} for this use of {tag}{why}.{tally}"
 
     skill_report_outcome.description = (
-        "Record whether the skill in use did its job. Call it once you know. This is the "
-        "only way the result is kept.\n"
+        "Record whether the skill in use did its job, with a line on why. Call it once you know. "
+        "This is the only way the result is kept. A second report of the same use replaces the first "
+        "and is not counted twice.\n"
         "Fails when no skill is in use this turn."
     )
 
     return [skill_report_outcome]
+
+
+# ---------------------------------------------------------------------------
+# skill_history
+# ---------------------------------------------------------------------------
+
+
+def _render_use(use: AgentSkillInvocationEntity, zone: tzinfo | None) -> list[str]:
+    """One use of a skill: when, how it started, how it went, and where.
+
+    :param use: the invocation row
+    :ptype use: AgentSkillInvocationEntity
+    :param zone: the reader's zone, or ``None`` for UTC
+    :ptype zone: tzinfo | None
+    :return: the line, and a second for the reason it was invoked when one was given
+    :rtype: list[str]
+    """
+    how = "a wake ran it" if use.invocation_source == "wake" else "invoked"
+    went = use.outcome or "no outcome reported"
+    line = f"- {render_local_time(use.invoked_at, zone)}, {how}: {went}"
+    if use.outcome_notes:
+        line += f" -- {use.outcome_notes}"
+    line += f" [conversation:{use.conversation_id}]"
+    if use.message_id is not None:
+        line += f" [message:{use.message_id}]"
+    lines = [line]
+    if use.notes:
+        lines.append(f"  why it was invoked: {use.notes}")
+    return lines
+
+
+def load_skill_history_tool(
+    *,
+    agent_id: UUID,
+    user_id: UUID,
+    skills_collection: AgentSkillCollection,
+    invocations_collection: AgentSkillInvocationCollection,
+    tz: tzinfo | str | None = None,
+) -> list[BaseTool]:
+    """Build a ``skill_history`` tool listing one skill's uses, newest first.
+
+    Each use says when (in the reader's zone), whether a wake ran it or it was
+    invoked, how it went and the note the agent left, and the conversation and
+    message it was in. The head says how often the skill was used and how it
+    went, and how many uses there are in all, so a page says which part it is.
+
+    Cross-user isolation: a skill belonging to another user is "not found" (SK-13).
+
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
+    :param user_id: caller's user UUID
+    :ptype user_id: UUID
+    :param skills_collection: three-tier skills collection
+    :ptype skills_collection: AgentSkillCollection
+    :param invocations_collection: three-tier invocations collection
+    :ptype invocations_collection: AgentSkillInvocationCollection
+    :param tz: the zone the times are said in; ``None`` says them in UTC
+    :ptype tz: tzinfo | str | None
+    :return: list with one LangChain tool
+    :rtype: list[BaseTool]
+    :raises ValueError: when ``tz`` is a name that is not a known zone
+    """
+    zone = resolve_zone(tz)
+
+    @tool("skill_history", args_schema=SkillHistoryInput)
+    async def skill_history(skill_id: str, limit: int = 20, offset: int = 0) -> str:
+        """List one skill's uses, newest first."""
+        parsed = await _resolve_skill_ref(skills_collection, agent_id=agent_id, user_id=user_id, raw=skill_id)
+        if parsed is None:
+            return _tool_error("skill_history", f"no skill has the id or name {skill_id!r}")
+        entity = await _load_skill_for_user(
+            collection=skills_collection,
+            agent_id=agent_id,
+            user_id=user_id,
+            skill_id=parsed,
+        )
+        if entity is None:
+            return _tool_error("skill_history", "skill not found")
+        total = await invocations_collection.count_for_skill(agent_id, entity.skill_id)
+        tag = f"[skill:{entity.skill_id}] {entity.name}"
+        if total == 0:
+            return f"{tag} has not been used yet."
+        uses = await invocations_collection.list_for_skill(agent_id, entity.skill_id, limit=limit, offset=offset)
+        worked, failed = int(entity.success_count or 0), int(entity.failure_count or 0)
+        head = f"{tag}: {total} use(s) in all; worked {worked}, failed {failed}."
+        if not uses:
+            return f"{head} None past use {offset:,}; skill_history with offset=0 starts at the newest."
+        first, last = offset + 1, offset + len(uses)
+        lines = [f"{head} Uses {first}-{last} of {total}, newest first:"]
+        for use in uses:
+            lines += _render_use(use, zone)
+        if last < total:
+            lines.append(f"skill_history with offset={last} shows the next {min(limit, total - last)}.")
+        return "\n".join(lines)
+
+    skill_history.description = (
+        "List a skill's uses, newest first: when, whether a wake ran it or you invoked it, how it went "
+        "and your note, and the conversation it was in."
+    )
+
+    return [skill_history]
 
 
 # ---------------------------------------------------------------------------

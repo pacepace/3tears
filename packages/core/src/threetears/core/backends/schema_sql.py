@@ -21,19 +21,20 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from threetears.core.serialization import json_datetime
+from threetears.core.sql_fragments import as_written, equality_conditions
 
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import Column, TableSchema
 
 __all__ = [
     "MAX_STATEMENT_PARAMS",
-    "build_bulk_delete_sql",
     "build_bulk_insert_sql",
     "build_cas_params",
     "build_cas_update_sql",
@@ -43,10 +44,15 @@ __all__ = [
     "build_fetch_sql",
     "build_insert_params",
     "build_insert_sql",
+    "build_key_led_delete_sql",
+    "build_led_by_select_sql",
     "build_ordered_upsert_sql",
     "build_select_column_list",
     "build_where_pk",
+    "build_whole_key_delete_sql",
     "bulk_batches",
+    "bulk_insert_batches",
+    "bulk_insert_row_sql",
     "cas_mutable_columns_for_data",
     "coerce_datetime_for_read_tz",
     "coerce_datetime_for_write_tz",
@@ -59,15 +65,20 @@ __all__ = [
     "encode_vector",
     "insert_columns_for_data",
     "json_default",
+    "key_array_type",
     "normalize_read_value",
     "normalize_write_value",
     "pull_value",
     "render_param",
+    "transport_param",
+    "transport_params_bytes",
 ]
 
 # column type tags (string-duplicated here so this module stays import-cycle-free;
 # the canonical definitions live in ``schema_backed`` and these mirror them verbatim).
 _UUID_TYPE = "uuid"
+_STRING_TYPE = "string"
+_ENUM_TYPE = "enum"
 _DATETIMETZ_TYPE = "datetimetz"
 _JSONB_TYPE = "jsonb"
 _BYTES_TYPE = "bytes"
@@ -461,8 +472,8 @@ def build_where_pk(schema: TableSchema, start: int = 1) -> tuple[str, tuple[str,
     :rtype: tuple[str, tuple[str, ...]]
     """
     pk_cols = schema.pk_columns
-    parts = [f"{col} = ${start + i}" for i, col in enumerate(pk_cols)]
-    return " AND ".join(parts), pk_cols
+    where, _ = equality_conditions(dict.fromkeys(pk_cols), first=start, quote=as_written)
+    return where, pk_cols
 
 
 def render_param(column: Column, idx: int) -> str:
@@ -673,74 +684,327 @@ def build_bulk_insert_sql(schema: TableSchema, *, rows: int, columns: list[Colum
     if rows < 1:
         raise ValueError(f"a bulk INSERT needs at least one row, got {rows}")
     cols = list(schema.columns) if columns is None else list(columns)
-    width = len(cols)
-    values = ", ".join(
-        "(" + ", ".join(render_param(c, row * width + i + 1) for i, c in enumerate(cols)) + ")" for row in range(rows)
-    )
+    values = ", ".join(bulk_insert_row_sql(cols, row) for row in range(rows))
+    return _bulk_insert_sql(schema, cols, values)
+
+
+def bulk_insert_row_sql(columns: Sequence[Column], position: int) -> str:
+    """one row's placeholders in a bulk INSERT: ``($k, ..., $k+n-1)`` for the row at ``position`` (0 first).
+
+    :param columns: the columns every row supplies
+    :ptype columns: Sequence[Column]
+    :param position: the row's place in the statement
+    :ptype position: int
+    :return: the row's parenthesised placeholders, each cast as its column needs
+    :rtype: str
+    """
+    width = len(columns)
+    return "(" + ", ".join(render_param(c, position * width + i + 1) for i, c in enumerate(columns)) + ")"
+
+
+def _bulk_insert_sql(schema: TableSchema, cols: list[Column], values: str) -> str:
+    """a bulk INSERT around its rows' placeholders, with the schema's conflict clause.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param cols: the columns every row supplies
+    :ptype cols: list[Column]
+    :param values: the rows' placeholders, joined by ``", "``; empty for the statement's text alone
+    :ptype values: str
+    :return: the INSERT
+    :rtype: str
+    """
     col_names = ", ".join(c.name for c in cols)
     return _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES {values}")
 
 
-def build_bulk_delete_sql(schema: TableSchema, *, rows: int) -> str:
-    """build one DELETE of ``rows`` rows named by their primary keys.
+#: column type tag -> the Postgres type of an array of its values, for a key-led ``= ANY($1::t[])``.
+#: A tag missing here (jsonb, vector, tsvector) has no array form a key would be named by.
+_ARRAY_TYPES: dict[str, str] = {
+    _STRING_TYPE: "text[]",
+    _UUID_TYPE: "uuid[]",
+    _INT_TYPE: "integer[]",
+    _BIGINT_TYPE: "bigint[]",
+    _BOOL_TYPE: "boolean[]",
+    _NUMERIC_TYPE: "numeric[]",
+    _DATETIMETZ_TYPE: "timestamptz[]",
+    _BYTES_TYPE: "bytea[]",
+}
 
-    ``DELETE FROM t WHERE (a, b) IN (($1, $2), ($3, $4))``: each key's parameters in the order of
-    the schema's key columns, every key one row of the ``IN`` list.
+
+def key_array_type(schema: TableSchema, column: str) -> str | None:
+    """the Postgres array type a key-led statement casts its ``$1`` of ``column``'s values to.
 
     :param schema: table schema
     :ptype schema: TableSchema
-    :param rows: how many keys the statement names; at least one
-    :ptype rows: int
+    :param column: one of its columns
+    :ptype column: str
+    :return: the array type, ``text[]`` for a string column, ``<enum_name>[]`` for an enum; None
+        for a type with no array form a key is named by (jsonb, vector, tsvector)
+    :rtype: str | None
+    """
+    col = schema.column(column)
+    if col.column_type == _ENUM_TYPE and col.enum_name is not None:
+        return f"{col.enum_name}[]"
+    return _ARRAY_TYPES.get(col.column_type)
+
+
+def _required_array_type(schema: TableSchema, column: str) -> str:
+    """:func:`key_array_type`, or a refusal naming the table and the column.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param column: one of its columns
+    :ptype column: str
+    :return: the array type
+    :rtype: str
+    :raises ValueError: when the column's type has no array form
+    """
+    cast = key_array_type(schema, column)
+    if cast is None:
+        kind = schema.column(column).column_type
+        raise ValueError(f"{schema.name}.{column} is {kind}, which no key-led statement names as an array")
+    return cast
+
+
+def build_key_led_delete_sql(schema: TableSchema, *, varying: str) -> str:
+    """build one DELETE of the rows whose key is ``varying`` in an array and the rest of the key as given.
+
+    ``DELETE FROM t WHERE <varying> = ANY($1::<type>[]) AND <k2> = $2 ...``: ``$1`` is the varying
+    column's values, and every other key column, in the key's order, takes the next parameter with
+    its write cast (:func:`render_param`, so a jsonb key column binds ``$n::jsonb``). The key is
+    named whole, a column an array and the rest single values, so the statement is led by the key
+    on any primary key: a hash-sharded table (YugabyteDB hashes the leading key column) is looked
+    up at each named key, never read whole.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param varying: the key column whose values the array carries
+    :ptype varying: str
     :return: parameterized DELETE SQL
     :rtype: str
-    :raises ValueError: when ``rows`` is under one
+    :raises ValueError: when ``varying`` is not a key column, or its type has no array form
     """
-    if rows < 1:
-        raise ValueError(f"a bulk DELETE needs at least one key, got {rows}")
-    key = [schema.column(name) for name in schema.pk_columns]
-    width = len(key)
-    keys = ", ".join(
-        "(" + ", ".join(render_param(c, row * width + i + 1) for i, c in enumerate(key)) + ")" for row in range(rows)
+    if varying not in schema.pk_columns:
+        raise ValueError(f"{schema.name}: {varying!r} is not a key column of {schema.pk_columns}")
+    conditions = [f"{as_written(varying)} = ANY($1::{_required_array_type(schema, varying)})"]
+    fixed = [schema.column(name) for name in schema.pk_columns if name != varying]
+    conditions += [f"{as_written(col.name)} = {render_param(col, index)}" for index, col in enumerate(fixed, start=2)]
+    return f"DELETE FROM {schema.name} WHERE {' AND '.join(conditions)}"
+
+
+def build_whole_key_delete_sql(schema: TableSchema) -> str:
+    """build one DELETE of the rows named by whole keys, one array a key column, led by the leading column.
+
+    ``DELETE FROM t WHERE <k1> = ANY($1::<t1>[]) AND (<k1>, <k2>, ...) IN (SELECT * FROM unnest($1::<t1>[],
+    $2::<t2>[], ...))``: ``$n`` is the n-th key column's values, the i-th of each array one key. For
+    keys that share no key-column value, where :func:`build_key_led_delete_sql` would need a
+    statement a key: the leading ``= ANY`` keeps the statement led by the key (a hash-sharded table
+    is looked up at each leading value) and the ``IN`` keeps exactly the keys named.
+
+    :param schema: table schema; its key has more than one column, each with an array form
+    :ptype schema: TableSchema
+    :return: parameterized DELETE SQL
+    :rtype: str
+    :raises ValueError: when the key has one column, or a key column has no array form
+    """
+    if len(schema.pk_columns) < 2:
+        raise ValueError(f"{schema.name}: a one-column key is deleted by build_key_led_delete_sql")
+    arrays = [
+        f"${index}::{_required_array_type(schema, name)}" for index, name in enumerate(schema.pk_columns, start=1)
+    ]
+    lead = as_written(schema.pk_columns[0])
+    key = ", ".join(as_written(name) for name in schema.pk_columns)
+    return (
+        f"DELETE FROM {schema.name} WHERE {lead} = ANY({arrays[0]}) "
+        f"AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
     )
-    return f"DELETE FROM {schema.name} WHERE ({', '.join(c.name for c in key)}) IN ({keys})"
+
+
+def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
+    """build one SELECT of ``columns`` from the rows whose leading key column is one of ``$1``.
+
+    ``SELECT ... FROM t WHERE <lead> = ANY($1::<type>[])``: led by the key, so a hash-sharded
+    table is looked up at each value rather than read whole.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param columns: the columns to read, each declared
+    :ptype columns: Sequence[str]
+    :return: parameterized SELECT SQL
+    :rtype: str
+    :raises ValueError: when the leading key column's type has no array form
+    """
+    lead = schema.pk_columns[0]
+    return (
+        f"SELECT {build_select_column_list(schema, columns)} FROM {schema.name} "
+        f"WHERE {as_written(lead)} = ANY($1::{_required_array_type(schema, lead)})"
+    )
+
+
+def transport_param(value: Any) -> Any:
+    """convert one statement parameter to the form it crosses the L3 rail in.
+
+    The one owner of that form: :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`
+    sends every parameter through it, and :func:`transport_params_bytes` sizes a statement by it,
+    so what is measured is what is sent. A UUID, datetime or Decimal becomes its string and bytes
+    become ``\\x``-prefixed hex, two characters a byte. A list or tuple is an array parameter
+    (``= ANY($1::uuid[])``, ``unnest($1::timestamptz[])``) and is converted element by element, at
+    every depth, into a list, so the broker can restore each element as it restores a scalar.
+    Other types pass through unchanged.
+
+    :param value: parameter value to convert
+    :ptype value: Any
+    :return: the value as the rail carries it, ready for JSON
+    :rtype: Any
+    """
+    if isinstance(value, (list, tuple)):
+        result: Any = [transport_param(element) for element in value]
+    elif isinstance(value, UUID):
+        result = str(value)
+    elif isinstance(value, datetime):
+        result = value.isoformat()
+    elif isinstance(value, Decimal):
+        result = str(value)
+    elif isinstance(value, bytes):
+        result = "\\x" + value.hex()
+    else:
+        result = value
+    return result
+
+
+def transport_params_bytes(params: Sequence[Any]) -> int:
+    """the bytes a statement's parameters occupy in an L3 rail request.
+
+    The parameters as the rail sends them: each through :func:`transport_param`, then the list
+    as JSON with the storage handler (:func:`json_default`) for what is nested in a jsonb value.
+
+    :param params: one statement's parameters, in order
+    :ptype params: Sequence[Any]
+    :return: the size of the request's ``params`` value, in bytes
+    :rtype: int
+    """
+    return len(json.dumps([transport_param(value) for value in params], default=json_default).encode("utf-8"))
 
 
 def bulk_batches(
-    rows: list[list[Any]], *, max_rows: int, max_bytes: int, max_params: int = MAX_STATEMENT_PARAMS
+    rows: list[list[Any]],
+    *,
+    max_rows: int,
+    max_bytes: int,
+    max_params: int = MAX_STATEMENT_PARAMS,
+    base_bytes: int = 0,
+    position_bytes: Callable[[int], int] | None = None,
 ) -> list[list[list[Any]]]:
     """split rows' parameters into consecutive batches, each one statement's worth.
 
     A batch holds at most ``max_rows`` rows (what one statement may write inside the database's
-    statement timeout), at most ``max_params`` parameters, and at most ``max_bytes`` of the
-    parameters as JSON (what one statement may carry over the bus). A row larger than
-    ``max_bytes`` alone is a batch of its own rather than dropped.
+    statement timeout), at most ``max_params`` parameters, and at most ``max_bytes`` (what one
+    statement may carry over the bus). A batch's size is ``base_bytes`` plus, for each row, its
+    parameters as the L3 rail sends them (:func:`transport_params_bytes`) and
+    ``position_bytes`` of its place in the batch (0 first): what a statement adds for a row
+    besides its values, such as its placeholders in the SQL text. With neither, a batch's size is
+    its rows' parameters alone. A row larger than ``max_bytes`` alone is a batch of its own rather
+    than dropped.
 
     :param rows: each row's parameters, in order
     :ptype rows: list[list[Any]]
     :param max_rows: the most rows in one batch
     :ptype max_rows: int
-    :param max_bytes: the most JSON bytes of parameters in one batch
+    :param max_bytes: the most bytes one batch's statement may come to
     :ptype max_bytes: int
     :param max_params: the most parameters in one batch
     :ptype max_params: int
+    :param base_bytes: what a statement comes to before any row
+    :ptype base_bytes: int
+    :param position_bytes: what a row adds besides its parameters, by its place in its batch
+    :ptype position_bytes: Callable[[int], int] | None
     :return: the batches, in order, covering every row once
     :rtype: list[list[list[Any]]]
     """
     batches: list[list[list[Any]]] = []
     batch: list[list[Any]] = []
-    size = 0
+    size = base_bytes
     params = 0
     for row in rows:
-        row_bytes = len(json.dumps(row, default=json_default))
+        values = transport_params_bytes(row)
+        row_bytes = values + (position_bytes(len(batch)) if position_bytes is not None else 0)
         if batch and (len(batch) >= max_rows or size + row_bytes > max_bytes or params + len(row) > max_params):
             batches.append(batch)
-            batch, size, params = [], 0, 0
+            batch, size, params = [], base_bytes, 0
+            row_bytes = values + (position_bytes(0) if position_bytes is not None else 0)
         batch.append(row)
         size += row_bytes
         params += len(row)
     if batch:
         batches.append(batch)
     return batches
+
+
+def bulk_insert_batches(
+    schema: TableSchema,
+    columns: list[Column],
+    rows: list[list[Any]],
+    *,
+    max_rows: int,
+    max_bytes: int,
+    request_bytes: Callable[[str, list[Any]], int | None] | None = None,
+) -> list[list[list[Any]]]:
+    """split rows into :func:`build_bulk_insert_sql` statements whose whole request fits ``max_bytes``.
+
+    A statement's request is its SQL text, its parameters and what the transport sends around
+    them, and all three are counted. ``request_bytes`` is the transport's own measure of the
+    message it sends for a statement (``NatsProxyL3Backend.statement_request_bytes`` and its
+    connection's), asked once, of the statement with no row; each row then adds its placeholders
+    to the text and its values to the parameters, both as JSON, so the sum is the size of the
+    message to the byte. With no ``request_bytes`` (a transport with no bus around it) the
+    statement's text and parameters are counted alone, as they are when it answers no count.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param columns: the columns every row supplies, as :func:`build_bulk_insert_sql` takes them
+    :ptype columns: list[Column]
+    :param rows: each row's parameters, in the order of ``columns``
+    :ptype rows: list[list[Any]]
+    :param max_rows: the most rows one statement writes
+    :ptype max_rows: int
+    :param max_bytes: the most bytes one statement's request may come to
+    :ptype max_bytes: int
+    :param request_bytes: the transport's size of the request for a statement and its parameters
+    :ptype request_bytes: Callable[[str, list[Any]], int | None] | None
+    :return: the batches, in order, covering every row once
+    :rtype: list[list[list[Any]]]
+    """
+    shell = _bulk_insert_sql(schema, columns, "")
+    measured = request_bytes(shell, []) if request_bytes is not None else None
+    base = measured if measured is not None else _json_text_bytes(shell) + len("[]")
+
+    def position_bytes(position: int) -> int:
+        # the row's placeholders in the text, after ", " when a row precedes it; its values in the
+        # parameter list, after ", " too, where the first row's values replace the empty list's
+        # brackets that transport_params_bytes counts
+        placeholders = _json_text_bytes(bulk_insert_row_sql(columns, position))
+        return placeholders + 2 if position else placeholders - 2
+
+    return bulk_batches(
+        rows,
+        max_rows=max_rows,
+        max_bytes=max_bytes,
+        max_params=MAX_STATEMENT_PARAMS,
+        base_bytes=base,
+        position_bytes=position_bytes,
+    )
+
+
+def _json_text_bytes(text: str) -> int:
+    """the bytes ``text`` occupies inside a JSON string, quotes excluded.
+
+    :param text: the text
+    :ptype text: str
+    :return: its encoded size
+    :rtype: int
+    """
+    return len(json.dumps(text).encode("utf-8")) - 2
 
 
 def _conflict_target_ref(schema: TableSchema) -> str:
@@ -929,8 +1193,8 @@ def build_cas_upsert_params(
     return params
 
 
-def build_select_column_list(schema: TableSchema) -> str:
-    """render the by-pk SELECT projection from declared schema columns.
+def build_select_column_list(schema: TableSchema, columns: Sequence[str] | None = None) -> str:
+    """render a SELECT projection from declared schema columns.
 
     projects ONLY the schema's declared columns -- never ``SELECT *`` --
     so a real table column the schema does not declare is never read. a
@@ -940,16 +1204,18 @@ def build_select_column_list(schema: TableSchema) -> str:
 
     :param schema: table schema
     :ptype schema: TableSchema
-    :return: comma-joined projection list in declared column order
+    :param columns: the columns to project, each declared, in this order; every declared column,
+        in declared order, when None
+    :ptype columns: Sequence[str] | None
+    :return: comma-joined projection list
     :rtype: str
     """
     text_cast_types = (_VECTOR_TYPE, _TSVECTOR_TYPE)
+    chosen = list(schema.columns) if columns is None else [schema.column(name) for name in columns]
     parts: list[str] = []
-    for col in schema.columns:
-        if col.column_type in text_cast_types:
-            parts.append(f"{col.name}::text AS {col.name}")
-        else:
-            parts.append(col.name)
+    for col in chosen:
+        name = as_written(col.name)
+        parts.append(f"{name}::text AS {name}" if col.column_type in text_cast_types else name)
     return ", ".join(parts)
 
 

@@ -71,6 +71,7 @@ from pydantic import (
     model_validator,
 )
 
+from threetears.datasources.export import ExportConfig
 from threetears.datasources.geo_config import GeoConfig
 from threetears.datasources.entities import DataSourceAccessMode, DataSourceType
 from threetears.datasources.secrets import resolve_secret, validate_ref
@@ -349,6 +350,7 @@ class RedshiftConnectionConfig(BaseModel):
         (not a total deadline; DNS is outside it). logins with one credential
         wait their turn, so an unbounded hung login would stall the rest;
         lifted from the socket once the connection is open
+    :param export: where the datasource's exports go; None, it cannot export
     """
 
     model_config = _CONNECTION_CONFIG
@@ -452,6 +454,13 @@ class RedshiftConnectionConfig(BaseModel):
         "the backend's default applies\". order is preserved (matches the "
         "Redshift / Postgres precedence semantics: leftmost schema wins on "
         "unqualified-name resolution).",
+    )
+    export: ExportConfig | None = Field(
+        default=None,
+        description="where this datasource's exports go (bucket, key prefix, the role Redshift writes as). "
+        "absent, the datasource cannot export: every export is refused and readers page through the "
+        "query rail. an export is an UNLOAD of a SELECT the read rail would run, to a destination "
+        "under this prefix (threetears.datasources.export)",
     )
 
     @field_validator("password_ref")

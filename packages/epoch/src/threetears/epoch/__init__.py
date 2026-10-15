@@ -4,7 +4,7 @@ generation-stamped configuration epochs with NATS broadcast (push) and
 per-message epoch echo (pull-on-stale) to keep in-memory caches
 coherent across pods on admin writes.
 
-provides three modules:
+provides:
 
 - :mod:`threetears.epoch.wire` -- :class:`EpochBumpMessage` typed wire
   envelope
@@ -13,6 +13,10 @@ provides three modules:
   ``config_epochs`` for the durable family)
 - :mod:`threetears.epoch.listener` -- :class:`EpochListener`
   subscribe-side dispatcher with monotonic dedupe + echo helper
+- :mod:`threetears.epoch.generation`, :mod:`threetears.epoch.generation_tick`
+  and :mod:`threetears.epoch.table_follow` -- collection write generations
+  over the epoch bucket, the catch-up pass and key watch that follow them,
+  and :class:`TableFollower`, one supervised watch per table
 """
 
 from __future__ import annotations
@@ -33,8 +37,22 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
 from threetears.epoch.client import DurableEpoch, EpochClient, PoolLike
-from threetears.epoch.generation import EpochGenerationSource
+from threetears.epoch.generation import EpochGenerationReader, EpochGenerationSource, generation_kv_key
+from threetears.epoch.generation_tick import (
+    DEFAULT_BROADCAST_GRACE,
+    GenerationWatcher,
+    follow_generation_key,
+    generation_catchup_tick,
+)
 from threetears.epoch.listener import BumpCallback, EpochListener, ResetCallback
+from threetears.epoch.table_follow import (
+    DEFAULT_STOP_TIMEOUT,
+    DEFAULT_WATCH_RESTART_DELAY,
+    MAX_WATCH_RESTART_DELAY,
+    TableFollower,
+    WatchHealth,
+    follow_tables,
+)
 from threetears.epoch.tick import catchup_tick
 from threetears.epoch.wire import EpochBumpMessage
 
@@ -42,10 +60,22 @@ __all__ = [
     "BumpCallback",
     "ResetCallback",
     "catchup_tick",
+    "DEFAULT_BROADCAST_GRACE",
+    "DEFAULT_STOP_TIMEOUT",
+    "DEFAULT_WATCH_RESTART_DELAY",
+    "MAX_WATCH_RESTART_DELAY",
+    "GenerationWatcher",
     "EpochBumpMessage",
     "DurableEpoch",
     "EpochClient",
+    "EpochGenerationReader",
     "EpochGenerationSource",
+    "follow_generation_key",
+    "follow_tables",
+    "generation_catchup_tick",
+    "generation_kv_key",
     "EpochListener",
     "PoolLike",
+    "TableFollower",
+    "WatchHealth",
 ]

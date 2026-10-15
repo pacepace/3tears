@@ -45,7 +45,8 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from threetears.core.security.door_request import omit_absent_proof
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 from threetears.core.security.delegated_token import NAMESPACE_DISCOVER_DOOR
 from threetears.core.security.door_request import NAMESPACE_DISCOVER_OP, DoorCredential
 from threetears.observe import get_logger, traced
@@ -137,6 +138,17 @@ class NamespaceDiscoveryRequest(BaseModel):
     identity_proof: str | None = None
     user_identity_token: str | None = None
     namespace_type: NamespaceTypeFilter | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_proof(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``identity_proof`` off the wire when there is none, for a hub that predates it.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        return omit_absent_proof(handler(self))
 
 
 class NamespaceDiscoverySummary(BaseModel):

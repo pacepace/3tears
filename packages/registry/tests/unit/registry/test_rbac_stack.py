@@ -42,14 +42,11 @@ import pytest
 from threetears.agent.acl import (
     AclCache,
     ActorMembershipKey,
-    AssignmentInvalidatePayload,
     GroupCollection,
     GroupMemberCollection,
-    MembershipInvalidatePayload,
     NamespaceCollection,
     RoleAssignmentCollection,
     RoleCollection,
-    RoleInvalidatePayload,
 )
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.registry.auth import (
@@ -123,10 +120,7 @@ def _make_nats_client() -> MagicMock:
     """
     nc = MagicMock()
     nc.raw = MagicMock()
-    # coll-task-07a: the stack delegates to
-    # :func:`threetears.agent.acl.subscribe_acl_invalidation`, which binds through
-    # ``subscribe_typed`` -- the raw ``subscribe`` the registry hand-rolled is gone. a distinct
-    # handle per call so the teardown assertions can tell the three apart.
+    # a distinct handle per call so the teardown assertions can tell them apart.
     nc.subscribe_typed = AsyncMock(side_effect=lambda **_kw: MagicMock())
     nc.unsubscribe = AsyncMock()
     return nc
@@ -259,14 +253,10 @@ class TestBuildRegistryRbacStack:
 
 
 class TestSubscribeInvalidations:
-    """invalidation subscriptions are bound on demand."""
+    """the acl invalidation subjects are retired; the access tables' generations replace them."""
 
     @pytest.mark.asyncio
-    async def test_subscribes_three_acl_invalidate_subjects(self) -> None:
-        """``subscribe_invalidations`` binds membership / assignment /
-        role invalidate subjects so cross-process rbac mutations
-        purge the cache promptly.
-        """
+    async def test_subscribes_no_acl_subject(self) -> None:
         nc = _make_nats_client()
         stack = build_registry_rbac_stack(
             nats_client=nc,
@@ -277,99 +267,89 @@ class TestSubscribeInvalidations:
 
         await stack.subscribe_invalidations()
 
-        # the ACL channel is three subjects. `subscribe_invalidations` also starts the
-        # registry's COLLECTION invalidation listener, which subscribes on this same
-        # client -- a different channel with a different publisher -- so count the ACL
-        # subjects rather than every subscribe the client saw.
-        # the default-namespace prefix is set by other tests in the
-        # process via :func:`set_default_namespace`; assert on the
-        # invariant suffix shape rather than a fixed prefix so test
-        # ordering does not flake the assertion.
-        suffixes = sorted(
-            call.kwargs["subject"].path.split(".", 1)[1]
-            for call in nc.subscribe_typed.await_args_list
-            if ".acl." in call.kwargs["subject"].path
-        )
-        assert suffixes == [
-            "acl.assignment.invalidate",
-            "acl.membership.invalidate",
-            "acl.role.invalidate",
+        subjects = [str(call.kwargs.get("subject", "")) for call in nc.subscribe_typed.await_args_list]
+        subjects += [
+            str(call.kwargs.get("subject", call.args[0] if call.args else "")) for call in nc.subscribe.call_args_list
         ]
+        assert not [subject for subject in subjects if ".acl." in subject]
+        await stack.close()
 
-    @pytest.mark.asyncio
-    async def test_binds_the_canonical_payload_models(self) -> None:
-        """each subject decodes into its own canonical payload model.
 
-        the registry used to hand-roll ``model_validate_json`` inside three local handlers;
-        going through the shared bus means the decode is the client's, and a validation failure
-        deadletters instead of warning-and-dropping.
-        """
-        nc = _make_nats_client()
-        stack = build_registry_rbac_stack(
-            nats_client=nc,
+class TestTheAccessTablesAreFollowed:
+    """epoch-task-06 stage 3: the registry's AclCache is evicted row by row from the access tables,
+    whose generations it follows by watching their keys."""
+
+    def _stack(self) -> Any:
+        return build_registry_rbac_stack(
+            nats_client=_make_nats_client(),
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
             identity_token=_identity_token_provider(),
         )
 
-        await stack.subscribe_invalidations()
+    @pytest.mark.asyncio
+    async def test_subscribing_follows_the_four_tables_and_binds_the_cache(self) -> None:
+        from threetears.agent.acl import ACCESS_TABLES
 
-        bound = {
-            call.kwargs["subject"].path.split(".", 1)[1]: call.kwargs["message_type"]
-            for call in nc.subscribe_typed.await_args_list
-        }
-        assert bound["acl.membership.invalidate"] is MembershipInvalidatePayload
-        assert bound["acl.assignment.invalidate"] is AssignmentInvalidatePayload
-        assert bound["acl.role.invalidate"] is RoleInvalidatePayload
+        stack = self._stack()
+        await stack.subscribe_invalidations()
+        try:
+            for table in ACCESS_TABLES:
+                assert stack.registry.generation_marks.follows(table)
+                assert stack.registry.has_derived_caches(table)
+        finally:
+            await stack.close()
 
     @pytest.mark.asyncio
-    async def test_no_queue_group_on_any_invalidate_subject(self) -> None:
-        """every registry replica must observe every invalidation.
+    async def test_a_membership_row_evicts_that_actor_with_no_acl_subject(self) -> None:
+        from threetears.core.collections import CacheInvalidationMessage
 
-        a queue group delivers each broadcast to exactly one member, leaving the rest serving
-        the tuples they were just told to drop.
-        """
-        nc = _make_nats_client()
-        stack = build_registry_rbac_stack(
-            nats_client=nc,
-            subject_namespace="3tears",
-            l1_backend=create_registry_l1_backend(),
-            identity_token=_identity_token_provider(),
-        )
-
+        stack = self._stack()
         await stack.subscribe_invalidations()
-
-        for call in nc.subscribe_typed.await_args_list:
-            assert call.kwargs.get("queue") is None
+        try:
+            actor, other = uuid7(), uuid7()
+            stack.acl_cache.put_membership(ActorMembershipKey(actor_kind="user", actor_id=actor), ())
+            stack.acl_cache.put_membership(ActorMembershipKey(actor_kind="user", actor_id=other), ())
+            stack.registry.tell_derived_caches(
+                CacheInvalidationMessage(
+                    table="group_members",
+                    ids=[f"{uuid7()}", f"{uuid7()}"],
+                    columns={"member_type": "user", "member_id": f"{actor}"},
+                )
+            )
+            assert stack.acl_cache.get_membership(ActorMembershipKey(actor_kind="user", actor_id=actor)) is None
+            assert stack.acl_cache.get_membership(ActorMembershipKey(actor_kind="user", actor_id=other)) is not None
+        finally:
+            await stack.close()
 
     @pytest.mark.asyncio
-    async def test_a_membership_broadcast_evicts_that_actor(self) -> None:
-        """the bound handler drops the named actor's membership entry.
-
-        exercised through the callback the bus registered rather than a local method: the three
-        local handlers are gone, and this is the behaviour they existed for.
-        """
-        nc = _make_nats_client()
-        stack = build_registry_rbac_stack(
-            nats_client=nc,
-            subject_namespace="3tears",
-            l1_backend=create_registry_l1_backend(),
-            identity_token=_identity_token_provider(),
-        )
+    async def test_close_stops_following_and_unbinds_the_cache(self) -> None:
+        stack = self._stack()
         await stack.subscribe_invalidations()
-        actor = uuid7()
-        key = ActorMembershipKey(actor_kind="user", actor_id=actor)
-        stack.acl_cache.put_membership(key, ())
+        watches = [task for task in asyncio.all_tasks() if task.get_name().startswith("follow-generation:")]
+        from threetears.agent.acl import ACCESS_TABLES
 
-        handlers = {
-            call.kwargs["subject"].path.split(".", 1)[1]: call.kwargs["cb"]
-            for call in nc.subscribe_typed.await_args_list
-        }
-        await handlers["acl.membership.invalidate"](
-            MembershipInvalidatePayload(actor_type="user", actor_id=actor),
-        )
+        assert len(watches) == len(ACCESS_TABLES)
+        await stack.close()
+        assert not stack.registry.has_derived_caches("group_members")
+        assert all(task.done() for task in watches)
 
-        assert stack.acl_cache.get_membership(key) is None
+    @pytest.mark.asyncio
+    async def test_it_reports_whether_the_tables_are_followed(self) -> None:
+        stack = self._stack()
+        assert not stack.access_tables_followed
+        await stack.subscribe_invalidations()
+        try:
+            # the mocked client cannot watch, so every watch keeps failing: not followed
+            await asyncio.sleep(0.05)
+            assert not stack.access_tables_followed
+        finally:
+            await stack.close()
+
+    def test_the_registry_reads_generations(self) -> None:
+        from threetears.core.collections.generation import source_reads
+
+        assert source_reads(self._stack().registry.generation_source)
 
 
 class TestRegistryServerRbacFactoryConstructor:
@@ -461,7 +441,7 @@ class TestRegistryRbacStackClose:
 
     @pytest.mark.asyncio
     async def test_unsubscribes_each_invalidation_subject(self) -> None:
-        """three invalidation subscriptions -> three unsubscribe calls."""
+        """the collection listener's subscription is released."""
         nc = _make_nats_client()
         stack = build_registry_rbac_stack(
             nats_client=nc,
@@ -471,9 +451,8 @@ class TestRegistryRbacStackClose:
         )
         await stack.subscribe_invalidations()
         await stack.close()
-        # three ACL subjects plus the collection invalidation listener, which subscribes
-        # on the same client and must be released by the same close.
-        assert nc.unsubscribe.await_count == 4
+        # the collection invalidation listener's one subscription
+        assert nc.unsubscribe.await_count == 1
         # the CLIENT form, handed the exact handles ``subscribe_typed`` returned.
         # ``Subscription.unsubscribe()`` would look equivalent and would leave every handle on
         # the client's own subscription list.
@@ -507,8 +486,8 @@ class TestRegistryRbacStackClose:
         await stack.subscribe_invalidations()
         await stack.close()
         await stack.close()
-        # three ACL subjects plus the collection listener, each released exactly once
-        assert nc.unsubscribe.await_count == 4
+        # the collection listener's, released exactly once
+        assert nc.unsubscribe.await_count == 1
 
 
 class TestRegistryServerPodAuthenticatorFactory:

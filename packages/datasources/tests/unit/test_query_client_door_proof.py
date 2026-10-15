@@ -81,4 +81,4 @@ async def test_a_client_without_a_key_sends_the_token_alone() -> None:
     client = DatasourceQueryClient(nats, identity_token=lambda: "bearer")  # type: ignore[arg-type]
     await client.query("warehouse", "SELECT 1")
     assert nats.sent[1]["identity_token"] == "bearer"
-    assert nats.sent[1]["identity_proof"] is None
+    assert "identity_proof" not in nats.sent[1]

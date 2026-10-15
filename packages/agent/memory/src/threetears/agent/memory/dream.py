@@ -45,6 +45,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
 
+from threetears.agent.memory.origin import UNATTENDED_TAG, origin_of
 from threetears.agent.memory.revisions import supersede
 from threetears.agent.memory.collections import (
     MemoriesCollection,
@@ -432,7 +433,7 @@ class DreamService:
         gist = await self._reflect(members, user_id=user_id, conversation_id=conversation_id)
         if gist is None:
             return None
-        gist_text, rationale, one_subject, permanent = gist
+        gist_text, rationale, one_subject = gist
         if not one_subject:
             # The guard: memories that are similar but about different people or
             # things are never merged, and a gist that names someone none of its
@@ -465,8 +466,10 @@ class DreamService:
                 "content": gist_text,
                 "embedding": embedding,
                 "salience": self._config.consolidation_gist_salience_seed,
-                # dream's own judgment that this should never fade or be merged again
-                "evergreen": permanent,
+                # never ``evergreen``: a dream does not make a memory permanent.
+                # It marked a merge of the person's own facts permanent in the
+                # agent's first person, and nothing but the person can undo that.
+                **({"tags": [UNATTENDED_TAG]} if _all_unattended(members) else {}),
             },
             rationale=rationale,
         )
@@ -487,7 +490,7 @@ class DreamService:
         *,
         user_id: UUID | None,
         conversation_id: UUID,
-    ) -> tuple[str, str | None, bool, bool] | None:
+    ) -> tuple[str, str | None, bool] | None:
         """call the reflector to synthesize a gist + rationale for a cluster, and judge it.
 
         :param members: the cluster's source memory dicts
@@ -496,11 +499,12 @@ class DreamService:
         :ptype user_id: UUID | None
         :param conversation_id: conversation for gateway-model attribution
         :ptype conversation_id: UUID
-        :return: ``(gist_text, rationale, one_subject, permanent)`` or ``None`` on any
+        :return: ``(gist_text, rationale, one_subject)`` or ``None`` on any
             failure / empty gist (fail-safe: skip the cluster). ``one_subject`` is the
             reflector's word that the sources are about one person or thing and the gist
-            names no one they do not; ``permanent`` that the gist should never fade
-        :rtype: tuple[str, str | None, bool, bool] | None
+            names no one they do not. A ``permanent`` in the answer (an older
+            prompt asked for one) is not read
+        :rtype: tuple[str, str | None, bool] | None
         """
         # Stored memories: what they say came from conversations and tools, so
         # they are read as material, fenced, and the call is told so.
@@ -532,10 +536,9 @@ class DreamService:
                 return None
             rationale_raw = result.get("rationale")
             rationale = str(rationale_raw).strip() if rationale_raw else None
-            # absent means the old answer shape: one subject, not permanent
+            # absent means the old answer shape: one subject
             one_subject = result.get("one_subject", True) is not False
-            permanent = result.get("permanent") is True
-            return gist_text, rationale, one_subject, permanent
+            return gist_text, rationale, one_subject
         except json.JSONDecodeError, KeyError:
             log.warning("Failed to parse Dream reflector response; skipping cluster")
             return None
@@ -598,6 +601,21 @@ class DreamService:
                 event.consolidated_memory_id,
                 exc,
             )
+
+
+def _all_unattended(members: list[dict[str, Any]]) -> bool:
+    """Whether every memory a gist merges was written with nobody present.
+
+    Such a gist is what unattended turns said and nothing else, so it follows
+    them out of ambient recall. One attended source is enough to keep it in:
+    the gist then holds something a person was there for.
+
+    :param members: the cluster's source memory rows, each with its ``tags``
+    :ptype members: list[dict[str, Any]]
+    :return: ``True`` only when all of them carry the unattended tag
+    :rtype: bool
+    """
+    return bool(members) and all(origin_of(m.get("tags")).unattended is True for m in members)
 
 
 def _identity_kwargs(

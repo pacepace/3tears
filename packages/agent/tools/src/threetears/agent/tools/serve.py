@@ -50,12 +50,14 @@ def _register_builtin_tools(server: ToolServer) -> None:
 
     from threetears.agent.tools.builtin.calculator import CalculatorTool
     from threetears.agent.tools.builtin.current_date import CurrentDateTool
+    from threetears.agent.tools.builtin.date_math import DateMathTool
     from threetears.agent.tools.builtin.dictionary import DictionaryTool
 
     server.register(CalculatorTool())
     server.register(CurrentDateTool())
+    server.register(DateMathTool())
     server.register(DictionaryTool())
-    registered_count += 3
+    registered_count += 4
 
     try:
         from threetears.agent.tools.builtin.unit_converter import UnitConverterTool

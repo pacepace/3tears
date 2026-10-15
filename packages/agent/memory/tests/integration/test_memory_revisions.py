@@ -1,7 +1,7 @@
 """integration: nothing an agent remembers is destroyed, and a permanent memory is never touched.
 
-Against real pgvector tables: dream's people guard and its permanence
-judgment, extraction's UPDATE as a linked revision and its DELETE as a
+Against real pgvector tables: dream's people guard and that it makes
+nothing permanent, extraction's UPDATE as a linked revision and its DELETE as a
 retraction, and every move refusing a permanent (``evergreen``) memory.
 """
 
@@ -102,7 +102,8 @@ class TestDreamJudges:
             await conn.close()
             await pool.close()
 
-    async def test_a_gist_dream_judges_lasting_is_permanent(self, applied_schema: tuple[str, str]) -> None:
+    async def test_a_gist_dream_judges_lasting_is_still_not_permanent(self, applied_schema: tuple[str, str]) -> None:
+        """A dream never makes a memory permanent: only the agent's own keep, or the person, does."""
         url, schema = applied_schema
         pool, conn = await make_pool(url, schema), await asyncpg.connect(url)
         try:
@@ -117,7 +118,7 @@ class TestDreamJudges:
             result = await service.run_consolidation(agent_id, customer_id=user_id, user_id=user_id)
 
             [gist] = result.gist_ids
-            assert (await _row(conn, uuid.UUID(str(gist))))["evergreen"] is True
+            assert (await _row(conn, uuid.UUID(str(gist))))["evergreen"] is False
         finally:
             await conn.close()
             await pool.close()

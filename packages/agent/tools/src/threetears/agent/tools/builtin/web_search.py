@@ -30,14 +30,26 @@ back apart, and it survives the NATS hop intact because
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Final
+from urllib.parse import urlsplit
 
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.search.adapters.searxng import SearxngAdapter
+from threetears.search.adapters.searxng import (
+    SEARXNG_CATEGORIES,
+    SEARXNG_NAMESPACE,
+    SEARXNG_RELATIVE_TIME_RANGES,
+    SearxngAdapter,
+)
 from threetears.search.bind import bind_search
-from threetears.search.contracts import Criterion, SearchRequest
+from threetears.search.contracts import (
+    SEARCH_RESULTS_METADATA_KEY,
+    Criterion,
+    SearchRequest,
+    SearchResultsMetadata,
+)
 
 if TYPE_CHECKING:
     from threetears.search.contracts import BudgetPort, RateLimiterPort, SearchTransport
@@ -53,6 +65,28 @@ __all__ = [
 #: number stated as a criterion the adapter can push down and answer for.
 DEFAULT_MAX_RESULTS: Final[int] = 10
 
+#: A domain as ``site`` takes it: labels of letters, digits and hyphens, at least two.
+_DOMAIN: Final[re.Pattern[str]] = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$"
+)
+
+
+def _site_of(raw: str) -> str | None:
+    """The bare domain a ``site`` argument names, or None when it names none.
+
+    ``https://www.nature.com/articles`` and ``nature.com`` both name ``nature.com``.
+
+    :param raw: what the caller passed
+    :ptype raw: str
+    :return: the lower-cased domain, without ``www.``
+    :rtype: str | None
+    """
+    text = raw.strip().lower()
+    if "//" in text:
+        text = urlsplit(text).hostname or ""
+    text = text.split("/", 1)[0].removeprefix("www.").rstrip(".")
+    return text if _DOMAIN.match(text) else None
+
 
 def create_web_search_tool(config: dict[str, Any], description: str) -> StructuredTool:
     """Factory: create a web search tool.
@@ -66,7 +100,8 @@ def create_web_search_tool(config: dict[str, Any], description: str) -> Structur
     Optional config keys, all deployment facts rather than per-call choices:
     ``max_results``, ``timeout_seconds``, ``transport`` (a prebuilt
     :class:`~threetears.search.contracts.transport.SearchTransport`),
-    ``budget`` and ``limiter``.
+    ``budget`` and ``limiter``; and ``_user_timezone``, the zone of the person
+    the turn is with, which a host injects.
 
     :param config: tool configuration; ``base_url`` is required
     :ptype config: dict[str, Any]
@@ -89,6 +124,7 @@ def create_web_search_tool(config: dict[str, Any], description: str) -> Structur
             timeout_seconds=config.get("timeout_seconds"),
             budget=config.get("budget"),
             limiter=config.get("limiter"),
+            zone=config.get("_user_timezone") or None,
         ),
         description=description,
     )
@@ -109,6 +145,28 @@ class WebSearchTool(TearsTool):
                 "type": "string",
                 "description": "search query",
             },
+            "category": {
+                "type": "string",
+                "enum": list(SEARXNG_CATEGORIES),
+                "description": (
+                    "What kind of results: news for news stories, science for papers, it for software and "
+                    "programming, general (the default) for the whole web."
+                ),
+            },
+            "time_range": {
+                "type": "string",
+                "enum": list(SEARXNG_RELATIVE_TIME_RANGES),
+                "description": "Only results published in the last day, week, month or year. Omit for any date.",
+            },
+            "page": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Which page of results, from 1. Ask for the next page when this one did not have it.",
+            },
+            "site": {
+                "type": "string",
+                "description": "Search one site only, by its domain, for example nature.com.",
+            },
         },
         "required": ["query"],
     }
@@ -122,6 +180,7 @@ class WebSearchTool(TearsTool):
         timeout_seconds: float | None = None,
         budget: BudgetPort | None = None,
         limiter: RateLimiterPort | None = None,
+        zone: str | None = None,
     ) -> None:
         """initialize web search tool against one configured SearXNG instance.
 
@@ -150,6 +209,9 @@ class WebSearchTool(TearsTool):
         :param limiter: the pacing seam for this provider's egress (D8);
             None leaves the call unpaced
         :ptype limiter: RateLimiterPort | None
+        :param zone: the IANA zone of the person the agent works for; a result's time of day is
+            shown in it
+        :ptype zone: str | None
         :return: nothing
         :rtype: None
         """
@@ -164,6 +226,7 @@ class WebSearchTool(TearsTool):
         self._timeout_seconds = timeout_seconds
         self._budget = budget
         self._limiter = limiter
+        self._zone = zone
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """perform one web search.
@@ -171,32 +234,86 @@ class WebSearchTool(TearsTool):
         Never raises: :func:`~threetears.search.bind_search` carries D10's
         unconditional guarantee, so a refusal, a timeout or an unmapped
         provider defect all arrive here as a rendered failure that still
-        accounts for what it spent.
+        accounts for what it spent. An argument this search cannot take is
+        answered before anything is sent, with what it does take.
 
-        :param kwargs: must include 'query' key with search query string
+        The first line says what was searched and how many results came back;
+        each result then carries its date and the engines that found it.
+
+        :param kwargs: ``query``, and optionally ``category``, ``time_range``, ``page``, ``site``
         :ptype kwargs: Any
         :return: result carrying rendered prose, and the typed result under
             the search-results metadata key
         :rtype: ToolResult
         """
-        query = kwargs.get("query", "")
+        query = str(kwargs.get("query") or "").strip()
+        if not query:
+            return _refused("web_search needs a query: say what to search for.")
+        criteria: list[Criterion] = [Criterion.max_results(self._max_results)]
+        said: list[str] = []
+        category = kwargs.get("category")
+        if category:
+            if category not in SEARXNG_CATEGORIES:
+                return _refused(
+                    f"web_search has no category {category!r}. The categories: {', '.join(SEARXNG_CATEGORIES)}."
+                )
+            criteria.append(Criterion.namespaced(SEARXNG_NAMESPACE, "categories", category))
+            said.append(f"in {category}")
+        time_range = kwargs.get("time_range")
+        if time_range:
+            if time_range not in SEARXNG_RELATIVE_TIME_RANGES:
+                return _refused(
+                    f"web_search has no time_range {time_range!r}. It takes "
+                    f"{', '.join(SEARXNG_RELATIVE_TIME_RANGES)}, or none for any date."
+                )
+            criteria.append(Criterion.namespaced(SEARXNG_NAMESPACE, "time-range", time_range))
+            said.append(f"published in the last {time_range}")
+        page = kwargs.get("page")
+        page_number = 1
+        if page not in (None, ""):
+            if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+                return _refused(f"web_search's page is a whole number from 1; {page!r} is not.")
+            page_number = page
+            if page > 1:
+                criteria.append(Criterion.namespaced(SEARXNG_NAMESPACE, "page", page))
+        sent = query
+        site = kwargs.get("site")
+        if site:
+            domain = _site_of(str(site))
+            if domain is None:
+                return _refused(f"web_search's site is a domain such as nature.com; {site!r} is not one.")
+            # Pushed down as the engines' own operator, and held here as a filter, because an
+            # engine that ignores the operator would otherwise hand back other sites' pages.
+            sent = f"{query} site:{domain}"
+            criteria.append(Criterion.domains_include([domain]))
+            said.append(f"on {domain}")
         rendered = await bind_search(
-            SearchRequest(
-                query=query,
-                criteria=(Criterion.max_results(self._max_results),),
-            ),
+            SearchRequest(query=sent, criteria=tuple(criteria)),
             provider=self._provider,
             timeout_seconds=self._timeout_seconds,
             max_candidates=self._max_results,
             budget=self._budget,
             limiter=self._limiter,
             egress=self._transport.egress_name,
+            zone=self._zone,
         )
+        if not rendered.success:
+            return ToolResult(
+                success=False,
+                content=rendered.content,
+                metadata=rendered.metadata,
+                error=rendered.error,
+            )
+        found = _count(rendered.metadata)
+        scope = f" {', '.join(said)}" if said else ""
+        head = f'Searched the web for "{query}"{scope}: {found} result(s) on page {page_number}.'
+        if found >= self._max_results:
+            head += f" More may be on page {page_number + 1}."
         return ToolResult(
-            success=rendered.success,
-            content=rendered.content,
+            success=True,
+            content=f"{head}\n\n{rendered.content}",
             metadata=rendered.metadata,
-            error=rendered.error,
+            error=None,
         )
 
     def mcp_schema(self) -> MCPToolDefinition:
@@ -228,3 +345,28 @@ class WebSearchTool(TearsTool):
         :rtype: str
         """
         return "1.0"
+
+
+def _refused(message: str) -> ToolResult:
+    """A search that was not sent, because an argument cannot be used; the message says what can.
+
+    :param message: what was wrong and what the search takes
+    :ptype message: str
+    :return: the failed result
+    :rtype: ToolResult
+    """
+    return ToolResult(success=False, content=message, metadata={}, error=message)
+
+
+def _count(metadata: dict[str, Any]) -> int:
+    """How many results a rendered search holds, read off its typed projection.
+
+    :param metadata: the rendered search's metadata
+    :ptype metadata: dict[str, Any]
+    :return: the candidate count, 0 when there is no projection
+    :rtype: int
+    """
+    raw = metadata.get(SEARCH_RESULTS_METADATA_KEY)
+    if raw is None:
+        return 0
+    return len(SearchResultsMetadata.from_metadata(raw).candidates)

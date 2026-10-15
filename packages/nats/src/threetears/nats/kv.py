@@ -76,6 +76,7 @@ from threetears.nats.errors import (
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.raw_errors import is_bucket_not_found
+from threetears.nats.subject_permissions import kv_stream_name
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
@@ -102,12 +103,6 @@ __all__ = [
 
 
 log = get_logger(__name__)
-
-#: Name of the JetStream stream backing a KV bucket. Mirrors nats-py's
-#: ``KV_STREAM_TEMPLATE``, restated rather than imported because that constant is
-#: module-level in ``nats.js.client`` and importing it would bind this wrapper to
-#: a name nats-py does not document as public.
-_KV_STREAM_PREFIX = "KV_"
 
 #: Subject tree a KV bucket owns. Mirrors nats-py's ``KV_PRE_TEMPLATE``.
 _KV_SUBJECT_TEMPLATE = "$KV.{bucket}.>"
@@ -457,7 +452,7 @@ def build_kv_stream_config(
     if ttl_seconds and ttl_seconds < duplicate_window:
         duplicate_window = ttl_seconds
     return StreamConfig(
-        name=f"{_KV_STREAM_PREFIX}{bucket}",
+        name=kv_stream_name(bucket),
         description=None,
         subjects=[_KV_SUBJECT_TEMPLATE.format(bucket=bucket)],
         allow_direct=direct,
@@ -831,7 +826,7 @@ async def _entry_ttl_for_bound_bucket(*, js: Any, full_name: str, ttl: timedelta
         bucket-wide expiry and refuses per-entry TTLs
     :raises KvError: when the live configuration cannot be read
     """
-    live = await _live_stream_config(js=js, full_name=full_name, stream=f"{_KV_STREAM_PREFIX}{full_name}")
+    live = await _live_stream_config(js=js, full_name=full_name, stream=kv_stream_name(full_name))
     requested = float(int(ttl.total_seconds()))
     live_age = float(_normalised("max_age", live.max_age))
     entry_ttl: timedelta | None = None
@@ -1212,7 +1207,7 @@ def _failure_remedy(exc: BaseException | None, *, full_name: str, answered: str,
             f"temporarily unavailable -- what a NATS restart or rolling update looks like while the "
             f"stream's replicas recover and a leader is elected. It recovers on its own, and the next "
             f"operation retries; nothing needs granting. Only if it persists well past the restart, "
-            f"look at the stream itself (`nats stream info {_KV_STREAM_PREFIX}{full_name}`) and the "
+            f"look at the stream itself (`nats stream info {kv_stream_name(full_name)}`) and the "
             f"JetStream cluster's health."
         )
     elif getattr(exc, "err_code", None) is not None:
@@ -1861,8 +1856,8 @@ class NatsKvBucket:
         that froze a downstream fleet through ``jetstream_publish``, at a different call
         site. ``KeyValue.put`` is literally ``await self._js.publish(...)`` with no timeout.
 
-        This matters most for :func:`~threetears.nats.distributed_lock.nats_distributed_lock`,
-        which is KV-backed: a wedged heartbeat or release holds the lock for the length of
+        This matters most for :func:`~threetears.core.coordination.nats_distributed_lock`,
+        which is KV-backed: a wedged renewal or release holds the lock for the length of
         the wedge, so ONE stuck pod blocks every other pod's turn at it.
 
         :param op: builds the KV coroutine to run
@@ -2207,7 +2202,7 @@ class NatsKvBucket:
         :raises KvError: on transport failure, or when the server reports no creation time
         """
         js = self._client.jetstream_context()
-        stream = f"KV_{self._full_name}"
+        stream = kv_stream_name(self._full_name)
         info: StreamInfo = await self._run_op(
             lambda: js.stream_info(stream), passthrough=(), failure=f"KV stream info failed: bucket={self._full_name}"
         )
@@ -2259,7 +2254,7 @@ class NatsKvBucket:
         if not key or any(char in _KEY_WATCH_FORBIDDEN for char in key):
             raise ValueError(f"watch_key needs one literal key, got {key!r}")
         subject = f"$KV.{self._full_name}.{key}"
-        stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        stream = kv_stream_name(self._full_name)
         last: KvKeyUpdate | None = None
         while True:
             consumer = await _KeyWatchConsumer.open(
@@ -2327,7 +2322,7 @@ class NatsKvBucket:
             raise ValueError(f"watch_prefix needs '' or a literal prefix ending in '.', got {prefix!r}")
         key_prefix = f"$KV.{self._full_name}."
         subject = f"{key_prefix}{prefix}>"
-        stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        stream = kv_stream_name(self._full_name)
         # each yielded key's (revision, value). the value is part of the identity: a wiped bucket
         # starts its sequence again, so a NEW value can arrive on the revision the old one had.
         known: dict[str, tuple[int, bytes]] = {}
@@ -2405,7 +2400,7 @@ class NatsKvBucket:
         subject_prefix = f"$KV.{self._full_name}."
         narrowed = prefix == "" or prefix.endswith(".")
         filter_subject = f"{subject_prefix}{prefix}>" if narrowed else f"{subject_prefix}>"
-        stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        stream = kv_stream_name(self._full_name)
         try:
             # like every other operation: a handle whose connection was replaced (a credential
             # renewal, a move off a lame-duck server) is bound again on the current one first.

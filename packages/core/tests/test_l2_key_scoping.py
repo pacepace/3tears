@@ -596,7 +596,6 @@ class TestInvalidationEvictsL2:
         is no pull-through to re-cache anything, and a peer principal's copy under its own
         scope is its own truth rather than a stale view of somebody else's.
 
-        This is the same reasoning ``l1_max_age_seconds`` already applies to L1 expiry.
         """
         collection, registry = _make_pod(bus, _AGENT_SCOPE, {}, config_always, with_l3=False)
         await registry.start_invalidation_listener(bus)

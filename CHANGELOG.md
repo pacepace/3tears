@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Door requests and grants, made consistent with 0.66.0 to 0.68.0 when develop was merged in
+
+- **A request without a proof carries no `identity_proof` key.** `door_request.omit_absent_proof`,
+  called by the serializer of every request model with a proof field (`DatasourceQueryRequest`,
+  `AuditAnonymizeRequest`, `EngagementScopeRequestModel`, `NamespaceDiscoveryRequest`,
+  `ObjectResolveRequestModel`). A 0.66.0 to 0.68.0 hub reads the datasource and anonymization requests
+  with `extra="forbid"`, so a body carrying `"identity_proof": null` was refused there; a caller with
+  no key now sends exactly what that hub reads, and the two upgrade in either order. The proof is left
+  out of what it signs, so no hash changes.
+- **A retired subscription has no dead-letter.** `subject_permissions.retired_subscriptions()` names
+  the subjects still granted on subscribe only for an older release, which nothing publishes (the acl
+  invalidation subjects, kept for an SDK pod a release back); the per-subscription dead-letter
+  derivation skips them, so no principal is granted a publish on an acl subject. They go at the
+  contract step, with this list.
+- `NatsProxyL3Backend.encode_request(subject, payload)`: the one place an L3 request's wire bytes are
+  made, the proof of possession included; `statement_request_bytes` measures through it, so a
+  statement is sized with its proof.
+
 ### NATS: each principal's subject grants are the subjects its code uses, held by a gate
 
 - `tests/enforcement/test_subject_grants_match_the_code.py` holds `subject_permissions` equal to the
@@ -318,6 +336,2140 @@ delivered on any subject, through a push consumer's `deliver_subject` or a reque
   receiving site in `packages/` now carries its marker; `tests/enforcement/_sender_posture_allowlist.txt`
   lists the receivers still open under the NATS receiver-trust audit.
 
+## v0.68.0 -- 2026-10-14
+
+### Media and the small tools: a question gets a new look, an image can be changed by its id, and the converters read what people write
+
+`media_analyze` answered every question about an image with its stored description, and stored any
+answer as the description, so "what colour is the car?" became what the image was. `memory_search`
+printed `[media:<content id>]`, which no media tool takes. The image tool changed only the newest
+upload, made no size or seed, and said it edited a photo when the model had used none. The time-zone
+converter stamped a time with no date with the server's UTC day, so 3:00 PM in Chicago at 03:21 UTC
+read as Saturday while it was Friday there; it took no "3pm", "PST" or "chicago". The unit converter
+read "F" to "C" as farad to coulomb and took no "Miles"; the calculator returned a bare number, read
+`sin` in radians and `log` as natural without saying so, and answered errors with its evaluator's
+internals.
+
+**Changed (agent-tools, `media_analyze`):**
+
+- **`question` is optional.** Left out (or blank) it is the describe ask: one item's kept description
+  is served, said to be the kept one, and a new one is kept. Any question is a new look, and its
+  answer is never kept as the description, nor passed to `on_analysis` as one. A document's reading is
+  kept only for the describe ask of its first part. New `DESCRIBE_PROMPT`.
+- **An item the storage did not resolve is never answered from its kept description**, so a storage
+  that refuses another person's media refuses the cache too.
+- **Documents take `offset` and `find`.** The reading opens at the offset, or just before the first
+  match of `find`; every match's offset is listed; no match reads nothing and says so.
+- **Every answer opens with the tool's statement** (what was looked at, by which analyzer, what part,
+  whether it was kept), then the window and find notes, a blank line, and the answer. The "covers only
+  part" note was after the answer.
+- **An id that is not one is refused by name** rather than raising.
+
+**Added (agent-tools):**
+
+- **`text_window.find_in_text(text, term, *, after=0) -> Found`**, `Found` (`offsets`, `total`,
+  `start`, `note()`), `FIND_LEAD_CHARS`, `FIND_LISTED`.
+- **`object_media_storage.read_bounded_stream(media_id, stream, *, max_bytes)`**: the bounded read a
+  host's `MediaStorage.download_media(max_bytes=...)` hands its own stream to.
+- **Image generation:** `source_media_id`, `size`, `aspect`, `seed` arguments; `SourceImage`,
+  `SourceImageRefused`, the `SourceImageContext` protocol (`load_source_image(media_id)`), and
+  `GENERATION_SOURCE_LABEL`. A backend with `takes_source_image = False` is refused an edit before it
+  is paid for, naming the models that can. An option the backend's `generate` does not take is not
+  sent. What was not done is said on the line after the host's statement: "No source was used",
+  "Not applied: seed (...)". `load_attached_image` may return a `SourceImage` to name the file.
+- **`date_math`** (`threetears.date_math`, in `STANDARD_TOOLS`, `STANDARD_BUILTIN_FACTORIES`,
+  `register_builtins` and the tool pod): the weekday of a date, a date plus or minus days, weeks,
+  months or years (a month past the 31st lands on the month's last day and says so), and days
+  between. "Today" is today in the person's zone.
+- **`builtin.time_words`**: `read_zone`, `parse_when`, `parse_date`, `describe_zone`,
+  `ZONE_ABBREVIATIONS` (one stated zone per abbreviation: IST is India), `Clock`, `system_clock`.
+
+**Changed (agent-tools, the small tools):**
+
+- **`timezone_converter`:** a time with no date is on the source zone's day, from the clock there.
+  Takes "3pm", "noon", "tomorrow 9:00", "Oct 9 3pm", ISO with an offset, any-case IANA names, cities,
+  abbreviations and UTC offsets. A left-out zone is the person's (call scope, else
+  `config["_user_timezone"]`); only `time_str` is required. The result names both zones with their
+  abbreviation and offset, says "the next day" or "the day before", and has a `Read:` line saying how
+  each loosely written thing was read. A clock time that summer time skips is refused; one that
+  happens twice says the first was used. `TimezoneConverterTool(timezone=, *, clock=)`.
+- **`unit_converter`:** a unit is read as written, then in lower case; F, C and K are degrees when the
+  other side is a temperature, and F to uF stays farads, either way said; `quantity` (or a
+  `from_unit` with numbers) adds up "5 feet 10 inches"; `value` is optional. Money is a `[NO CHANGE]`
+  ("no exchange rates here"). The result says it is rounded to 6 significant figures and that
+  "gallon", "pint", "cup", "quart" and "ton" are the US measures.
+- **`calculator`:** the result is "84.50*0.15 = 12.675", shown to 12 significant figures (0.1+0.2 is
+  0.3). Reads "15% of 84.50", "84.50*15%", "$22.50*3.5" and "1,000*2"; `10 % 3` is still the
+  remainder and a comma between arguments stays one. New functions: `sind`, `cosd`, `tand`, `asind`,
+  `acosd`, `atand`, `radians`, `degrees`, `ln`, `cbrt`, `atan2`, `hypot`, `trunc`, `gcd`, `lcm`,
+  `sum`, `mean`, `median`. A result that used `sin`-family trig or `log` says radians and natural log.
+  A non-number is refused, and every error says what to write instead.
+
+**Changed (media-contracts):** `ImageGenerationBackend.generate` takes keyword `size`, `aspect` and
+`seed`; result-metadata keys `GENERATION_SOURCE_USED`, `GENERATION_IGNORED`, `GENERATION_SIZE`,
+`GENERATION_SEED`.
+
+**Changed (agent-memory):** `memory_search` prints a file as `[media:<media id>]`, the id the media
+tools take, once per file, with its content kind when opened by id; `MediaContentCollection.search_by_ids`
+matches a media id as well as a content id. The ambient "Files you have seen" block prints the media id.
+
+**Breaking:** a caller that relied on a bare calculator number, a question being served the cached
+description, or `question` being required, now gets the forms above.
+
+### Image providers: size, aspect and seed, and what each could not apply
+
+The five image providers in `threetears.models` did not take the `size`, `aspect` and `seed` the
+image contract gained above, so none of them satisfied `ImageGenerationBackend` and the typecheck
+failed on each. ComfyUI sent seed 0 for every image, so the same prompt made the same picture each
+time. GPT Image models were sent `style` and `response_format`, which they refuse.
+
+**Changed (models, image providers):** each `generate` takes keyword `size`, `aspect` and `seed`,
+applies what the service takes, and says in the result's metadata (`GENERATION_SIZE`,
+`GENERATION_SEED`, `GENERATION_SOURCE_USED`, `GENERATION_IGNORED`) what it made and what it could
+not apply. A call with none of the three sends the body it sent before, except ComfyUI's seed.
+
+- **OpenAI:** a size must be one the model makes (DALL-E 3, DALL-E 2, GPT Image), else it is refused
+  with the sizes it takes and nothing is sent; an aspect picks the model's nearest size, and on a
+  model whose sizes are not known is named as not applied. A seed is named as not applied ("OpenAI's
+  image models take no seed"). A GPT Image model is sent no `style` (named as not applied) and no
+  `response_format`, and `standard` / `hd` quality read as `auto` / `high`. The result's width and
+  height are the size made.
+- **HuggingFace:** `width`, `height` and `seed` go as the task's `parameters`, only when asked.
+- **ModelsLab:** `width` and `height` from the size or aspect (512 by 512 unless asked, at most 1024 on
+  a side); a seed only when asked; the seed the service reports in `meta` is the one said.
+- **ComfyUI:** the empty latent takes the size or aspect (512 by 512 unless asked, at most 2048); the
+  sampler takes the seed asked for, else a new one per image, and the seed used is said. A negative
+  seed is named as not applied and a new one used.
+- **A1111:** `width` and `height` from the size or aspect on both txt2img and img2img (512 by 512
+  unless asked, at most 2048); a seed only when asked; the seed the server reports in `info` is the
+  one said.
+- **HuggingFace, ModelsLab and ComfyUI** carry `takes_source_image = False`, so the image tool refuses
+  an edit on them before an image is made from the words alone; A1111 carries `True`.
+
+**Added (models):** `threetears.models.providers.image.options`: `dimensions_for`, `parse_size`,
+`result_metadata`, `ASPECTS`. An unreadable size or aspect, or a size past a provider's largest side,
+raises `ValueError` saying what to write.
+
+### Web tools: search by kind, date, page and site; robots that cannot be read are not a refusal; PDFs, thin pages and charsets read; every failure says why and what next
+
+`web_search` took a query and nothing else and showed no dates; `web_fetch` refused a whole site whose
+`robots.txt` was its app shell, called a robots timeout "the site refused", read no PDF, cut nothing
+but decoded everything as UTF-8, and a failed read said only "No readable text could be taken".
+
+**Added (search):**
+
+- **`extract(...)` gains** `robots_timeout_seconds=5.0` (the robots read's own bound),
+  `robots_unreadable="deny" | "allow"` (deployment config: whether rules that cannot be read let the page
+  be read), `readers=()` (`CarrierReader`s for carriers that are not pages, each with its own media types
+  and cap) and `thin_page_chars=None` (when set, a page with less readable text that points at its
+  article -- a `citation_pdf_url` meta, or its one `iframe` -- follows it one level, same registrable site
+  only, through the same transport, robots asked for the frame, out of the byte cap and time the page
+  left). All default to the old behaviour except the robots changes below.
+- **New facets:** `EXTRACTION_NEXT_STEP_FACET` ("try again", "find the same facts on another site"),
+  `EXTRACTION_FINAL_URL_FACET`, `EXTRACTION_CHARSET_FACET`, `EXTRACTION_NOTES_FACET` (a followed frame, a
+  PDF read in part, robots read past under `allow`), `EXTRACTION_THIN_TEXT_FACET` (what a thin page held
+  when its frame was not read). A read candidate now carries the page's own `title` and `published_at`
+  (trafilatura's metadata) when the candidate had none.
+- **`CarrierReader`, `CarrierText`, `CarrierUnreadable`, `robots_agent_token(user_agent)`,
+  `same_site(a, b)`, `DEFAULT_ROBOTS_TIMEOUT_SECONDS`, `DEFAULT_THIN_PAGE_CHARS`,
+  `DEFAULT_FETCH_TIME_BUDGET_SECONDS`, `ROBOTS_UNREADABLE_DENY` / `_ALLOW`** in `threetears.search.extract`.
+- **`threetears.search.testing.RecordedFetchTransport` and `RecordedPage`**: a `FetchTransport` that
+  answers each URL from a recording and keeps the real transport's byte cap and content-type gate.
+- **`threetears.search.bind`:** `result_facts(candidate, zone)`, `shown_date(value, zone)`,
+  `DISPLAY_ZONE_METADATA_KEY`; `render_prose`, `bind_candidate_set` and `bind_search` take `zone=`.
+- **`threetears.search.standalone.DEFAULT_TRANSPORT_USER_AGENT`** names the transport's default.
+
+**Changed (search):**
+
+- **The prose under each result's `URL:` line gains one line**: `published 2026-10-01; found by
+  duckduckgo, wikipedia` (or `no date given`). A day-only date is shown as that day; a time of day is
+  shown in `zone` with its abbreviation, else UTC. Prose is no longer byte-identical to the old renderer.
+- **Robots:** a 2xx `robots.txt` is parsed whatever its content type (it had to be `text/plain`). A
+  timeout, a 5xx, a transport failure or a robots file past 512 KB records the candidate `failed`
+  (was `refused`) with "robots.txt could not be read (timed out after 5 s)" and "try again". A disallowing
+  file is still `refused`. Rules are matched against the user agent's product token, so a caller passing
+  its full user agent (`metallm/1.0 (+url)`) is matched as `metallm`.
+- **Charset:** a page is decoded by its header's charset, then a BOM, then a `<meta>` charset, then UTF-8,
+  then charset_normalizer (trafilatura's own dependency); it was always UTF-8 with replacement.
+- **Reasons:** a non-2xx page says which (`the site refused the request (403 Forbidden); ...`, `the site is
+  turning requests away for now (429 Too Many Requests); it asks to wait 60 s`, `the page was not found
+  (404)`, `the site had an error (503)`, `the page needs a login (401)`) where it said "the server answered
+  N"; a cap says which cap and its size; a timeout says the bound.
+
+**Added (agent-tools):**
+
+- **`web_search` takes `category`** (SearXNG's categories), **`time_range`** (`day`/`week`/`month`/`year`),
+  **`page`** (from 1) and **`site`** (a domain; sent as `site:` and held as a domains-include filter). An
+  argument it cannot take is answered before anything is sent. Its first line says what was searched and
+  how many results came back, and names the next page when this one was full. `zone=` (config
+  `_user_timezone`) shows times in the person's zone.
+- **`web_fetch` reads PDFs** through `document.parse_document` (PyMuPDF), as a `CarrierReader`:
+  `pdf_max_bytes` (20 MB), `pdf_max_pages` (100; the rest is named), `pdf_parse_timeout_seconds` (30), no
+  OCR, and the `%PDF-` signature checked in the first kilobyte. `pdf_reader(...)` is public.
+- **`web_fetch` config:** `user_agent` (sent by the default transport and matched by robots),
+  `robots_unreadable`, `thin_page_chars` (1000; 0 turns frame-following off), the PDF limits, and
+  `_user_timezone`. The default transport's own ceiling is the largest carrier the tool reads.
+- **`build_fetch_transport(user_agent=...)`.**
+- **`parse_document(..., max_pages=None)`**: for PDFs, reads at most that many pages;
+  `metadata["pages_read"]` says how many, and `creationDate` / `modDate` are kept in `metadata`.
+
+**Changed (agent-tools):**
+
+- **A fetch opens with one line**: `Read "<title>" (published <date>) at <final URL>: characters a-b of N.`
+  Notes follow on their own lines (the window's "this is a part", a followed frame, a PDF's pages), then a
+  blank line and the text. A read that did not happen is `Did not read <url>: <reason>; <next step>.`
+  (was `No readable text could be taken from <url>: <reason>.`), with what a thin page held below it.
+- **`BackgroundOperation.start_when_needed`** marks its wait's error seen once the wait ends: the error
+  is logged where it is raised and still raised to whoever awaits, and a wait nobody awaited was logged a
+  second time ("Task exception was never retrieved") when it was collected.
+
+**Not built:** pages rendered by JavaScript (a rendering service is an open question for the
+deployment); a PDF served as `application/octet-stream` is refused at the content-type gate.
+
+### Skills: the whole skill, what a change changed, an outcome counted once with its note kept, and each use listed
+
+`skill_invoke` named every tool a skill adds, held or not, so the agent called tools it did not have;
+`skill_report_outcome` logged its note and dropped it, and a second report counted twice; nothing showed
+a skill's uses.
+
+**Schema, agent-skills v005:** `agent_skill_invocations.outcome_notes TEXT NULL` -- the agent's line on
+how a use went, apart from `notes` (the reason given when the skill was invoked). `ADD COLUMN IF NOT
+EXISTS`; existing rows get `NULL`. The table factory, the entity (`outcome_notes`), every invocation read
+and the upsert carry it; `SkillInvocationResponse` gains `outcome_notes: str | None = None`.
+
+**Added:**
+
+- **`AgentSkillInvocationCollection.record_outcome(agent_id, invocation_id, *, skill_id, outcome,
+  source, notes=None) -> OutcomeRecorded`.** Sets the use's outcome and notes and moves the skill's
+  counts in one statement, the use's row locked as it is read: a use counts once however often it is
+  reported, a report of the other outcome moves one count to the other side, and two reports at once
+  count once. `notes=None` keeps the note there. `OutcomeRecorded` says whether the use was found, what
+  it carried before and whether the counts moved. The skill row's cache entry is the caller's to drop.
+  `set_outcome` and `increment_outcome_counts` are unchanged.
+- **`load_skill_history_tool(*, agent_id, user_id, skills_collection, invocations_collection, tz=None)`**
+  builds `skill_history(skill_id, limit=20, offset=0)` (`SkillHistoryInput`): a skill's uses, newest
+  first, each with when (in `tz`), whether a wake ran it or it was invoked, its outcome and note, the
+  reason it was invoked, and its `[conversation:<id>]` and `[message:<id>]`. The head says how many uses
+  there are in all and how the skill has gone; a page says which uses it holds and the offset for the next.
+- **`BindableTools`**, a probe the consumer passes `load_skill_invoke_tool(..., bindable_tools=...)`:
+  the tools the turn can bind.
+- **`SkillShape`**, the Protocol `compose_turn_context` and `render_skill_body_block` now take: an
+  `AgentSkillEntity` is one, and so is a consumer's own record of the skill a turn started with.
+
+**Changed:**
+
+- **`skill_invoke`'s result** opens `[ACTIVE SKILL: <name>] in use for the rest of this turn.`, keeps
+  `prompt_mode`, then names only the tools the turn can bind: `Tools it adds, yours from your next
+  step: ...`, `N more tool(s) it names cannot be used on this turn.` (counted, never named) and `Tools it
+  puts away until the turn ends: ...`. With no probe no tool is named. The steps follow whole, rendered
+  as a wake renders them (`Follow the skill "<name>" for this task:`). The raw `tool_additions: [...]` /
+  `tool_restrictions: [...]` lines are gone.
+- **`skill_get`** (`load_skill_get_tool(..., tz=None)`) shows the skill whole and then how it has gone:
+  `used: N times, last <time>` (or `used: never`), `reported: worked N, failed N (last failure <time>)`,
+  when it was written and last changed, times in `tz`. `skill_introspect` is unchanged.
+- **`skill_update`** returns `Changed [skill:<id>] <name>, was -> now:` and one line per field that
+  changed; a text over 200 characters is shown by its length and the first line that differs. A change
+  to nothing writes nothing and returns `[NO CHANGE] skill_update: ... already reads that way; nothing
+  was written.`
+- **`skill_report_outcome`** stores its note in `outcome_notes` and counts through `record_outcome`:
+  `Recorded <outcome> for this use of [skill:<id>] <name> ("<note>"). It has worked N and failed N
+  time(s).`, `Changed this use of ... from <a> to <b> ...`, `Kept <outcome> for this use ..., counted once.
+  Its note now reads: ...`, or `[NO CHANGE] skill_report_outcome: this use of ... was already recorded as
+  <outcome>; it is counted once.`
+
+### Todo tools: a todo is named by its id or by a title that fits only it, and every result says what changed
+
+A todo named by part of its title was the first row the database returned: `remove_todo("call mom")`
+with "Call mom" and "Call mom's doctor" on the list could delete either, and `%` matched anything.
+
+**Breaking, `TodoStorage`:**
+
+- **Removed, `find_by_title`.** Replaced by **`match_title(conversation_id, title, list_name)`**,
+  which returns every todo the title names, ordered by list then position: those whose whole title is
+  `title` in any case, or when none is, those whose title holds it in any case. `title` is taken
+  literally (`%` and `_` match only themselves). `list_name=None` searches every list.
+- **Added, `get(conversation_id, todo_id)`:** the todo with that id in that conversation, or `None`.
+  An id of another conversation's todo is `None`.
+- **Changed, `update(...)`** takes `new_list_name: str | None = None`: a move goes to the end of the
+  new list.
+- `list_all` rows may carry `date_created` and `date_updated` (a `datetime` or an ISO string); a
+  listing shows them when present.
+
+**The tools:**
+
+- **Changed, `complete_todo`, `update_todo` and `remove_todo`** take `todo_id` (bare, `todo:<id>` or
+  `[todo:<id>]`) or `title`. A title that fits more than one todo changes nothing and returns
+  `[NO CHANGE] ...: "<title>" matches N todos, so nothing was changed.` with each candidate's
+  `[todo:<id>]`, title, list and state. `list_name` now defaults to `None` (every list); a title
+  not on the named list but on another changes nothing and names where it is. `CompleteTodoInput`,
+  `UpdateTodoInput` and `RemoveTodoInput` gain `todo_id`; their `title` and `list_name` are optional.
+- **Changed, the results** name the todo's `[todo:<id>]`, its list and the state it had:
+  `Completed [todo:<id>] "<title>" in "<list>"; it was open.`; `Updated [todo:<id>] in "<list>":
+  title "<old>" -> "<new>"; open -> done; moved from "<a>" to "<b>".`; `Removed ... it was open. It
+  cannot be brought back. That list now has N todos, N open, N done.`; `Todo added: ... [todo:<id>]
+  ... That list now has ...`. Completing a done todo, and an update to what a todo already is, return
+  `[NO CHANGE]`.
+- **Changed, `update_todo`** refuses a blank `new_title` or `new_list_name` (`[TOOL ERROR]`), and a
+  rename or move onto a title the target list already has (`[NO CHANGE]`, naming that todo). It
+  gains `new_list_name`.
+- **Changed, `list_todos`** takes `list_name` (one list; a list that is not there is `[NO CHANGE]`
+  naming the lists) and opens `N todos, N open, N done, in N lists:`; each list's heading carries
+  its counts, and each line its `[todo:<id>]` and when it was added and last changed.
+- **Added, `load_todo_tools(tz=)`**, keyword-only, default `None` (UTC): the zone those times are
+  said in.
+- **Added, `TODO_HANDLE`, `todo_handle()`, `ListTodosInput`** in `threetears.agent.tools.todo`.
+
+### Workflow tools: `variable_list` and `variable_delete`, and a save says what it replaced and what it cut
+
+- **Added, `variable_list`:** every saved variable, by name: its kind, its size, and its first 200
+  characters, under `N of <cap> variables this conversation may hold:`.
+- **Added, `variable_delete(key)`:** `Deleted '<key>' (<kind>, N chars). It cannot be brought back.
+  It held: <value>. N of <cap> variables are saved now.` A name not saved is `[NO CHANGE]` naming the
+  saved ones.
+- **Changed, `variable_set`'s result:** `Saved '<key>' (<kind>, N chars).` then, when the value was
+  over the cap, `It was cut: only the first N of M chars were kept, and the last K are not saved.`,
+  then `Nothing was saved under that name before.`, `It already held this value.`, or `It replaced
+  the earlier value, which is gone (<kind>, N chars): <value>`. The context id is no longer in it.
+- **Changed, `variable_set` checks `value_type`:** one of `string`, `number`, `json`; a `number`
+  must parse as one and a `json` value must parse. Otherwise `[TOOL ERROR] variable_set: ... Nothing
+  was saved.` **Added, `VALUE_TYPES`, `ListVariablesInput`, `DeleteVariableInput`** in
+  `threetears.agent.tools.workflow`.
+- **Added, `ToolContextManager.var_limit`** (read-only). **Changed, the cap's message:** `Delete one
+  you no longer need with variable_delete, or save over one by reusing its name.`
+
+### Intention tools: a listing honours its limit and says how many of how many, a want is read by id, and a near-duplicate is kept as written
+
+- **Fixed, `intention_list` honours `limit` up to 100.** It was clamped to `max_results` (20), so a
+  call for 50 returned 20 and said "20 open want(s)". `max_results` is now the default when the call
+  names no limit. The first line is `N of M <status> wants, strongest first.`, with how many open
+  wants the cooldown held back and, when there are more, how to see them.
+- **Added, `intention_list(status=)`:** `open` (the default, the deliberation set as before),
+  `asked`, `granted`, `dropped` or `all`. Each line carries the want's status and when it was
+  written down. An empty listing is `You have no <status> wants.`
+- **Added, `load_intention_get_tool`** and `IntentionGetInput`: `intention_get(intention_id)` reads
+  one want in full (status, when written and last set, strength, the memory and conversation it came
+  from, the text). Another user's want is not found.
+- **Added, `WantNotes`** and keyword-only `tz=` and `notes=` on `load_intention_list_tool` and
+  `load_intention_get_tool`: the zone times are said in, and a consumer's own words about each want
+  shown (a project carrying it, say), put at the end of its line. A failing `notes` leaves the
+  listing without them.
+- **Fixed, a near-duplicate `intention_log`** answered with the new text, which was not saved, and
+  replaced the stored embedding with the new text's. It now answers with the want as stored and keeps
+  its embedding: `Refreshed existing want [intention:<id>] (it was N% the same), so nothing new was
+  written down. It is now stronger, and it stays as first written: <text>`.
+- **Changed, `intention_mark_surfaced`'s result** says the status it moved from and the want:
+  `Marked [intention:<id>] granted; it was asked. The want: <text>`. A mark to the status a want
+  already has is `[NO CHANGE]` and stamps nothing. Its description says what granted and dropped
+  mean and where a marked want is listed.
+
+### Models: which request settings a model accepts
+
+- **Added, request-settings facts on `threetears.models.ModelCapabilities` and `CapabilityOverride`:**
+  `accepts_temperature`, `reasoning_efforts` (the provider-native effort words a request may carry,
+  lowest first; `[]` = the model takes no effort parameter), `reasoning_budget` (takes a reasoning
+  token budget, Anthropic `thinking.budget_tokens`), `adaptive_reasoning` (takes
+  `thinking={"type": "adaptive"}`), `reasoning_disable` (reasoning can be switched off, Anthropic
+  `thinking={"type": "disabled"}`) and `structured_output` (takes a strict `json_schema` reply
+  format). Each is tri-state: `None` means not declared, and a caller that needs the fact learns it
+  from the provider. The off switch is its own field rather than `"none"` in the effort list,
+  because Anthropic's off switch is a thinking type, not an effort word, and a budget-only model
+  (effort refused) can still be switched off. `register_model_capabilities_bulk` reads the same keys
+  from a product row.
+- **Added, a provider-published capability layer:** `register_published_capabilities`,
+  `get_published_capabilities` and `unregister_published_capabilities`. `get_capabilities` and
+  `list_capabilities` now layer three sources, lowest first: the static entry, the facts the
+  provider publishes, and a deployment override. A model with no static entry keeps its published
+  facts in the layer (readable with `get_published_capabilities`) but stays `None` from
+  `get_capabilities`, which will not invent a model's type or tier.
+- **Added, `threetears.models.anthropic_capabilities`:** reads Anthropic's Models API
+  (`load_anthropic_capabilities` for one model, `load_all_anthropic_capabilities` for the paginated
+  listing) through a caller-supplied client built with `anthropic_models_api_headers`, maps
+  `capabilities.effort`, `capabilities.thinking.types.{enabled,adaptive,disabled}` and
+  `capabilities.structured_outputs` onto the fields, and records them in the published layer,
+  cached per process (`max_age_seconds`, default a day). A failed fetch returns a
+  `PublishedCapabilityLoad` naming the failure, logs a WARNING and changes nothing; an unknown
+  capability key is ignored; a known key in a shape the build cannot read raises
+  `PublishedCapabilityShapeError` before anything is recorded. Temperature is not published there.
+- **Changed, the static entries:** the registered chat models carry the facts their providers'
+  docs state, and nothing more. `claude-opus-4-8` and `claude-sonnet-5`: temperature and budgets
+  refused, adaptive, effort `low`..`max`, can be switched off, structured outputs.
+  `claude-sonnet-4-6`: budget and adaptive, effort `low`/`medium`/`high`/`max`, can be switched off.
+  `claude-haiku-4-5-20251001`: budget only, no effort parameter, can be switched off, structured
+  outputs. `gpt-4o` / `gpt-4o-mini`: no effort parameter, no budget, structured outputs.
+  `deepseek/deepseek-v4-flash`: structured outputs. Temperature is recorded only where a provider
+  documents its removal; "allowed" stays `None`.
+
+### OpenRouter: the usage and response fields LangChain drops reach the answer, `is_byok` among them
+
+OpenRouter reports `usage.is_byok` on every reply: whether the call ran on the caller's own
+provider key. Under BYOK `usage.cost` is only OpenRouter's fee, and the upstream provider's charge
+is `cost_details.upstream_inference_cost`. The `openrouter` SDK parses the flag, but
+`langchain-openrouter` 0.2.9 copies only `cost` and `cost_details` into `response_metadata`, so no
+consumer could tell whether a reported cost was the whole charge. It also drops
+`server_tool_use_details` (billed), every token-detail count beyond cached / cache-write /
+reasoning, the difference between a count OpenRouter omitted and `0` (it reads both as `0`), and
+the response-level `openrouter_metadata`, `service_tier` and `system_fingerprint`.
+
+**Fixed:** an OpenRouter model from `create_openrouter_chat` adds two keys to `response_metadata`,
+each OpenRouter's wire shape as sent:
+
+- **`openrouter_usage`**: the reply's `usage` block exactly as sent -- a field OpenRouter did not
+  send is not in the dict (never defaulted), a sent `null` stays `null`. Absent when the reply
+  carried no usage. Read BYOK as `openrouter_usage["is_byok"]`: when `True`, the call's full cost
+  is `cost + cost_details["upstream_inference_cost"]`; when absent, OpenRouter did not say.
+- **`openrouter_response`**: `openrouter_metadata`, `service_tier`, `system_fingerprint`, each only
+  when sent with a value. Absent when none was. Fields LangChain already carries (`id`, `model`,
+  `provider`, `cost`, `cost_details`) are not repeated.
+
+Both are on the message of a non-streamed answer and on the usage chunk of a streamed one (so on
+the aggregated message too); a stream that ends without a usage chunk carries them on a trailing
+empty chunk. Every path: `invoke`, `ainvoke` with or without the call deadline, `stream`,
+`astream`. They are read from the SDK's own parsed replies as they pass the model's `client`,
+which is now a thin wrapper over the SDK client; each call keeps its own, so concurrent calls on
+one model never see each other's. `langchain-openrouter` is not patched, and every key it writes
+arrives exactly as before. A client whose `chat.send` / `chat.send_async` moved raises
+`TypeError` when the model is built. Pinned at the wire, through the real `openrouter` SDK over a
+mock HTTP transport. No public name added.
+
+### Scheduled jobs: a failed fire keeps the output its handler reported
+
+A handler that returned `JobFireResult(status="failed", error=..., output=...)` had its `output`
+dropped: `finalize_failed` wrote the error and nothing else, so a consumer whose handler reports
+what it did beside the failure (was the result delivered, where is it kept) could read that only
+for a fire that succeeded.
+
+- **Changed, `FireStore.finalize_failed`:** gains an optional keyword `output: dict | None = None`.
+  `JobFireCollection.finalize_failed` writes it to `job_fires.output`; `None` leaves the column as
+  it is. The tick and `BackgroundDispatch` pass `output` only when the handler reported one, so a
+  consumer's own `FireStore` written before the argument existed is called exactly as before for
+  every failure without an output, and raises `TypeError` only if one of its handlers starts
+  returning a failure with an output: add the keyword to that store first.
+- The wake fire store accepts the keyword and does not keep it: `wake_fires` has no column for a
+  failed fire's output.
+
+### Wake: a wake run by hand, what started a fire, refused deliveries kept, and results that state the schedule
+
+A fire did not say what started it (`create_dispatching` discarded `fire_source`), no fire could be
+asked for outside the schedule, a refused webhook delivery was logged and stored nowhere, and the
+tools' results left out how often a wake fires and when it last did.
+
+- **Migration `agent_wake` v009:** `wake_fires.fire_source` (`TEXT NOT NULL DEFAULT
+  'scheduled_tick'`, CHECK `scheduled_tick | webhook | manual`; earlier rows backfilled, a row
+  with a `webhook_subscription_id` becoming `webhook`), `wake_fires.requested_by` (required on a
+  manual fire, by CHECK), and `agent_wake_schedules.last_manual_fire_at`.
+- **Migration `agent_wake` v010:** `webhook_refusals`, one row per subscription, reason and minute,
+  with a count (`refusals`), the last time and a short `detail`; `ON DELETE CASCADE` with its
+  subscription. Rows older than 30 days (`REFUSALS_KEPT_FOR`) are dropped as new ones are written.
+- **Added, `threetears.agent.wake.manual`:** `claim_manual_fire(pool, schedule, *, requested_by,
+  min_gap, task_prompt=None, now=None)` takes the limit and inserts the `dispatching` row in one
+  statement (an `UPDATE ... RETURNING` on `last_manual_fire_at` feeding the `INSERT`): of any
+  number of callers at once exactly one is claimed. It raises `ManualFireRefused` (`reason`:
+  `too_soon` with `retry_at`, `dispatching`, `gone`) and `ValueError` for a gap that is not
+  positive. `run_manual_fire(claim, *, pool, fires, dispatch_callback)` runs the claimed fire
+  through the tick's dispatch callback and finalizes the row; a callback that raises is a failed
+  fire. A manual fire moves neither `next_fire_at` nor `last_fired_at`. Exported from the package:
+  `ManualFireClaim`, `ManualFireRefused`, `claim_manual_fire`, `run_manual_fire`.
+- **Changed, `FireSource`:** adds `"manual"` (and the REST `WakeFireResponse.fire_source`);
+  `WakeTrigger.requested_by` and `WakeFireResponse.requested_by` (default `None`) are added;
+  `WakeFireEntity.fire_source` and `.requested_by` read the new columns. `create_dispatching`
+  stores `fire_source` and takes `requested_by` (default `None`).
+- **Added, `FireLimits.manual_fires_count` (default `True`):** a manual fire spends the per-wake and
+  per-agent limits like any other. `False` leaves manual fires out of both counts and never refuses
+  one.
+- **Changed, `update_protected`:** a config equal to the wake's writes nothing (`changed` false,
+  the next fire where it was). A fixed-step wake (`interval`, `every_n_hours`) keeps its grid: the
+  anchor is the occurrence before the next fire (`next_fire_at - step`), and the new next fire is
+  the first slot of the new step after now, so 60 -> 90 -> 60 minutes is due where it was. A wake
+  with no next fire starts from now, as before.
+- **Added, `WakeFireCollection.list_for_subscription`**, **`WebhookSubscriptionCollection.record_refusal`
+  and `.list_refusals`**, **`WEBHOOK_REFUSAL_REASONS`**, **`webhook_refusals_table`**, and
+  **`webhook_adapter.record_webhook_refusal`**, which keeps a refusal and never lets a store that
+  cannot be written change the answer. `webhook_receive` keeps a paused subscription's delivery,
+  a missing or bad signature, a source the pattern refuses, a rate-limited delivery, and a body or
+  template that cannot be read. `threetears.channels.webhook.WebhookReceiver` keeps the ones it
+  decides (unknown scheme, missing signature, a signature its verifier refuses). A delivery to an
+  unknown subscription id is not kept: there is no row to hang it on.
+- **Added, `load_wake_schedule_get_tool`** (`wake_schedule_get`: one wake in full, its next three
+  fires and its last), **`load_wake_fires_tool`** (`wake_fires`: a wake's fires, or a webhook's
+  accepted and refused deliveries, each line saying on schedule and how late, by hand and who
+  asked, or a delivery), **`next_fires(entity, count=3)`**, **`load_webhook_subscription_get_tool`**
+  (`webhook_subscription_get`: address, template, source pattern, limit, skill, refusal count; never
+  the secret) and **`standing_same_subscription`**.
+- **Changed, the wake tools' results:** a listing line carries the schedule in words and the last
+  fire (`· interval · every 90 minutes · next: ... · last: ... ·`); `wake_schedule_update` answers
+  with `Changed: field old -> new` and a call whose every value is the current one is `[NO CHANGE]`
+  and writes nothing; pause, resume and delete say what the wake was, and pausing a paused wake is
+  `[NO CHANGE]`. `load_wake_schedule_pause_tool` and `load_wake_schedule_delete_tool` take `tz=`.
+- **Changed, the webhook tools:** `webhook_subscription_create` refuses a subscription identical
+  in name, template, skill, source pattern and limit to one the agent has, with `[NO CHANGE]` and
+  the standing one's id and address, before a secret is made. Update answers `Changed: ...`, a call
+  that changes nothing is `[NO CHANGE]`, and `clear_rate_limit_per_minute` puts the limit back to
+  the default. Create, rotate and list say the address, or that none is configured (list and rotate
+  take `endpoint_base_url=`). Pause, resume and delete say what the subscription was.
+- **Added, `redact_secret(text)`, `SECRET_SHOWN_ONCE` and `SECRET_REDACTED`** (`tools.webhook_tools`,
+  exported from `threetears.agent.wake.tools`): the create and rotate results show the plaintext
+  secret after `SECRET_SHOWN_ONCE`, and a host that keeps a copy of a tool result (a ledger, a store
+  read back by handle, an audit trail) keeps `redact_secret(result)`, so "shown only once" holds.
+
+### Wake: the same wake made twice is made once
+
+`wake_schedule_create` had no notion of two rows being one wake: called again with the same
+arguments, in another turn, it made a second schedule that fired beside the first, each fire a turn
+of its own (and, with wake conversations, a second conversation).
+
+- **Changed, `wake_schedule_create`:** before anything is made it reads the agent's active and
+  paused wakes (`list_for_agent`). One with the same name, schedule type and config, text, skill,
+  missed-fire policy, context source and history flag is not made again; the result is
+  `[NO CHANGE] wake_schedule_create: you already have this wake, [schedule:<id>] (<status>): the
+  same name, schedule, text and settings. Nothing was made. To change it use wake_schedule_update.`
+  A wake with no name and no text is never judged the same as another. A listing that cannot be
+  read is logged and the create goes ahead. A consumer that makes identical named wakes on purpose
+  now gets one.
+- **Added, `tools.schedule_tools.standing_same_wake`:** the lookup, for a host tool that makes a
+  wake by another road.
+- `webhook_subscription_create` refuses an identical subscription the same way (entry above).
+
+### Models: a refusal by the model's safeguards is its own error, says what ran it, and can be tried again on a CLI of its own
+
+On one deployment a subscription model's safeguards refused ten ordinary requests in fourteen days
+(`[reasoning_extraction]`), all on calls that hand a model's own output back to it. Each reached the
+caller as a plain `ModelProviderError`, indistinguishable from a provider that is down, and nothing
+recorded which CLI process had made the call or the provider's id for the request.
+
+**Nothing changes for a caller that reads none of this.** A refusal is still a `ModelProviderError`.
+
+- **Added, `ModelRefusalError(ModelProviderError)`** (`threetears.models`): raised by the Claude CLI
+  provider when a message or result has the stop reason `refusal`, or carries the CLI's notice
+  ("...'s safeguards flagged this message"). It carries `category` (`"reasoning_extraction"`),
+  `request_id` and `message_id`, each read from the notice's own `Details:`, `Request ID:` and
+  `Message ID:` lines and `None` when the CLI did not give one. A caller that matches on
+  `type(exc) is ModelProviderError` (not `isinstance`) no longer matches a refusal.
+- **Added, `ModelProviderError.ran_on`:** for a call the Claude CLI ran, a dict of `pid`,
+  `session_id`, `pooled`, `calls_served` (before this call), `uptime_s` and `agents`; `None` for any
+  other provider. `agents` is the names of the system prompts a pooled CLI was launched with:
+  hashes (`agent_name`), never the prompts, which may be other callers'. Set on every CLI failure,
+  not only a refusal.
+- **Added, `claude_cli_pool.on_own_cli()`** and `own_cli_asked()`: inside the block a subscription
+  call runs on a CLI started for it and stopped after it, never a pooled one. For a retry after a
+  refusal, which can follow a session around.
+- **Added, `LentClient(pid=, calls_served=, started_at=, agents=)`** and `PooledCliSession.started_at` /
+  `.calls_served`: what the pool tells a call about the CLI it was lent. A stand-in for
+  `PooledCliSession` in a consumer's tests needs both attributes.
+
+### Memory tools: with nobody present, `memory_add` replaces no memory
+
+On a turn nobody is present for (a wake fire, an injected turn) a memory is not replaced. Before,
+`memory_add` replaced a non-permanent memory three ways on any turn: a near-duplicate, `corrects`,
+and the same event written this turn or the one before.
+
+**Every new argument defaults to "as before".**
+
+- **Added, `load_memory_add_tool(person_present=)`**, keyword-only, default `None` (a person is
+  always present). A `PersonPresent` resolver, read per call. When it answers anything but `True`,
+  or raises, a call that would replace a memory by any of the three ways writes nothing, changes
+  nothing, links nothing, and returns `[NO CHANGE] memory_add: Nothing was stored. It would replace
+  [memory:<id>], written <date>, which says "<text>". A change to a memory waits for a turn with
+  your person in the conversation.` A memory that replaces nothing is stored as before, and so is
+  one written beside a near-twin with `replace=false`, beside a permanent near-twin, or as a
+  correction beside a permanent memory. A `corrects` list naming any memory it would replace
+  stores nothing at all.
+- **Added, `PersonPresent`** (`Callable[[], Awaitable[bool]]`) and **`CHANGE_NEEDS_THE_PERSON`**
+  (`"A change to a memory waits for a turn with your person in the conversation."`), both in
+  `threetears.agent.memory.tools.__all__`.
+- **Added, `revisions.write_once(when_replaceable=)`**, keyword-only, `"replace"` (default) or
+  `"hold"`, and **`Written.held`** (default `()`). With `"hold"` an earlier write of the same event
+  that is not permanent is not replaced: nothing is written, `memory_id` is `None`, and the rows it
+  would have replaced are in `held`.
+- **Changed, `memory_add`'s description** gains `Replacing or correcting one needs your person in
+  the conversation.`, and the `corrects` field's description ends `Needs your person in the
+  conversation.`
+
+### Memory: what ambient recall hands an agent, one event stored once, and a dream that makes nothing permanent
+
+On one deployment eight of the ten memories an agent was handed on a turn were from the last five
+days, most of them its own corrections; 168 of 291 recent memories were written by scheduled fires
+with nobody present; one event was stored three and four times in a few minutes; and a dream had
+marked its merges of the person's own facts permanent, in the agent's first person.
+
+**Every new knob defaults to "as before", except the two marked Changed.**
+
+- **Changed, `DreamService`:** a dream never sets `evergreen` on a gist. The `permanent` field of
+  the reflector's answer is no longer read, and `DEFAULT_CONSOLIDATION_PROMPT` no longer asks for
+  it. The prompt gains one rule: `Keep who each fact is about. A fact about a person stays about
+  that person, in the words the memories use for them. Never restate someone's fact as "I" unless
+  the memories say "I".` A consumer whose own consolidation prompt still asks for `permanent` gets
+  an answer field nothing reads. `DreamService._reflect` returns three values, not four.
+- **Changed, extraction's ADD:** written through `revisions.write_once`. With
+  `MemoryConfig.same_event_threshold` unset this is the same single insert as before.
+- **Added, `threetears.agent.memory.origin`:** `UNATTENDED_TAG` (`"unattended"`),
+  `MADE_BY_PREFIX` (`"made_by:"`), `made_by_tag`, `origin_tags`, `origin_of`, `MemoryOrigin`. Where a
+  memory came from, as tags on its row. A row with neither tag has no recorded origin, and
+  `origin_of` answers `unattended=None` for it, never `False`. A dream's gist carries
+  `UNATTENDED_TAG` when every memory it merges does.
+- **Added, `MemoryConfig`:** `ambient_recent_cap` (`None`), `ambient_recent_days` (`7.0`),
+  `ambient_excluded_tags` (`()`), `ambient_bumps_salience` (`True`), `same_event_threshold`
+  (`None`). `MemoryRetriever` reads the first four.
+- **Added, `MemoriesCollection.hybrid_search(recent_cap=, recent_window_hours=)`:** at most
+  `recent_cap` of the returned memories were written inside the window. Which recent ones is decided
+  on semantic and keyword evidence, never on recency; the returned order is still the composite's.
+  With a cap the nearest `candidate_limit` memories older than the window are candidates too (one
+  more vector query), so a burst that fills the candidate pool does not leave the list short.
+- **Added, `RetrievalScope.tags_none`:** rows carrying any of these tags are not eligible. An empty
+  tuple excludes nothing.
+- **Added, `MemoriesCollection.find_same_event`** and **`revisions.write_once`, `Written`,
+  `SAME_EVENT_RATIONALE`:** a new memory replaces a stored one from the same source messages
+  (`near_message_ids`: this turn's and the one before) that is at least `threshold` like it. A
+  permanent one is never replaced: `when_permanent="skip"` writes nothing, `"beside"` writes beside
+  it.
+- **Added, `MemoryExtractor.extract(near_message_ids=, reply_is_source=)`**, both keyword-only.
+  `reply_is_source=False` shows the worthiness and extraction models `REPLY_NOT_A_SOURCE`
+  (`"(not given)"`) in place of the reply. The length gates still read the reply as it was.
+- **Added, `load_memory_add_tool(permanent_allowed=, near_message_ids=, same_event_threshold=)`**,
+  keyword-only. A same-event replacement answers in the words a near-duplicate's does:
+  `Stored as [memory:<id>]: <text>. It replaces [memory:<id>] (<n>% the same, written <date>),
+  which said "<text>" and stays readable by its id. If they are two facts and not one, store it
+  again with replace=false.` A `permanent=true` the host's `permanent_allowed` refuses is stored
+  not permanent, and the result ends `It is not kept permanently: making this one permanent needs
+  your person's word.` (`PERMANENT_NEEDS_THE_PERSON`).
+- **Added, `load_memory_keep_tool(permanent_allowed=)`**, keyword-only. Refused:
+  `[NO CHANGE] memory_keep: [memory:<id>] is as it was. It is not kept permanently: making this one
+  permanent needs your person's word.`
+- **Added, `load_memory_recall_tool(salience_bump=)`**, keyword-only, default `0.0`: opening a
+  current memory raises its salience by that much.
+- **Changed, additive:** `MemoriesCollection.find_active_for_consolidation` rows carry `tags`.
+
+### Memory tools: every result says which memories still stand, and an agent can correct, retire and restore its own
+
+A search returned a replaced memory and its replacement as two equal facts, and a retired memory
+came back unmarked. `memory_add` named the id it replaced and not the text, and said nothing of a
+permanent near-twin it left standing. Nothing listed memories without a query, corrected one,
+retired one or brought one back. A bare `date_before` left out the day it named. A cut preview read
+as the whole passage.
+
+**A consumer that reads these tools' text, or passes these arguments by position, is affected by
+the lines marked Changed.**
+
+- **Changed, every memory line** (`memory_search` by query, by `ids` and by `alias`; `memory_list`):
+  after the date it carries how it matched, `[match 0.47]` or `[word match]` (a search by query
+  only), then its state, each part in brackets and before the text: `(alias: <name>)`,
+  `(permanent)`, `(retired, no longer holds: <reason>)`,
+  `(replaced by [memory:<id>] on <date>; that one is current)`, `(corrected by [memory:<id>])`.
+  The line was `- [memory:<id>] [<type>] [<date>] <text>`.
+- **Changed, `memory_search`:** a retired (retracted) memory is no longer found by a query; a read
+  by `ids` or `alias` still opens it, marked. `type_filter` accepts `relational_context` (it was
+  described and refused). A bare date in `date_before` runs to the end of that day and in
+  `date_after` starts at its first minute, in the zone passed as `tz` (UTC without one); a time
+  with no zone is read in that zone too (it was read as UTC). The date filters now reach the files
+  and passages sections. New arguments `limit` (1-50, default the factory's `max_results`) and
+  `offset`. New first lines, each before the first `Found` header:
+  `(More memories may match than the <n> shown: call again with offset=<n>.)`,
+  `(Memories <a>-<b>; no more match.)`,
+  `(More files|passages|files and passages may match than the 5 shown: narrow the query, or use chunk_search for passages.)`,
+  `(Not ids, so not looked up: <ids>. An id is the part after the colon in a [memory:<id>], [media:<id>] or [chunk:<id>] mark.)`.
+  Past the last page: `No more memories match this query past the first <n>.` A passage line and a
+  file line read by id carry their date; a file's text cut at 500 characters says
+  `(cut: the first 500 of <n> characters; ...)` (it ended `...`). An id may be passed as its whole
+  `[memory:<id>]` mark.
+- **Added, `load_memory_search_tool(file_reader=)`:** the name of the host's tool that reads a
+  file whole by its media id, named in that cut mark.
+- **Changed, `memory_recall`:** the first line is a header,
+  `[memory:<id>] [<type>] written <date> <state marks>`; a replaced or corrected memory is followed
+  by `Replaced by [memory:<id>]: "<its text>"` or `Corrected by [memory:<id>]: "<its text>"`, and a
+  memory that replaced others by `It replaced or corrects: [memory:<id>], ... .` Then the text,
+  then the parts: `Parts 0-4 of 37. Next: chunk_id_after=<id>.` (with `Earlier: chunk_id_before=<id>.`
+  after the first page), or `<n> of <total> parts, the ones matching the text|asked for.` Each part
+  is `[chunk:<id>] (part <index>)` and a preview cut at 200 characters is marked
+  `(cut: the first 200 of <n> characters; chunk_recall reads [chunk:<id>] whole)`. It was
+  `[memory:<id>]`, the text, `Parts (<n>):` and unmarked 200-character previews labelled
+  `(position <index>)`.
+- **Added, `load_memory_recall_tool(tz=, consolidations_collection=)`**, both keyword-only.
+- **Changed, `memory_add`:** `memory_type` defaults to `fact` (it was `preference`). A replaced
+  near-duplicate is quoted: `It replaces [memory:<id>] (93% the same, written <date>), which said
+  "<text>" and stays readable by its id. ... If they are two facts and not one, store it again with
+  replace=false.` A near-duplicate left standing is named:
+  `[memory:<id>] (permanent, 93% the same) still stands beside it and says "<text>". Both are now in
+  your memory. Only your person can change or retire a permanent memory.` (for one that is not
+  permanent, without the last two sentences). It answered a plain `Stored as [memory:<id>]: ...`
+  in that case.
+- **Added, `memory_add(replace=, corrects=)`:** `replace=false` writes beside a near-duplicate.
+  `corrects` names the memories the new one replaces, each through `supersede`; a permanent one is
+  left standing with the correction written beside it and linked, unless the host's `person_asked`
+  says the person asked. Refused with nothing stored (`[NO CHANGE] memory_add: ...`): a memory that
+  is not the caller's, a retired one, an already replaced one.
+- **Added, `load_memory_add_tool(tz=, person_asked=)`**, both keyword-only.
+- **Added, `memory_list`** (`load_memory_list_tool`, `MemoryListInput`): memories newest first with
+  no query, by `date_after`, `date_before`, `memory_type`, `permanent`, `has_alias` and `show`
+  (`current`, `retired`, `replaced`, `all`), with `limit`, `offset` and the count of every match.
+- **Added, `memory_update`** (`load_memory_update_tool`, `MemoryUpdateInput`): changes a memory's
+  text, type or name by writing its replacement through `supersede`; the result shows both texts.
+- **Added, `memory_forget`** (`load_memory_forget_tool`, `MemoryForgetInput`): retires a memory
+  through `retract`, with a required reason. The row is kept and opens by id.
+- **Added, `memory_restore`** (`load_memory_restore_tool`, `MemoryRestoreInput`): the undo.
+- **Added, `PersonAsked` and `PERMANENT_IS_THE_PERSONS`** in `threetears.agent.memory.tools`.
+  `memory_update` and `memory_forget` leave a permanent memory standing and say only the person can
+  change it, unless the factory was given `person_asked` and it answers yes for that memory. A
+  resolver that raises is a no.
+- **Changed, `memory_keep`:** its description ends `It cannot be taken back here: only your person
+  can change, retire or un-keep a permanent memory.`
+- **Changed, `chunk_search`:** each hit is
+  `[chunk:<id>] (from [memory:<id>], "<title>" p.<n> "<heading>", written <date>)` and a preview cut
+  at 200 characters is marked as in `memory_recall`; more hits than `limit` puts
+  `(More passages match than the <n> shown: raise limit (up to 20), or narrow the query.)` first.
+- **Changed, `chunk_recall`:** it opens with
+  `[chunk:<id>] part <index> of <total> of [memory:<id>], written <date>, from "<title>".`, a blank
+  line, then the passage whole. It was the passage, a blank line, `From [memory:<id>].`
+- **Added, `tz=` on `load_chunk_search_tool` and `load_chunk_recall_tool`**, keyword-only.
+- **Changed, `revisions.retract`:** one `UPDATE` (`MemoriesCollection.mark_retracted`) in place of
+  an entity save and a salience write, so the check and the write have no window between them. It
+  returns `False` for a memory that is already retracted (it re-tagged it and returned `True`). The
+  memory's salience is kept as a `retracted_salience:<value>` tag. New keyword `allow_permanent`.
+  **A consumer whose collection subclass acts on `save_entity` no longer sees a retraction there:
+  override `mark_retracted`.**
+- **Added, `revisions.restore`, `revisions.correct_beside`, `revisions.marks_of`,
+  `revisions.MemoryMarks`, `supersede(allow_permanent=)`.**
+- **Changed, `MemoriesCollection.search_by_semantic` and `search_by_fts`:** a retracted memory is
+  left out unless `include_retracted=True`. Both, and `search_by_ids` and `find_by_alias`, return
+  six more keys per row: `alias`, `evergreen`, `tags`, `superseded_by`, `superseded_at`,
+  `corrected_by`.
+- **Added, `MemoriesCollection.find_for_recall`, `list_for_user`, `mark_retracted`,
+  `clear_retracted`; `MemoryChunkCollection.find_for_recall`, `count_by_memory_id`.**
+  `find_by_user` is unchanged.
+- **Changed, additive:** `MemoryChunkCollection.find_by_memory_id` and `find_by_conversation_id`
+  rows carry `chunk_index`; `search_by_ids` rows carry `chunk_index` and `date_created`;
+  `search_by_semantic` rows carry `date_created`. `MediaContentCollection.search_by_semantic`,
+  `search_by_fts` and `MemoryChunkCollection.search_by_semantic` take `date_after` and `date_before`.
+
+No migration: no column is added.
+
+### Tools: a date filter's day is public, and a fence a cut left open can be closed
+
+- **Added, `threetears.core.utils.parse_date_bound(label, raw, zone)`** (also in
+  `threetears.core.utils.local_time`): reads a `date_after` / `date_before` filter. A date alone is
+  the whole day in the reader's zone, so a bare `date_before` runs to the end of the day it names; a
+  time with no zone is in the reader's zone; with no zone the day is UTC's. Returns the moment, or
+  the error to show. It is the function the memory tools already used, moved out of
+  `threetears.agent.memory.tools` (where it was the private `_parse_bound`) so a consumer's own tools
+  read a date the same way. No behaviour change in the memory tools.
+- **Added, `threetears.langgraph.fence.closed_fences(text)`:** closes every fence `text` opens and
+  does not close. A result that fences parts of itself can be cut afterwards, to a window or a head;
+  a cut inside a fence takes its closing tag, and everything after it in the prompt then reads as
+  inside. Whoever shows such text after a cut passes it through here. Text whose fences are closed,
+  or that has none, comes back unchanged.
+
+### Wake and scheduled jobs: a fire whose dispatcher is known to be gone is reaped by name
+
+A fire left `'dispatching'` by a process that died is reaped by age (15 minutes by default), because
+the store cannot know who was dispatching it. A consumer that keeps that record can now say so.
+
+- **Added, `WakeFireCollection.reap_fires(fire_ids)` and `JobFireCollection.reap_fires(fire_ids)`:**
+  fail the named fires that are still `'dispatching'`, with the reaper's own marker
+  (`REAPED_DISPATCH_ERROR`), whatever their age. The wake one returns `ReapedFire` rows, as the age
+  sweep does; the job one returns the fire ids. A fire that finished is left as it ended.
+
+### Observe: a log line can say which process wrote it
+
+Several worker processes under one supervisor write one log, and no line said which worker wrote
+it, so a worker that hung or died could not be told from its siblings.
+
+- **Added, `configure_logging(process_id=True)` and `ContextFormatter(process_id=True)`:** every
+  line carries `[pid:<id>]` after the timestamp, before the context tags. Off by default: a
+  consumer that parses the line sees no change until it asks. Loggers attached afterwards with
+  `configure_third_party_logging` follow the same choice.
+
+### Tools: a new plan says what it replaced, and a specialist that is not there names the ones that are
+
+- **Changed, `workflow_declare`:** the result opens `Workflow declared. No plan was there before.`
+  or `Workflow declared. It replaced the plan '<plan>' (<n> steps, <m> done, <status>).`, then the
+  plan and steps as before. It opened `Workflow declared:`. **A consumer that matched that opening
+  with the colon no longer matches.**
+- **Changed, `invoke_tool_llm`:** when the resolver returns `None` the result is
+  `[TOOL ERROR] invoke_tool_llm: specialist '<name>' not found. Your specialists: <names>.`, or
+  `You have no specialists to ask.` The names come from the resolver's `available_names()`, an
+  optional async method (`ToolLlmResolver` is unchanged); a resolver without it, or one whose list
+  fails, gets `It is not on your list.` as before.
+
+### Tools: the arguments of `tool_search` have public names
+
+- **Added, `threetears.agent.tools.relevance.ToolSearchInput` and `ToolSearchFamilyInput`:** the
+  argument schemas `create_tool_search_tool` builds its tool with (the second when `group_of` is
+  given). A consumer that adds an argument of its own extends the class and checks
+  `tool.args_schema` against it. They were `_ToolSearchInput` and `_ToolSearchFamilyInput`; the
+  underscored names are gone.
+
+### Tools: a recall that misses names what is saved
+
+- **Changed, `context_recall` (both `load_workflow_tools` and the `threetears.context_recall`
+  builtin):** asked for an id nothing is saved under, it still opens `Saved result '<id>' not found
+  in this conversation.` and then lists the conversation's saved tool results, newest first, each
+  with the `[ctx:<id>]` mark it opens by: the newest 10, with the count when there are more.
+- **Added, `threetears.agent.tools.context.missing_result_text(context_id, items)`:** the one
+  rendering both tools use.
+
+### Tools: a stored result is recalled in parts
+
+`context_recall` returned a stored result whole, whatever its size. A recalled result is a tool
+message, sent again on every later round of the loop that recalled it, so a consumer either put
+tens of thousands of tokens in every round or cut the recall and left the rest unreachable.
+
+- **Changed, `context_recall` (both `load_workflow_tools` and the `threetears.context_recall`
+  builtin):** one call returns at most `RECALL_MAX_CHARS` (15,000) characters, and takes `offset`.
+  A part opens with its window line, which names the offset of the next part; the line saying a
+  later call replaced the row comes second. A result under the bound is returned as before.
+  **A consumer that read a long recall as the whole result now reads its first part.**
+- **Added, `threetears.agent.tools.context.recalled_text(item, offset=, tz=, label=)` and
+  `RECALL_MAX_CHARS`:** the one rendering both tools use.
+
+### Tools: a note comes before the body it is about
+
+A reader that keeps only the head of a long result (a prompt budget, a stored copy, a digest) lost
+the one line saying the result was incomplete, because every tool wrote that line last. A page cut
+at its bound was discussed as if whole; a recall that lost a branch was presented as everything.
+
+- **Added, `TextWindow.rendered(note_first=True, notes=())`:** the window line first, then the
+  tool's other notes one per line, a blank line, then the text. The trailing form stays for a
+  caller that has not moved; `notes` is refused without `note_first`.
+- **Changed, `web_fetch`, `parse_document`, `dictionary`, the transcript `media_analyze` returns and
+  the copy `create_context_save_node` stores:** each renders note-first. `parse_document` puts its
+  OCR note second, above the title, pages and words. A stored copy's `short_desc` and `long_desc`
+  are of the result, not of the note.
+- **Changed, `memory_search`:** `(Partial results: ... failed, so more may exist.)` is the first
+  line, not the last. Sections are parted by one blank line and a result no longer opens with one.
+- **Enforcement, `tests/enforcement/test_a_tool_states_its_notes_first.py`:** no window is rendered
+  without `note_first=True`, no note is glued on behind a body, and no note is appended to a list
+  of lines after lines that are not notes, in any package.
+
+### Tools: a call that changed nothing is not a failure
+
+A consumer read failure only from `[TOOL ERROR]`. A duplicate `add_todo` came back as plain text and
+was recorded as done; a todo that was not found came back as an error, and a consumer that refuses a
+failed tool for the rest of a turn then refused every later call to it.
+
+- **Added, `threetears.agent.tools.utils`:** `NO_CHANGE_PREFIX` (`[NO CHANGE]`), `TOOL_ERROR_PREFIX`,
+  `tool_no_change(tool_name, what)` and `tool_result_status(result)`, which answers `ok`,
+  `no_change` or `error` from how the text opens. A consumer calls it and parses no sentence.
+- **Changed, `add_todo`:** a duplicate answers `[NO CHANGE] add_todo: ...`.
+- **Changed, `complete_todo`, `update_todo`, `remove_todo`:** a todo that is not there answers
+  `[NO CHANGE]` and lists what the list holds, or the lists that exist. `update_todo` with nothing
+  to change is a `[TOOL ERROR]`.
+- **Changed, `variable_set`, `variable_get`:** at the cap, and for a name that is not saved, the
+  answer is `[NO CHANGE]` with the saved names. A store failure is a `[TOOL ERROR]`, where it raised.
+- **Added, `VariableLimitError`** (a `ValueError`), raised by `ToolContextManager.set_variable` at
+  the cap.
+
+### Tools: `tool_search` shows arguments and families, and its caller judges the fit
+
+- **Added, the model's arguments `limit` and, with families, `family`:** `family` alone lists a
+  family, `family` with a query searches it, and a family that does not exist is answered with the
+  families that do.
+- **Changed, a hit line:** `- name(argument: type, optional?: type): description`. Arguments a host
+  injects are not shown.
+- **Added, `create_tool_search_tool(..., max_limit=DEFAULT_SEARCH_MAX_LIMIT, group_of=None, nothing_fits=None)`**
+  (`DEFAULT_SEARCH_MAX_LIMIT` is 20):
+  `group_of` names a tool's family, and a hit list then ends `Also in the <family> family: ...`.
+  `nothing_fits(query, ranked)` is handed the whole scored ranking and answers whether to offer none
+  of it. The factory holds no similarity floor.
+- **Added, `ToolSearchResult.ranked`:** the whole ranking with scores; empty when the ranking did
+  not run.
+- **Added, `create_tool_search_tool(..., offer=None)`:** `offer(found, catalog)` answers with the
+  line for each tool found and the tools `on_hit` receives, for a search and for a listed family. A
+  consumer whose surface keeps some tools behind another names the way in on the tool's line and
+  hands that over instead. Left out, each tool is shown as `tool_hit_line` and handed over as it is.
+  Every other sentence of the result stays the factory's.
+- **Added, `tool_arguments`, `tool_hit_line`, `tool_families`, `also_in_family`:** the pieces a
+  consumer with its own hit lines uses instead of writing them again.
+- **Changed, the word-match fallback:** its first line says the tools were found by matching words
+  only, because the ranked search did not run.
+
+### Wake, memory: times in the zone the caller names
+
+A wake listing printed `2026-10-10T04:11:20.123456+00:00` and a memory `Oct 9, 2026 at 3:00 PM` with
+no zone, to a reader whose clock is somewhere else.
+
+- **Added, `threetears.core.utils.render_local_time(value, tz)` and `resolve_zone(tz)`:**
+  `Oct 9, 2026 at 9:11 PM PDT`. A name that is not a zone is refused, not read as UTC.
+- **Added, `tz=` on `load_memory_search_tool`, the wake schedule create, update, list and resume
+  loaders, and the webhook subscription create, update and list loaders:** a `tzinfo` or an IANA
+  name. Every time in a result is shown in it and names it. Ids stay as stored. With no `tz` the
+  text is unchanged.
+- **Added, `threetears.agent.wake.format_wake_time` and `describe_schedule`:** a wake's time and
+  its schedule in words (`every 4 hours`, `daily at 03:00 America/Los_Angeles`).
+
+### Tools: a stored result a later call replaced says so
+
+A result saved under its input's key is one row, refreshed by the same call again. A handle from the
+first call then opened the second call's answer with nothing saying it had changed.
+
+- **Changed, `context_recall`** (the workflow tool and the `threetears.context_recall` builtin): a
+  row whose `date_updated` is after its `date_created` opens with
+  `(Updated at <time>: a later call with the same input replaced what this first held.)`, a blank
+  line, then the result. A row written once reads as before.
+- **Added, `load_workflow_tools(tool_context, tz=None)` and `ContextRecallTool(tz=None)`** (the
+  builtin's factory reads `config["tz"]`): the zone that time is said in; UTC, and named, without one.
+- **Added, `threetears.agent.tools.context.refreshed_note(item, tz=None)`.**
+- **Fixed, `ToolContextManager.save_tool_result`:** on a refresh the in-memory row keeps the
+  `date_created` the stored row keeps, where it took the refresh's.
+
+### Wake: a change to a protected wake says what was there before
+
+- **Changed, `update_protected`:** returns `ProtectedWakeChange` (`schedule`, `schedule_type`,
+  `config_before`, `config_after`, `next_fire_before`, `next_fire_after`, `changed`, `said(tz)`)
+  where it returned the entity. The wake as it now stands is `.schedule`.
+  `said()` reads `Was every 3 hours, next fire <time>. Now every 6 hours, next fire <time>.`
+
+### Wake: a check that found nothing is a fire status of its own
+
+A consumer can run a check before a fire starts anything -- new mail, a changed page -- and wake the
+agent only when it finds something. A check that found nothing ran no turn, but the only statuses
+for it were `fired` and `fired_silent`, which the fire limits count: a check every ten minutes would
+spend an agent's whole budget.
+
+- **Added, fire status `checked_quiet`:** a handler returns it for a check that found nothing. It is
+  not counted by the fire limits, not a failure, and not a `context_from` source.
+- **Migration `agent_wake` v008** widens `wake_fires_status_check` to accept it (drop and re-add,
+  idempotent).
+- **Changed, `context_from`:** a downstream wake reads its upstream's latest fire past a check's
+  quiet runs (`checked_quiet` only), so they no longer hide its last find. Any other latest fire
+  counts as it is: a failed or skipped one still means the older output is stale, and the
+  downstream gets nothing. `WakeFireCollection.latest_for_schedule` gains `statuses=`.
+- A check that must start no conversation runs in the tick's dispatch callback and returns
+  `checked_quiet` without calling `dispatch_wake`, which starts a fire's conversation before its
+  handler runs.
+
+### Search: a read that did not happen says why
+
+The extraction status says `refused` for robots.txt, a content type and a size cap alike, and
+`failed` for an error status, a transport failure and a page with no text. A caller could not tell
+its reader which one stopped the read.
+
+- **Added, facet `EXTRACTION_REASON_FACET` (`extraction_reason`):** every refused or failed
+  extraction records why, in a sentence a person can read (a cap's own message names the cap).
+- **Changed, `web_fetch`:** "No readable text could be taken from <url>" ends with that reason.
+
+### Testing: a NATS server container without the deprecated wait
+
+`testcontainers.nats.NatsContainer` waits through testcontainers' deprecated
+`wait_container_is_ready` / `wait_for_logs` (still so in 4.15.0), so every live NATS test carried
+two deprecation warnings.
+
+- **Added, `threetears.core.testing.fixtures.nats_server(image)` and `nats_server_uri(container)`:**
+  a NATS container that waits with `LogMessageWaitStrategy`, and the URI it serves. The
+  `nats_container` fixture and every live NATS test use them.
+- **Changed, the workspace pytest config:** a `DeprecationWarning` from testcontainers is an error,
+  and discord.py 2.7.1's own `asyncio.iscoroutinefunction` call in `Client.event` is ignored.
+
+## v0.67.0 -- 2026-10-13
+
+### Datasources: a pod can list its own recorded exports
+
+A pod deletes each export once its load has proven it. A pod killed mid-load left its exports in the
+bucket with nothing to find them by: the pod held the only list in memory. The hub already records
+every export it ran (its `datasource_export_objects` table); this is the ask that reads that record
+back for the pod it belongs to.
+
+- **Added, `DatasourceQueryClient.list_own_exports(datasource_name, *, correlation_id=None,
+  max_pages=EXPORT_LIST_MAX_PAGES)`:**
+  every export the hub holds a record of for the calling pod on a datasource, read to the last page,
+  as `DatasourceExportRecord`s (`destination`, `object_prefix`, `date_created`). Each is deleted
+  through the existing `delete_export` by its `destination`. The ask names no pod: the hub answers
+  for the pod its verified identity token names, and the request has no field by which another
+  could be asked about. It takes its turn under `max_concurrent_asks` like every other ask. A
+  cursor the hub has already given is refused (`MALFORMED_RESPONSE`), as are a next page past
+  `max_pages` (1000 by default) and a success carrying no page; none is read as "no exports".
+- **Added, the ask on the wire:** `DatasourceQueryRequest.export_list`
+  (`DatasourceExportListRequest`, one page by `cursor`) and `DatasourceQueryResponse.export_list`
+  (`DatasourceExportListResult`: `exports`, `next_cursor`), on the datasource's existing query
+  subject. No subject and no NATS grant is added. The field is left off every request that does not
+  make the ask, so a query, fingerprint, export or delete from this release is byte for byte what
+  an older hub reads.
+- **Added, `DatasourceExportListUnsupportedError`** (a `DatasourceQueryError`, code
+  `EXPORT_LIST_UNSUPPORTED`): the hub does not know the ask. Raised, and logged at WARNING, when
+  the hub answers the ask `MALFORMED_REQUEST`: a hub on an earlier release answers that to a field
+  its request model forbids, and one on this release's models with no handler answers it to a
+  request carrying no ask it runs. It is its own type so that "the hub could not be asked" is never
+  read as "nothing recorded": a caller that lists in order to clear catches it and clears nothing.
+  A hub with the models and no handler checks `datasource.read` before it gets that far, so to a
+  pod that has lost its read grant it answers `ACCESS_DENIED`. That stays a `DatasourceQueryError`
+  `ACCESS_DENIED`, logged at WARNING, with a message saying the hub has no handler and the pod no
+  read grant; the README's sample shows a clearing caller treating it as nothing to clear.
+- **The hub's side is specified, not built here:** `packages/datasources/README.md`, "A pod's own
+  exports", sets out the message shapes, the verified-caller rule, the paging (by destination,
+  through `threetears.core.pagination.Keyset`), and what each hub state answers today.
+- **Deploying it:** pods and hubs upgrade in either order. A pod on this release against a hub
+  that has no handler for the ask gets `DatasourceExportListUnsupportedError` from
+  `list_own_exports` and nothing else changes for it: its queries, exports and deletes are
+  answered as before, and exports a killed run left stay on the operator's surface
+  (`aibots datasource exports`) until the hub is upgraded. A hub that answers the ask breaks no
+  older pod, which never sends it and ignores the reply field. No migration, no new grant and no
+  operator step. **A hub relocked to this release ships the handler in the same change:** its pin
+  (`3tears>=0.66.0,<1.0.0`) reaches this release on a plain relock, and without the handler the hub
+  answers the ask as above. The same change must also add `export_list` to
+  `docs/data-access-paths.md`, because the hub's
+  `tests/enforcement/test_data_access_paths_name_every_datasource_ask.py` reads the asks off this
+  request model and fails until the doc names it (its planted-doc case, which expects exactly
+  `["export", "export_delete"]` missing, fails too and needs `export_list` added), and must
+  correct the docstring of `_deserialize_param` in `aibots/hub/broker/proxy.py`, which names
+  `NatsProxyL3Backend._serialize_param`, now `threetears.core.backends.schema_sql.transport_param`.
+
+### Core: a bulk statement is sized by the whole request the rail sends
+
+- **Fixed, `SchemaBackedCollection.save_rows` and `SqlL3Backend.upsert_many`:** a page could be split
+  into statements larger than the bus allows, and the proxy then raised `DataLayerUnavailableError`
+  after earlier batches had been sent. Two things were left out of a statement's size. `bulk_batches`
+  measured a row as JSON with `bytes` in base64 (four characters for three bytes), and
+  `NatsProxyL3Backend` sends `bytes` as `\x` and hex (two characters a byte), so a statement
+  measured at `BULK_MAX_BYTES` (768 KB) carried up to 1.15 MB of parameters. And only parameters
+  were measured: the SQL text grows by a `$N` placeholder a value (a `$N::jsonb` for a jsonb column),
+  so a wide jsonb table's statement passed 1 MiB on its text. Every statement's whole request -- its
+  SQL text, its parameters as the rail sends them and the envelope around them -- is now sized to
+  the byte, and `BULK_MAX_BYTES` and `max_bytes` bound that. Statements come out somewhat smaller
+  than before for the same bound, by their text and envelope. A row larger than the bound still
+  travels alone.
+- **Added, `threetears.core.backends.schema_sql.transport_param` and `transport_params_bytes`:** the
+  form a statement parameter crosses the L3 rail in, and the bytes a statement's parameters occupy
+  there. The one owner of that form: `NatsProxyL3Backend` sends every parameter through
+  `transport_param` (its private copy is gone) and `bulk_batches` sizes by
+  `transport_params_bytes`, so the two cannot drift apart again; a test compares the measured size
+  with the bytes the proxy puts on the bus for each parameter type.
+- **Added, `NatsProxyL3Backend.statement_request_bytes(query, params)`** (and the same on the
+  connections it hands out, which measure the `l3.tx.*` request inside a transaction): the size of
+  the message one statement is sent as, built by the payload builder the send path uses and
+  encoded by its one encoder. **Added, `schema_sql.bulk_insert_batches`**, which splits a bulk
+  INSERT's rows by that measure plus each row's placeholders (`bulk_insert_row_sql`, the builder
+  `build_bulk_insert_sql` uses) and values, and `bulk_batches(..., base_bytes=, position_bytes=)`
+  under it; with neither, `bulk_batches` sizes as before. A transport with no
+  `statement_request_bytes` (a direct asyncpg pool) has its statements sized by text and
+  parameters alone. Tests compare the measure with the bytes put on the bus, in and out of a
+  transaction, and cut a page exactly at one statement's request.
+- **For a caller that scaled `max_bytes` down to make room for hex** (the geography pod's
+  `WIRE_BYTES_PER_SIZED_BYTE`): that allowance is no longer needed and now only makes statements
+  smaller than they need be.
+
+## v0.66.0 -- 2026-10-13
+
+### Core: a replay guard owns its nonce bucket, on memory
+
+- **Changed, `threetears.core.coordination.ReplayGuard`:** a guard that declares its bucket
+  (`create_if_missing=True`, the default) declares it through `ensure_kv_bucket` as its owner, on
+  memory storage, with `drop_file_storage=True`. A nonce bucket left live on file storage (opened
+  before it was declared, or by hand) is recreated on memory, empty, where before the guard bound it
+  as it was and NATS logged the storage mismatch at every boot. Emptying it reopens no replay: the
+  recreate's creation time refuses anything issued before it, the same rule that makes a broker
+  wipe safe. A bind-only guard (`create_if_missing=False`) still only binds and never recreates.
+  **Breaking for a client double with `kv_bucket` alone:** a declaring guard now refuses, at
+  construction with a `TypeError`, a client without `ensure_kv_bucket`; `NatsClient` and
+  `threetears.core.testing.FakeNatsClient` have it. Its constructor's overloads say the same to a
+  type checker: a declaring guard takes a `KvDeclaringClient`, a bind-only one a `KvCapable`.
+  **Breaking for a declaring consumer's NATS grants:** the identity a declaring guard runs as needs
+  `STREAM.UPDATE` and `STREAM.DELETE` on its nonce stream as well as `STREAM.CREATE`, or its bind
+  fails at startup while the bucket is still file-backed. The registry's `pop_nonces` grant already
+  carries them; the hub (proxy nonces), identity (DPoP nonces), survey and scriob check theirs before
+  relocking. `docs/design-durable-coordination.md` drops the by-hand nonce-bucket deletion.
+- **Added, `threetears.nats.kv.KvDeclaringClient`:** a client that both opens and declares KV
+  buckets (`KvCapable` and `KvDeclaring` together), for a consumer that owns its bucket.
+
+### NATS: one write-health watch for a persisted copy
+
+- **Added, `threetears.nats.CopyWriteHealth` and `WRITE_FAILURE_THRESHOLD`:** whether writes to a
+  persisted-copy bucket are landing, for a READINESS check (never liveness: a closed connection is
+  already the `nats` liveness check's to report). It counts write operations, not keys: a single
+  put or delete is one, and a pass of many writes run inside `operation()` (a sync, a write-back) is
+  one, failed if any of its writes failed and counting as nothing if it wrote nothing. `persisting`
+  turns `False` after `WRITE_FAILURE_THRESHOLD` (3) failed operations in a row, logged once at
+  ERROR, and back on the next that lands, logged at INFO. A pass belongs to the task that opened it,
+  so concurrent passes and writes (a heartbeat sweep beside a registration) are each counted alone.
+- **Changed, `threetears.registry.ToolCatalog`:** uses it instead of its own copy. A write-back, a
+  pod's deregistration sweep and a promotion each count as one operation, where before every entry
+  they wrote counted, so one failed pass over a large catalog no longer takes the registry out of
+  rotation by itself. `threetears.registry.catalog.WRITE_FAILURE_THRESHOLD` is the shared value.
+
+### Geo: a tile source's caches are its own
+
+- **Changed, breaking, `threetears.geo.TileCollection` and `FeatureCache`:** each takes a required
+  `cache_scope`, the tile source's identity, and its table name carries it
+  (`geo_tiles_<scope>`, `geo_features_<scope>`). Every tier the collection framework keys by
+  table -- the pod-local L1 table, the NATS L2 keys, the cross-pod build lock and the registry
+  entry -- was shared by every source under one name, and tiles are keyed by
+  `(layer, version, z, x, y)` alone: two sources serving a layer of the same name (two
+  datasources, or a customer's datasource and a platform layer, both starting at version 1)
+  answered for each other from whichever built a tile first, across tenants. Only the object
+  store was scoped (by `datasource_name`, unchanged). `check_cache_scope` refuses anything but
+  a lowercase identifier of at most `MAX_CACHE_SCOPE_LENGTH` (48) characters, since the scope
+  names SQL tables and NATS KV keys unquoted: `ds_<32 hex>` and `ns_<32 hex>` fit. A caller
+  whose L1 backend declares the tables by name declares the scoped names.
+
+### Geo: building layers from other layers
+
+- **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
+  say), naming each piece `<coarse id>-<fine id>`. Each part of a cut is judged on its own and
+  dropped when narrower or smaller than the caller's thresholds (`min_width_m`, `min_area_km2`),
+  since two sources' boundaries disagree by a few meters; features no piece covers are reported.
+  `replace_features` swaps a layer's features for a set of keys, refusing replacements that cover
+  other keys. `missing_features` names the ids a consumer needs that a layer lacks. `mean_width_m`
+  and `area_km2` measure in a local projection around each shape's latitude. Measured on US
+  counties cut by congressional districts: slivers 4 to 10 m wide, coastline fragments up to
+  0.6 km², the smallest real piece 5.3 km².
+
+### Datasources: geo blocks beside their tables, and the borrowed-pool config named for what it is
+
+- **Added, `GeoConfig.check_against_tables`:** refuses a geo layer that names a table, or a column
+  of it, the declaring tables lack, with `GeoLayerConfig.columns_read` listing every column a layer
+  reads (feature id, geometry, version, bounding box, and its bands' attributes, rank and rollup).
+  The one copy the SDK and the Hub both run for a tool pod's `geo:` block.
+- **Added, `threetears.datasources.geo_reload`:** the contract a tool pod uses to report that it
+  has written a new generation of its geography layers' shapes: `report_geo_layers_reloaded`, its
+  request and reply models, and the hub's obligations. The hub moves each layer's tile version to
+  the reported generation, forward only (a generation below the version is refused
+  `GENERATION_BEHIND` with the version in the reply). A layer never reported has no version, and
+  nothing of it is served until its first report sets one. New subject
+  `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
+  publish and to the hub to answer. The hub serves a layer's tiles at exactly two versions: its
+  current one and the PREVIOUS one, the version the current one replaced, which is recorded when
+  the version moves and never inferred as one below (generations skip: a failed, unreported load
+  leaves rows stamped with a generation nobody reported). The success reply carries each layer's
+  previous version (`previous_versions`), `report_geo_layers_reloaded` returns each layer's
+  `LayerVersions` (`version`, `previous`), and `generations_to_delete` names every stamped
+  generation a pod deletes after it: all but those two, failed loads' included. A report whose
+  generations break the request's bounds is refused `INVALID_REQUEST` without asking the hub.
+- **Added, `EpochClient.advance_to`:** moves a durable epoch forward to a target in one statement and
+  never back, so concurrent writers meeting one target leave it there (where `bump` would carry it
+  past). Durable subjects only. It, and a durable `bump`, record the epoch each move replaced;
+  it returns a `DurableEpoch` (`epoch`, `previous`); `EpochClient.versions` reads both in one query. New
+  migration epoch v002 adds the nullable `config_epochs.previous_epoch` column; existing rows read
+  `None` until their next move.
+- **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
+  its docstring asked once a second use appeared: a tool pod's platform geography layers are read
+  for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
+  discriminator is unchanged (`agent_internal`). No alias: rename at the call site. The Hub's
+  OpenAPI schema component carries the new name too, so the TypeScript clients generated from it
+  (the SDK's `web-api-client`) and any hand-written interface naming the old one follow on their
+  next regeneration.
+
+### Core: L1 bulk writes, and imports without the NATS client
+
+- **Added, L1 backends:** `upsert_many` writes many rows as `upsert` would one by one (SQLite in
+  one transaction; DuckDB in one columnar statement, about twenty times faster than
+  `executemany`), and `upsert` is now `upsert_many` of one row, so the two cannot drift. A batch
+  repeating a key keeps its last row. `column_types` exposes the type codes a table's columns are
+  read and written by. `DuckDBBackend.load_parquet` loads a Parquet file into a table in one
+  statement. First consumer: the reports product's Tableau evaluator, which loads an extract
+  snapshot into DuckDB L1 (its backlog item RPT-T3B1) and today bulk-inserts on the backend's
+  connection and reads its private schema. **Breaking for out-of-repo implementers:** `upsert_many`
+  and `column_types` are now part of the `L1Backend` protocol, so an L1 backend written outside
+  3tears must add both to keep satisfying it.
+- **Fixed, `SQLiteBackend`:** a write that fails for any reason rolls its transaction back. It
+  rolled back only on `OperationalError`, so a constraint or binding error left `BEGIN IMMEDIATE`
+  open, holding the write lock against the thread's next write. A table whose every column is its
+  key takes an upsert (`DO NOTHING`, where it built an empty `DO UPDATE SET`). A write SQLite rolled
+  back by itself (a full disk, an I/O error, an interrupt) raises its own error, not a failed
+  `ROLLBACK`'s "no transaction is active".
+- **Fixed, L1 backends:** every table and column name either backend interpolates is quoted through
+  one helper, `threetears.core.cache.base.quote_identifier`, so a table or key column named with a
+  space or capitals (a converted extract's `% of Exp. In`) is created, written, read and deleted
+  alike. Only the bulk writes quoted before, so such a table could be filled but not read by id.
+- **Fixed:** `DerivedCollection`, and with it `threetears.geo`, no longer needs the optional NATS
+  client (core's `nats` extra) to import or to derive on a single pod. With no NATS client there is
+  no peer to coordinate with, so a derivation runs under the in-process gate alone and never
+  imports the cross-pod lock; with a client it takes the lock, which needs the extra.
+
+### Agent tools: a coalesced operation runs a request its lost lease left, and one first run for replicas that start together
+
+- **Fixed, a unit whose lease was lost left its request with nobody to run it.** `CoalescedRun`
+  cancels such a unit and records its request again, and the run ends `failed: LeaseLost`; with no
+  other replica draining, the request then sat until a manual request or a restart.
+  `CoalescedOperation` now looks again after it, as it does after a run that found the lease held:
+  once the lease has had its lifetime it runs the request if no live holder is there to.
+- **Fixed, a bucket error while the first run was being decided ended the wait for good.**
+  `start_when_needed` reads and writes the request beside the lease; an error there was not among a
+  pod's `retry_on` (its own check's errors), so the wait ended, the status read failed, and no first
+  run started. Those reads and writes are now retried like the errors a pod names, whatever the
+  bucket's client raises, and logged.
+- **Fixed, replicas starting together could run the first unit twice.** A replica whose `needed`
+  says yes while the lease is held (and no run is in progress on it) records no request: the run in
+  progress is the first run. It waits a lease's lifetime at a time and asks `needed` again once no
+  live holder remains, so a first run that failed is still run. Until now it recorded a request,
+  which a holder that had already taken its own ran as a second unit after the first.
+- **Fixed, an entry a replica could not remove could hide its next run.** A progress entry now
+  names the holding of the lease it was written under (`holding`, when the lease was taken), and a
+  reader takes it for the run in progress only when that is the holding the lease has now. A
+  `work_over` entry left behind by an earlier holding, the same replica's included, no longer says
+  anything of the run that has just taken the lease; nor does that run depend on its own first
+  write landing. An entry naming no holding is still its holder's present run's. A unit that
+  follows one whose work was over removes its progress when it ends, as any unit does.
+- **Added, `KVLease.held(key)`** (`LeaseHolding(holder, acquired_at)`): who holds a lease and since
+  when. `holder(key)` is its holder. **Changed, a renewal keeps `acquired_at`**: `refresh` wrote the
+  time of the renewal there, though the envelope documents it as when the lease was first taken; it
+  now keeps that, so it names one holding. Nothing else reads the field.
+- **Changed, the module's "no request lost" says its bound:** a request is lost only when the
+  process holding it is killed after taking it and before its unit ends (`CoalescedRun` takes a
+  request before it runs).
+
+### Agent tools: a coalesced operation says how far it is on every replica, once, and when its work is over
+
+- **Changed, the replica that runs says how far it is.** `status_across_replicas` (with
+  `shared_progress=`) carries `run_progress`: the progress of the run in progress wherever it runs
+  (what this replica's run last reported while one runs here, what the other replica wrote while one
+  runs there, `None` when none runs). `OperationStatusTool` says it after the running clause on
+  both: `running since <time>: <summary>` and `running on another replica (<pod_id>): <summary>`. A
+  pod sharing progress needs no `progress=` to show a run's.
+- **Changed, the sentence says a line once.** `; now: <summary>` of the tool's `progress=` is left
+  out when it is the line just said for the run in progress, and said when it is another
+  (`running on another replica (replica-a): Loading · 1 of 2 states; now: Ready`). Until now both
+  were printed, the same line twice.
+- **One status call reads the lease and the progress once.** The run's progress is in the status the
+  tool already read, so a pod's `progress=` no longer asks `running_elsewhere()` for it;
+  `running_elsewhere()` stays for callers outside the status tool.
+- **Added, `CoalescedOperation.work_over()`** (and `SharedProgress.over()`): a unit that holds its
+  lease past its work says the work is over. Its progress entry is replaced by one saying only that
+  (`{"holder": <pod_id>, "work_over": true}`), which a reader takes over the held lease: the other
+  replicas see no run in progress from then on, though the lease is held until the unit returns.
+  The entry is left until the lease is let go, then removed. Only the holder's own entry ends its run
+  early. The replica whose unit it is still reports `running`, with no progress.
+- **Changed, `CoalescedOperation.report_progress`** also takes a callable, asked only when the
+  progress is about to be written or shown and never when the call is dropped (no unit runs here,
+  the work is over, the pod is stopping); a mapping is still taken. A callable that raises is logged
+  and nothing is written or shown for it. `SharedProgress.report()` / `.reported()` keep and answer
+  what the run in progress here reports. `holder` and `work_over` in a pod's own progress are the
+  record's and are dropped.
+- **Changed, a run that did nothing is never a replica's last run.** With `SharedOutcome(ran=)`, a
+  succeeded run `ran` refuses was kept as `last` when the replica had no run before it, and so
+  reported (`succeeded`, with its empty result) while no record existed. It is not a run: the
+  replica now reports what it reported before, and with no run of its own and none recorded, `idle`.
+  A failed `start_when_needed` wait is no longer replaced by such a run either.
+
+### Agent tools: one primitive for a pod's operation coordinated across replicas
+
+- **Added, `threetears.agent.tools.coalesced_operation.CoalescedOperation(name, lease, key, unit, *,
+  ttl, renew_every, lease_retry_seconds=None, render_result=None, ran_nothing=None)`:** what the
+  geography and ENR reports pods each wrote by hand around a coalesced load. It owns the
+  `CoalescedRun` on the lease (one unit at a time across replicas; a request during a unit is run
+  once after it), the `BackgroundOperation` over it (`.operation`, which a pod registers
+  `RequestOperationTool` and `OperationStatusTool` on) with its shared outcome record, the first
+  run (`start_when_needed`, which also resumes a request still recorded when the pod starts), the
+  look-again after a run that found the lease held (it survives a bucket that cannot be asked, and
+  starts nothing while a live holder holds the lease or once the holder took the request), the
+  progress of the unit in progress (`report_progress`), and `stop(within=)`, which answers whether
+  everything ended. A run answers `Drained(results=...)`: each unit's own result, in order;
+  `rendered_drain` renders it when the pod gives no `render_result`.
+- **One behaviour for a run that ran nothing.** A run on a replica that cannot hold the lease, or
+  started for a request the run before it already took, runs no unit: it is `Drained()`, it is not
+  written to the shared record, and it does not replace the replica's last run that did run a unit.
+  Neither pod's branch for it is needed (geography's repeat of the previous result and its
+  `NothingLeftToLoadError`; the reports pod's kept last result).
+- **Added, `SharedProgress(lease, key)` and `BackgroundOperation(..., shared_progress=)`**
+  (`RunningElsewhere` is what it answers): the lease holder writes what its run is doing to
+  `<key>.progress` beside the lease, and `status_across_replicas` on a replica that is not running
+  reports `state: running`, `running: true` and `elsewhere: {replica, progress}` while another
+  replica holds the lease; `OperationStatusTool` says `running on another replica (<pod_id>): <summary>`.
+  **What makes an entry count is the lease, never the entry's age:** a reader asks who holds the
+  lease, and the entry is that holder's progress only when it names that holder (an entry naming no
+  writer, as code before this wrote, is taken for the holder's). A holder that died is shown as
+  running for as long as its lease still names it (the lease's own expiry) and not after; nothing
+  here reads a clock or expires an entry. The holder removes its entry when its unit ends. It is
+  read when the status is asked (one read of the lease, and one of the entry while it is held), not
+  followed in the background.
+- **Changed, `BackgroundOperation` with `shared=`:** a run that did nothing (`SharedOutcome(ran=)`)
+  no longer replaces `last` when the replica has a last run that did something, so that run stays
+  reported, and stays the one written to a record that lacks it.
+- **Changed, `OperationStatusTool(progress=)`** may be a coroutine function, awaited when the tool
+  is called; `answer(operation)`, which cannot await, says the progress is unavailable.
+- **Added, `CoalescedRun.drain_results()`:** `drain`, answering what each run returned, in order,
+  rather than how many there were; `drain()` is its length, as before.
+- **Added, `KVLease.holder(key)`:** who holds a lease now, without contending for it: the holder's
+  `pod_id`, or `None` when the key is free, its entry has expired, or it is not an entry a lease wrote.
+
+### Datasources: the query client can limit its asks at once
+
+- **Added, `DatasourceQueryClient(..., max_concurrent_asks=None)`:** how many asks the client has
+  out at once; the rest wait their turn. The hub runs at most a datasource's cap at once and refuses
+  the rest `DATASOURCE_BUSY`, so a caller that reads side by side (a bulk read's pages, several
+  tables at once, through `read_all`, `read_parts`, `read_partitions` or its own calls) sets this to
+  that cap and stays under it as a whole. The turn is taken in the one method every operation
+  reaches the bus through, so `query`, `relation_fingerprint`, `relation_fingerprint_groups`,
+  `export` and `delete_export` all take it, and it is held while a busy hub is asked again. A test
+  lists every public coroutine of the client and fails when one is added that is not shown to take
+  its turn. `None` (the default) sends every ask as it is made, as before; a limit below one raises
+  `ValueError`. The ENR reports pod's own wrapper class did this until now.
+
+### Agent tools: a run that did nothing is not the newest run, and a lost record is written again
+
+- **Added, `SharedOutcome(..., ran=)`:** whether a succeeded run's result is of a run that did the
+  work (every result is, without it). An operation over a `CoalescedRun` returns at once on a
+  replica that could not hold the lease, with a result saying nothing ran; recorded, each such
+  return stood as the newest outcome and hid the load another replica was still running, or the one
+  that last failed. A succeeded run `ran` refuses is never written (`SharedOutcome.records(outcome)`,
+  which `publish` asks), and in `BackgroundOperation.status_across_replicas` the replica it ended on
+  reports the record's run over it whatever the finish times; with no record it reports its own. A
+  failed run is always recorded and `ran` is not asked. A `ran` that raises is logged and the run is
+  compared by its finish time.
+- **Changed, a run whose record could not be written is written when its replica's status is next
+  asked.** `status_across_replicas` writes this replica's own last run when it is a run to record
+  and the record is absent or holds an earlier one (the bucket was out of reach when the run ended),
+  so the other replicas report it from then on rather than from the next run. A write that fails
+  again is logged and the status answers. A replica whose run the record already holds writes
+  nothing, and a `start_when_needed` wait that failed is reported by its replica and never recorded.
+
+### Agent tools: every replica's status reports the newest finished run
+
+- **Added, `threetears.agent.tools.background_operation.SharedOutcome(lease, key, *, render_result=None)`
+  and `BackgroundOperation(..., shared=)`.** A background operation kept how its last run ended in
+  the process that ran it, and a tool pod runs as several replicas, so a status call answered by
+  another replica reported that replica's older run (or `idle`). An operation built with `shared=`
+  also writes each finished run, succeeded or failed, to one key beside its lease (`<key>.outcome`
+  in the lease's bucket, under its owner scope via `KVLease.stored_key`), by compare-and-swap on the
+  entry's revision: a run is written unless the entry holds one that finished later. Nothing expires
+  the entry.
+- **Added, `BackgroundOperation.status_across_replicas(render_result=None)`**, which
+  `OperationStatusTool` now answers from: `last` is the newer of the replica's own last run and the
+  record's, and carries `replica` (the `pod_id` of the lease factory that ran it) and
+  `other_replica`. The sentence says so when the run was another replica's: `the last run, on
+  another replica (<pod_id>), succeeded at ...`. `status()`, `last` and `state` still describe the
+  replica's own runs.
+- **A result is stored as rendered JSON.** `SharedOutcome` stores `render_result(result)` through
+  `serialize_to_json`, and a result read from the record is reported as stored, not rendered again:
+  give `SharedOutcome` the `render_result` the status tool has. `RecordedOutcome` is what
+  `SharedOutcome.read()` returns.
+- **The record never decides how a run ended or whether the status answers.** A record that cannot
+  be written (the bucket is out of reach, the result does not encode, `render_result` raises) or
+  read (absent, unreachable, in a form this code does not read) is logged and the replica reports
+  its own outcome, so replicas that write no record and replicas that do run side by side. Without
+  `shared=` nothing changes, and no caller needs to.
+
+### Repository: agent attribution in a commit fails CI
+
+- **Added, `scripts/check-attribution.sh`**, run by CI's `check` job on every pull request over the
+  commits it adds: a `Co-Authored-By` naming an agent, an Anthropic noreply address, a "Generated
+  with" footer or a `Claude-Session` trailer fails the PR (CLAUDE.md, "No agent attribution").
+  `--message <file>` checks one message, for a commit-msg hook. Commits already on the base are
+  never examined. Six commits on `feature/reports` landed with such trailers before the check
+  existed (f6d43aa0 and 5440a306 with `Co-Authored-By`; 4d575851, f114794c, d5897cd7 and a491ab0a
+  with `Claude-Session`). They are not rewritten, which would take a force-push of a shared branch;
+  `scripts/attribution-exemptions.txt` exempts them by full hash.
+- **Added, `scripts/install-hooks.sh`**: installs the check as the clone's commit-msg hook
+  (`check-attribution.sh --message`), in the hooks directory git uses (so every worktree of the
+  clone), idempotently. A commit-msg hook already there (a git template's, a tool's) is kept as
+  `commit-msg.chained` and runs first; CLAUDE.md points at the script instead of a hand-typed hook.
+  In a worktree whose branch has no check script the hook lets the commit through, with a line on
+  stderr saying it was not checked.
+
+### Tests: SearXNG's scoring is pinned on engines of the test container's own
+
+- **Changed, `searxng_container`** (`threetears.core.testing.fixtures`) also runs two `json_engine`
+  engines that read fixed result lists the container serves itself (`SEARXNG_FIXTURE_ENGINES`): one
+  result comes back twice from one engine and once from the other (positions `[1, 2, 2]`, two
+  engines). `test_searxng_live_scoring.py` demands that result instead of skipping when the
+  internet's engines are throttled or CAPTCHA'd (which, on a test client, they are): the multiplier
+  in SearXNG's `calculate_score` is now checked on every run, and the formula invariant never runs
+  over nothing.
+- **Changed, the SearXNG image is pinned** by tag and digest (`SEARXNG_IMAGE`,
+  `searxng/searxng:2026.8.28-a30b2d474@sha256:addd2cf3...`), not `:latest`, and the fixture fails at
+  start, naming the path and the image, when the image does not serve `/static` from
+  `SEARXNG_STATIC_DIR` (checked by a directory the image ships, since a mount would create the static
+  directory itself).
+
+### Coordination: one lease primitive -- `nats_distributed_lock` runs on `KVLease`, and lives in core
+
+- **Changed, `nats_distributed_lock`** holds its key through `KVLease.hold` (one lease per hold) and
+  keeps its call shape: `LockHeld`, `LockLost`, `LockLossReason`, `LockHold` (`key`, `lost`,
+  `lost_reason`, `raise_if_lost`), and every parameter with its default. Its own heartbeat task,
+  renewal loop and hold state are deleted; acquisition, compare-and-swap renewal, retry inside the
+  TTL, the maximum hold and the fenced release are the lease's. It still opens its bucket itself with
+  `kv_bucket(name, ttl=ttl)` and refuses a `ttl` that differs from the bucket's.
+- **Changed, the lock's TTL is whole seconds** (the lease's): a fractional `ttl` raises `ValueError`.
+  Every caller uses the 60-second default.
+- **Breaking, the lock's import path: `threetears.nats` -> `threetears.core.coordination`.**
+  `nats_distributed_lock`, `LockHeld`, `LockHold` and `LockLost` are now
+  `from threetears.core.coordination import ...` (module
+  `threetears.core.coordination.distributed_lock`); `threetears.nats.distributed_lock` and those four
+  names on `threetears.nats` are gone, with no forwarding alias. `LockLossReason` stays in
+  `threetears.nats.errors` and is importable from both packages. Why: the lock runs on `KVLease`,
+  which lives in core, and core depends on `3tears-nats` -- so kept in the NATS package it had to
+  reach up into core through an import deferred to the call. Beside the lease it is a plain import
+  and the NATS package no longer reaches up. Importing core (`threetears.core`,
+  `threetears.core.coordination`, the lock module) still loads neither `nats-py` nor `nkeys`: the
+  lock reaches a broker only through the `KvCapable` its caller hands it, and
+  `test_imports_without_nats_client.py` holds that in a fresh interpreter with both refused.
+- **Upgrade contract (rolling; any order, and rollback):** releases before 0.66.0 store a lock entry's
+  value as the holder's raw `token_hex(16)`; from 0.66.0 it is the `KVLease` envelope. A new
+  replica treats an old entry as another holder's -- `LockHeld` on acquire, `TAKEN` on renewal,
+  never written or deleted -- including an all-digit token, which parses as a JSON number. An old
+  replica treats a new entry as held: its acquire is create-if-absent (fails on any existing key),
+  its renewal and release compare the value with its own token (an envelope never matches), and it
+  never reclaims. The bucket is shared unchanged: both versions open it with the same
+  `kv_bucket(name, ttl)`, so an existing `{ns}-scheduler-locks` keeps its bucket-level `max_age`
+  and is never redeclared or recreated. A fresh bucket gets what it always got: `max_age = ttl`,
+  history 1, `allow_msg_ttl` on. Entries carry no per-key TTL (`expire_entries` is off): the bucket's
+  `max_age` already removes an entry `ttl` after its last write.
+- **Added, `KVLease.hold(max_hold=, on_lost=)` and `HeldLease.lost_reason`**: a maximum hold past
+  which renewal stops (reported at ERROR as `LeaseLossReason.MAX_HOLD`), a callback told the reason
+  the moment the lease is lost, and why it was lost (`EXPIRED`, `TAKEN`, `RENEWAL_FAILED`,
+  `MAX_HOLD`). `LeaseLost.reason` says what a refresh found. `LeaseLossReason` (exported from
+  `threetears.core.coordination`) is `LockLossReason`: one vocabulary for both.
+- **Fixed, a lease entry holding a JSON number** (an older lock's all-digit token) made `KVLease`
+  raise `AttributeError` instead of treating it as another holder's.
+- **Fixed, a lease released while its renewal's answer never came** (the server applied it; the
+  release stopped waiting and cancelled it) left its entry for a whole TTL: the handle was a revision
+  behind its own write and the fenced delete refused. The release now recognises that exact write
+  (`LeaseHandle.in_flight_value`) and deletes it; another holder's entry still always survives.
+- **Fixed, a release waits for a renewal in flight only briefly**: one renewal interval, never more
+  than one KV operation's own ceiling (`RENEWAL_ANSWER_WAIT_SECONDS`, equal to
+  `KvTimings.op_timeout_seconds`), instead of up to the whole TTL -- which stretched an owner's
+  shutdown (the scheduler's, a tool pod's SIGTERM) by a lease TTL whenever the broker stopped
+  answering. Past it the renewal is cancelled; the entry is deleted only when it is this holder's at
+  the revision it recorded or is exactly that renewal's write, and otherwise left to lapse by its TTL
+  (logged). A release cancelled while it waits cancels that renewal too, so it cannot write (or, for
+  a lease that retakes, re-create) the entry after the delete.
+- **Fixed, a renewal the server applied but never answered no longer costs a healthy lease.** The
+  handle was left a revision behind its own entry, the next renewal's swap was refused, and the
+  lease was reported `TAKEN` though nobody took it -- cancelling a lock's body and leaving the entry
+  for a TTL. Every handle now renews from (and its release deletes) the entry that is exactly the
+  write it sent and never heard back about (`LeaseHandle.in_flight_value`, kept until a later write
+  is answered); another holder's entry is still a lost lease. Holds that do not `retake` gain this
+  without gaining retake-by-create: the lock, the snapshot rebuild claim, a coalesced run, the
+  scrape session claim.
+
+### NATS: a public composer for a KV bucket's stream name
+
+- **Added, `threetears.nats.subject_permissions.kv_stream_name(bucket)`** (and `KV_STREAM_PREFIX`;
+  both re-exported from `threetears.nats`), beside the bucket-name composers: the JetStream stream
+  backing a KV bucket, `KV_{bucket}`. Every place 3tears spelled it by hand now composes it -- the
+  KV stream config, live-config reads, stream info, the reconcile hint, `JsResource.stream_name`,
+  `NatsClient`'s bucket withdraw, the collection-key purge and the grant remedy text.
+
+### Coordination: a lease on a bucket it was handed, whose key lapses with its holder; snapshot write claims held on it
+
+- **Added, `KVLease(None, bucket=...)`**: a lease over a bucket already bound (one another owner
+  declared, such as a pod's pointer bucket), keyed exactly as told; the lease opens nothing.
+- **Added, `KVLease(expire_entries=True)`**: every entry is written with a NATS per-key TTL equal to
+  the lease's, so a holder that stops renewing loses the key itself, not only its envelope's expiry.
+  For buckets whose readers test whether a key exists. The bucket must allow per-key TTLs.
+- **Added, `KVLease.hold(retake=True)`** (and `LeaseHandle.retake`): a renewal that finds the entry
+  gone (lost with its bucket, or lapsed through an outage) takes it again instead of reporting the
+  lease lost, and one that finds its own entry at a revision it never saw (its write landed, its
+  reply did not) renews from it (`LeaseHandle.refresh(adopt_own_revision=True)`); another holder on
+  the entry still loses it. For keys that name their holder alone.
+- **Added, `KVLease.close()`**: ends every hold the factory handed out that is still renewing, each
+  deleting its entry while still its own; for an owner stopping while callers may hold leases.
+- **Added, `KVLease.hold(name=, renew_failure_level=)`**: what a lease is called in its log lines, and
+  the level a renewal failed inside its TTL is logged at (INFO by default).
+- **Fixed, a value `KVLease` cannot read** (another format) is treated as another holder's: never an
+  error, never reclaimed, refreshed or deleted.
+- **Changed, scoped snapshot claims**: each write holds its own claim, a `KVLease` hold on the
+  pointer bucket (`{name}.w.{epoch}.{writer}`, the grammar `is_write_claim_key` reads, unchanged), its
+  caller's to release; a stage's claim rides on its `StagedScope` (`claim`) until `publish_staged`
+  (on every way out, raised or returned) or `discard_staged`, and `ScopedSnapshot.stop` ends any a
+  writer dropped. A write whose claim is lost writes no more chunks under it and moves no pointer.
+  The rebuild claim is a `KVLease` hold too, never taken back once lost; a rebuild that lost it says
+  so and skips the store sweep. No per-process claim table and no renewal loop of the snapshot's
+  own remain in the module.
+- **Fixed, `publish_staged` part way**: a stage whose claim is lost just before its pointer moves (after
+  its chunks were checked) is skipped and left to the catch-up, as one lost earlier is, not raised. A
+  publish that raises part way (a move that kept failing, a transport error) still indexes the scopes
+  whose pointers already moved, so a new scope's pointer is never left unserved, and still retires
+  the unmoved stages and the moved scopes' older epochs.
+
+### Datasources: a relation read by parts in bulk, through one export or pages read side by side
+
+Reading a relation part by part (one state at a time) cost a fingerprint, a read and a fingerprint
+per part, one round trip after another; the round trips, not the bytes, were the time.
+
+- **Added, a grouped fingerprint**: `RelationFingerprintRequest.group_by` (and set filters,
+  `where_in`) answers every value's fingerprint in one ask (`DatasourceQueryResponse.fingerprint_groups`;
+  `DatasourceQueryClient.relation_fingerprint_groups`), each equal to the fingerprint of that value's
+  rows alone. `Driver.relation_fingerprint_groups` (Redshift, Postgres; others refuse with
+  `DriverFingerprintGroupsUnsupportedError`, answered `FINGERPRINT_GROUPS_UNSUPPORTED`).
+- **Added, `threetears.core.fingerprint.fingerprint_sql`** (and `postgres_fingerprint_sql(group_by=)`):
+  one statement builder, whole or grouped, around an engine's per-row number. Postgres and Redshift
+  each name only that number, and both their single and grouped fingerprints are built by it, so a
+  group's digest is the whole statement's for its rows by construction (a grouped statement is the
+  whole one with the group column added, nothing else changed). Redshift's single and grouped
+  fingerprints share one body, its boolean-column answer kept and forgotten in one place.
+- **Added, a partitioned export**: `DatasourceExportRequest.partition_by` has the warehouse write one
+  directory of files per value (`UNLOAD ... PARTITION BY (column) INCLUDE`), still one statement,
+  one destination, one manifest. `threetears.datasources.partitioned_export.export_partitions` reads
+  every part (or the parts asked for) through one export, proven before the first part is handed back
+  (grouped fingerprints before and after, the warehouse's count, each part's manifest count), each
+  part's files read when it is reached and counted, and deletes the export once read or abandoned.
+- **Added, `partitioned_read.read_partitions`**: the rail's counterpart. One statement answers every
+  page start of a batch of parts; the pages are read side by side under the datasource's cap; each
+  batch is fingerprinted again in one ask before its parts are handed back.
+- **Added, `query_client.keyset_condition`**: the one nested-OR keyset builder, per-column comparison
+  and first placeholder number given. `read_all`'s next page (its filters numbered first, the keyset
+  after them, with no renumbering pass) and `read_partitions`' page bounds both build from it, so a
+  rule about the shape (the `$N` placeholder style among them) reaches every page read at once.
+- **Wire, both orders**: `group_by`, `where_in` and `partition_by` are left off a request that does not
+  ask for them, so an older hub sees what it knows; one that is asked for them refuses
+  (`MALFORMED_REQUEST`), and a caller asks part by part instead.
+
+### Scoped snapshot: chunks no pointer serves and no live write claims are retired, by state, never by age
+
+A tool pod's Object Store filled with chunks nothing served: a catch-up that failed part way (on a
+full store) retired the old chunks of none of the scopes it had moved, a write that never committed
+kept its stages, and once the store was full every publish was refused, so nothing was retired
+again.
+
+- **Changed, `_Sweeper.deletable`**: a chunk is kept while its scope's pointer names it or a live
+  write claims its epoch, and deleted otherwise. `stray_age` is gone, with every age-based rule: a
+  writer claims each epoch it writes chunks at (`{name}.w.{epoch}.{replica}` in the pointer bucket,
+  renewed while it lives, taken again if lost with its bucket) until a pointer names them.
+- **Changed, `ScopedSnapshot`**: a rebuild or catch-up retires each scope's older chunks as soon as
+  its pointer moves; a chunk write refused as full sweeps by the rule and is tried once more; a
+  staged publish, and a publish that found its chunk already written, never moves a pointer onto a
+  chunk that is not there (the scope is left to the catch-up); a same-epoch pointer of other columns
+  stays until a write moves the scope on.
+- **Added, `ScopedSnapshot.discard_staged(staged)`** and **`ScopedSnapshot.discard_epoch(epoch)`**.
+  A writer must call `discard_staged` when a write it staged will not commit; it may call
+  `discard_epoch` when it takes over a dead write. Without them, a dead write's stages go at the
+  next sweep once its claim has lapsed.
+- **Changed, `NatsObjectStore.purge_orphan_chunks(*, pointers)`**: the declarer's sweep of chunks no
+  object names takes them only while no write claim stands in the pod's pointer bucket
+  (`object_store_requests.is_write_claim_key`), and then every one; `older_than` and
+  `ORPHAN_CHUNK_MIN_AGE` are gone. A declarer must pass the pod's pointer bucket.
+  The sweep lists the chunk subjects first, then reads the claims, then the named objects, the
+  order the pod-side sweep already keeps: read the other way round, a put that started between the
+  claim read and the listing had its first chunks purged and then wrote metadata for an object no
+  `get` could verify.
+- **Added, `threetears.nats.ObjectStoreFullError`** (`bucket`, `name`), an `ObjectStoreError` raised
+  for a store failure that reports its max bytes exceeded (JetStream 10077) and for insufficient
+  server resources (10047); any other store failure stays a plain `ObjectStoreError`.
+
+### Agent acl, core, nats, registry, memory and conversations: the access tables' contract stage
+
+Stage 5 of `docs/epoch-task-06-collection-generations-by-default.md`, for the access tables. The
+write generations are now the only invalidation of every cache derived from them.
+
+**Deploy rule for 0.66.0. There is no rolling-safe path from 0.65.0 for the access tables.** The
+stages this was built in (expand, switch-on, contract) all ship in 0.66.0; none was released on its
+own. While a 0.65.0 hub or gateway replica and a 0.66.0 one run together, a grant the 0.65.0
+replica changes (a group member, a role, a role assignment) advances no write generation, so no
+0.66.0 hub, gateway, registry or pod sees the change, and nothing ages it out of their caches. So:
+
+1. **During the deploy, make no access changes and reload no geography layer.** The second because
+   a 0.65.0 writer does not maintain `config_epochs.previous_epoch`: a tile epoch it bumps keeps the
+   previous version an earlier move recorded, and a pod reporting next keeps that generation and
+   deletes the one clients still hold (`generations_to_delete`).
+2. **Once the last 0.65.0 process is gone, restart every hub, gateway, registry, agent pod and tool
+   pod once.** A restart drops whatever a 0.66.0 process cached while a 0.65.0 one could still write.
+3. **Do not roll any of them back below 0.66.0 while any 0.66.0 process runs.**
+
+See "What Must Already Be Deployed Everywhere" in the note.
+
+- **Removed, breaking:** `threetears.agent.acl.invalidation_bus` (`subscribe_acl_invalidation`,
+  `unsubscribe_acl_invalidation`, `publish_membership_invalidation`,
+  `publish_assignment_invalidation`, `publish_role_invalidation`, `AclInvalidationPublisher`,
+  `AclInvalidationSubscriber`) and `threetears.agent.acl.invalidation` (`MembershipInvalidatePayload`,
+  `AssignmentInvalidatePayload`, `RoleInvalidatePayload`).
+- **Removed, breaking:** `AclCache(ttl_seconds=)`; nothing in the cache ages. A consumer that passed
+  it drops the argument (14-eng-ai-survey's tenancy integration test passes `ttl_seconds=0`).
+- **Changed, breaking:** `evict_after_rbac_write(cache, *, member_actors=, group_ids=)` is
+  synchronous and takes no publisher; `MemoryAuthorizerDependencies` and
+  `ConversationAuthorizerDependencies` take no `invalidation_publisher`.
+- **Added, `AclCache.followed_by` / `AclCache.trusted`:** a cache `follow_access_tables` follows
+  serves and keeps entries only while every watch runs, is emptied when that stops, and is never
+  trusted again once its follower stops. A cache nobody followed is a scratch cache and is trusted.
+- **Added, `threetears.core.collections.announce_unheard_writes(source, tables)`:** advances each
+  table once with no rows, for writes no collection made (a migration, a restore), so every follower
+  drops the table; attempts every table and raises the failures together.
+- **Changed, grants:** the hub, the gateway and the registry are no longer granted the `acl.*`
+  subjects. An agent pod keeps the subscribe, dated, so a pod one release back is not refused it;
+  `Subjects.acl_invalidate` stays for that grant alone.
+- **Removed:** the registry stack's `acl.*` subscriptions and `THREETEARS_REGISTRY_ACL_TTL_SECONDS`.
+- **Removed, breaking (owner, 2026-10-09):** the L1 age mechanism: `CollectionRegistry.set_l1_max_age`
+  / `get_l1_max_age`, `DEFAULT_L1_MAX_AGE_SECONDS`, `BaseCollection.l1_max_age_seconds`,
+  `write_to_cache_sync(from_lower_tier=)`, `L1Backend.select_by_id` / `select_batch`
+  `max_age_seconds=` / `now_monotonic=`, the SQLite cached-at stamp, `CACHED_AT_COLUMN`,
+  `TABLES_WITHOUT_CACHE_STAMP` and `entry_is_fresh`. Nothing in L1 ages.
+- **Changed, breaking:** `ScanCache` has no TTL (`DEFAULT_SCAN_TTL_SECONDS`, `ttl_seconds=`, the
+  `now_monotonic=` of `get` / `put` are gone): it stores and serves an entry only while every table
+  it depends on is followed with its watch running (`trusted=`, which the registry supplies from
+  the new `CollectionRegistry.watched_by` / `not_watched_by` / `tables_trusted`; every follower of
+  a table is tracked, and the table is trusted only while all of them are watching). A `ScanCache`
+  built without `trusted=` caches nothing.
+- **Changed:** `announce_unheard_writes` fails (`GenerationUnavailableError`, after attempting every
+  table) when an advance returns no generation, as it does when an advance raises.
+- **Added:** `BaseCollection.delete_cascades` (`DeleteCascade(child_table, child_column, action,
+  parent_column="id")`): each foreign key that points at the table with `ON DELETE CASCADE` or `SET
+  NULL`. `delete` reads the rows each will reach before deleting and invalidates them through their
+  own collections after (`threetears.core.collections.delete_cascade.read_delete_cascade` /
+  `announce_delete_cascade`, which a raw-SQL delete calls itself); a reached table with no
+  collection here is advanced with no rows. `NamespaceCollection` declares its grants'
+  (`role_assignments.scope_namespace_id`) and `TableTemplateCollection` the tables it unbinds
+  (`datasource_tables.template_id`).
+- **Added:** `BaseCollection.scan_ticket()` and `write_to_cache_sync(..., read_since=)`
+  (`ScanReadTicket`): a row a scan read is cached in L1 only while nothing of the collection was
+  written or evicted since the ticket was taken, so a scan can no longer cache a row older than a
+  write it overlapped. A `write_to_cache_sync` with no ticket (a row the process decided, such as
+  an upsert's) is recorded as a change, so no read in flight caches its older row over it. Every scan in the framework passes it, and an enforcement test holds every
+  `async` method to it.
+- **Switched on:** `concepts`, `playbook_entries` (`threetears.agent.knowledge`), `datasources` and
+  `datasource_tables` (`threetears.datasources`). A process caching knowledge scans follows them
+  beside the access tables: `threetears.epoch.follow_tables(registry, reader,
+  KNOWLEDGE_SCAN_TABLES)`. The scans' dependencies name `namespaces` too.
+- **Fixed:** a write-generation watch whose connection is closed stops instead of restarting forever
+  (`EpochGenerationReader.closed`), and `TableFollower.stop` is bounded (`stop_timeout`, 5 s);
+  a tool pod no longer hangs on SIGTERM.
+
+### Core coordination: a fence on a producer's ready signal
+
+- **Added, `threetears.core.coordination.source_token`**: `SourceToken` (the producer's run and the
+  newest data it saw), `SourceTokenFence` (one row per signal in the owner's L3, advanced by one
+  `INSERT ... ON CONFLICT DO UPDATE ... WHERE` only to a newer token: a later run whose data is not
+  older; the work it starts runs in the same transaction, so a failed start does not spend the
+  token), `Advance`, and `source_tokens_schema(name)` for the owner to declare the table. Moved from
+  the reports product's ENR pod, where it was written while 3tears was closed; any pod woken by
+  another system's pipeline needs it.
+
+### Datasources: a geo layer's name is refused when written unless it fits a NATS subject token
+
+A geo layer's name becomes a token of its tile epoch's NATS subject and a tile URL path segment.
+The hub refused anything but letters, digits, `-` and `_` (`GEO_LAYER_NAME_INVALID`), but
+`GeoLayerConfig` accepted any name, so a datasource declaring `census.tracts` was written and only
+refused later, by the hub.
+
+- **Changed, `GeoLayerConfig.name`, strict on write and lenient on read**: a writer validating a
+  declaration (`GeoConfig.for_write(data)`, or the `WRITE_CONTEXT` validation context) is refused a
+  name that is not 1 to 128 ASCII letters, digits, `-` and `_`, naming the name and the rule. The
+  subject builder maps `.` to `-`, so `census.tracts` would collide with `census-tracts`'s tile
+  version; `*`, `>` and whitespace make no usable subject; a non-ASCII letter or digit is refused
+  too (the class is explicit ASCII, not `\w`). A stored declaration read back with a plain
+  `model_validate` is not refused: one bad name would otherwise make the whole config, and the
+  datasource around it, unreadable. `GeoConfig.unfit_layer_names()` names the layers a reader
+  leaves out (the hub serves the rest).
+- **Added, `threetears.datasources.layer_name_fits(name: str) -> bool`** (also in
+  `threetears.datasources.geo_config`), `MAX_LAYER_NAME_LENGTH` (128) and `WRITE_CONTEXT`: the same
+  rule for a caller holding only the name, so the hub can call it rather than keep its own copy.
+- **Changed, `GeoLayersReloadedRequest.generations`**: a key `layer_name_fits` refuses fails the
+  model, so a pod reporting `census.tracts` is refused `INVALID_REQUEST` locally and sends nothing.
+
+### Agent acl and agent tools: a tool pod's per-caller answer, followed through the access tables
+
+- **Added, `threetears.agent.acl.CallerAccessCache`**: one answer per caller (`CallerKey`: the
+  verified agent and person), in the process, with no age. Bound to the access tables
+  (`bind_caller_cache_to_access_tables`): a `group_members` row naming a user or an agent drops
+  those callers' answers; any other access-table row, a row that does not say what it names, and a
+  dropped table drop every answer. A read fence keeps an answer asked before an eviction from being
+  stored after it. It serves and keeps answers only while it is followed and every watch is running
+  (`trusted`); otherwise every question goes to the hub, and losing trust empties it.
+  It holds at most `max_entries` answers (`CallerAccessCache(*, max_entries=)`, default
+  `DEFAULT_CALLER_CACHE_MAX_ENTRIES`, 10,000): one more drops the least recently used, which is
+  asked of the hub again when wanted. A size bound, not an age. `size`, `max_entries` and
+  `capacity_evictions` report it, and reaching the bound for the first time is logged at WARNING.
+- **Added, `threetears.agent.acl.generation_follow.follow_caller_access_cache`**: binds the cache and
+  follows the access tables in one call, as `follow_access_tables` does for `AclCache`, and tells the
+  cache whether its watches are running (`TableFollower.watching`: running, none failing; a key
+  never written is watched though never pushed).
+- **Added, `threetears.agent.acl.CallerNamespaces`**: the namespaces the hub's `namespace.discover`
+  lists for a caller, asked with the caller's own tokens, kept in a `CallerAccessCache`, and failing
+  closed (`CallerNamespacesUnavailable`) when the answer cannot be had.
+- **Added, `ToolResult` codes `PERMISSION_DENIED` (a part of the tool's data the caller's grants do
+  not reach; the hub answers 403) and `TOOL_AUTHORIZATION_UNAVAILABLE` (the tool could not confirm
+  what the caller may have; 503)**, both already mapped by the hub.
+- **Added, `RestAffordance.scope_node`**: the namespace node whose child tool nodes name the scopes a
+  reader may read at the edge; the hub issues edge tokens naming those scopes. An older hub ignores
+  the field.
+
+### Datasources: a warehouse export, read from S3 and proven whole
+
+A relation too large to page over the bus quickly can be exported by the warehouse itself and read
+from the export bucket. Granted apart from reads by the hub; nothing changes for a datasource with no
+export configured.
+
+- **Added, `threetears.datasources.export`**: `ExportConfig` (bucket, prefix, the role the warehouse
+  writes as) on `RedshiftConnectionConfig.export`; the one `UNLOAD` an export runs
+  (`redshift_unload_statement`: the caller's `SELECT` quoted as a literal, parquet, a verbose
+  manifest, the configured role, never `ALLOWOVERWRITE`); a destination grammar that cannot leave
+  the configured prefix; a `SELECT` or value holding a backslash or a NUL refused
+  (`ExportRefusedError`).
+- **Added, `Driver.unload`**: concrete and refusing (`DriverExportUnsupportedError`) on every
+  driver; `RedshiftDriver` runs the `UNLOAD` when its datasource has an export configured and counts
+  it with `pg_last_unload_count()` on the same session.
+- **Added, the export ask on the datasource wire**: `DatasourceQueryRequest.export`
+  (`DatasourceExportRequest`: a `SELECT` with no bind parameters and a relative destination),
+  answered in `DatasourceQueryResponse.export` (`DatasourceExportResult`), and
+  `DatasourceQueryClient.export`. A request that is not an export leaves the field off the wire, so
+  an older hub (which forbids unknown fields) still reads every query and fingerprint.
+- **Added, `threetears.datasources.export_read`** (the `export` extra, pyarrow): `export_part`
+  fingerprints a part, exports it, fingerprints it again and reads the parquet the manifest lists
+  through an object store the caller built, refusing (`IncompleteExportError`) a part that moved,
+  counts that disagree (warehouse, manifest, files, fingerprint), an answer at another destination
+  than the one asked for, or a manifest naming any file outside the export.
+- **Added, delete after load** (Pace's ruling, 2026-10-09): once a part is proven, `export_part` asks
+  the hub to delete every version under its destination (`DatasourceExportDeleteRequest`, the
+  `export_delete` ask, `DatasourceQueryClient.delete_export`); the hub deletes with a delete-only
+  grant (`ExportConfig.cleanup_access_key_ref`/`cleanup_secret_key_ref`, or its own role), so the
+  reader's keys stay read-only. A refused export is deleted too, as `export_partitions` deletes one:
+  every way out of `export_part` after the hub answered (proven, refused, or failed) deletes it, and a
+  refusal is logged at WARNING with its proof and counts so an operator can tell why without the
+  files. A delete that fails raises `ExportNotDeletedError` when nothing else is raised; under a
+  refusal or another error, that error wins and the failed delete is logged at ERROR. No timer and no
+  lifecycle rule.
+- **Added, `S3ObjectStore.delete_versions(prefix)`**: every version and delete marker under a
+  non-empty prefix, by version id, raising any S3 refused.
+- **Added, `Driver.export_config`**, and one frozen `ExportResult` (with `ExportLocation`) that
+  `Driver.unload` returns and the wire carries (`DatasourceExportResult` is it). The refusal codes
+  `EXPORT_NOT_GRANTED`, `EXPORT_UNSUPPORTED` and `EXPORT_REFUSED` are published constants. Every
+  export grammar is matched whole, so a trailing newline is refused.
+
+### Agent acl, core, epoch, nats, registry and agent tools: the access tables are switched on (switch-on stage)
+
+Stage 3 of `docs/epoch-task-06-collection-generations-by-default.md`. Additive: the `acl.*`
+subjects and `AclCache`'s TTL stay until the contract stage.
+
+- **Changed, `groups`, `group_members`, `roles` and `role_assignments` carry write generations**
+  (`write_generation = WRITE_GENERATION` on `GroupCollection`, `GroupMemberCollection`,
+  `RoleCollection`, `RoleAssignmentCollection`). A membership row's broadcast carries
+  `member_type` and `member_id`, an assignment row's `group_id` (`invalidation_columns`).
+- **Changed, `RoleAssignmentCollection.ensure_group_role_assignment` and
+  `delete_by_group_and_scope`**: the rows their SQL wrote are evicted in one advance, naming their
+  group; a lost insert race announces the winning row, and a revocation that matches nothing sends
+  no `DELETE`.
+- **Added, `AclCache` row-by-row eviction**: `evict_group_member_row`, `evict_role_assignment_row`,
+  `evict_role_row`, `evict_group_row`, `drop_membership_layer`, `drop_assignment_layers`; a read
+  fence (`read_fence`, `put_*(fence=)`) so an entry computed before an eviction is not stored after
+  it; `GroupNamespaceEntry.role_ids`, recorded by the evaluator, so a role edit evicts exactly the
+  entries that read the role.
+- **Added, `threetears.agent.acl.bind_acl_cache_to_access_tables` and `ACCESS_TABLES`**, and
+  `threetears.epoch.TableFollower` (one supervised generation-key watch per table; the acl half
+  that uses it needs the `3tears-agent-acl[follow]` extra, which brings `3tears-epoch`).
+- **Changed, a broker reply carrying no generations field says the broker advanced nothing**
+  (owner, 2026-10-08): `BrokerGenerationSource.advance` returns `None`, the rows name no
+  generation, and a warning is logged once per table, so a pod switched on ahead of its hub still
+  writes. `GenerationSource.advance` may return `None`.
+- **Changed, grants**: the standalone registry (`_registry`) reads the whole `{ns}-epochs` bucket,
+  read only, as the tool pod does; its rbac stack follows the access tables and takes
+  `BrokerGenerationSource` with a reader.
+- **Changed, the tool pod's collection stack**: its `BrokerGenerationSource` reads through
+  `EpochGenerationReader`; `3tears-agent-tools` and `3tears-registry` depend on `3tears-epoch`.
+- **Changed, `namespaces` carries a write generation too** (`NamespaceCollection`): a per-namespace
+  access entry reads the row, so `rescope` (both keys of the moved row) and `ensure_namespace`'s
+  insert announce their row in one advance, and an `AclCache` evicts that namespace's entries.
+- **Added, `follow_access_tables(registry, cache, reader)`** in
+  `threetears.agent.acl.generation_follow`: binds and follows in one call, returning one handle
+  (`AccessTableFollowing`) whose `stop()` undoes both; refuses unless the registry's invalidation
+  listener runs (`CollectionRegistry.invalidation_listener_running`, added). `threetears.epoch.TableFollower`
+  backs a failing watch off from one second to a sixty-second cap and exposes `WatchHealth` and
+  `healthy`; `DegradedEvictions` counts rows whose reach was unknown. `follow_generation_key` takes
+  any `threetears.epoch.GenerationWatcher`.
+- **Added, `GroupCollection.read_cascade` and `announce_cascade` (`GroupCascade`)**: a group delete
+  announces the memberships and assignments its database cascade removed, and announces them even
+  when its own advance fails.
+- **Changed, absence caching never takes "nothing advanced" as an advance**: for a collection that
+  caches absences, an advance that returns `None` fails, raised after the write path ran.
+- **Changed, `ensure_platform_builtin_tool_user_role`** announces its `INSERT`.
+
+### Core: answers computed once per version of their data, shared by every replica, retired when the version moves
+
+- **Added, `threetears.core.collections.versioned_answers.VersionedAnswers`**: a `DerivedCollection`
+  keyed by `(version, sha256 of the request)` whose value is the answer gzip-compressed, in L2 alone
+  (no L3: a miss computes; no L1). `answer(version, request, compute, order=)` returns the gzip bytes,
+  computing at most once across replicas under the build lock (a tool pod passes a
+  `LeaseBuildLock`); whatever `compute` raises reaches the caller and nothing is cached; `get` and
+  `get_for` refuse with `AnswerNotComputable`. Entries never expire (owner ruling, 2026-10-08).
+  `current_version(version, order)` retires every version of a LOWER order, never a higher one,
+  serialised and retried on the next call after a failure; `retire_older_than(order)` does it once.
+  Retirement reads an index the owner keeps as rows of an L2-only collection beside the answers,
+  changed only by `l2_cas_mutate` (a pod's grant on the shared bucket admits no key listing): each
+  version's order, a floor below which no version is recorded, and sixteen digest shards per
+  version. A computing replica records before it computes and takes its answer back if the version
+  was retired meanwhile; retirement raises the floor, then empties each shard by compare-and-set; so
+  no answer outlives its index under any interleaving. An index that cannot be written answers the
+  read uncached and stores nothing. A retired version leaves nothing behind: once retired, every key
+  it touched (answers and index shards) is purged by the owner's `purger` (a stream purge filtered
+  to the key's exact subject, which leaves no marker); with none, or one unreachable, the delete
+  markers stay and the miss is logged once. An answer is written to L2 while its writer holds the
+  key's build lock, and retirement drops a digest with no answer only when it can pause the key's
+  derivation (`DerivedCollection.derivation_paused`), so an answer whose writer is cancelled or dies
+  after writing it is still named, and the next retirement deletes it. A writer's take-back purge runs
+  off the read path; an unreadable floor counts as retired; no purger error fails a read or wedges a
+  retirement.
+- **Added, `DerivedCollection.derivation_paused(key)`**: holds off any derivation of a key for its body
+  (the in-process gate and the cross-pod build lock), raising `BuildLockHeld` when one is running.
+- **Added, `threetears.nats.collection_key_requests`** and `Subjects.hub_collection_keys_purge`
+  (`{ns}.hub.collection_keys.purge`): a tool pod asks the hub to purge keys it retired, named
+  relative to its own scope (`purge_pod_collection_keys`); the hub composes each subject under the
+  VERIFIED scope and purges exactly it (`purge_scoped_keys`; a key is literal tokens, never a
+  wildcard or an empty token). Every tool pod may publish the request and the hub subscribes it; no
+  KV or stream grant changes. A hub older than the request does not answer, and the pod keeps the
+  markers.
+- **Added, `threetears.nats.hub_requests.ask_hub`**: one pod -> hub ask on a forwarded-token subject
+  (send, decode, match the reply to its request, classify a refusal as retryable or final), used by
+  the object store, collection keys, geography reload and audit anonymization clients, which keep
+  only their models, subjects and what their own success carries. One correlation rule for all: a
+  reply answers a request when it carries the request's id, or is a refusal carrying none.
+- **Fixed, `purge_pod_collection_keys`**: a success reply with no correlation id is no longer taken as
+  this request's (it is `CollectionKeysRequestUnavailableError`, as the other clients already
+  answered). The hub's purge responder echoes the id on every reply it builds from a decoded request,
+  so no hub that answers the request is refused by the stricter check.
+- **Added, `BaseCollection.caches_in_l1`**: `False` declares a collection that takes no L1 backend,
+  whatever the registry offers.
+
+### Core: a derived collection takes its cross-pod build lock, so a tool pod can run one
+
+- **Added, `DerivedCollection(..., build_lock=)`** and `BuildLock` (`holding(key)`, raising
+  `BuildLockHeld` when another pod has the key). The default is unchanged: `NatsBuildLock` on
+  `build_lock_bucket`, which DECLARES its bucket, so only an infrastructure identity may use it. A
+  tool pod holds no stream-management verb and was refused at its first miss; it passes
+  `LeaseBuildLock(KVLease(nats, bucket_name="leases", create_if_missing=False, key_scope=...))`,
+  a fail-fast lease in the hub-declared bucket under its own key scope (a key outside the KV grammar
+  is hashed). Without a NATS client and no lock, a miss derives under the in-process gate alone, as
+  before.
+
+### Agent tools: a large answer crosses the bus compressed for a caller that reads it so, and one too large is refused aloud
+
+- **Added, `CallContext.accept_encoding`**: the encoding the caller reads a result in, `"gzip"` or
+  `None`. Set by a caller that serves the bytes on as they are (the hub's REST face, answering
+  `Content-Encoding: gzip`), never by an agent. Safe to roll out in any order: `CallContext` ignores
+  unknown fields, and neither the proof of possession nor the proxy assertion covers the context, so
+  an older proxy or pod drops the field and answers in plain text.
+- **Added, `threetears.agent.tools.content_encoding`**: `encode_for_caller`, `plain_content`,
+  `gzip_bytes`, `gzipped_content`, `accepts_gzip`, `CONTENT_ENCODING_METADATA_KEY`, `GZIP`,
+  `GZIP_MIN_BYTES`. On the wire a compressed result's content is base64 text and
+  `metadata["content_encoding"]` is `"gzip"`.
+- **Changed, `ToolServer`**: a success of `GZIP_MIN_BYTES` or more is compressed for a caller that
+  asked; a caller that did not ask gets plain text, a result its tool compressed itself
+  decompressed; an imported API's passthrough body is left alone.
+- **Added, `body_for_client`, `ContentEncodingError`, `DecodedTooLargeError`, `DECODED_MAX_BYTES`**:
+  every decode is guarded (bad base64, a corrupt or truncated gzip, text that is not UTF-8 raise
+  `ContentEncodingError`) and bounded (`DecodedTooLargeError` before the text is held, 64 MiB by
+  default); `body_for_client` is the one place a server chooses the gzip bytes or the text.
+- **Added, `TOOL_RESULT_TOO_LARGE`** (audited as the failure the caller received): an answer larger than the connected broker's `max_payload`
+  (less 64 KiB for the envelope the registry wraps it in) is refused with both sizes and logged,
+  instead of the broker refusing the reply after the tool ran while the caller waits out its timeout.
+  A hub maps it to an HTTP status in its error faces.
+
+### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
+
+Stage 2 of `docs/epoch-task-06-collection-generations-by-default.md`. A pod may not write the epoch
+bucket, so the hub's L3 broker advances each switched-on table a pod's commit wrote and names the
+token in its reply; this release is the pod's half. No table is switched on, so nothing advances
+that did not already.
+
+- **Added, `threetears.core.backends.BrokerGenerationSource`**: a pod's generation source.
+  `advance(table)` returns the token the broker's reply named for the commit this task just made,
+  once per table per commit (a second advance of the table for that commit raises), and raises
+  `GenerationUnavailableError` when the reply named none or listed the table as not advanced.
+  `current` reads through an optional `GenerationReader` (such as
+  `threetears.epoch.EpochGenerationReader`) and raises with none, or for a table with no generation
+  yet: a pod cannot mint one. Without a reader it says so (`reads_generations = False`).
+- **Changed, `NatsProxyL3Backend`**: every reply that ends a commit (a successful `l3.query` or
+  `l3.tx.commit`, and every `l3.batch` reply, a partly failed statement-by-statement batch
+  included) that ends a write replaces the calling task's record with its own generations, naming
+  any or not; a read's reply leaves it. A rolled-back transaction, a refused commit and a commit
+  whose request got no reply drop them all; a later advance then raises
+  `GenerationNotCommittedError`.
+- **Changed, `CallerTransaction`**: settling advances each table once, however many collection
+  instances of it the transaction wrote (`SharedAdvance`, `shared_advance_for`), and every row
+  broadcast carries the total row count.
+- **Changed, `AgentSkillCollection.bump_use_count`**: evicts its rows in one `invalidate_cache_many`,
+  one advance for its one UPDATE.
+- **Added, `threetears.core.exceptions.GenerationNotCommittedError`**, a `GenerationUnavailableError`
+  for an advance asked of a commit that landed nothing; a collection logs it at INFO.
+- **Added, reading as a capability of its own**: `GenerationSource` implementations may declare
+  `reads_generations = False`; `threetears.core.collections.generation.source_reads` and
+  `CollectionRegistry.readable_generation_source` read it. Absence caching (and the refusal to build
+  an absence-caching collection without a source) needs a source that reads, so a registry wired
+  with a reader-less source caches no absences, exactly as with no source.
+- **Added, wire names** in `threetears.core.backends.broker_generation`:
+  `GENERATIONS_REPLY_FIELD` (`generations`), `GENERATIONS_FAILED_REPLY_FIELD`
+  (`generations_failed`) and `GENERATION_UNAVAILABLE_ERROR_CODE` (`GENERATION_UNAVAILABLE`, on a
+  reply that is still a success, because the write committed and must not be retried).
+- **Added, `threetears.core.collections.tables_with_write_generation()`**: the tables named on
+  every live imported collection class that is switched on or caches absences. What the broker
+  reads. `threetears.core.collections.base.table_named_by_class` is the one derivation of a class's
+  table, shared with the census.
+- **Changed, `build_tool_pod_collection_stack`** (so `ToolServerBootstrap.install_collection_stack`)
+  wires `BrokerGenerationSource()` on the pod's registry.
+- **Added, `threetears.enforcement.collection_census`** (`run_census`, `find_census_problems`):
+  the one-class-per-table census, shipped so a product repository runs it over its own trees with
+  the framework's classes joined (`framework=True`). Replaces `tests/enforcement/_collection_census.py`.
+- **Wire:** additive. A pod built before this ignores the reply fields; a reply without them is read
+  as before.
+
+### Core, epoch and nats: a table can carry a write generation a pod follows (expand stage)
+
+A row broadcast is at most once, and a pod that misses one serves its cached row until it
+restarts. This is the first of five stages (`docs/epoch-task-06-collection-generations-by-default.md`)
+that let a pod detect that for any collection table. Everything ships here and nothing is on: no
+collection is switched on, so no table advances a generation it did not already, and nothing
+follows one. An unchanged collection writes exactly as before.
+
+- **Changed, `GenerationSource.advance`** (`threetears.core.collections.generation`) returns the
+  token it wrote, and `EpochGenerationSource.advance` returns the value its own compare-and-swap
+  put in the epoch bucket. Callers that ignored the `None` are unaffected. A source that still
+  returns nothing works: the write advances and its row messages name no generation.
+- **Added, `BaseCollection.write_generation`**: `WRITE_GENERATION` switches a table on,
+  `NoWriteGeneration(reason="...")` is the reasoned opt-out, and `WRITE_GENERATION_UNDECLARED`,
+  the default, changes nothing. A switched-on collection advances its table's generation once
+  per commit on every write path: `save_entity`, `delete`, a won `l2_cas_mutate`, a subscript
+  write, `invalidate_cache`, `invalidate_cache_many`, `bypassing_write`, a `CallerTransaction`
+  settling, and `flush_pending` (once per table per flush). Never once per row. It needs a
+  generation source on the registry; without one nothing advances. A collection built with
+  `NO_L2` advances nothing whatever it declares. A class that sets `negative_cache_max_age` and
+  opts out is refused when it is defined.
+- **Added, `BaseCollection.invalidation_columns`**: column names whose values ride on every row
+  message the collection publishes, from the row the write saw. A delete reads the row before
+  deleting it, and only for a collection that declares columns; so does
+  `SchemaBackedCollection.delete_rows`, once per key, on the caller's transaction.
+- **Added, `BaseCollection.L2_READ_THROUGH_LIMIT`** (10,000): how many keys read through from L3
+  since a table drop are remembered as trusted again. Past it the oldest is distrusted again and
+  costs one more L3 read.
+- **Added:** a failed advance after a committed write raises `GenerationUnavailableError` from
+  `delete`, `invalidate_cache`, `invalidate_cache_many`, `bypassing_write`, `CallerTransaction`
+  and `flush_pending`, on a switched-on collection only, after the rest of the write path has
+  run. `save_entity` and `l2_cas_mutate` already raised it for a collection that caches absences.
+- **Changed, `PeriodicFlusher`** (`threetears.core.coordination.flusher`): a write generation that
+  could not be advanced for a flush is logged as rows written with the generation unmoved, never
+  as "retrying", because `flush_pending` raises it only after the rows were acknowledged. The
+  interval loop carries on; the final flush in `aclose` raises it.
+- **Added, `CollectionRegistry`**: `follow_generation`, `generation_marks`, `account_generation`
+  and `settle_generation` keep and judge a per-table mark (`GenerationMarks`,
+  `GenerationVerdict`); `drop_table` drops a table's L1 rows, its cached scans and every cache
+  derived from it; `register_derived_cache(table, on_row=..., on_table_dropped=...)` tells a
+  derived cache about each changed row, this process's own writes included, and to drop
+  everything only when the table drops; `row_message` and `tell_derived_caches` are the pieces.
+  `publish_invalidation` takes `generation`, `bump_rows` and `columns`.
+- **Added, `BaseCollection.drop_cached_table`** and `announce_flushed`. After a table drop the
+  pod's own L2 entries for the table are not trusted until each has been read through from L3
+  once: a missed broadcast leaves the stale entry in place, and it would otherwise be cached
+  again by the next read. Not on a write-behind table or one a compare-and-swap orders, where L2
+  is ahead of L3 by design.
+- **Changed, `CollectionRegistry.register`** raises `ValueError` for a second collection for a
+  table that declares `write_generation` differently from the one it holds.
+- **Added, `threetears.epoch`**: `EpochGenerationReader` (binds the epoch bucket, reads or watches
+  a table's generation, never writes), `generation_catchup_tick(registry, reader)` (one pass per
+  call; the consumer schedules it; one table's failure does not abandon the rest; a generation
+  that cannot be read drops nothing), `follow_generation_key(registry, reader, table)` (follows
+  one table through `watch_key`, waiting `DEFAULT_BROADCAST_GRACE` for an advance's row
+  broadcasts before calling them missed), and `generation_kv_key(table)`.
+- **Changed, `threetears.nats.subject_permissions`**: a tool pod holds a read of the `{ns}-epochs`
+  bucket, as an agent pod already did, so it can follow the tables its per-caller cache is
+  derived from. No pod can write it.
+- **Wire:** additive. `CacheInvalidationMessage` gains `generation`, `bump_rows` and `columns`,
+  all optional. A receiver built before them ignores them; a message without them is handled as
+  before. A tool pod's minted NATS grant grows by the epoch bucket's read subjects.
+- **Not changed:** `AclCache`, the `acl.*.invalidate` subjects, `set_l1_max_age` and the scan
+  TTL. `save_entity(conn=)` and subscript writes stay refused on a collection that caches
+  absences.
+
+### Datasources: closing a dead Redshift connection no longer breaks the process's other TLS connections
+
+- **Fixed, `RedshiftDriver`**: a cached connection that had died while idle (a scheduled query every
+  five minutes, a network that drops idle connections sooner) was closed on reuse, and in the same
+  millisecond unrelated TLS connections on the event loop failed: asyncpg raised `connection was
+  closed in the middle of operation` out of `BrokenPipeError: [Errno 32] Broken pipe` from
+  `ssl.SSLObject.read`, mid-transaction, and the database logged `Connection reset by peer`. No file
+  descriptor is shared or closed twice. OpenSSL keeps one error queue per thread and reads it to
+  classify the next TLS call that returns no data; a write to a dead TLS socket records its
+  `EPIPE` / `ECONNRESET` there, and CPython (seen on 3.14.3 and 3.14.8 with OpenSSL 3.5) raises the
+  `OSError` and leaves the record behind. `redshift_connector`'s `Connection.close()` writes a
+  Terminate message and swallows the failure, so closing a dead connection is such a write, and
+  every TLS connection its thread serves then reads "nothing yet" as that broken pipe until
+  something empties the queue.
+- **Changed:** every close of a Redshift connection goes through one routine, which empties the
+  calling thread's OpenSSL error queue after `close()` returns or raises. That covers the bridge
+  workers, the default executor the cancel path closes on, the event loop thread a statement's
+  cancel callback runs on, and whichever thread the driver's finalizer fires on.
+- **Changed:** a cached connection found dead on reuse is closed on a bridge worker, as the module
+  already said every cached connection was. It was the one close made directly on the event loop.
+- **Not changed:** a statement that fails on a dead connection still leaves its own bridge worker's
+  queue as it was. Nothing but Redshift statements run on those threads, on blocking sockets that
+  are not affected, and a new login's handshake empties the queue itself.
+- **Wire:** none. No public API change.
+
+### Core and agent tools: answers an edge may cache, labelled with exactly the data they read
+
+- **Added:** `ScopedSnapshot.read_versioned()` yields a `VersionedRead(cursor, epochs, behind)`: a
+  read of the copy, as `read()`, the epoch of every scope whose rows the cursor sees, exactly (a
+  scope dropped is absent), and the scopes it is behind on, taken as `read_with_behind()` takes
+  them. A read opened while a swap commits waits for it and reads its result; it
+  never fails for a long swap, and a swap lets it go on every path (a failed commit, a cancelled
+  task). Blocking: call it from a worker thread; on the event loop it raises `RuntimeError` at once. Consumers: the hub's REST
+  face labels shareable answers with these epochs through the ENR pod (`enr.edge_rows`).
+- **Added:** `RestAffordance.cache_max_age` (whole seconds, 1 to `MAX_POINTER_AGE_SECONDS` = 60): a
+  short-lived pointer, the one unversioned read a shared cache may hold (an index naming the current
+  version). Refused beside `cache_version_param`, on a `PRIVATE` declaration and on a write.
+  `RestAffordance.resolve_cache_max_age(inherited)` is the sanctioned reader, beside
+  `resolve_cache_class`: the max age only where the effective class may reach a shared cache.
+- **Wire:** additive. A manifest without `cache_max_age` reads it as `None`; a hub built before it
+  ignores the field and serves the read origin-only.
+
+### Core: a collection can declare it has no L2 by design
+
+The geography pod's layer tables and the ENR pod's report tables are built L1+L3 only on purpose,
+as the integration guide documents, and every one of them logged `collection invalidation is
+silently disabled ... wiring gap: datasource-task-06 DS-06-04` on its first write.
+
+- **Added, `threetears.core.collections.NO_L2`** (and its type, `NoL2`): pass it as a collection's
+  `nats_client` to run it without L2 by design. It has no L2 client whatever the registry offers,
+  never logs the wiring-gap WARNING, and logs `collection runs without L2 by design: table=<t>`
+  once per table at INFO when the first such collection is built. An explicit `nats_client=None`
+  keeps its meaning and its WARNING, which now names `NO_L2` as the declaration for a deliberate
+  opt-out. Integration guide §8.2 says which to use.
+
+### Core: reads and deletes by many keys stay bounded on a hash-sharded key
+
+The geography pod's census tracts (84,091 polygons a generation, two or three generations held)
+stopped loading: on YugabyteDB a statement no key leads reads every row of the table, geometry
+included, and runs into the broker's five-second statement ceiling. The pod wrote the bounded
+forms itself; they are the collection's now.
+
+- **Added, `SchemaBackedCollection.read_rows_led_by(values, *, columns=None, max_values=None,
+  conn=None)`**: the rows whose leading key column is one of `values` (each read once), the key
+  columns and any `columns` named beside them, read from L3 around the caches. Every statement
+  is led by the key: `LED_READ_MAX_VALUES` (250) values a statement as
+  `WHERE <lead> = ANY($1::<type>[])`; an answer that reaches the transport's row cap is read again
+  in halves; and a single value that alone reaches it is paged by the rest of its key
+  (`WHERE <lead> = $1 AND (<rest>) > (...) ORDER BY <rest> LIMIT <cap>`), which is the key's own
+  order inside one hash bucket. A read that had to split or page logs it once at INFO with its
+  statement, split and paged-value counts. Through `KeyLedReadingStore.fetch_led_by` (new
+  protocol, which `SqlL3Backend` implements), or an equality `scan` a value at a time on a store
+  without it, which refuses a `conn` (`scan` takes none) rather than read outside the caller's
+  transaction. A `max_values` under one is refused. `schema_sql` gains `build_led_by_select_sql`,
+  `build_key_led_delete_sql`, `build_whole_key_delete_sql` and `key_array_type`;
+  `build_select_column_list` takes the columns to project.
+- **Added, `threetears.core.backends.protocol.L3_RAIL_ROW_CAP`** (1,000): the one owner of the L3
+  rail's row cap. `NatsProxyL3Backend.rows_per_statement` states it, `SqlL3Backend.rows_per_statement`
+  reads its transport's (`None` for one that never cuts; one that says nothing is taken to be the
+  rail), and `complete_copy.DEFAULT_PAGE_SIZE` is derived from it.
+- **Added, `threetears.core.keyset.read_keyset_pages`**: the one keyset pager. `read_l3_rows` and
+  the key-led read's paging of one value both page through it, each spelling names in its own
+  policy (`quote`, as `sql_fragments.equality_conditions` takes it).
+- **Changed, `SchemaBackedCollection.delete_rows`** (unreleased): its statements are key-led, in
+  place of a row-constructor `IN` list, which YugabyteDB need not look up by key. Whichever of two
+  forms needs fewer statements: keys grouped by all but one key column
+  (`<k> = ANY($1::<type>[]) AND <rest of the key> = $2 ...`, each fixed column with its write cast,
+  so a jsonb key column binds `$n::jsonb`), or whole keys
+  (`<k1> = ANY($1) AND (<key>) IN (SELECT * FROM unnest($1, $2, ...))`) for keys that share no
+  value. At most `ceil(keys / max_rows)` statements; a `max_rows` under one is refused.
+  `schema_sql.build_bulk_delete_sql` is gone.
+- Not changed: `complete_copy.read_l3_rows` still pages `ORDER BY` the whole key. It reads a table
+  whole by design, and on a hash-sharded key each page sorts every row its filters leave; its
+  docstring now says so and names `read_rows_led_by` for a key-bounded read.
+
+### Observe: a log line names the class of the instance that logged it
+
+- **Fixed, `ThreeTearsLogger`**: the call-site class a record carries (`call_site_class`, the
+  `Class` in `path/Class.func.line`) was cached by file and line, so a line in a base class named
+  the first instance's class on every record after: every layer table's missing-L2 warning read
+  `LayerShapeCollection[us_state_census2022]`, whichever table it was about. The class is now read
+  from the logging frame for each record. The shortened path is no longer cached either, so a
+  prefix added to `path_strip_prefixes` after a file first logged applies to its later records. The cost: a
+  stack walk per enabled record, measured at 6.47 us a record against 5.82 us with the cache (a
+  method logging to a no-op handler, best of five runs of 100,000).
+
+### Testing: `FakeNatsClient.ensure_kv_bucket` takes `max_bytes` and `still_wanted`, and enforces the bound
+
+The shipped double refused `max_bytes` (and `still_wanted`), both of which the real
+`NatsClient.ensure_kv_bucket` and the `KvDeclaring` protocol accept, so a bucket that declared a
+bound could not be tested against it.
+
+- **Fixed, `FakeNatsClient.ensure_kv_bucket(..., max_bytes=None, still_wanted=None)`**: its
+  signature now matches `KvDeclaring.ensure_kv_bucket` parameter for parameter, which a test
+  compares. `max_bytes` is set on a bucket the declaration creates and moved on a live one only by
+  its owner, as the real declaration reconciles it; `None` asks nothing of a live bucket. The bound
+  survives `restart_broker`.
+- **The bound is enforced as a `discard: new` stream enforces it**: a write (`put`, `create`,
+  `update`, or a delete's marker) that would bring the bucket to its bound raises `KvError` and
+  lands nothing, unless it replaces a key's latest message no smaller than itself, which the server
+  admits. Size is counted per retained message as the server's memory store counts it: subject
+  `$KV.<bucket>.<key>`, value, a delete marker's header, and 16 bytes. Headers of TTL and CAS
+  writes are not counted. An entry whose per-entry TTL has lapsed stops counting at once, as the
+  server removes it on its own. `FakeKvBucket(max_bytes=...)` and `FakeKvBucket.max_bytes` are
+  added.
+- **`still_wanted`** is asked by `restart_broker` before a declaration is put back; one answering
+  `False` is forgotten and its bucket stays absent; one that raises is logged at ERROR and the
+  declaration is restored. Both are what the real restoration does.
+
+### Epoch and agent acl: the table follower lives in `threetears.epoch`
+
+The supervised follower knows nothing about access control: it follows any table's write generation
+on a registry, and the knowledge scan tables are followed through it. It was in
+`threetears.agent.acl.generation_follow`, behind an extra named for a bus this release deletes.
+
+- **Moved, before any release carried them:** `threetears.epoch.table_follow` holds `TableFollower`
+  (was `AccessTableFollower`; `tables` is now a required third argument, with no access-table
+  default), `WatchHealth`, `follow_tables`, `DEFAULT_WATCH_RESTART_DELAY`,
+  `MAX_WATCH_RESTART_DELAY` and `DEFAULT_STOP_TIMEOUT`, all exported from `threetears.epoch`.
+  Nothing is re-exported from the old path.
+- **Stays in `threetears.agent.acl.generation_follow`:** `follow_access_tables`,
+  `follow_caller_access_cache` and `AccessTableFollowing`, which bind a cache to the access tables
+  and follow them with a `TableFollower`.
+- **Changed, breaking, packaging:** the `3tears-agent-acl` extra `bus` is now `follow`
+  (`3tears-agent-acl[follow]`): `3tears-epoch` and the NATS client, needed only to import
+  `threetears.agent.acl.generation_follow`. The acl README names it.
+
+### Epoch: a durable subject's versions can be read from a per-process copy
+
+`EpochClient.versions` read the `config_epochs` row on every call, and the hub calls it on every
+TileJSON and tile request; that read failed live when a pool connection dropped.
+
+- **Added, `EpochClient.versions(subject, *, cached: bool = False)`**: with `cached=True`, a
+  per-process copy per subject answers. The copy has no age and no grace: it answers until the
+  epoch system says the subject moved. This process's own `advance_to` writes the new versions
+  into it with no read, its `bump` drops it, a broadcast naming a later epoch drops it
+  (`observe_broadcast`), and a missed broadcast is repaired by the listener's catch-up
+  (`EpochListener.catch_up`, `catchup_tick`): the pass reads `EpochClient.current`, which drops a
+  copy the row has moved away from. Without `cached` every call reads the row, as before, and a
+  non-durable subject still raises `ValueError`. A read that fails raises, cached or not. A read
+  that left for the pool before this process moved the subject cannot overwrite the move.
+- **A copy is kept only for a subject a listener follows.** `EpochListener.subscribe` reports each
+  subscription to its client (`EpochClient.observe_subscription(subject)`, added), concrete or
+  wildcard. A subject no subscription covers has nothing that could drop its copy, so none is kept:
+  `cached=True` reads the row every time and logs that once, at WARNING. A process that wants the
+  cached answer subscribes the subject, or a wildcard covering it, on an `EpochListener` over the
+  same client, and schedules `catchup_tick` over `EpochClient.cached_subjects` (added: the durable
+  subjects a copy is held for).
+- **Added, `EpochClient.observe_broadcast(message: EpochBumpMessage) -> None`**: drops the cached
+  copy when a broadcast names a later epoch than it holds, and marks any read in flight when it
+  arrives (cached or not), so that read cannot cache the row as it stood before the move.
+  `EpochListener` now calls it for every broadcast it receives, before its dedupe, so another
+  process's advance invalidates the copy as its broadcast arrives. A broadcast with an empty
+  `subject_path` is keyed by the subscribed subject for both the dedupe and the cache. Nothing is
+  kept per broadcast subject: the only per-subject state is a copy, or a read in flight.
+- **Changed, for stand-in epoch clients**: because `EpochListener` calls `observe_subscription` once
+  per subscribe and `observe_broadcast` on every broadcast, an object handed to it as the epoch
+  client must have both methods. A real `EpochClient` or a subclass of it does; a hand-rolled
+  duck-typed stub must add them (no-ops are enough).
+- **Constraint for callers**: between a missed broadcast and the catch-up pass that repairs it a
+  cached value lags the row, so it is for choosing what to serve or advertise, never for building
+  at a version whose rows may already be gone. Read without `cached` before reading source rows.
+
+### Geo: a feature-cache read with no L1 is one loader call, and a wide rectangle is read once
+
+A z3 tile through `FeatureCache` made 1,025 loader queries live, and a z0 tile 65,537: the read
+swept every z8 chunk under the rectangle, one loader call each, and with no L1 bound then asked the
+loader for the whole rectangle anyway. The rows it swept were kept in two unbounded per-process
+maps, with or without an L1.
+
+- **Fixed, `FeatureCache.features_in_bbox` with no L1**: one loader call for the rectangle, and
+  nothing is kept.
+- **Fixed, with an L1**: a rectangle spanning more than `FeatureCache.max_chunk_reads` (16)
+  uncovered chunks is one loader call for the rectangle. Its rows cover each chunk it wholly
+  contains, with the rows that intersect that chunk; a chunk it only overlaps is left uncovered, so
+  a later tile there loads that chunk alone. A z0 build through a cache-wired `TileCollection` is
+  one loader call.
+- **Fixed, held rows are bounded**: `FeatureCache(max_cached_rows=...)`, default
+  `FeatureCache.max_cached_rows` (100,000 row entries across covered chunks; a row in two chunks
+  counts twice, an empty chunk once). Past it the least recently read chunk is evicted, its rows
+  and R-Tree entries leaving once no held chunk carries them, and it is loaded again when next asked
+  for. Eviction never takes a chunk a read in progress depends on, and is logged at DEBUG. One read
+  newly holds at most half the bound, counted the same way and summed over every chunk it loads:
+  the chunks past that, or a wide rectangle whose entries would pass it, are answered from the
+  read's own rows and not held, so no read can flush the working set.
+- **Fixed, caches sharing an L1**: every R-Tree key carries a token minted per `FeatureCache`
+  instance, so several caches of one scope on one L1 (the hub builds one per layer) never read or
+  evict each other's index entries. A collected instance's entries are deleted, best effort.
+- **Changed, the R-Tree answers the read**: once a rectangle's chunks are covered, the held features
+  overlapping it come from an R-Tree query, then an exact rectangle test. Before, the index was
+  written and never read. `index_feature` and the read path share one insert. The layer prefix is
+  matched exactly rather than with `LIKE`, so a layer name containing `%` or `_` cannot match
+  another layer's features.
+- **Changed, one rule for every read path**: rows with no feature id are dropped and every row is
+  tested against the rectangle, with or without an L1, narrow or wide. Before, the no-L1 and wide
+  paths returned id-less rows and the no-L1 path returned rows outside the rectangle.
+- **Added**: `FeatureCache.max_chunk_reads: ClassVar[int] = 16`, `FeatureCache.max_cached_rows:
+  ClassVar[int] = 100_000`, and the `max_cached_rows: int | None = None` keyword (below 1 raises
+  `ValueError`).
+
 ### NATS: a KV bucket whose stream is briefly offline is no longer blamed on a missing grant
 
 During a NATS restart a catalog write failed with `stream is offline`, and the error told the
@@ -332,6 +2484,48 @@ later, unprompted.
   is serving yet) is reported as an outage that recovers on its own. Any other answered error is
   reported as not a grant. The classification reads nats-py's exception types and the server's
   error codes, never message text. No API change.
+
+### Geo: each tile's geometry is clipped to the tile and a buffer
+
+- **Changed, `threetears.geo.mvt.encode_tile`**: geometry is clipped to the tile plus a 64-unit
+  margin before it is encoded (**added `TILE_BUFFER` and `clip_to_tile(projected, buffer=)`**). A
+  shape far larger than its tile (Aleutians West at z3) reached 32,747 units on a 4,096 extent, past
+  the 16-bit range MapLibre reads ("Geometry exceeds allowed extent").
+- **Consequence for tiles already built:** a tile is cached as immutable per `(layer, version, z,
+  x, y)`, and the encoder is not part of that key. Tiles already in L1, L2, the L3 object store or a
+  CDN keep their unclipped bytes until the layer's version moves. A consumer (the hub, the
+  geography pod) that served a refused tile must bump or reload each affected layer to get clipped
+  tiles.
+
+### Enforcement: a test subclass may not reach its base's private state
+
+- **Added, underscore-access shape I (`shape_i_violations`, walker `"shape_i"`, in `"all"`):** a
+  class a `tests/` tree defines that reads or writes `self._x` / `cls._x` where `_x` is private
+  STATE of any production ancestor (assigned on `self` in its methods, or a class-body value;
+  followed through generic bases and test-defined classes in between) is reported. A base's private methods stay callable, as protected hooks. SLF001 exempts every
+  `self` access, so a test borrowing its base's lock passed every gate and would go on passing,
+  testing nothing, once the base kept that state another way. Two members here were fixed: an
+  epoch test that wrote its listener's last-seen map, and a fake NATS client that replaced its
+  base's subscriber map with a list of another shape.
+
+### Core: one home for SQL identifiers, and a typed L3 seam for the copies
+
+- **Added, `threetears.core.sql_fragments`:** `quote_identifier` (moved here; still importable from
+  `threetears.core.cache.base`), `equality_conditions(where, first=, quote=)` and `as_written`. The
+  L1 backends, the whole-table copies, scope epochs, the scoped snapshot and the datasources drivers
+  all spell identifiers and equality filters through it. The drivers' `build_equality_filter` keeps
+  its columns unquoted (`as_written`), as the rest of its statement is: no behaviour change.
+- **Added, `threetears.core.backends.L3Reader`:** the two reads (`fetch`, `fetchrow`) the copies
+  make. `l3_fingerprint`, `read_l3_rows`, `copy_table`, `ScopedSnapshot` and
+  `open_tool_pod_snapshot` take it where they took `Any`; every `L3Backend` is one.
+
+### Core: a DuckDB bulk write converts its rows once, through Arrow
+
+- **Changed, `DuckDBBackend` bulk writes (`upsert_many`, `replace_all`, `replace_partitions`,
+  `export_rows`)**: rows go through one Arrow table when pyarrow is installed. Binding Python lists
+  made DuckDB try to import pandas once per value, a search of the whole import path where pandas
+  is absent: seconds for a few thousand rows. A column Arrow cannot type as one, or no pyarrow,
+  falls back to binding the values, and says so in the log. Output is unchanged.
 
 ### Datasources: the catalog is what the datasource's own user can SELECT
 
@@ -456,6 +2650,20 @@ so a starting replica loads them without reading L3, and a refresh moves only th
   again and retries); `open_tool_pod_snapshot(...)` builds and starts a `ScopedSnapshot` over them,
   refusing `store`/`pointers`/`ensure_buckets`/`retire` it wires itself. `ORPHAN_CHUNK_MIN_AGE` states
   the hub's orphan-chunk sweep bound, and is `purge_orphan_chunks`'s default.
+- **Added, reads that say what they are behind on, and the mixed-version rule:**
+  `ScopedSnapshot.read_with_behind()` is a read with the scopes its data is an epoch behind on (taken
+  before the read opens and cleared only after a scope's commit, so it may over-report, never
+  under-report); `applied_epoch(scope)` / `applied_epochs()` are the epochs the L1 holds, each listed
+  only once committed. During a rolling deploy a replica never loads chunks of other columns: a later
+  epoch under other columns marks the scope behind and rebuilds it from L3, and a same-epoch pointer
+  of other columns stays until `stray_age` while the replica serves that scope from L3.
+- **Changed, after review, the snapshot's threads:** the state a reader on any thread takes (the
+  applied pointers, the behind set, the row counts, the status) is changed only on the event loop, by
+  rebinding a new read-only value, never in place, so `status()`, `read_with_behind()` and
+  `applied_epoch(s)` are safe from a worker thread; only the backend runs off the loop, and the
+  versioned L1 behind `read_versioned()`, which owns its lock and epochs, runs its commits there too. A read never
+  waits on a write: `DuckDBBackend.read_snapshot()` opens its cursor from a connection no write
+  locks, so a request on the event loop is not frozen behind a long replacement.
 - **Added, `OperationStatusTool(progress=)`** (the ENR pod's `enr.load_status`): what the operation
   is doing now, answered with its status; a progress that raises is reported as unavailable, never
   taking the last run's error with it.
@@ -483,7 +2691,7 @@ copies swapped in whole.
   tables kept apart from the collections' own L1. `build()` copies every table into a fresh backend
   beside the live set, proves each, and swaps the new set in with one assignment only when every
   table is proven and the writer's record (`settled`: a stamp naming the last committed write, or
-  None while one is in progress) was the same before the first table and after the last; otherwise
+  `Unsettled(reason)` while one is in progress; `None` is a stamp like any other) was the same before the first table and after the last; otherwise
   it raises `IncompleteCopyError`, closes the half-filled backend and the live set stays. `require()`
   answers the live `CopyGeneration` (`backend`, `proofs`, `stamp`, `built_at`), which a reader holds
   for its whole read: a swap never changes a generation a reader holds. `build_if_behind()` builds
@@ -536,11 +2744,13 @@ copies swapped in whole.
   that) but answered "requested", and the run in progress is followed by one more, which takes it
   even when the drain had already made its last look for requests.
 - **Added, `SchemaBackedCollection.delete_rows(keys, *, conn, max_rows=None)`** (the ENR pod's
-  refresh deletes the rows the warehouse no longer holds): rows deleted by key in multi-row
-  `DELETE ... WHERE (k1, k2) IN ((...), ...)` statements on the caller's transaction, settled with
-  the rest when it ends; through `BulkDeletingStore.delete_many` (new protocol, which
-  `SqlL3Backend` implements), or a key at a time through `delete` on a store without it.
-  `schema_sql.build_bulk_delete_sql` builds the statement.
+  refresh deletes the rows the warehouse no longer holds): rows deleted by key in key-led
+  statements on the caller's transaction, settled with the rest when it ends; through
+  `BulkDeletingStore.delete_many` (new protocol, which `SqlL3Backend` implements), or a key at a
+  time through `delete` on a store without it. Each statement is
+  `DELETE ... WHERE <k> = ANY($1::<type>[]) AND <rest of the key> = $2 ...`
+  (`schema_sql.build_key_led_delete_sql`): the keys are grouped by all but one key column, the one
+  leaving the fewest groups, so the ENR refresh's keys of one race go as one array of geographies.
 - **Added, `nats_proxy.LOCK_NOT_AVAILABLE_ERROR_CODE`**: the broker's code for a statement whose
   `NOWAIT` lock another transaction holds (SQLSTATE 55P03); the proxy rebuilds
   `asyncpg.LockNotAvailableError` from it, as a direct pool raises. The hub sends it from its
@@ -694,133 +2904,6 @@ copies swapped in whole.
   A wait of `start_when_needed` that ends on an error it does not retry is kept as the last outcome,
   so the status reports `failed` with the reason rather than `idle`; it and a failed run are logged
   with their traceback.
-
-## v0.66.0 -- 2026-10-05
-
-### Core: a replay guard owns its nonce bucket, on memory
-
-- **Changed, `threetears.core.coordination.ReplayGuard`:** a guard that declares its bucket
-  (`create_if_missing=True`, the default) declares it through `ensure_kv_bucket` as its owner, on
-  memory storage, with `drop_file_storage=True`. A nonce bucket left live on file storage (opened
-  before it was declared, or by hand) is recreated on memory, empty, where before the guard bound it
-  as it was and NATS logged the storage mismatch at every boot. Emptying it reopens no replay: the
-  recreate's creation time refuses anything issued before it, the same rule that makes a broker
-  wipe safe. A bind-only guard (`create_if_missing=False`) still only binds and never recreates.
-  **Breaking for a client double with `kv_bucket` alone:** a declaring guard now refuses, at
-  construction with a `TypeError`, a client without `ensure_kv_bucket`; `NatsClient` and
-  `threetears.core.testing.FakeNatsClient` have it. Its constructor's overloads say the same to a
-  type checker: a declaring guard takes a `KvDeclaringClient`, a bind-only one a `KvCapable`.
-  **Breaking for a declaring consumer's NATS grants:** the identity a declaring guard runs as needs
-  `STREAM.UPDATE` and `STREAM.DELETE` on its nonce stream as well as `STREAM.CREATE`, or its bind
-  fails at startup while the bucket is still file-backed. The registry's `pop_nonces` grant already
-  carries them; the hub (proxy nonces), identity (DPoP nonces), survey and scriob check theirs before
-  relocking. `docs/design-durable-coordination.md` drops the by-hand nonce-bucket deletion.
-- **Added, `threetears.nats.kv.KvDeclaringClient`:** a client that both opens and declares KV
-  buckets (`KvCapable` and `KvDeclaring` together), for a consumer that owns its bucket.
-
-### NATS: one write-health watch for a persisted copy
-
-- **Added, `threetears.nats.CopyWriteHealth` and `WRITE_FAILURE_THRESHOLD`:** whether writes to a
-  persisted-copy bucket are landing, for a READINESS check (never liveness: a closed connection is
-  already the `nats` liveness check's to report). It counts write operations, not keys: a single
-  put or delete is one, and a pass of many writes run inside `operation()` (a sync, a write-back) is
-  one, failed if any of its writes failed and counting as nothing if it wrote nothing. `persisting`
-  turns `False` after `WRITE_FAILURE_THRESHOLD` (3) failed operations in a row, logged once at
-  ERROR, and back on the next that lands, logged at INFO. A pass belongs to the task that opened it,
-  so concurrent passes and writes (a heartbeat sweep beside a registration) are each counted alone.
-- **Changed, `threetears.registry.ToolCatalog`:** uses it instead of its own copy. A write-back, a
-  pod's deregistration sweep and a promotion each count as one operation, where before every entry
-  they wrote counted, so one failed pass over a large catalog no longer takes the registry out of
-  rotation by itself. `threetears.registry.catalog.WRITE_FAILURE_THRESHOLD` is the shared value.
-
-### Geo: a tile source's caches are its own
-
-- **Changed, breaking, `threetears.geo.TileCollection` and `FeatureCache`:** each takes a required
-  `cache_scope`, the tile source's identity, and its table name carries it
-  (`geo_tiles_<scope>`, `geo_features_<scope>`). Every tier the collection framework keys by
-  table -- the pod-local L1 table, the NATS L2 keys, the cross-pod build lock and the registry
-  entry -- was shared by every source under one name, and tiles are keyed by
-  `(layer, version, z, x, y)` alone: two sources serving a layer of the same name (two
-  datasources, or a customer's datasource and a platform layer, both starting at version 1)
-  answered for each other from whichever built a tile first, across tenants. Only the object
-  store was scoped (by `datasource_name`, unchanged). `check_cache_scope` refuses anything but
-  a lowercase identifier of at most `MAX_CACHE_SCOPE_LENGTH` (48) characters, since the scope
-  names SQL tables and NATS KV keys unquoted: `ds_<32 hex>` and `ns_<32 hex>` fit. A caller
-  whose L1 backend declares the tables by name declares the scoped names.
-
-### Geo: building layers from other layers
-
-- **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
-  say), naming each piece `<coarse id>-<fine id>`. Each part of a cut is judged on its own and
-  dropped when narrower or smaller than the caller's thresholds (`min_width_m`, `min_area_km2`),
-  since two sources' boundaries disagree by a few meters; features no piece covers are reported.
-  `replace_features` swaps a layer's features for a set of keys, refusing replacements that cover
-  other keys. `missing_features` names the ids a consumer needs that a layer lacks. `mean_width_m`
-  and `area_km2` measure in a local projection around each shape's latitude. Measured on US
-  counties cut by congressional districts: slivers 4 to 10 m wide, coastline fragments up to
-  0.6 km², the smallest real piece 5.3 km².
-
-### Datasources: geo blocks beside their tables, and the borrowed-pool config named for what it is
-
-- **Added, `GeoConfig.check_against_tables`:** refuses a geo layer that names a table, or a column
-  of it, the declaring tables lack, with `GeoLayerConfig.columns_read` listing every column a layer
-  reads (feature id, geometry, version, bounding box, and its bands' attributes, rank and rollup).
-  The one copy the SDK and the Hub both run for a tool pod's `geo:` block.
-- **Added, `threetears.datasources.geo_reload`:** the contract a tool pod uses to report that it
-  has written a new generation of its geography layers' shapes: `report_geo_layers_reloaded`, its
-  request and reply models, and the hub's obligations. The hub moves each layer's tile version to
-  the reported generation, forward only (a generation below the version is refused
-  `GENERATION_BEHIND` with the version in the reply). A layer never reported has no version, and
-  nothing of it is served until its first report sets one. New subject
-  `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
-  publish and to the hub to answer. The hub serves a layer's tiles at exactly two versions: its
-  current one and the PREVIOUS one, the version the current one replaced, which is recorded when
-  the version moves and never inferred as one below (generations skip: a failed, unreported load
-  leaves rows stamped with a generation nobody reported). The success reply carries each layer's
-  previous version (`previous_versions`), `report_geo_layers_reloaded` returns each layer's
-  `LayerVersions` (`version`, `previous`), and `generations_to_delete` names every stamped
-  generation a pod deletes after it: all but those two, failed loads' included. A report whose
-  generations break the request's bounds is refused `INVALID_REQUEST` without asking the hub.
-- **Added, `EpochClient.advance_to`:** moves a durable epoch forward to a target in one statement and
-  never back, so concurrent writers meeting one target leave it there (where `bump` would carry it
-  past). Durable subjects only. It, and a durable `bump`, record the epoch each move replaced;
-  it returns a `DurableEpoch` (`epoch`, `previous`); `EpochClient.versions` reads both in one query. New
-  migration epoch v002 adds the nullable `config_epochs.previous_epoch` column; existing rows read
-  `None` until their next move.
-- **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
-  its docstring asked once a second use appeared: a tool pod's platform geography layers are read
-  for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
-  discriminator is unchanged (`agent_internal`). No alias: rename at the call site. The Hub's
-  OpenAPI schema component carries the new name too, so the TypeScript clients generated from it
-  (the SDK's `web-api-client`) and any hand-written interface naming the old one follow on their
-  next regeneration.
-
-### Core: L1 bulk writes, and imports without the NATS client
-
-- **Added, L1 backends:** `upsert_many` writes many rows as `upsert` would one by one (SQLite in
-  one transaction; DuckDB in one columnar statement, about twenty times faster than
-  `executemany`), and `upsert` is now `upsert_many` of one row, so the two cannot drift. A batch
-  repeating a key keeps its last row. `column_types` exposes the type codes a table's columns are
-  read and written by. `DuckDBBackend.load_parquet` loads a Parquet file into a table in one
-  statement. First consumer: the reports product's Tableau evaluator, which loads an extract
-  snapshot into DuckDB L1 (its backlog item RPT-T3B1) and today bulk-inserts on the backend's
-  connection and reads its private schema. **Breaking for out-of-repo implementers:** `upsert_many`
-  and `column_types` are now part of the `L1Backend` protocol, so an L1 backend written outside
-  3tears must add both to keep satisfying it.
-- **Fixed, `SQLiteBackend`:** a write that fails for any reason rolls its transaction back. It
-  rolled back only on `OperationalError`, so a constraint or binding error left `BEGIN IMMEDIATE`
-  open, holding the write lock against the thread's next write. A table whose every column is its
-  key takes an upsert (`DO NOTHING`, where it built an empty `DO UPDATE SET`). A write SQLite rolled
-  back by itself (a full disk, an I/O error, an interrupt) raises its own error, not a failed
-  `ROLLBACK`'s "no transaction is active".
-- **Fixed, L1 backends:** every table and column name either backend interpolates is quoted through
-  one helper, `threetears.core.cache.base.quote_identifier`, so a table or key column named with a
-  space or capitals (a converted extract's `% of Exp. In`) is created, written, read and deleted
-  alike. Only the bulk writes quoted before, so such a table could be filled but not read by id.
-- **Fixed:** `DerivedCollection`, and with it `threetears.geo`, no longer needs the optional NATS
-  client (core's `nats` extra) to import or to derive on a single pod. With no NATS client there is
-  no peer to coordinate with, so a derivation runs under the in-process gate alone and never
-  imports the cross-pod lock; with a client it takes the lock, which needs the extra.
 
 ## v0.65.0 -- 2026-10-05
 

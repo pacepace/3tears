@@ -316,7 +316,7 @@ class WebhookReceiver:
         # runners that only touch other channel adapters). Same
         # pattern as agent-wake's dispatch module uses for its
         # CollectionRegistry import.
-        from threetears.agent.wake.webhook_adapter import webhook_receive  # noqa: PLC0415
+        from threetears.agent.wake.webhook_adapter import record_webhook_refusal, webhook_receive  # noqa: PLC0415
 
         body = await request.body()
         if len(body) > self._max_payload_bytes:
@@ -369,6 +369,9 @@ class WebhookReceiver:
                     },
                 },
             )
+            await record_webhook_refusal(
+                self._subscriptions, sub, reason="unknown_scheme", status_code=400, detail=f"scheme {scheme}"
+            )
             return JSONResponse(
                 status_code=400,
                 content={
@@ -382,6 +385,7 @@ class WebhookReceiver:
             # outcome the wake adapter would produce on its own). Skip
             # the verifier so vendor verifiers don't have to defend
             # against ``None`` / empty inputs.
+            await record_webhook_refusal(self._subscriptions, sub, reason="missing_signature", status_code=401)
             return JSONResponse(
                 status_code=401,
                 content={"fire_id": None, "message": "missing signature header"},
@@ -417,6 +421,7 @@ class WebhookReceiver:
                     },
                 },
             )
+            await record_webhook_refusal(self._subscriptions, sub, reason="bad_signature", status_code=403)
             return JSONResponse(
                 status_code=403,
                 content={"fire_id": None, "message": "invalid signature"},

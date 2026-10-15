@@ -9,16 +9,20 @@ possible to rev ``nats-py`` without breaking every catch site.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 __all__ = [
     "KvBucketNotFoundError",
     "KvConfigMismatch",
     "KvError",
+    "LockLossReason",
     "NamespaceNotConfiguredError",
     "NatsClientError",
     "NoRespondersError",
     "ObjectExistsError",
     "ObjectNotFoundError",
     "ObjectStoreError",
+    "ObjectStoreFullError",
     "ObjectStoreNotFoundError",
     "OpLogError",
     "OpLogSequenceConflict",
@@ -257,9 +261,36 @@ class ObjectStoreError(NatsClientError):
     """raised when a JetStream Object Store operation fails.
 
     covers binding, declaring, putting, getting, listing and deleting objects. the narrower
-    subclasses name the outcomes a caller acts on: an absent bucket, an absent object, a name
-    already taken.
+    subclasses below name the outcomes a caller acts on.
     """
+
+
+class ObjectStoreFullError(ObjectStoreError):
+    """raised when a write is refused for want of room: the store at its ``max_bytes``, or the server
+    or account out of the storage it reserves.
+
+    the store holds what it holds until objects are deleted, so room comes from deleting what is no
+    longer served, or from a larger bound.
+
+    :ivar bucket: the fully-qualified bucket name
+    :ivar name: the object whose write was refused
+    """
+
+    def __init__(self, message: str, *, bucket: str, name: str) -> None:
+        """build the error, carrying the bucket and object names on the instance.
+
+        :param message: human-readable explanation, naming the server's own description
+        :ptype message: str
+        :param bucket: the fully-qualified bucket name
+        :ptype bucket: str
+        :param name: the object
+        :ptype name: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
+        self.name = name
 
 
 class ObjectStoreNotFoundError(ObjectStoreError):
@@ -387,3 +418,29 @@ class OpLogSequenceConflict(OpLogError):
     :class:`threetears.nats.AppendResult` with ``deduplicated=True``
     rather than raising.
     """
+
+
+class LockLossReason(StrEnum):
+    """why a holder stopped holding a KV-backed lock or lease before it let it go.
+
+    Not an error itself: the reason a :class:`~threetears.core.coordination.LockLost` carries, and the one
+    :class:`~threetears.core.coordination.HeldLease` reports: one vocabulary for a lost hold, not one
+    per primitive. It lives here, beside the KV errors, as a plain value this package's own callers
+    can name without core; core re-exports it (``threetears.core.coordination.LockLossReason``, and
+    as ``LeaseLossReason``).
+
+    :cvar EXPIRED: the entry was gone at renewal -- it expired (the holder stalled past the
+        TTL) and nobody has taken it yet
+    :cvar TAKEN: the entry carries another holder's identity (or a value this holder cannot read,
+        such as an older release's format), or another write landed between the renewal's read and
+        its compare-and-swap -- someone else holds it now
+    :cvar RENEWAL_FAILED: renewals kept failing (broker unreachable) until the entry may
+        have expired, so the hold can no longer be vouched for
+    :cvar MAX_HOLD: the holder kept it past the maximum hold and renewal stopped so the TTL
+        could hand it on
+    """
+
+    EXPIRED = "expired"
+    TAKEN = "taken"
+    RENEWAL_FAILED = "renewal_failed"
+    MAX_HOLD = "max_hold"

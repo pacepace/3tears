@@ -268,7 +268,7 @@ async def test_a_published_scope_reaches_the_other_replica_alone_and_whole(platf
         rows = {table.name: await _rows(platform.pool, table.name, "TX") for table in _TABLES}
         started = asyncio.get_running_loop().time()
         await writer.publish("TX", 2, rows)
-        while reader.status().last_change is None or reader.status().last_change.epoch != 2:
+        while (change := reader.status().last_change) is None or change.epoch != 2:
             assert asyncio.get_running_loop().time() - started < 10, "the reader never applied TX"
             await asyncio.sleep(0.02)
     finally:
@@ -279,7 +279,8 @@ async def test_a_published_scope_reaches_the_other_replica_alone_and_whole(platf
     with reader.read() as cursor:
         assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'TX'").fetchall() == [(7,)]
     assert _count(reader, "results", "CA") == 40, "another scope was touched"
-    assert reader.status().last_change is not None and reader.status().last_change.scope == "TX"
+    change = reader.status().last_change
+    assert change is not None and change.scope == "TX"
     assert any("/TX/1/" in name for name in platform.retired), "the superseded epoch was not retired"
     assert not any("/TX/2/" in name or "/CA/" in name for name in platform.retired)
     await writer.stop()
@@ -370,9 +371,7 @@ async def test_a_pointer_never_moves_to_a_lower_epoch(platform: _Platform) -> No
     await reader.wait_ready(timeout=_WAIT)
     fresh = {t.name: await _rows(platform.pool, t.name, "DE") for t in _TABLES}
     await writer.publish("DE", 3, fresh)
-    await _until(
-        lambda: reader.status().last_change is not None and reader.status().last_change.epoch == 3, what="DE@3"
-    )
+    await _until(lambda: (change := reader.status().last_change) is not None and change.epoch == 3, what="DE@3")
     # a stale writer, still holding epoch 2, publishes rows that are not the scope's any more
     stale = {name: [dict(r, votes=-1) if name == "results" else r for r in rows] for name, rows in fresh.items()}
     stale_writer, _ = await platform.replica()
@@ -482,7 +481,8 @@ class _HeldStore:
         if self._hold in name and not self.release.is_set():
             self.held.set()
             await self.release.wait()
-        return await self._inner.get(name)
+        data: bytes = await self._inner.get(name)
+        return data
 
 
 async def test_a_chunk_retired_under_a_read_is_read_at_the_current_pointer(platform: _Platform) -> None:
@@ -1040,3 +1040,78 @@ async def _de_chunks(platform: _Platform) -> set[str]:
     """every chunk of DE in the store."""
     store = await platform.hub.object_store(name="pod-objects")
     return {info.name for info in await store.list_objects(prefix="enr/DE/")}
+
+
+def _new_backend_with_note() -> DuckDBBackend:
+    """the next code version's L1: counties gains a column."""
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    TableSchema(
+        name="counties",
+        primary_key="county",
+        columns=[
+            Column("county", STRING_TYPE),
+            Column("state", STRING_TYPE),
+            Column("total", BIGINT_TYPE),
+            Column("note", STRING_TYPE, nullable=True),
+        ],
+        on_conflict="update",
+    ).to_sqlalchemy_table(metadata)
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    return backend
+
+
+async def _pointer_revisions(platform: _Platform) -> dict[str, int]:
+    pointers = await platform.hub.kv_bucket(name="pod-pointers", create_if_missing=False)
+    revisions = {}
+    for state in _STATES:
+        entry = await pointers.get_entry(key=f"enr.s.{state}")
+        assert entry is not None
+        revisions[state] = entry[1]
+    return revisions
+
+
+async def test_two_code_versions_with_other_columns_never_load_or_repoint_each_others_chunks(
+    platform: _Platform,
+) -> None:
+    """a rolling deploy of a column change: the old version and the new one run together over the
+    same pointers. Neither ever holds the other's columns, neither repoints the other's scopes on a
+    rebuild, and a write either one publishes reaches the other, which rebuilds that scope from L3."""
+    await platform.pool.execute("ALTER TABLE counties ADD COLUMN note TEXT")
+    await platform.pool.execute("UPDATE counties SET note = 'from L3'")
+    old, _ = await platform.replica()
+    await old.start()
+    await old.wait_ready(timeout=_WAIT)
+    before = await _pointer_revisions(platform)
+
+    new, new_l3 = await platform.replica(backend=_new_backend_with_note())
+    await new.start()
+    await new.wait_ready(timeout=_WAIT)
+    await asyncio.sleep(1.0)  # several passes of both workers
+
+    assert new.status().source is SnapshotSource.L3, "the new version loaded the old one's chunks"
+    assert new_l3.statements > 0
+    with new.read() as cursor:
+        assert cursor.execute("SELECT DISTINCT note FROM counties").fetchall() == [("from L3",)]
+    assert "other columns" in new.status().detail
+    assert await _pointer_revisions(platform) == before, "a rebuild repointed the other version's scopes"
+    assert old.status().phase is SnapshotPhase.READY and "note" not in str(old.backend.column_types("counties"))
+
+    # the old version writes DE at epoch 2: the new one cannot load those chunks and rebuilds DE from L3
+    await platform.pool.execute("UPDATE results SET votes = 11 WHERE state = 'DE'")
+    platform.epochs["DE"] = 2
+    await old.publish("DE", 2, {t.name: await _rows(platform.pool, t.name, "DE") for t in _TABLES})
+
+    def new_has_de() -> bool:
+        with new.read() as cursor:
+            votes: list[Any] = cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall()
+        return votes == [(11,)]
+
+    await _until(new_has_de, what="the new version to rebuild DE from L3")
+    with new.read() as cursor:
+        assert cursor.execute("SELECT DISTINCT note FROM counties WHERE state = 'DE'").fetchall() == [("from L3",)]
+    with old.read() as cursor:
+        assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(11,)]
+    await old.stop()
+    await new.stop()

@@ -7,7 +7,7 @@ The code says what it does. This gate holds the two equal, in both directions:
   covered by its principal's list. A subscribe the broker refuses is not an error anybody sees: it
   is a subscription that receives nothing, which in cache invalidation is a silently stale cache.
 - **every grant has a site.** No grant outlives the code that needed it, unless it is on
-  :data:`_KEPT_FOR_OLDER_RELEASES`, dated and with its reason: the auth callout mints these lists for
+  :func:`_kept_for_older_releases`, dated and with its reason: the auth callout mints these lists for
   pods running OLDER releases too, so a subject the current code stopped using stays until no
   supported release uses it (expand, migrate, contract).
 - **every receiver in this repository is accounted for.** The sender-posture walker finds each place
@@ -47,6 +47,7 @@ import pytest
 from tests.enforcement.sender_posture_support import SENDER_POSTURE_CONFIG as _POSTURE_CONFIG
 from threetears.enforcement.sender_posture import find_subscribe_sites
 from threetears.nats.subject_permissions import (
+    retired_subscriptions,
     CROSS_PLATFORM_CACHE_INVALIDATE,
     SERVER_USER_INFO_SUBJECT,
     Principal,
@@ -69,11 +70,30 @@ _UNGATED: Final[Mapping[Principal, str]] = {
     ),
 }
 
-#: grants kept for a release older than the current code, with the date the current code stopped
-#: using the subject and why an older release still needs it. Each one has no current site; once no
-#: supported release uses it, the entry and the grant go together. Empty: no subject a pod's grant
-#: lost in this change was used by any release (see the commit that introduced this gate).
-_KEPT_FOR_OLDER_RELEASES: Final[Mapping[Principal, Mapping[str, tuple[str, str]]]] = {}
+
+# grants kept for a release older than the current code, with the date the current code stopped
+# using the subject and why an older release still needs it. Each one has no current site; once no
+# supported release uses it, the entry and the grant go together.
+def _kept_for_older_releases() -> Mapping[Principal, Mapping[str, tuple[str, str]]]:
+    """the grants each principal keeps for older releases: pattern to (date stopped, reason).
+
+    Built at call time, as the subjects are, under the namespace the test runs in.
+
+    :return: principal to its kept patterns
+    :rtype: Mapping[Principal, Mapping[str, tuple[str, str]]]
+    """
+    return {
+        Principal.AGENT_POD: {
+            subject: (
+                "2026-10-09",
+                "the access tables moved onto their write generations (0.66.0) and nothing publishes the acl "
+                "subjects; an SDK pod a release back still subscribes them at start, and a refused subscribe "
+                "is logged at ERROR on every connect",
+            )
+            for subject in sorted(retired_subscriptions())
+        },
+    }
+
 
 _AGENT: Final[str] = "019470a8-b5c3-7def-8123-000000000001"
 _AGENT_POD_ID: Final[str] = "01947100-0000-7000-8000-000000000001"
@@ -173,15 +193,6 @@ def _inprocess_pod() -> str:
     return Subjects.agent_inprocess_pod_id(UUID(_AGENT), "instance-1")
 
 
-def _acl() -> tuple[str, ...]:
-    """the three ACL invalidation subjects ``subscribe_acl_invalidation`` subscribes.
-
-    :return: one subject per invalidation kind
-    :rtype: tuple[str, ...]
-    """
-    return tuple(str(Subjects.acl_invalidate(kind)) for kind in ("membership", "assignment", "role"))
-
-
 def _l3() -> tuple[str, ...]:
     """the L3 broker subjects ``NatsProxyL3Backend`` requests, every transaction op included.
 
@@ -230,11 +241,6 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
     session = "session-1"
     every: dict[Principal, tuple[str, ...]] = {p: (str(Subjects.cache_invalidate()),) for p in Principal}
     return {
-        "packages/agent/acl/src/threetears/agent/acl/invalidation_bus.py::subscribe_acl_invalidation": {
-            # sdk runtime/three_tier_stack.py:321; registry rbac_stack.py:200
-            Principal.AGENT_POD: _acl(),
-            Principal.REGISTRY: _acl(),
-        },
         "packages/agent/audit/src/threetears/agent/audit/persist.py::start_audit_persister": _ON_THE_INBOX,
         "packages/agent/tools/src/threetears/agent/tools/server.py::ToolServer.serve": {
             Principal.AGENT_POD: (str(Subjects.tools_internal(inprocess)), str(Subjects.tools_probe(inprocess))),
@@ -243,6 +249,8 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
         "packages/channels/src/threetears/channels/presence/fanout.py::RoomFanout._subscribe_locked": _NOT_WIRED,
         "packages/core/src/threetears/core/collections/registry.py::CollectionRegistry.start_invalidation_listener": every,
         "packages/core/src/threetears/core/collections/scoped_snapshot.py::ScopedSnapshot._follow": _ON_THE_INBOX,
+        # a write generation is followed through the KV key watch, on the inbox
+        "packages/epoch/src/threetears/epoch/generation.py::EpochGenerationReader.watch": _ON_THE_INBOX,
         "packages/epoch/src/threetears/epoch/listener.py::EpochListener.subscribe": {
             # hub gateway/service.py:660, the catalog epoch; the hub's mcp.rbac listener is ungated
             Principal.GATEWAY: (str(Subjects.gateway_catalog_epoch()),),
@@ -328,7 +336,6 @@ def _external_receive_sites() -> dict[Principal, tuple[_Site, ...]]:
             _there("hub:src/aibots/gateway/handlers/completion.py:237", str(Subjects.gateway_completion())),
             _there("hub:src/aibots/gateway/handlers/embedding.py:142", str(Subjects.gateway_embedding())),
             _there("hub:src/aibots/gateway/service.py:682", str(Subjects.gateway_health())),
-            _there("hub:src/aibots/hub/broker/acl.py:798", *_acl()),
         ),
         Principal.CHANNEL_ADAPTER: (
             _there(
@@ -467,6 +474,12 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
                 "packages/datasources/src/threetears/datasources/geo_reload.py",
                 "Subjects.hub_geo_layers_reloaded()",
                 str(Subjects.hub_geo_layers_reloaded()),
+            ),
+            # a pod asks the hub to purge the keys it retired from its own scope of the collections bucket
+            _here(
+                "packages/nats/src/threetears/nats/collection_key_requests.py",
+                "Subjects.hub_collection_keys_purge()",
+                str(Subjects.hub_collection_keys_purge()),
             ),
             _here(
                 "packages/agent/tools/src/threetears/agent/tools/object_resolver.py",
@@ -660,8 +673,11 @@ def _deadletters(permissions: PrincipalPermissions) -> tuple[str, ...]:
     :return: one dead-letter subject per subscribed subject
     :rtype: tuple[str, ...]
     """
+    retired = retired_subscriptions()
     return tuple(
-        str(Subjects.deadletter(s)) for s in permissions.subscribe if not s.startswith(f"{permissions.inbox_prefix}.")
+        str(Subjects.deadletter(s))
+        for s in permissions.subscribe
+        if not s.startswith(f"{permissions.inbox_prefix}.") and s not in retired
     )
 
 
@@ -673,7 +689,7 @@ def _kept(principal: Principal) -> tuple[str, ...]:
     :return: the kept patterns
     :rtype: tuple[str, ...]
     """
-    return tuple(_KEPT_FOR_OLDER_RELEASES.get(principal, {}))
+    return tuple(_kept_for_older_releases().get(principal, {}))
 
 
 def test_every_principal_is_gated_or_says_why_not() -> None:
@@ -846,7 +862,7 @@ def test_kept_grants_are_dated_and_still_granted() -> None:
     :rtype: None
     """
     problems: list[str] = []
-    for principal, kept in _KEPT_FOR_OLDER_RELEASES.items():
+    for principal, kept in _kept_for_older_releases().items():
         permissions = _permissions(principal)
         sites = [s for site in (*_receive_sites(principal), *_publish_sites()[principal]) for s in site.subjects]
         for pattern, (stopped, reason) in kept.items():

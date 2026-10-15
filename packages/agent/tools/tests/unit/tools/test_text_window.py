@@ -60,6 +60,43 @@ class TestTheWindow:
         assert first.text + second.text == "abcdefgh"
 
 
+class TestTheNoteGoesFirst:
+    """A reader that keeps only the head of a result still reads that it is a part."""
+
+    def test_the_window_line_is_the_first_line_and_the_text_follows_a_blank_line(self) -> None:
+        window = window_text("x" * 250, max_chars=100)
+        rendered = window.rendered(tool="web_fetch", note_first=True)
+        note, blank, text = rendered.partition("\n\n")
+        assert note == window.note(tool="web_fetch") and note.startswith("[characters 0-100 of 250")
+        assert blank and text == "x" * 100
+
+    def test_a_tools_own_notes_follow_the_window_line_and_come_before_the_text(self) -> None:
+        window = window_text("body " * 50, max_chars=100)
+        rendered = window.rendered(tool="parse_document", note_first=True, notes=["OCR was used.", ""])
+        head, _, text = rendered.partition("\n\n")
+        assert head.splitlines() == [window.note(tool="parse_document"), "OCR was used."]
+        assert text == window.text
+
+    def test_a_whole_text_with_a_note_still_states_the_note_first(self) -> None:
+        rendered = window_text("short", max_chars=100).rendered(tool="t", note_first=True, notes=["Read by OCR."])
+        assert rendered == "Read by OCR.\n\nshort"
+
+    def test_a_whole_text_with_no_note_is_only_the_text(self) -> None:
+        assert window_text("short", max_chars=100).rendered(tool="t", note_first=True) == "short"
+
+    def test_a_window_past_the_end_is_its_note_and_nothing_after(self) -> None:
+        rendered = window_text("x" * 50, offset=9999, max_chars=100).rendered(tool="t", note_first=True)
+        assert rendered.startswith("[characters 50-50 of 50") and rendered.endswith("the end of it]")
+
+    def test_the_trailing_form_is_unchanged_for_a_caller_that_has_not_moved(self) -> None:
+        window = window_text("x" * 250, max_chars=100)
+        assert window.rendered(tool="web_fetch") == "x" * 100 + "\n\n" + window.note(tool="web_fetch")
+
+    def test_notes_are_refused_in_the_trailing_form(self) -> None:
+        with pytest.raises(ValueError, match="note_first=True"):
+            window_text("short", max_chars=100).rendered(tool="t", notes=["a note"])
+
+
 class TestTheSharedArgument:
     def test_the_offset_argument_defaults_to_the_beginning_and_refuses_a_negative(self) -> None:
         assert WindowedInput().offset == 0
@@ -69,3 +106,42 @@ class TestTheSharedArgument:
     def test_its_description_tells_the_model_what_to_do_with_it(self) -> None:
         description = WindowedInput.model_fields["offset"].description or ""
         assert "call again with the offset it names" in description
+
+
+class TestFindInText:
+    """find_in_text: every match from an offset on, ignoring case, and where a window opens."""
+
+    def test_every_match_is_counted_and_the_window_opens_before_the_first(self) -> None:
+        from threetears.agent.tools.text_window import FIND_LEAD_CHARS, find_in_text
+
+        text = "a" * 1_000 + "Rent is due" + "b" * 50 + "rent again"
+        found = find_in_text(text, "RENT")
+
+        assert found.offsets == (1_000, 1_061)
+        assert found.total == 2
+        assert found.start == 1_000 - FIND_LEAD_CHARS
+        assert "2 matches, at characters 1,000, 1,061" in found.note()
+
+    def test_matches_before_the_offset_are_not_counted(self) -> None:
+        from threetears.agent.tools.text_window import find_in_text
+
+        found = find_in_text("rent rent rent", "rent", after=1)
+
+        assert found.offsets == (5, 10)
+        assert found.start == 1, "the window never opens before the offset asked for"
+
+    def test_no_match_has_no_window(self) -> None:
+        from threetears.agent.tools.text_window import find_in_text
+
+        found = find_in_text("nothing here", "rent")
+
+        assert found.start is None
+        assert "no match" in found.note()
+
+    def test_a_blank_term_is_refused(self) -> None:
+        import pytest
+
+        from threetears.agent.tools.text_window import find_in_text
+
+        with pytest.raises(ValueError):
+            find_in_text("text", "  ")

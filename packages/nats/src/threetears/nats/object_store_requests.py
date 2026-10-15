@@ -28,11 +28,15 @@ The request and reply models, the subjects and the pod's client live here; the h
    names anything but a tool pod, is answered ``IDENTITY_REFUSED``.
 3. Declare or retire in the VERIFIED pod's own buckets only; a failure after verification is
    answered ``DECLARE_FAILED`` / ``RETIRE_FAILED``, and a retry is safe.
-4. The sweep of chunks a failed write left behind takes only chunk subjects no object names that
-   are OLDER than :data:`ORPHAN_CHUNK_MIN_AGE`. A retire runs while other replicas of the same pod
-   are writing (every publish ends in one), and an object's chunks are stored before its
-   metadata, so a younger unnamed chunk may be a put still in flight; sweeping it tears that put.
-   :meth:`threetears.nats.object_store.NatsObjectStore.purge_orphan_chunks` holds to it by default.
+4. The sweep of chunks a failed write left behind takes chunk subjects no object names only while
+   no write is in flight, judged by state, never by age: a writer claims what it writes in the
+   pod's pointer bucket (a key :func:`is_write_claim_key` recognises, held from before its first
+   chunk until a pointer names the object, renewed while it lives), and an object's chunks are
+   stored before its metadata, so while any claim stands an unnamed chunk may be a put in flight
+   and sweeping it would tear that put. A claim whose writer died lapses unrenewed, and the next
+   sweep takes what that writer left.
+   :meth:`threetears.nats.object_store.NatsObjectStore.purge_orphan_chunks` judges it, given the
+   pointer bucket.
 
 ``error_code`` vocabulary: :data:`OBJECT_STORE_REQUEST_ERROR_CODES`.
 """
@@ -41,15 +45,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import TYPE_CHECKING, Annotated, Final
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_serializer
 from threetears.observe import get_logger
 
-from threetears.nats.errors import RequestError
-from threetears.nats.subjects import Subject, Subjects
+from threetears.nats.hub_requests import ask_hub
+from threetears.nats.subjects import Subjects
 
 if TYPE_CHECKING:
     from threetears.nats.client import NatsClient
@@ -61,7 +64,8 @@ __all__ = [
     "MAX_RETIRED_OBJECTS",
     "OBJECT_NAME_PATTERN",
     "OBJECT_STORE_REQUEST_ERROR_CODES",
-    "ORPHAN_CHUNK_MIN_AGE",
+    "WRITE_CLAIM_SEGMENT",
+    "is_write_claim_key",
     "DeclaredObjectStore",
     "ObjectStoreDeclareReply",
     "ObjectStoreDeclareRequest",
@@ -83,9 +87,21 @@ log = get_logger(__name__)
 #: objects one retire request may name
 MAX_RETIRED_OBJECTS: Final[int] = 1000
 
-#: how old a chunk subject no object names must be before the hub's retire sweeps it: well above the
-#: longest put (an object's chunks land before its metadata, so a younger one may be a put in flight)
-ORPHAN_CHUNK_MIN_AGE: Final[timedelta] = timedelta(minutes=10)
+#: the segment that marks a write claim's key in a pod's pointer bucket: ``{name}.w.{epoch}.{writer}``
+WRITE_CLAIM_SEGMENT: Final = "w"
+
+
+def is_write_claim_key(key: str) -> bool:
+    """whether a pointer-bucket key is a writer's claim on what it writes: ``{name}.w.{epoch}.{writer}``.
+
+    :param key: the key
+    :ptype key: str
+    :return: whether it is a write claim
+    :rtype: bool
+    """
+    parts = key.split(".")
+    return len(parts) == 4 and parts[1] == WRITE_CLAIM_SEGMENT and parts[2].isdigit() and bool(parts[0] and parts[3])
+
 
 #: seconds a pod waits for the hub's answer
 DEFAULT_OBJECT_STORE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
@@ -282,71 +298,17 @@ class RetiredObjects:
     orphan_chunks: int
 
 
-async def _ask(
-    nats_client: NatsClient,
-    *,
-    subject: Subject,
-    request: _TokenRequest,
-    what: str,
-    timeout_seconds: float,
-) -> bytes:
-    """send one request and return the raw reply.
+def _refused(reply: ObjectStoreDeclareReply | ObjectStoreRetireReply) -> ObjectStoreRequestRefusedError:
+    """the error a final refusal raises: a bucket NATS lost is its own, so the caller declares it again.
 
-    :param nats_client: the pod's connected NATS client
-    :ptype nats_client: NatsClient
-    :param subject: the request subject
-    :ptype subject: Subject
-    :param request: the request
-    :ptype request: _TokenRequest
-    :param what: what is asked, for the error
-    :ptype what: str
-    :param timeout_seconds: seconds to wait
-    :ptype timeout_seconds: float
-    :return: the reply's bytes
-    :rtype: bytes
-    :raises ObjectStoreRequestUnavailableError: on a transport failure or timeout
-    """
-    try:
-        raw: bytes = await nats_client.request_raw(
-            subject=subject,
-            payload=request.model_dump_json().encode("utf-8"),
-            timeout=timedelta(seconds=timeout_seconds),
-        )
-    except RequestError as exc:
-        raise ObjectStoreRequestUnavailableError(
-            f"{what} failed (correlation_id={request.correlation_id}): {exc}"
-        ) from exc
-    return raw
-
-
-def _check_reply(reply: ObjectStoreDeclareReply | ObjectStoreRetireReply, *, correlation_id: UUID, what: str) -> None:
-    """refuse a reply that answers another request, or that refuses.
-
-    :param reply: the decoded reply
+    :param reply: the refusal
     :ptype reply: ObjectStoreDeclareReply | ObjectStoreRetireReply
-    :param correlation_id: the request's correlation id
-    :ptype correlation_id: UUID
-    :param what: what was asked, for the error
-    :ptype what: str
-    :return: nothing
-    :rtype: None
-    :raises ObjectStoreRequestUnavailableError: on a reply to another request, or a retryable code
-    :raises ObjectStoreRequestRefusedError: on any other refusal
+    :return: the error
+    :rtype: ObjectStoreRequestRefusedError
     """
-    # a refusal with no correlation id is this request's: a body the hub could not decode had none to echo
-    if reply.correlation_id != correlation_id and (reply.success or reply.correlation_id is not None):
-        raise ObjectStoreRequestUnavailableError(
-            f"{what} reply carried correlation_id={reply.correlation_id}, not {correlation_id}"
-        )
-    if not reply.success and reply.error_code in _RETRYABLE_ERROR_CODES:
-        raise ObjectStoreRequestUnavailableError(
-            f"{what} failed hub-side (correlation_id={correlation_id}): "
-            f"{reply.error_code}: {reply.error_message or 'no details'}"
-        )
-    if not reply.success and reply.error_code == _NOT_DECLARED:
-        raise ObjectStoreNotDeclaredError(_NOT_DECLARED, reply.error_message or "no details")
-    if not reply.success:
-        raise ObjectStoreRequestRefusedError(reply.error_code or "UNKNOWN", reply.error_message or "no details")
+    if reply.error_code == _NOT_DECLARED:
+        return ObjectStoreNotDeclaredError(_NOT_DECLARED, reply.error_message or "no details")
+    return ObjectStoreRequestRefusedError(reply.error_code or "UNKNOWN", reply.error_message or "no details")
 
 
 async def declare_pod_object_store(
@@ -373,20 +335,17 @@ async def declare_pod_object_store(
     if not identity_token:
         raise ObjectStoreRequestUnavailableError("an object store declare has no identity token to present")
     request = ObjectStoreDeclareRequest(identity_token=SecretStr(identity_token), correlation_id=uuid7())
-    raw = await _ask(
+    reply = await ask_hub(
         nats_client,
         subject=Subjects.hub_object_store_declare(),
         request=request,
+        reply_type=ObjectStoreDeclareReply,
         what="object store declare",
         timeout_seconds=timeout_seconds,
+        unavailable=ObjectStoreRequestUnavailableError,
+        refused=_refused,
+        retryable=_RETRYABLE_ERROR_CODES,
     )
-    try:
-        reply = ObjectStoreDeclareReply.model_validate_json(raw)
-    except ValidationError as exc:
-        raise ObjectStoreRequestUnavailableError(
-            f"object store declare reply did not decode (correlation_id={request.correlation_id}): {exc}"
-        ) from exc
-    _check_reply(reply, correlation_id=request.correlation_id, what="object store declare")
     if reply.bucket is None or reply.pointers_bucket is None or reply.max_bytes is None:
         raise ObjectStoreRequestUnavailableError(
             f"object store declare reply does not name the buckets (correlation_id={request.correlation_id})"
@@ -435,20 +394,17 @@ async def retire_pod_objects(
     except ValidationError as exc:
         # the hub would refuse the same body, so it is refused here with the hub's code
         raise ObjectStoreRequestRefusedError("INVALID_REQUEST", f"object retire is not valid: {exc}") from exc
-    raw = await _ask(
+    reply = await ask_hub(
         nats_client,
         subject=Subjects.hub_object_store_retire(),
         request=request,
+        reply_type=ObjectStoreRetireReply,
         what="object retire",
         timeout_seconds=timeout_seconds,
+        unavailable=ObjectStoreRequestUnavailableError,
+        refused=_refused,
+        retryable=_RETRYABLE_ERROR_CODES,
     )
-    try:
-        reply = ObjectStoreRetireReply.model_validate_json(raw)
-    except ValidationError as exc:
-        raise ObjectStoreRequestUnavailableError(
-            f"object retire reply did not decode (correlation_id={request.correlation_id}): {exc}"
-        ) from exc
-    _check_reply(reply, correlation_id=request.correlation_id, what="object retire")
     retired = RetiredObjects(
         retired=reply.retired or 0, absent=reply.absent or 0, orphan_chunks=reply.orphan_chunks or 0
     )

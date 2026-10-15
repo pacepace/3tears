@@ -210,7 +210,7 @@ async def scheduled_tick_job(
     """
     # local import to keep the lock module out of the engine's always-paid
     # import cost (consumers without NATS skip this).
-    from threetears.nats import LockHeld, nats_distributed_lock  # noqa: PLC0415
+    from threetears.core.coordination import LockHeld, nats_distributed_lock  # noqa: PLC0415
     from threetears.nats.errors import KvError  # noqa: PLC0415
 
     routed_kinds = _validate_routes(dispatch_routes)
@@ -626,6 +626,7 @@ async def _dispatch_one(
             fire_id,
             error=result.error or "dispatch returned status='failed' without an error string",
             latency_ms=_resolve_latency_ms(result, dispatch_started),
+            **_failed_output(result),
         )
         emitter.inc_fire(status="failed", schedule_type=schedule.schedule_type)
         emitter.inc_failure(reason="handler_exception")
@@ -639,6 +640,20 @@ async def _dispatch_one(
         latency_ms=_resolve_latency_ms(result, dispatch_started),
     )
     emitter.inc_fire(status=result.status, schedule_type=schedule.schedule_type)
+
+
+def _failed_output(result: JobFireResult) -> dict[str, Any]:
+    """The ``output`` argument for ``finalize_failed``: passed only when the callback reported one.
+
+    A store written before ``finalize_failed`` took an ``output`` is still called
+    exactly as it was for every failure that carries none.
+
+    :param result: the callback's ``status='failed'`` result
+    :ptype result: JobFireResult
+    :return: ``{"output": ...}``, or nothing
+    :rtype: dict[str, Any]
+    """
+    return {} if result.output is None else {"output": result.output}
 
 
 def _elapsed_ms(started: float) -> int:

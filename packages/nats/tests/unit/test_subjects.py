@@ -291,6 +291,7 @@ def test_hub_subjects() -> None:
     assert Subjects.hub_engagement_scope().path == "3tears.hub.engagement.scope"
     assert Subjects.hub_audit_anonymize().path == "3tears.hub.audit.anonymize"
     assert Subjects.hub_geo_layers_reloaded().path == "3tears.hub.geo.layers.reloaded"
+    assert Subjects.hub_collection_keys_purge().path == "3tears.hub.collection_keys.purge"
     assert Subjects.hub_usage_track().path == "3tears.hub.usage.track"
     assert Subjects.hub_stream(agent_id, correlation_id).path == "3tears.hub.stream.agent-3.corr-9"
 
@@ -332,7 +333,7 @@ def test_l3_subjects() -> None:
 
 
 def test_acl_subjects() -> None:
-    """acl invalidation subjects."""
+    """the retired acl invalidation subjects, still named for an agent pod's subscribe grant."""
     assert Subjects.acl_invalidate("membership").path == ("3tears.acl.membership.invalidate")
     assert Subjects.acl_invalidate("assignment").path == ("3tears.acl.assignment.invalidate")
     assert Subjects.acl_invalidate("role").path == "3tears.acl.role.invalidate"

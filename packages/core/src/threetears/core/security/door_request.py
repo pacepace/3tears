@@ -66,6 +66,7 @@ from threetears.core.security.pop import access_token_hash, make_pop_proof
 from threetears.core.security.service_envelope import EnvelopeJwksSource
 
 __all__ = [
+    "omit_absent_proof",
     "APPROVAL_RECORD_DOOR",
     "APPROVAL_RECORD_OP",
     "AUDIT_ANONYMIZE_OP",
@@ -156,6 +157,25 @@ def datasource_query_op(subject: Subject) -> str:
     if len(tokens) < 4 or tokens[-3] != "datasource" or tokens[-1] != "query" or not tokens[-2]:
         raise ValueError(f"{subject.path!r} is not a datasource query subject")
     return ".".join(tokens[-2:])
+
+
+def omit_absent_proof(data: dict[str, Any]) -> dict[str, Any]:
+    """leave a request's proof off the wire when it carries none.
+
+    A caller holding no key the token binds sends the token alone. A hub from before the door
+    proofs (0.66.0 to 0.68.0) reads some of these requests with ``extra="forbid"``, so a body
+    carrying ``"identity_proof": null`` would be refused there: the two must upgrade in either
+    order. The proof is left out of what it signs (:func:`door_request_hash`), so omitting a null
+    one changes no hash. Each request model with a proof field calls this from its serializer.
+
+    :param data: the serialized request
+    :ptype data: dict[str, Any]
+    :return: the same mapping, without a null proof
+    :rtype: dict[str, Any]
+    """
+    if data.get(DOOR_PROOF_FIELD, "") is None:
+        del data[DOOR_PROOF_FIELD]
+    return data
 
 
 def door_request_hash(body: Mapping[str, Any], *, door: str, op: str) -> str:

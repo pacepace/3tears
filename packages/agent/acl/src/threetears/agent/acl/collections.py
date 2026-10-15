@@ -42,8 +42,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
+from typing import ClassVar
 from uuid import UUID, uuid7
 
+from threetears.core.collections import WRITE_GENERATION, DeleteCascade
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -56,6 +58,7 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.namespaces import namespace_contains
 from threetears.observe import get_logger
 
@@ -80,12 +83,14 @@ from threetears.agent.acl.types import (
 log = get_logger(__name__)
 
 __all__ = [
+    "GroupCascade",
     "GroupCollection",
     "GroupMemberCollection",
     "ImpersonationGateCollection",
     "ImpersonationGateStatus",
     "NamespaceCollection",
     "NamespaceRescope",
+    "NamespaceRescopeNotAdvanced",
     "NamespaceRescopeRefused",
     "RoleAssignmentCollection",
     "RoleCollection",
@@ -151,13 +156,29 @@ def _coerce_role_permissions(raw: Any) -> dict[str, frozenset[str]]:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class GroupCascade:
+    """the rows deleting a group cascades away in the database, read before the delete.
+
+    :ivar group_id: the group deleted
+    :ivar members: its ``group_members`` rows: ``member_type``, ``member_id``, ``id``
+    :ivar assignments: its ``role_assignments`` rows: ``row_scope``, ``assignment_id``
+    """
+
+    group_id: UUID
+    members: tuple[dict[str, Any], ...]
+    assignments: tuple[dict[str, Any], ...]
+
+
 class GroupCollection(SchemaBackedCollection[GroupEntity]):
     """three-tier collection for ``groups`` rows.
 
     groups use hard-delete. cascading FKs on ``group_members`` and
     ``role_assignments`` (``ON DELETE CASCADE``) clean up member +
-    assignment rows in the same transaction, so the collection only
-    needs to delete the group row itself. CRUD comes from the
+    assignment rows in the same transaction. the database moves no write
+    generation for them, so :meth:`delete` reads the rows the cascade is
+    about to remove and announces them afterwards through those tables'
+    collections (:meth:`read_cascade`, :meth:`announce_cascade`). CRUD comes from the
     declarative :class:`TableSchema`; the evaluator-loader / introspection
     helpers (``list_by_customer`` / ``list_all`` / ``get_many`` /
     ``get_by_name``) stay on the canonical class because every
@@ -190,6 +211,10 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     consumer already does.
     """
 
+    # the access tables carry write generations (epoch-task-06): every write advances the table's
+    # generation, so a pod following it notices a missed row broadcast, and the caches derived from
+    # it (``AclCache``) are evicted row by row.
+    write_generation = WRITE_GENERATION
     primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
     partition_exempt_methods = frozenset(
         {
@@ -201,6 +226,12 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             "save_entity",
             "create",
             "find_by_id",
+            # rationale: a group's cascade spans both partitions of its members and its
+            # assignments; the group is the key, and the rows are read only to be announced
+            "read_cascade",
+            "announce_cascade",
+            # rationale: deletes by its full primary key, which carries the partition
+            "delete",
         }
     )
     # v0.8.0 hygiene enrichment: date_created/date_updated carry the
@@ -283,6 +314,103 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             }
         return super().create(data)
 
+    async def delete(self, entity_id: Any) -> bool:
+        """delete one group, then announce every membership and assignment its cascade removed.
+
+        :param entity_id: the group's primary key, ``(row_scope, group_id)``
+        :ptype entity_id: Any
+        :return: what the framework's own ``delete`` returns
+        :rtype: bool
+        :raises GenerationUnavailableError: when a cascaded table's write generation could not be
+            advanced; every row was still evicted and broadcast
+        """
+        group_id = UUID(f"{self.normalize_pk(entity_id)[self.primary_key_columns.index('group_id')]}")
+        cascade = await self.read_cascade(group_id)
+        deletion_failure: GenerationUnavailableError | None = None
+        deleted = True
+        try:
+            deleted = await super().delete(entity_id)
+        except GenerationUnavailableError as exc:
+            # the group is gone; only the groups table's advance failed. Its cascade is announced
+            # all the same, and the failure raised once it has been.
+            deletion_failure = exc
+        try:
+            await self.announce_cascade(cascade)
+        except GenerationUnavailableError:
+            # the first failure is the one raised; this one was logged where it happened
+            if deletion_failure is None:
+                raise
+        if deletion_failure is not None:
+            raise deletion_failure
+        return deleted
+
+    async def read_cascade(self, group_id: UUID) -> GroupCascade:
+        """the memberships and assignments deleting ``group_id`` will cascade away, read before the delete.
+
+        :param group_id: the group about to be deleted
+        :ptype group_id: UUID
+        :return: the rows, by key; empty without an L3 pool
+        :rtype: GroupCascade
+        """
+        members: list[Any] = []
+        assignments: list[Any] = []
+        if self.l3_pool is not None:
+            # cache-bypass: the rows a cascade is about to remove, by group across both partitions
+            members = await self.l3_pool.fetch(
+                "SELECT member_type, member_id, id FROM group_members WHERE group_id = $1", group_id
+            )
+            # cache-bypass: the same cascade's assignments, by group across both partitions
+            assignments = await self.l3_pool.fetch(
+                "SELECT row_scope, assignment_id FROM role_assignments WHERE group_id = $1", group_id
+            )
+        return GroupCascade(
+            group_id=group_id,
+            members=tuple(dict(row) for row in members),
+            assignments=tuple(dict(row) for row in assignments),
+        )
+
+    async def announce_cascade(self, cascade: GroupCascade) -> None:
+        """evict the rows a group delete cascaded away, each table in one advance, naming what each reaches.
+
+        Through the registry's ``group_members`` and ``role_assignments`` collections: a membership
+        row names its member, an assignment row its group, so a cache derived from those tables
+        evicts exactly what they reached, and a pod following them hears the change. A subclass
+        that announces the cascade on another channel too extends this and calls it.
+
+        :param cascade: what :meth:`read_cascade` read before the delete
+        :ptype cascade: GroupCascade
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when a table's write generation could not be advanced;
+            every row was still evicted and broadcast
+        """
+        registry = self.registry
+        members = None if registry is None else registry.get_collection(GroupMemberCollection.schema.name)
+        assignments = None if registry is None else registry.get_collection(RoleAssignmentCollection.schema.name)
+        first_failure: GenerationUnavailableError | None = None
+        if cascade.members and members is not None:
+            try:
+                await members.invalidate_cache_many(
+                    [(cascade.group_id, row["id"]) for row in cascade.members],
+                    rows=[
+                        {"member_type": row["member_type"], "member_id": row["member_id"]} for row in cascade.members
+                    ],
+                )
+            except GenerationUnavailableError as exc:
+                # every row was still evicted and broadcast; the assignments are announced all the
+                # same, and the first failure raised after
+                first_failure = exc
+        if cascade.assignments and assignments is not None:
+            try:
+                await assignments.invalidate_cache_many(
+                    [(row["row_scope"], row["assignment_id"]) for row in cascade.assignments],
+                    rows=[{"group_id": cascade.group_id} for _ in cascade.assignments],
+                )
+            except GenerationUnavailableError as exc:
+                first_failure = first_failure or exc
+        if first_failure is not None:
+            raise first_failure
+
     async def find_by_id(
         self,
         group_id: UUID,
@@ -300,6 +428,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         :return: group entity or ``None`` when no row exists
         :rtype: GroupEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: GroupEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -308,7 +437,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -336,6 +465,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         :return: group entity or ``None`` when no group matches
         :rtype: GroupEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: GroupEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -349,7 +479,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -369,6 +499,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             ascending
         :rtype: list[GroupEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -382,7 +513,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -411,6 +542,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             exist in L3); order is database-determined
         :rtype: list[GroupEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupEntity] = []
         if self.l3_pool is not None and len(group_ids) > 0:
             rows = await self.l3_pool.fetch(
@@ -427,7 +559,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                     data["group_id"] = _coerce_uuid(data["group_id"])
                 if "customer_id" in data:
                     data["customer_id"] = _coerce_uuid(data["customer_id"])
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -451,6 +583,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             ascending
         :rtype: list[GroupEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupEntity] = []
         if self.l3_pool is not None:
             if customer_id is None:
@@ -473,7 +606,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -494,6 +627,13 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     class.
     """
 
+    # the access tables carry write generations (epoch-task-06): every write advances the table's
+    # generation, so a pod following it notices a missed row broadcast, and the caches derived from
+    # it (``AclCache``) are evicted row by row.
+    write_generation = WRITE_GENERATION
+    # a row's key names the group and the row, not the member whose cached group set it changes, so
+    # its broadcast carries the member too
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("member_type", "member_id")
     primary_key_column: tuple[str, ...] = ("group_id", "id")
     partition_exempt_methods = frozenset(
         {
@@ -724,6 +864,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             ascending
         :rtype: list[GroupMemberEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupMemberEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -736,7 +877,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -798,6 +939,10 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     # name)``, so two customers may both author a "Field Manager".
     # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``role_id`` to
     # standardize on ``<entity>_id`` across all entity tables.
+    # the access tables carry write generations (epoch-task-06): every write advances the table's
+    # generation, so a pod following it notices a missed row broadcast, and the caches derived from
+    # it (``AclCache``) are evicted row by row.
+    write_generation = WRITE_GENERATION
     primary_key_column: str = "role_id"
     schema = TableSchema(
         name="roles",
@@ -858,6 +1003,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             ascending
         :rtype: list[RoleEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[RoleEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -865,7 +1011,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -881,6 +1027,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             ascending
         :rtype: list[RoleEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[RoleEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -892,7 +1039,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -963,6 +1110,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             ascending
         :rtype: list[RoleEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[RoleEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -976,7 +1124,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -999,6 +1147,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     ``count_by_*``) subclass and add their own methods.
     """
 
+    # the access tables carry write generations (epoch-task-06): every write advances the table's
+    # generation, so a pod following it notices a missed row broadcast, and the caches derived from
+    # it (``AclCache``) are evicted row by row.
+    write_generation = WRITE_GENERATION
+    # a row's key names the assignment, not the group whose cached contribution it changes, so its
+    # broadcast carries the group too
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("group_id",)
     primary_key_column: tuple[str, ...] = ("row_scope", "assignment_id")
     partition_exempt_methods = frozenset(
         {
@@ -1129,6 +1284,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         :return: assignment entity or ``None`` when no row exists
         :rtype: RoleAssignmentEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: RoleAssignmentEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -1137,7 +1293,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -1233,6 +1389,14 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         ``created=False``. Without such an index nothing is absorbed and two
         racing callers can both insert, which the evaluator reads as one
         grant; declare the index.
+
+        **Announced, with its advance.** The table carries a write generation,
+        so a statement that may have written it is followed by one eviction of
+        the row it names, carrying the group, which advances the generation and
+        lets every follower evict that group's cached contribution. A lost race
+        announces the winning row: through the L3 broker the insert that was
+        absorbed still advanced the generation, and an advance no row is heard
+        for drops the table on every follower.
 
         the ``scope_type`` argument maps to :class:`ScopeType`:
 
@@ -1336,12 +1500,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             if inserted is not None:
                 result = inserted
                 created = True
+                await self._announce_rows(((row_scope, inserted),), group_id)
             else:
                 # a concurrent ensure inserted the same grant between the lookup and
                 # this insert, and the deploying app's natural-key index absorbed ours
-                winner = await self.l3_pool.fetchval(
+                winner_row = await self.l3_pool.fetchrow(
                     """
-                    SELECT assignment_id FROM role_assignments
+                    SELECT row_scope, assignment_id FROM role_assignments
                      WHERE group_id = $1
                        AND role_id = $2
                        AND scope_type = $3
@@ -1356,12 +1521,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                     scope_id,
                     managed_by,
                 )
-                if winner is None:
+                if winner_row is None:
                     raise RuntimeError(
                         f"role assignment ({group_id}, {role_id}, {scope_type}, {scope_id}, {managed_by}) was "
                         "not inserted: a unique index absorbed it, yet no row holds that grant; the conflict "
                         "is on something other than the grant's natural key"
                     )
+                winner: UUID = winner_row["assignment_id"]
                 log.info(
                     "role assignment ensure lost a concurrent insert of the same grant; answering the row that won",
                     extra={
@@ -1373,9 +1539,25 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                         }
                     },
                 )
+                winner_scope: str = winner_row["row_scope"]
+                await self._announce_rows(((winner_scope, winner),), group_id)
                 result = winner
                 created = False
         return result, created
+
+    async def _announce_rows(self, keys: Sequence[tuple[str, UUID]], group_id: UUID) -> None:
+        """evict rows a statement of this class wrote by SQL, in one advance, naming their group.
+
+        :param keys: the rows' primary keys, ``(row_scope, assignment_id)``
+        :ptype keys: Sequence[tuple[str, UUID]]
+        :param group_id: the group every one of the rows grants to
+        :ptype group_id: UUID
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the table's write generation could not be
+            advanced; every row was still evicted and broadcast
+        """
+        await self.invalidate_cache_many(list(keys), rows=[{"group_id": group_id} for _ in keys])
 
     async def delete_by_group_and_scope(
         self,
@@ -1431,40 +1613,35 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         row_scope = "platform" if scope_type == "all" else "customer"
         result: int = 0
         if self.l3_pool is not None:
-            if managed_by is None:
-                status = await self.l3_pool.execute(
-                    """
-                    DELETE FROM role_assignments
+            # one predicate for both statements; ``managed_by IS NULL`` as the parameter means no
+            # provenance filter
+            predicate = """
                      WHERE row_scope = $1
                        AND group_id = $2
                        AND scope_type = $3
                        AND scope_namespace_id IS NOT DISTINCT FROM $4
-                    """,
-                    row_scope,
-                    group_id,
-                    scope_type,
-                    scope_id,
+                       AND ($5::text IS NULL OR managed_by = $5)
+            """
+            params = (row_scope, group_id, scope_type, scope_id, managed_by)
+            # the rows first, so a revocation that matches nothing issues no DELETE: through the L3
+            # broker a DELETE advances the table's write generation whether it removed a row or
+            # not, and an advance with no row heard for it drops the table on every follower.
+            matching = await self.l3_pool.fetch(
+                "SELECT assignment_id FROM role_assignments" + predicate,
+                *params,
+            )
+            if matching:
+                deleted = await self.l3_pool.fetch(
+                    "DELETE FROM role_assignments" + predicate + " RETURNING assignment_id",
+                    *params,
                 )
-            else:
-                status = await self.l3_pool.execute(
-                    """
-                    DELETE FROM role_assignments
-                     WHERE row_scope = $1
-                       AND group_id = $2
-                       AND scope_type = $3
-                       AND scope_namespace_id IS NOT DISTINCT FROM $4
-                       AND managed_by = $5
-                    """,
-                    row_scope,
-                    group_id,
-                    scope_type,
-                    scope_id,
-                    managed_by,
+                result = len(deleted)
+                keys = dict.fromkeys(
+                    [(row_scope, row["assignment_id"]) for row in matching]
+                    + [(row_scope, row["assignment_id"]) for row in deleted]
                 )
-            # asyncpg returns "DELETE <count>" status string
-            parts = status.split()
-            if len(parts) >= 2 and parts[0].upper() == "DELETE":
-                result = int(parts[1])
+                # every row the DELETE may have removed, carrying the group, in one advance
+                await self._announce_rows(tuple(keys), group_id)
         return result
 
 
@@ -1511,6 +1688,31 @@ class NamespaceRescope:
     customer_id: UUID | None
 
 
+class NamespaceRescopeNotAdvanced(GenerationUnavailableError):
+    """a rescope that MOVED its row and could not advance the namespaces table's write generation.
+
+    Raised by :meth:`NamespaceCollection.rescope` after the move committed and the row was
+    evicted and announced. It carries what the move decided, so the caller runs everything it
+    owes a moved row -- its own invalidations, its audit -- and then raises it: announce first,
+    raise last.
+
+    :ivar outcome: what the rescope decided; ``outcome.moved`` is ``True``
+    """
+
+    def __init__(self, message: str, *, outcome: NamespaceRescope) -> None:
+        """carry the failure and the move it followed.
+
+        :param message: the advance's failure
+        :ptype message: str
+        :param outcome: what the rescope decided
+        :ptype outcome: NamespaceRescope
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.outcome = outcome
+
+
 class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     """three-tier collection for ``namespaces`` rows.
 
@@ -1524,7 +1726,16 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     deploying-app subclasses.
     """
 
+    # a per-namespace access decision reads the namespace row (its customer, its type), so the
+    # table carries a write generation like the four access tables, and ``AclCache`` is evicted
+    # by its rows (epoch-task-06)
+    write_generation = WRITE_GENERATION
     primary_key_column: tuple[str, ...] = ("row_scope", "namespace_id")
+    # role_assignments.scope_namespace_id cascades (v001): a namespace's grants go with it, and
+    # every cached decision about them must go too
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (
+        DeleteCascade("role_assignments", "scope_namespace_id", "CASCADE", parent_column="namespace_id"),
+    )
     partition_exempt_methods = frozenset(
         {
             "delete_from_store",
@@ -1762,6 +1973,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :rtype: NamespaceRescope
         :raises NamespaceRescopeRefused: when the row already belongs to a
             different customer
+        :raises NamespaceRescopeNotAdvanced: when the row moved and the table's write generation
+            could not be advanced; it carries the outcome, for the caller to finish with
         """
         target_scope = row_scope_for_customer(customer_id)
         result = NamespaceRescope(
@@ -1840,9 +2053,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 previous_scope,
             )
             moved = written is not None
-            if moved:
-                await self.invalidate_cache((previous_scope, namespace_id))
-        return NamespaceRescope(
+        outcome = NamespaceRescope(
             namespace_id=namespace_id,
             moved=moved,
             previous_row_scope=previous_scope,
@@ -1850,6 +2061,16 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             row_scope=target_scope,
             customer_id=customer_id,
         )
+        if moved:
+            try:
+                # the row's key changed with its partition: both keys go, in the one advance the
+                # UPDATE owes, so a cache derived from the row (its customer decides access) hears it
+                await self.invalidate_cache_many([(previous_scope, namespace_id), (target_scope, namespace_id)])
+            except GenerationUnavailableError as exc:
+                # the move committed and both keys were evicted and announced; only the advance
+                # failed. The caller still owes the moved row its own tail, so it gets the outcome
+                raise NamespaceRescopeNotAdvanced(str(exc), outcome=outcome) from exc
+        return outcome
 
     async def find_by_id(
         self,
@@ -1869,6 +2090,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :return: namespace entity or ``None`` when no row exists
         :rtype: NamespaceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -1877,7 +2099,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -1955,6 +2177,10 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 _json.dumps(dict(metadata or {})),
                 now,
             )
+            # announced whether or not a conflict absorbed it: through the L3 broker the INSERT
+            # advanced the table's write generation either way, and an advance no row is heard for
+            # drops the table on every follower
+            await self.invalidate_cache(("platform" if customer_id is None else "customer", namespace_id))
             existing = await self.find_by_id(namespace_id)
             if existing is None:
                 # absorbed by a unique index other than the id's -- the name, or any unique column the
@@ -1991,6 +2217,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :return: namespace entity or ``None`` if not found
         :rtype: NamespaceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -1999,7 +2226,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -2024,6 +2251,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :return: namespace entity or ``None`` if not found
         :rtype: NamespaceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             # private agent namespaces always live in the customer
@@ -2038,7 +2266,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -2075,6 +2303,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             triple
         :rtype: NamespaceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         row_scope = row_scope_for_customer(customer_id)
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
@@ -2095,7 +2324,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 

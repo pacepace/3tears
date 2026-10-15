@@ -1270,6 +1270,133 @@ class TestQueryRouting:
             conn.commit.assert_called()
 
 
+class _ScriptedFingerprintCursor:
+    """the answers a fingerprint's cursor gives, by statement: the boolean columns, then the digest rows.
+
+    Wired onto the mocked connection's cursor (the lowest seam the driver reaches), so the driver's
+    own statement building, binding and decoding run unchanged.
+    """
+
+    def __init__(
+        self,
+        conn: MagicMock,
+        *,
+        booleans: list[tuple[Any, ...]],
+        groups: list[tuple[Any, ...]],
+        whole: tuple[Any, ...] = (0, 0),
+    ) -> None:
+        self.statements: list[tuple[str, Any]] = []
+        self.fail_digest = False
+        self._booleans = booleans
+        self._groups = groups
+        self._whole = whole
+        self._last = ""
+        cursor = conn.recorded_cursor
+        cursor.execute.side_effect = self._execute
+        cursor.fetchall = MagicMock(side_effect=self._fetchall)
+        cursor.fetchone = MagicMock(side_effect=lambda: self._whole)
+
+    def _execute(self, sql: str, *args: Any) -> None:
+        if _is_open_setup_stmt(sql):
+            return
+        self.statements.append((sql, args[0] if args else None))
+        self._last = sql
+        if self.fail_digest and "AS digest" in sql:
+            raise redshift_connector.ProgrammingError("cannot cast type boolean to character varying")
+
+    def _fetchall(self) -> list[tuple[Any, ...]]:
+        return self._booleans if "FROM SVV_COLUMNS" in self._last else self._groups
+
+    def digests(self) -> list[tuple[str, Any]]:
+        return [(sql, params) for sql, params in self.statements if "AS digest" in sql]
+
+    def lookups(self) -> list[str]:
+        return [sql for sql, _ in self.statements if "FROM SVV_COLUMNS" in sql]
+
+
+class TestGroupedFingerprint:
+    """``relation_fingerprint_groups`` over the connector's cursor: the statement, the binding, the decoding."""
+
+    @pytest.mark.asyncio
+    async def test_one_statement_groups_by_the_column_filters_bound_and_booleans_rendered(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        conn = _build_mock_connection()
+        script = _ScriptedFingerprintCursor(
+            conn, booleans=[("incumbent",)], groups=[("VA", 3, 11), (None, 1, 7), (2024, 2, 5)]
+        )
+        with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect", return_value=conn):
+            driver = RedshiftDriver(redshift_config)
+            groups = await driver.relation_fingerprint_groups(
+                "s1.results", ["race", "incumbent"], "state", where={"race": "r1"}, where_in={"state": ["VA", "TX"]}
+            )
+        assert {value: (f["row_count"], f["digest"]) for value, f in groups.items()} == {
+            "VA": (3, "11"),
+            None: (1, "7"),
+            "2024": (2, "5"),
+        }, "a group's value is its text, NULL is None, and each count and digest is decoded"
+        [(sql, params)] = script.digests()
+        assert sql.startswith("SELECT g, COUNT(*) AS row_count, ")
+        assert "SELECT state AS g, " in sql
+        assert sql.endswith(" GROUP BY g")
+        assert "WHERE race = %s AND state IN (%s, %s)" in sql
+        assert list(params) == ["r1", "VA", "TX"]
+        assert "WHEN incumbent THEN 'true' ELSE 'false' END" in sql
+        assert "CAST(incumbent AS VARCHAR)" not in sql
+        assert "CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))" in sql
+
+    @pytest.mark.asyncio
+    async def test_each_group_is_digested_exactly_as_the_single_fingerprint_digests_its_rows(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """the grouped statement is the single one with the group column added, nothing else changed."""
+        conn = _build_mock_connection()
+        script = _ScriptedFingerprintCursor(conn, booleans=[("incumbent",)], groups=[], whole=(0, 0))
+        with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect", return_value=conn):
+            driver = RedshiftDriver(redshift_config)
+            await driver.relation_fingerprint("s1.results", ["race", "incumbent"], {"race": "r1"})
+            await driver.relation_fingerprint_groups("s1.results", ["race", "incumbent"], "state", where={"race": "r1"})
+        (single, single_params), (grouped, grouped_params) = script.digests()
+        ungrouped = (
+            grouped.replace("SELECT g, ", "SELECT ", 1).replace("state AS g, ", "", 1).removesuffix(" GROUP BY g")
+        )
+        assert ungrouped == single
+        assert list(grouped_params) == list(single_params)
+
+    @pytest.mark.asyncio
+    async def test_an_empty_relation_has_no_groups(self, redshift_config: RedshiftConnectionConfig) -> None:
+        conn = _build_mock_connection()
+        _ScriptedFingerprintCursor(conn, booleans=[], groups=[])
+        with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect", return_value=conn):
+            driver = RedshiftDriver(redshift_config)
+            assert await driver.relation_fingerprint_groups("s1.results", ["race"], "state") == {}
+
+    @pytest.mark.asyncio
+    async def test_the_boolean_answer_is_dropped_after_a_grouped_fingerprint_fails_and_kept_after_one_succeeds(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        conn = _build_mock_connection()
+        script = _ScriptedFingerprintCursor(conn, booleans=[], groups=[("VA", 1, 1)])
+        with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect", return_value=conn):
+            driver = RedshiftDriver(redshift_config)
+            await driver.relation_fingerprint_groups("s1.results", ["race", "incumbent"], "state")
+            await driver.relation_fingerprint_groups("s1.results", ["race", "incumbent"], "state")
+            assert len(script.lookups()) == 1, "an answer that carried a fingerprint through was not kept"
+            script.fail_digest = True
+            with pytest.raises(redshift_connector.ProgrammingError):
+                await driver.relation_fingerprint_groups("s1.results", ["race", "incumbent"], "state")
+            script.fail_digest = False
+            await driver.relation_fingerprint_groups("s1.results", ["race", "incumbent"], "state")
+        assert len(script.lookups()) == 2, "the boolean columns were not read again after the fingerprint failed"
+
+    @pytest.mark.asyncio
+    async def test_a_closed_driver_refuses(self, redshift_config: RedshiftConnectionConfig) -> None:
+        driver = RedshiftDriver(redshift_config)
+        await driver.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            await driver.relation_fingerprint_groups("s1.results", ["race"], "state")
+
+
 # ---------------------------------------------------------------------------
 # test_connection sanitization
 # ---------------------------------------------------------------------------

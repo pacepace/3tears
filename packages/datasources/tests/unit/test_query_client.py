@@ -10,6 +10,8 @@ transport failure -- into either rows or one typed error carrying the hub's code
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid7
@@ -27,6 +29,8 @@ from threetears.datasources.query_client import (
     DatasourceQueryError,
     DatasourceQueryRequest,
     DatasourceQueryResponse,
+    RelationFingerprintGroup,
+    RelationFingerprintResult,
 )
 from threetears.nats.errors import RequestError, RequestTimeoutError
 from threetears.nats.subjects import Subject, set_default_namespace
@@ -453,3 +457,171 @@ class TestABusyHubIsAskedAgain:
 
         assert raised.value.error_code == DATASOURCE_BUSY
         assert len(fake.calls) == 1 + BUSY_RETRIES
+
+
+class TestGroupedFingerprint:
+    """``relation_fingerprint_groups``: one ask, each group answered as a single fingerprint would be."""
+
+    async def test_each_group_is_answered_as_its_own_fingerprint_with_null_as_none(self) -> None:
+        reply = DatasourceQueryResponse(
+            success=True,
+            fingerprint_groups=[
+                RelationFingerprintGroup(value="VA", row_count=3, digest="11"),
+                RelationFingerprintGroup(value=None, row_count=1, digest="7"),
+            ],
+            correlation_id=uuid7(),
+        )
+        fake = _FakeNatsClient(reply=reply)
+
+        groups = await _client(fake).relation_fingerprint_groups(
+            "warehouse", relation="s.t", key=["a", "b"], group_by="state", where={"r": "1"}, where_in={"state": ["VA"]}
+        )
+
+        assert groups == {
+            "VA": RelationFingerprintResult(row_count=3, digest="11"),
+            None: RelationFingerprintResult(row_count=1, digest="7"),
+        }
+        sent = fake.calls[0]["message"].fingerprint
+        assert (sent.relation, sent.key_columns, sent.group_by) == ("s.t", ["a", "b"], "state")
+        assert (sent.where, sent.where_in) == ({"r": "1"}, {"state": ["VA"]})
+        assert "warehouse" in fake.calls[0]["subject"].path
+
+    async def test_a_refusal_carries_the_hubs_code(self) -> None:
+        reply = DatasourceQueryResponse(
+            success=False, error_code="FINGERPRINT_GROUPS_UNSUPPORTED", error_message="no", correlation_id=uuid7()
+        )
+
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _client(_FakeNatsClient(reply=reply)).relation_fingerprint_groups(
+                "warehouse", relation="s.t", key=["a"], group_by="state"
+            )
+
+        assert raised.value.error_code == "FINGERPRINT_GROUPS_UNSUPPORTED"
+
+    async def test_a_success_with_no_groups_is_not_taken_as_an_empty_relation(self) -> None:
+        reply = DatasourceQueryResponse(success=True, correlation_id=uuid7())
+
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _client(_FakeNatsClient(reply=reply)).relation_fingerprint_groups(
+                "warehouse", relation="s.t", key=["a"], group_by="state"
+            )
+
+        assert raised.value.error_code == "MALFORMED_RESPONSE"
+
+    async def test_a_success_with_an_empty_list_is_a_relation_with_no_rows(self) -> None:
+        reply = DatasourceQueryResponse(success=True, fingerprint_groups=[], correlation_id=uuid7())
+
+        groups = await _client(_FakeNatsClient(reply=reply)).relation_fingerprint_groups(
+            "warehouse", relation="s.t", key=["a"], group_by="state"
+        )
+
+        assert groups == {}
+
+    async def test_a_transport_failure_is_named(self) -> None:
+        fake = _FakeNatsClient(raise_exc=RequestError("bus down"))
+
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _client(fake).relation_fingerprint_groups("warehouse", relation="s.t", key=["a"], group_by="state")
+
+        assert raised.value.error_code == "REQUEST_FAILED"
+
+
+class _CountingNatsClient(_FakeNatsClient):
+    """answers every request a refusal after a pause, counting how many are out at once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.out = 0
+        self.peak = 0
+
+    async def request(self, **kwargs: Any) -> BaseModel:
+        self.calls.append(kwargs)
+        self.out += 1
+        self.peak = max(self.peak, self.out)
+        await asyncio.sleep(0.005)
+        self.out -= 1
+        return DatasourceQueryResponse(success=False, error_code="ACCESS_DENIED", error_message="no grant")
+
+
+#: one call of every ask the client offers. A coroutine the client gains is added here, or the test
+#: below fails naming it: it must be shown to take its turn too
+_EVERY_ASK: dict[str, Any] = {
+    "query": lambda client: client.query("warehouse", "SELECT 1"),
+    "relation_fingerprint": lambda client: client.relation_fingerprint("warehouse", relation="s.t", key=["a"]),
+    "relation_fingerprint_groups": lambda client: client.relation_fingerprint_groups(
+        "warehouse", relation="s.t", key=["a"], group_by="state"
+    ),
+    "export": lambda client: client.export("warehouse", "SELECT 1", destination="loads/one"),
+    "delete_export": lambda client: client.delete_export("warehouse", destination="loads/one"),
+    "list_own_exports": lambda client: client.list_own_exports("warehouse"),
+}
+
+
+def _public_coroutines() -> list[str]:
+    return sorted(
+        name
+        for name, member in inspect.getmembers(DatasourceQueryClient)
+        if not name.startswith("_") and inspect.iscoroutinefunction(inspect.unwrap(member))
+    )
+
+
+class TestALimitOnAsksAtOnce:
+    async def test_every_ask_the_client_offers_takes_its_turn(self) -> None:
+        asks = _public_coroutines()
+        assert asks == sorted(_EVERY_ASK), "an ask the client offers is not shown to take its turn"
+        fake = _CountingNatsClient()
+        client = DatasourceQueryClient(fake, identity_token=lambda: _TOKEN, max_concurrent_asks=1)  # type: ignore[arg-type]
+
+        answers = await asyncio.gather(
+            *(_EVERY_ASK[name](client) for name in asks for _ in range(2)), return_exceptions=True
+        )
+
+        assert all(isinstance(answer, DatasourceQueryError) for answer in answers), answers
+        assert len(fake.calls) == 2 * len(asks)
+        assert fake.peak == 1, f"{fake.peak} asks out at once through a limit of one"
+
+    @pytest.mark.parametrize("limit", [2, 3])
+    async def test_as_many_asks_as_the_limit_are_out_at_once_and_no_more(self, limit: int) -> None:
+        fake = _CountingNatsClient()
+        client = DatasourceQueryClient(fake, identity_token=lambda: _TOKEN, max_concurrent_asks=limit)  # type: ignore[arg-type]
+
+        await asyncio.gather(*(client.query("warehouse", "SELECT 1") for _ in range(8)), return_exceptions=True)
+
+        assert fake.peak == limit
+
+    async def test_a_client_given_no_limit_sends_every_ask_as_it_is_made(self) -> None:
+        fake = _CountingNatsClient()
+        client = _client(fake)
+
+        await asyncio.gather(*(client.query("warehouse", "SELECT 1") for _ in range(6)), return_exceptions=True)
+
+        assert fake.peak == 6
+
+    async def test_a_turn_is_held_while_a_busy_hub_is_asked_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        order: list[str] = []
+
+        class _BusyOnce(_FakeNatsClient):
+            async def request(self, **kwargs: Any) -> BaseModel:
+                sql = kwargs["message"].query
+                order.append(sql)
+                busy = sql == "SELECT 'first'" and order.count(sql) == 1
+                await asyncio.sleep(0)
+                return DatasourceQueryResponse(
+                    success=False, error_code=DATASOURCE_BUSY if busy else "ACCESS_DENIED", error_message="x"
+                )
+
+        monkeypatch.setattr("threetears.datasources.query_client.BUSY_BACKOFF_SECONDS", 0.001)
+        client = DatasourceQueryClient(_BusyOnce(), identity_token=lambda: _TOKEN, max_concurrent_asks=1)  # type: ignore[arg-type]
+
+        await asyncio.gather(
+            client.query("warehouse", "SELECT 'first'"),
+            client.query("warehouse", "SELECT 'second'"),
+            return_exceptions=True,
+        )
+
+        assert order == ["SELECT 'first'", "SELECT 'first'", "SELECT 'second'"]
+
+    @pytest.mark.parametrize("limit", [0, -1])
+    def test_a_limit_below_one_is_refused(self, limit: int) -> None:
+        with pytest.raises(ValueError, match="at least 1"):
+            DatasourceQueryClient(_FakeNatsClient(), identity_token=lambda: _TOKEN, max_concurrent_asks=limit)  # type: ignore[arg-type]

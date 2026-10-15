@@ -48,7 +48,7 @@ class TestCalculatorTool:
         result = asyncio.run(tool.run(expression="2 + 3"))
         assert isinstance(result, ToolResult)
         assert result.success is True
-        assert result.content == "5"
+        assert result.content == "2 + 3 = 5"
         assert result.error is None
 
     def test_execute_math_function(self) -> None:
@@ -56,7 +56,7 @@ class TestCalculatorTool:
         tool = CalculatorTool()
         result = asyncio.run(tool.run(expression="sqrt(16)"))
         assert result.success is True
-        assert result.content == "4"
+        assert result.content == "sqrt(16) = 4"
 
     def test_execute_error(self) -> None:
         """CalculatorTool execute returns failure ToolResult for invalid expression."""

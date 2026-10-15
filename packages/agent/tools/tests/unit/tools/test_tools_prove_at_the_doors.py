@@ -259,7 +259,7 @@ class TestTheDoorClients:
         resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
         await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token="bearer")
         assert nats.sent[0]["identity_token"] == "bearer"
-        assert nats.sent[0]["identity_proof"] is None
+        assert "identity_proof" not in nats.sent[0]
 
 
 async def test_the_tool_server_puts_its_key_on_each_calls_scope() -> None:

@@ -177,6 +177,28 @@ class TestTheInvalidationListenerIsStartedAndStoppable:
         client.unsubscribe.assert_awaited_once()
 
 
+class TestTheBrokerAdvancesThePodsWriteGenerations:
+    """epoch-task-06 stage 2: a tool pod cannot write the epoch bucket, so the L3 broker advances."""
+
+    async def test_the_registry_carries_the_broker_generation_source(self) -> None:
+        from threetears.core.backends import BrokerGenerationSource
+
+        registry = await build_tool_pod_collection_stack(
+            nats_client=_nats_client(), pod_id=_POD_A, l1_metadata=_tables()
+        )
+        assert isinstance(registry.generation_source, BrokerGenerationSource)
+
+    async def test_the_source_reads_the_epoch_bucket(self) -> None:
+        """stage 3: the pod reads generations (absence caching, following a table) through its grant."""
+        from threetears.core.collections.generation import source_reads
+
+        registry = await build_tool_pod_collection_stack(
+            nats_client=_nats_client(), pod_id=_POD_A, l1_metadata=_tables()
+        )
+        assert source_reads(registry.generation_source)
+        assert registry.readable_generation_source is registry.generation_source
+
+
 class TestTheScopeIsNotAccidentallyUnique:
     """a scope that differed per CALL would pass the isolation half and brick the sharing half."""
 

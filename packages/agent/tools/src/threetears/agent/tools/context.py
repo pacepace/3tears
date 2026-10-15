@@ -3,23 +3,124 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
-from typing import Any
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, tzinfo
+from typing import Any, Final
 from uuid import UUID, uuid7
 
 from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
+from threetears.agent.tools.text_window import window_text
+from threetears.core.utils.local_time import render_local_time
 from threetears.observe import get_logger
 from threetears.langgraph.fence import explained_fence
 
 log = get_logger(__name__)
 
 __all__ = [
+    "RECALL_MAX_CHARS",
     "ToolContextManager",
+    "VariableLimitError",
     "make_tool_result_dedup_key",
+    "missing_result_text",
+    "recalled_text",
+    "refreshed_note",
 ]
 
+
+class VariableLimitError(ValueError):
+    """A new variable was refused because the conversation already holds as many as it may.
+
+    A ``ValueError`` still, for a caller that caught that; its own type so a
+    tool can tell "at the cap, nothing changed" from a value it should not have
+    been handed.
+    """
+
+
 _MEMORY_REF_FIFO_CAPACITY = 50
+
+
+#: What ONE ``context_recall`` returns of a stored result. A recalled result is a tool message,
+#: sent again on every later round of the loop that recalled it, so a stored result of any size
+#: is read a part at a time: the window line names the offset of the next part.
+RECALL_MAX_CHARS: Final[int] = 15_000
+
+
+def recalled_text(item: Mapping[str, Any], *, offset: int = 0, tz: tzinfo | str | None = None, label: str = "") -> str:
+    """A stored result as ``context_recall`` returns it: one window of it, its notes first.
+
+    The window line first when this is a part, then the line saying a later call replaced what
+    the row first held, then a blank line and the text. ``offset`` counts characters of the text
+    the tool returns (``label`` and the stored content), so the offset a window line names is the
+    one to pass back.
+
+    :param item: a context item, with its ``content``
+    :ptype item: Mapping[str, Any]
+    :param offset: where in the text to start
+    :ptype offset: int
+    :param tz: the zone a refreshed result's time is said in
+    :ptype tz: tzinfo | str | None
+    :param label: what the text opens with, such as the item's key and a colon
+    :ptype label: str
+    :return: what the model reads
+    :rtype: str
+    :raises ValueError: when ``tz`` is a name that is not a known zone
+    """
+    window = window_text(f"{label}{item.get('content', '')}", offset=offset, max_chars=RECALL_MAX_CHARS)
+    note = refreshed_note(item, tz)
+    return window.rendered(tool="context_recall", note_first=True, notes=[note] if note else [])
+
+
+#: How many saved results a miss names.
+_MISS_NAMES: Final[int] = 10
+
+
+def missing_result_text(context_id: str, items: Sequence[Mapping[str, Any]]) -> str:
+    """What ``context_recall`` says for an id nothing is saved under: so, and the saved results that exist.
+
+    A bare "not found" leaves the caller guessing at another id. The newest
+    saved results are named with the mark each is opened by, newest first.
+
+    :param context_id: the id asked for
+    :ptype context_id: str
+    :param items: the conversation's context items, oldest first
+    :ptype items: Sequence[Mapping[str, Any]]
+    :return: what the model reads
+    :rtype: str
+    """
+    head = f"Saved result '{context_id}' not found in this conversation."
+    saved = [item for item in items if item.get("context_type") == "tool_result"]
+    if not saved:
+        return f"{head} No tool result is saved in it."
+    newest = saved[-_MISS_NAMES:][::-1]
+    count = f"The newest {len(newest)} of {len(saved)} saved" if len(newest) < len(saved) else "Saved"
+    lines = [f"- [ctx:{item['context_id']}] {item.get('key', 'unknown')}" for item in newest]
+    return "\n".join([f"{head} {count} here:", *lines])
+
+
+def refreshed_note(item: Mapping[str, Any], tz: tzinfo | str | None = None) -> str | None:
+    """The line a stored result opens with when a later call replaced what it first held.
+
+    A result saved under its input's key is one row: the same call again
+    refreshes it. Whoever opens that row by a handle from the first call is
+    reading the second call's answer, and nothing in the content says so.
+
+    :param item: a context item, with its ``date_created`` and ``date_updated``
+    :ptype item: Mapping[str, Any]
+    :param tz: the zone of the person the time is read to: a ``tzinfo`` or an
+        IANA name; ``None`` shows it in UTC, and says so
+    :ptype tz: tzinfo | str | None
+    :return: the note, or ``None`` for a row that was written once
+    :rtype: str | None
+    :raises ValueError: when ``tz`` is a name that is not a known zone
+    """
+    created, updated = item.get("date_created"), item.get("date_updated")
+    if not isinstance(created, datetime) or not isinstance(updated, datetime) or updated <= created:
+        return None
+    return (
+        f"(Updated at {render_local_time(updated, tz)}: a later call with the same input replaced "
+        "what this first held.)"
+    )
 
 
 def make_tool_result_dedup_key(tool_name: str, input_fingerprint: str) -> str:
@@ -182,8 +283,9 @@ class ToolContextManager:
             None,
         )
         if existing is None and var_count >= self._var_limit:
-            raise ValueError(
-                f"Variable limit reached ({self._var_limit}). Save over one you no longer need by reusing its name."
+            raise VariableLimitError(
+                f"Variable limit reached ({self._var_limit}). Delete one you no longer need with variable_delete, "
+                "or save over one by reusing its name."
             )
         if len(value) > self._var_max_chars:
             # SDS-04: the agent reads this back later mid-sentence with nothing
@@ -220,6 +322,11 @@ class ToolContextManager:
         self.items.append(data)
 
         return context_id_str
+
+    @property
+    def var_limit(self) -> int:
+        """How many variables this conversation may hold; a new name past it is refused."""
+        return self._var_limit
 
     async def get_variable(self, key: str) -> dict[str, Any] | None:
         """Get a variable by key, or ``None`` if not found."""
@@ -399,6 +506,13 @@ class ToolContextManager:
             # Drop the pre-existing projection row for the upserted id
             # (UUID comparison -- identifiers stay UUID internally per the
             # border discipline) before re-appending the refreshed data.
+            # The row keeps the day it was first written, as the stored row does:
+            # that it was refreshed is read from the two dates differing.
+            first_written = next(
+                (i.get("date_created") for i in self.items if i.get("context_id") == returned_id), None
+            )
+            if first_written is not None:
+                data["date_created"] = first_written
             self.items = [i for i in self.items if i.get("context_id") != returned_id]
         self.items.append(data)
 

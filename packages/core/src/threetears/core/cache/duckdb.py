@@ -21,7 +21,8 @@ from types import MappingProxyType
 from typing import Any
 
 from threetears.core.backends.schema_sql import json_default
-from threetears.core.cache.base import build_select_clause, bulk_columns, quote_identifier
+from threetears.core.cache.base import build_select_clause, bulk_columns
+from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
 __all__ = [
@@ -71,6 +72,10 @@ class PartitionReplacement:
     primary_key: str | tuple[str, ...] = "id"
 
 
+#: whether this process has said pyarrow is missing (once is enough)
+_ARROW_MISSING_SAID = False
+
+
 def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], lists: Sequence[list[Any]]) -> bool:
     """insert or replace rows given as one list per column, through one Arrow table; False when it cannot.
 
@@ -91,21 +96,35 @@ def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], 
     :return: whether the rows were inserted
     :rtype: bool
     """
+    global _ARROW_MISSING_SAID  # noqa: PLW0603 -- said once per process, not per write
+    inserted = False
     try:
         import pyarrow as pa  # noqa: PLC0415 -- optional: the snapshot extra
     except ImportError:
-        return False
-    try:
-        arrow = pa.table({f"c{i}": values for i, values in enumerate(lists)})
-    except pa.ArrowInvalid, pa.ArrowTypeError, OverflowError:
-        return False
-    names = ", ".join(f"c{i}" for i in range(len(columns)))
-    connection.register("_bulk_rows", arrow)
-    try:
-        connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {names} FROM _bulk_rows")  # noqa: S608
-    finally:
-        connection.unregister("_bulk_rows")
-    return True
+        pa = None
+        if not _ARROW_MISSING_SAID:
+            _ARROW_MISSING_SAID = True
+            log.warning(
+                "pyarrow is not installed: DuckDB bulk writes bind every value through DuckDB's Python "
+                "layer, which is slow (install 3tears[snapshot])"
+            )
+    if pa is not None:
+        try:
+            arrow = pa.table({f"c{i}": values for i, values in enumerate(lists)})
+        except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError) as exc:
+            log.info(
+                "a bulk write's values do not type as one Arrow column; binding them one by one (slow)",
+                extra={"extra_data": {"target": target, "error": f"{type(exc).__name__}: {exc}"}},
+            )
+        else:
+            names = ", ".join(f"c{i}" for i in range(len(columns)))
+            connection.register("_bulk_rows", arrow)
+            try:
+                connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {names} FROM _bulk_rows")  # noqa: S608
+            finally:
+                connection.unregister("_bulk_rows")
+            inserted = True
+    return inserted
 
 
 class DuckDBBackend:
@@ -128,6 +147,10 @@ class DuckDBBackend:
         self._pool_lock: threading.Lock = threading.Lock()
         self._pooled_connections: list[Any] = []
         self._db_lock: threading.Lock = threading.Lock()
+        # the connection read cursors are opened from, apart from the one writes hold `_db_lock` on
+        # across their transaction, so opening a read never waits for a write to commit
+        self._reader: Any = None
+        self._reader_lock: threading.Lock = threading.Lock()
 
     def _make_connection(self) -> Any:
         """Create a new cursor/connection from the shared database."""
@@ -150,6 +173,7 @@ class DuckDBBackend:
             self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
             log.debug(f"Created DuckDB table: {table.name}")
 
+        self._reader = self._db.cursor()
         self._initialized = True
         log.debug(
             "DuckDB L1 cache initialized",
@@ -251,7 +275,7 @@ class DuckDBBackend:
         pk_cols = self._pk_columns(primary_key)
         schema = self._schema_info.get(table, {})
         # Only the table's own columns are written: the collection's pull-through
-        # injects keys (the L1 cache-age stamp among them) this backend declares no
+        # may inject keys (``date_created`` and the like) this backend declares no
         # column for. An unregistered table (no schema) writes every key named.
         columns = bulk_columns(rows, schema)
         # DuckDB refuses to touch one key twice in a statement; one by one, the last
@@ -508,7 +532,8 @@ class DuckDBBackend:
 
         Every query on it reads the database as it stood when the block began, whatever
         :meth:`replace_partitions` commits meanwhile, so several queries answering one request
-        agree with each other. Read-only by use; it holds no lock, so writers are not kept waiting.
+        agree with each other. Read-only by use; it holds no lock, so writers are not kept waiting,
+        and it is opened from a connection no write holds, so it never waits for a write either.
 
         :return: the cursor, inside a read transaction
         :rtype: Iterator[duckdb.DuckDBPyConnection]
@@ -516,10 +541,13 @@ class DuckDBBackend:
         """
         if not self._initialized:
             raise RuntimeError("DuckDB not initialized - call initialize() first")
-        with self._db_lock:
-            cursor = self._db.cursor()
+        with self._reader_lock:
+            cursor = self._reader.cursor()
         try:
             cursor.execute("BEGIN TRANSACTION")
+            # DuckDB starts a transaction's snapshot at its first statement that reads, not at BEGIN:
+            # read the catalog now, so the block reads the database as it stood when it began
+            cursor.execute("SELECT count(*) FROM duckdb_tables()").fetchall()
             try:
                 yield cursor
             finally:
@@ -563,13 +591,8 @@ class DuckDBBackend:
         entity_id: Any,
         primary_key: str | tuple[str, ...] = "id",
         columns: Sequence[str] | None = None,
-        *,
-        max_age_seconds: float | None = None,
-        now_monotonic: float | None = None,  # noqa: ARG002 - protocol parity; unused without expiry
     ) -> dict[str, Any] | None:
         """select single row by primary key with type deserialization.
-
-        Expiry is NOT supported here; passing ``max_age_seconds`` raises.
 
         :param table: target table name
         :ptype table: str
@@ -585,15 +608,7 @@ class DuckDBBackend:
         :rtype: dict[str, Any] | None
         :raises ValueError: if ``columns`` is empty, or names a column
             the table's registered schema does not have
-        :raises NotImplementedError: if ``max_age_seconds`` is given; this
-            backend injects no cache-age stamp, so it cannot honour a bound
         """
-        if max_age_seconds is not None:
-            raise NotImplementedError(
-                "DuckDBBackend does not implement L1 max-age expiry: it never injects the "
-                "cache-age stamp, so the request would silently never fire and the staleness "
-                "bound the caller asked for would not exist. Use SQLiteBackend."
-            )
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._pk_values(entity_id, pk_cols)
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
@@ -614,13 +629,8 @@ class DuckDBBackend:
         entity_ids: list[Any],
         primary_key: str | tuple[str, ...] = "id",
         columns: Sequence[str] | None = None,
-        *,
-        max_age_seconds: float | None = None,
-        now_monotonic: float | None = None,  # noqa: ARG002 - protocol parity; unused without expiry
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key with type deserialization.
-
-        Expiry is NOT supported here; passing ``max_age_seconds`` raises.
 
         :param table: target table name
         :ptype table: str
@@ -636,15 +646,7 @@ class DuckDBBackend:
         :rtype: list[dict[str, Any]]
         :raises ValueError: if ``columns`` is empty, or names a column
             the table's registered schema does not have
-        :raises NotImplementedError: if ``max_age_seconds`` is given; this
-            backend injects no cache-age stamp, so it cannot honour a bound
         """
-        if max_age_seconds is not None:
-            raise NotImplementedError(
-                "DuckDBBackend does not implement L1 max-age expiry: it never injects the "
-                "cache-age stamp, so the request would silently never fire and the staleness "
-                "bound the caller asked for would not exist. Use SQLiteBackend."
-            )
         if not entity_ids:
             return []
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
@@ -777,6 +779,13 @@ class DuckDBBackend:
                     pass
             self._pooled_connections = []
         self._local = threading.local()
+        if self._reader is not None:
+            try:
+                self._reader.close()
+            # NOSILENT: teardown best-effort; a connection that will not close is already gone
+            except Exception:  # noqa: BLE001
+                pass
+            self._reader = None
         if self._db is not None:
             try:
                 self._db.close()

@@ -96,7 +96,7 @@ def _cluster(tmp_path: Path) -> Iterator[tuple[_Node, _Node]]:
     :rtype: Iterator[tuple[_Node, _Node]]
     """
     from testcontainers.core.network import Network  # noqa: PLC0415
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
+    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
 
     with Network() as network:
         nodes: list[_Node] = []
@@ -107,7 +107,7 @@ def _cluster(tmp_path: Path) -> Iterator[tuple[_Node, _Node]]:
                 conf_dir.mkdir()
                 (conf_dir / "nats.conf").write_text(_config(name))
                 container = (
-                    NatsContainer(image=_IMAGE, jetstream=False)
+                    nats_server(_IMAGE)
                     .with_network(network)
                     .with_network_aliases(name)
                     .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
@@ -115,7 +115,7 @@ def _cluster(tmp_path: Path) -> Iterator[tuple[_Node, _Node]]:
                 )
                 container.start()
                 containers.append(container)
-                nodes.append(_Node(name=name, uri=container.nats_uri(), container=container))
+                nodes.append(_Node(name=name, uri=nats_server_uri(container), container=container))
             yield nodes[0], nodes[1]
         finally:
             for container in containers:

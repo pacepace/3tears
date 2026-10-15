@@ -13,7 +13,7 @@ a task of its own, and finalizes the row with the real outcome. These cases pin 
 - ``aclose`` cancels what is still running and records each fire as failed, saying why.
 
 No DB and no NATS server: the fire store is a recording fake, and the cross-pod lock is
-monkeypatched at ``threetears.nats.nats_distributed_lock`` exactly as the tick tests do.
+monkeypatched at ``threetears.core.coordination.nats_distributed_lock`` exactly as the tick tests do.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.nats import LockHeld
+from threetears.core.coordination import LockHeld
 from threetears.nats.errors import KvError
 
 from threetears.scheduled_jobs.background import IN_FLIGHT_SKIP_OUTPUT_KEY, BackgroundDispatch, in_flight_lock_key
@@ -152,7 +152,7 @@ def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any, keys: list[str] | Non
             keys.append(key)
         return ctx
 
-    monkeypatch.setattr("threetears.nats.nats_distributed_lock", _factory)
+    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", _factory)
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +210,31 @@ async def test_a_failed_result_finalizes_failed_with_its_error() -> None:
     await dispatch.join()
     assert fires.failed[0]["error"] == "upstream said no"
     assert fires.succeeded == []
+
+
+async def test_a_failed_result_keeps_the_output_it_reported() -> None:
+    kept: list[dict[str, Any]] = []
+
+    class _KeepsOutput(_FakeFireStore):
+        async def finalize_failed(  # type: ignore[override]
+            self,
+            partition_key: UUID,
+            fire_id: UUID,
+            *,
+            error: str,
+            latency_ms: int | None = None,
+            output: dict[str, Any] | None = None,
+        ) -> None:
+            kept.append({"error": error, "output": output})
+
+    dispatch = _dispatch(_KeepsOutput())
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="failed", error="upstream said no", output={"delivered": True})
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await dispatch.join()
+    assert kept == [{"error": "upstream said no", "output": {"delivered": True}}]
 
 
 async def test_a_raised_exception_finalizes_failed_with_its_text() -> None:

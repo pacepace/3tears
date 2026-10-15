@@ -144,7 +144,7 @@ from threetears.nats.errors import (
 )
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
-from threetears.nats.subject_permissions import SERVER_USER_INFO_SUBJECT
+from threetears.nats.subject_permissions import SERVER_USER_INFO_SUBJECT, kv_stream_name
 from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subject, Subjects, set_default_namespace
 
 # JetStream API error code for "subjects overlap with an existing stream": a
@@ -6134,7 +6134,7 @@ class NatsClient:
         """
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
         self._buckets.pop(full_name, None)
-        await self._withdraw(f"KV_{full_name}")
+        await self._withdraw(kv_stream_name(full_name))
 
     async def jetstream_publish(
         self,

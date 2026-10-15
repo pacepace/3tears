@@ -129,7 +129,6 @@ def _stub_dependencies() -> dict[str, Any]:
         "acl_cache": AclCache(
             membership_loader=_NoopMembershipLoader(),
             grant_loader=_NoopGrantLoader(),
-            ttl_seconds=60,
         ),
         "namespace_collection": MagicMock(),
         "workspace_collection": MagicMock(),

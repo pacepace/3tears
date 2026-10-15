@@ -3,7 +3,7 @@
 What a fake can only assert: chunks and metadata land on the stream in the NATS Object Store's wire
 shape (so the ``nats`` CLI and nats-py read them), an object larger than one chunk comes back whole
 with its digest checked, a name is written once, a deleted object leaves the listing, the declarer's
-sweep removes chunks no object names, and a declared bucket comes back after a restart wiped it.
+sweep removes chunks no object names and keeps those of a put that starts while it runs, and a declared bucket comes back after a restart wiped it.
 
 Uses the session-scoped ``nats_container`` fixture; a checkout without docker skips cleanly.
 """
@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import timedelta
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
 
@@ -134,10 +135,71 @@ async def test_the_declarers_sweep_removes_chunks_no_object_names(nats_container
         # a writer that died between its chunks and its metadata leaves chunks no object names
         await nc.jetstream_context().publish(f"$O.{store.name}.C.orphanednuid", b"x" * 1000)
         before = await store.bytes_held()
-        # the default grace keeps a put in progress; a fresh orphan is kept until it is old enough
-        assert await store.purge_orphan_chunks() == 0
-        assert await store.purge_orphan_chunks(older_than=timedelta(0)) == 1
+        pointers = await nc.ensure_kv_bucket(name="pointers")
+        # a writer's claim stands: its put may be in flight, however old, so nothing is purged
+        revision = await pointers.create(key="enr.w.7.writer1", value=b"writer1")
+        assert await store.purge_orphan_chunks(pointers=pointers) == 0
+        # the claim gone (released, or lapsed with its writer): the orphan is purged at once
+        assert revision is not None and await pointers.delete(key="enr.w.7.writer1")
+        assert await store.purge_orphan_chunks(pointers=pointers) == 1
         assert await store.bytes_held() < before
+        assert len(await store.get("kept")) == 300_000
+
+
+class _WriterStartsDuringClaimRead:
+    """a pointer bucket in which a writer starts while the sweep reads the claims.
+
+    The listing answers the keys as they stood when it was asked, and by the time the sweep has
+    them a writer has claimed its write and published its first chunk: the interleaving of a put
+    that starts in the middle of a sweep.
+    """
+
+    def __init__(self, pointers: Any, start_writer: Callable[[], Awaitable[None]]) -> None:
+        self._pointers = pointers
+        self._start_writer = start_writer
+
+    async def list_keys(self) -> list[str]:
+        """the keys as they stood, after which the writer starts.
+
+        :return: the bucket's keys before the writer claimed anything
+        :rtype: list[str]
+        """
+        keys: list[str] = await self._pointers.list_keys()
+        await self._start_writer()
+        return keys
+
+
+async def test_a_put_that_starts_during_the_sweep_keeps_its_chunks(nats_container: str) -> None:
+    """a sweep that read the claims before it listed the chunks purged a running put's chunks, and
+    the put then wrote metadata for an object no get could ever verify."""
+    namespace = _namespace()
+    async with await NatsClient.connect(
+        nats_url=nats_container, nats_subject_namespace=namespace, client_name="objects"
+    ) as nc:
+        store = await nc.ensure_object_store(name="objects", max_bytes=8 * 1024 * 1024)
+        await store.put("kept", os.urandom(300_000))
+        pointers = await nc.ensure_kv_bucket(name="pointers")
+        js = nc.jetstream_context()
+        chunk_subject = f"$O.{store.name}.C.latewriternuid"
+
+        async def start_writer() -> None:
+            # a writer claims before its first chunk, as every scoped-snapshot write does
+            assert await pointers.create(key="enr.w.8.writer2", value=b"writer2") is not None
+            await js.publish(chunk_subject, b"y" * 1000)
+
+        async def chunk_messages() -> int:
+            info = await js.stream_info(store.stream, subjects_filter=chunk_subject)
+            return dict(info.state.subjects or {}).get(chunk_subject, 0)
+
+        racing = _WriterStartsDuringClaimRead(pointers, start_writer)
+        assert await store.purge_orphan_chunks(pointers=racing) == 0  # type: ignore[arg-type]
+        assert await chunk_messages() == 1, "the sweep purged the chunk of a put that was still running"
+        # its claim stands now, so a later sweep keeps it too
+        assert await store.purge_orphan_chunks(pointers=pointers) == 0
+        # the writer never finished and its claim is gone: the chunk is an orphan, and goes
+        assert await pointers.delete(key="enr.w.8.writer2")
+        assert await store.purge_orphan_chunks(pointers=pointers) == 1
+        assert await chunk_messages() == 0
         assert len(await store.get("kept")) == 300_000
 
 

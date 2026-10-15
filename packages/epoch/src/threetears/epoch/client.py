@@ -13,7 +13,11 @@ that only a durable subject has:
 - :meth:`advance_to` -- move a durable subject forward to a target, never
   back, then broadcast as :meth:`bump` does
 - :meth:`versions` -- read a durable subject's epoch and the one its
-  latest move replaced
+  latest move replaced; with ``cached=True``, from a per-process copy that
+  answers until the epoch system says the subject moved: this process's
+  own moves, the broadcasts its
+  :class:`~threetears.epoch.listener.EpochListener` hears, and the
+  listener's catch-up for a broadcast that was missed. no clock is involved
 
 **two substrates, routed by what the number means.** an epoch is a
 coherence signal, not a durable fact, so the counter for one lives in a
@@ -277,6 +281,29 @@ _ADVANCE_SQL = (
 _VERSIONS_SQL = "SELECT epoch, previous_epoch FROM config_epochs WHERE subject_path = $1"
 
 
+def _covers(pattern: str, path: str) -> bool:
+    """whether a subscription to ``pattern`` receives a message published on ``path``.
+
+    the broker's matching rule: ``*`` stands for exactly one token, a trailing ``>`` for one or
+    more, and every other token matches itself.
+
+    :param pattern: a subscribed subject path, concrete or wildcard
+    :ptype pattern: str
+    :param path: a concrete subject path
+    :ptype path: str
+    :return: ``True`` when the subscription hears the path
+    :rtype: bool
+    """
+    wanted = pattern.split(".")
+    given = path.split(".")
+    for index, token in enumerate(wanted):
+        if token == ">":
+            return index == len(wanted) - 1 and len(given) > index
+        if index >= len(given) or token not in ("*", given[index]):
+            return False
+    return len(wanted) == len(given)
+
+
 @dataclass(frozen=True)
 class DurableEpoch:
     """a durable subject's epoch and the one its latest move replaced.
@@ -287,6 +314,11 @@ class DurableEpoch:
     twice -- the first move creates the row and replaces nothing -- for a subject that has
     never moved, whose ``epoch`` is ``0``, and for a row written before migration v002 until
     its next move.
+
+    every writer's own statement records it, so it is right only while every writer of the
+    subject runs 0.66.0 or later: a 0.65.0 writer moves ``epoch`` and leaves ``previous``
+    naming an earlier move. no durable subject is bumped while a 0.65.0 process still runs
+    (the 0.66.0 deploy rule, in the changelog).
 
     :ivar epoch: the subject's epoch, ``0`` when it has never moved
     :ivar previous: the epoch the latest move replaced, or ``None``
@@ -328,6 +360,19 @@ class EpochClient:
         self._pool = pool
         self._nats = nats_client
         self._counter = DistributedCounter(nats_client, bucket_name=_EPOCH_BUCKET, ttl=None)
+        # :meth:`versions` with ``cached=True``: the versions of each durable subject this process
+        # read or wrote, by subject path, held only for a subject a listener follows. one entry per
+        # followed durable subject asked about, which is one per tile layer.
+        self._versions: dict[str, DurableEpoch] = {}
+        # the subject paths, concrete or wildcard, a listener on this client has subscribed
+        # (:meth:`observe_subscription`); one per subscription
+        self._followed: set[str] = set()
+        # the :meth:`versions` reads in flight, by subject path. a change to a subject's copy removes
+        # its entry, so a read that left before the change and lands after does not store the row as
+        # it stood before. an entry lasts only as long as its reads do.
+        self._versions_reads: dict[str, set[object]] = {}
+        # whether the one warning for a cached read of a subject nothing follows has been logged
+        self._warned_unfollowed = False
 
     async def bucket_identity(self) -> str | None:
         """the epoch bucket's opaque identity, minting one if it has none.
@@ -403,6 +448,11 @@ class EpochClient:
         row for the tile family. A wildcard path short-circuits to ``0``
         without touching either.
 
+        A durable read that finds the row at another epoch than this
+        process's cached :meth:`versions` copy drops the copy, so the
+        catch-up pass that reads here is also what repairs a copy a missed
+        broadcast left behind.
+
         :param subject: target subject; its ``path`` keys the
             counter (digested when outside the KV key grammar), or is
             the row PK on the durable path
@@ -418,7 +468,13 @@ class EpochClient:
             return 0
         if _is_durable(subject):
             value = await self._pool.fetchval(_CURRENT_SQL, subject.path)
-            return 0 if value is None else int(value)
+            epoch = 0 if value is None else int(value)
+            held = self._versions.get(subject.path)
+            if held is not None and held.epoch != epoch:
+                # the row is not where this process's copy says it is: a broadcast was missed. this is
+                # how a catch-up pass repairs the copy, since every pass reads through here
+                self._forget_versions(subject.path)
+            return epoch
         return await self._counter.get(_key_for(subject))
 
     @traced
@@ -469,6 +525,8 @@ class EpochClient:
                     f"config_epochs upsert returned no row for subject={subject.path!r}",
                 )
             new_epoch = int(row["epoch"])
+            # the row moved, and RETURNING names only the new epoch, not the one it replaced
+            self._forget_versions(subject.path)
         else:
             new_epoch = await self._counter.increment(_key_for(subject))
 
@@ -538,6 +596,8 @@ class EpochClient:
         else:
             previous = row["previous_epoch"]
             result = DurableEpoch(epoch=int(row["epoch"]), previous=None if previous is None else int(previous))
+            # this process knows the row as it now stands, so later cached reads need not ask
+            self._remember_versions(subject.path, result)
             message = EpochBumpMessage(subject_path=subject.path, epoch=result.epoch, payload=payload)
             try:
                 await self._nats.publish(subject=subject, message=message)
@@ -549,20 +609,157 @@ class EpochClient:
                 )
         return result
 
-    async def versions(self, subject: Subject) -> DurableEpoch:
+    async def versions(self, subject: Subject, *, cached: bool = False) -> DurableEpoch:
         """a durable subject's epoch and the one its latest move replaced, in one read.
+
+        **with ``cached=True``, a per-process copy answers**, so a caller on a hot path (a tile or
+        TileJSON request) does not read the row every time. the copy has no age: it answers until
+        the epoch system says the subject moved, and only that removes it.
+
+        - this process's own :meth:`advance_to` writes the new versions into it, with no read;
+          :meth:`bump` drops it, since the row's previous epoch is not returned;
+        - a move by ANOTHER process drops it when the broadcast arrives, through
+          :meth:`observe_broadcast`, which :class:`~threetears.epoch.listener.EpochListener` calls
+          for every broadcast on a subject it is subscribed to;
+        - a broadcast that was missed is repaired by the listener's catch-up
+          (:meth:`~threetears.epoch.listener.EpochListener.catch_up`, one pass of
+          :func:`~threetears.epoch.tick.catchup_tick`): it reads :meth:`current`, which drops a copy
+          the row has moved away from. :attr:`cached_subjects` names what a pass must cover.
+
+        **a copy is kept only for a subject a listener follows.** a listener built on this client
+        reports each subscription it makes (:meth:`observe_subscription`); a subject no subscription
+        covers has nothing that could drop its copy, so none is kept and ``cached=True`` reads the
+        row every time, logging that once. a process that wants the cached answer subscribes the
+        subject, or a wildcard that covers it, on an :class:`~threetears.epoch.listener.EpochListener`
+        over this client, and schedules the catch-up pass, as every epoch consumer does.
+
+        a read that fails raises, cached or not: the row is read only when no copy is held.
+
+        **constraint for callers: a cached value must never be used to BUILD at a version whose rows
+        may be gone.** between a missed broadcast and the catch-up pass that repairs it the copy lags
+        the row, and the version it names may already have been reclaimed. use it to pick what to
+        SERVE or advertise -- a tile URL, TileJSON -- where a lagging answer is a version clients
+        still hold. before reading source rows at a version, read without ``cached`` (or check the
+        rows are still there).
 
         :param subject: target subject, of a durable family
         :ptype subject: Subject
+        :param cached: answer from this process's copy when it holds one; ``False`` (the default)
+            always reads the row
+        :ptype cached: bool
         :return: the epoch (``0`` when the subject has never moved) and its previous one
         :rtype: DurableEpoch
         :raises ValueError: for a subject outside the durable families
         """
         if not _is_durable(subject):
             raise ValueError(f"versions needs a durable epoch subject; {subject.path!r} counts in NATS KV")
-        row = await self._pool.fetchrow(_VERSIONS_SQL, subject.path)
+        path = subject.path
+        if cached:
+            held = self._versions.get(path)
+            if held is not None:
+                return held
+            if not self._is_followed(path) and not self._warned_unfollowed:
+                self._warned_unfollowed = True
+                log.warning(
+                    "cached durable epoch versions were asked for a subject no listener on this client "
+                    "follows; no copy is kept for it and every such read goes to the row",
+                    extra={"extra_data": {"subject": path}},
+                )
+        read = object()
+        self._versions_reads.setdefault(path, set()).add(read)
+        try:
+            row = await self._pool.fetchrow(_VERSIONS_SQL, path)
+        finally:
+            unchanged = self._end_versions_read(path, read)
         result = DurableEpoch(epoch=0, previous=None)
         if row is not None:
             previous = row["previous_epoch"]
             result = DurableEpoch(epoch=int(row["epoch"]), previous=None if previous is None else int(previous))
+        if unchanged and self._is_followed(path):
+            # nothing changed the copy since the read left, so the row it read is current
+            self._versions[path] = result
         return result
+
+    @property
+    def cached_subjects(self) -> tuple[Subject, ...]:
+        """the durable subjects this process holds a :meth:`versions` copy of.
+
+        what a catch-up pass must cover for a missed broadcast to be repaired. a process subscribed
+        to a wildcard does not know its concrete subjects ahead of time; these are the ones it has
+        answered for, to hand to :func:`~threetears.epoch.tick.catchup_tick`.
+
+        :return: one concrete subject per copy held
+        :rtype: tuple[Subject, ...]
+        """
+        return tuple(Subject(path=path, kind="point") for path in self._versions)
+
+    def observe_subscription(self, subject: Subject) -> None:
+        """record that a listener on this client is subscribed to ``subject``.
+
+        from here a cached :meth:`versions` copy may be kept for every subject the subscription
+        hears, because its broadcasts reach :meth:`observe_broadcast`. a read in flight is not
+        stored: it left before the subscription could hear a move.
+
+        :class:`~threetears.epoch.listener.EpochListener` calls this once its subscribe succeeded.
+        a process with its own subscription calls it after subscribing, and calls
+        :meth:`observe_broadcast` from its callback.
+
+        :param subject: the subscribed subject, concrete or wildcard
+        :ptype subject: Subject
+        :return: nothing
+        :rtype: None
+        """
+        self._followed.add(subject.path)
+        self._versions_reads.clear()
+
+    def observe_broadcast(self, message: EpochBumpMessage) -> None:
+        """drop the cached :meth:`versions` of the subject a broadcast names, when it names a later epoch.
+
+        the hook that keeps a cached read current across processes: another process's
+        :meth:`advance_to` or :meth:`bump` broadcasts the new epoch, and this process's copy, older
+        than it, must not answer after it arrives, and a read in flight when it arrives must not
+        cache what it brings back. a broadcast at or below the cached epoch -- this process hearing
+        its own advance, or a redelivery -- leaves the copy alone.
+
+        the message's ``subject_path`` is the key; a listener that fills an empty one from the
+        subject it subscribed passes the message with the path filled.
+
+        :class:`~threetears.epoch.listener.EpochListener` calls this for every broadcast it receives,
+        so a process subscribed to the subject through one needs nothing more. a process with its own
+        subscription calls it from its callback.
+
+        :param message: the broadcast as received
+        :ptype message: EpochBumpMessage
+        :return: nothing
+        :rtype: None
+        """
+        held = self._versions.get(message.subject_path)
+        if held is None or message.epoch > held.epoch:
+            # with nothing cached the read in flight is still marked: it may have read the row
+            # before this broadcast's move, and must not cache what it brings back
+            self._forget_versions(message.subject_path)
+
+    def _is_followed(self, path: str) -> bool:
+        """whether a recorded subscription hears broadcasts on ``path``."""
+        return path in self._followed or any(_covers(pattern, path) for pattern in self._followed)
+
+    def _end_versions_read(self, path: str, read: object) -> bool:
+        """end one :meth:`versions` read, saying whether the subject's copy was left alone meanwhile."""
+        reads = self._versions_reads.get(path)
+        if reads is None or read not in reads:
+            return False
+        reads.discard(read)
+        if not reads:
+            del self._versions_reads[path]
+        return True
+
+    def _remember_versions(self, path: str, value: DurableEpoch) -> None:
+        """write this process's own knowledge of a row into the cached copy, when the subject is followed."""
+        self._versions_reads.pop(path, None)
+        if self._is_followed(path):
+            self._versions[path] = value
+
+    def _forget_versions(self, path: str) -> None:
+        """drop a subject's cached copy, so its next read asks the row."""
+        self._versions_reads.pop(path, None)
+        self._versions.pop(path, None)

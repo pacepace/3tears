@@ -20,8 +20,10 @@ import json
 import uuid
 
 import pytest
+from nats.js.api import StorageType
 
 from threetears.nats.subject_permissions import (
+    retired_subscriptions,
     AGENT_POD_PLATFORM_BUCKET_SUFFIXES,
     CROSS_PLATFORM_CACHE_INVALIDATE,
     SERVER_USER_INFO_SUBJECT,
@@ -48,9 +50,11 @@ from threetears.nats.subject_permissions import (
     kv_bucket_names,
     kv_key_scope_for,
     kv_key_scope_for_service,
+    kv_stream_name,
     tool_pod_object_store_name,
     tool_pod_pointers_bucket_name,
 )
+from threetears.nats.kv import build_kv_stream_config
 from threetears.nats.result_delivery import result_stream_name
 from threetears.nats.subjects import Subjects, parse_tool_pod_audit_subject, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, js_api_grants_for_stream, mint_user_jwt
@@ -993,12 +997,20 @@ class TestDeadletterGrant:
     """
 
     @pytest.mark.parametrize("principal", list(Principal))
-    def test_every_principal_may_dead_letter_each_of_its_subscriptions(self, principal: Principal) -> None:
+    def test_every_principal_may_dead_letter_each_of_its_live_subscriptions(self, principal: Principal) -> None:
         perm = _build(principal)
-        subscribed = [s for s in perm.subscribe if not s.startswith(f"{perm.inbox_prefix}.")]
+        retired = retired_subscriptions()
+        subscribed = [s for s in perm.subscribe if not s.startswith(f"{perm.inbox_prefix}.") and s not in retired]
         assert subscribed, principal
         missing = [s for s in subscribed if f"{_NS}.deadletter.{s}" not in perm.publish]
         assert not missing, f"{principal}: cannot dead-letter {missing}"
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_a_retired_subscription_has_no_dead_letter(self, principal: Principal) -> None:
+        # nothing publishes a retired subject, so there is no message to fail
+        perm = _build(principal)
+        held = [s for s in perm.subscribe if s in retired_subscriptions()]
+        assert not [s for s in held if f"{_NS}.deadletter.{s}" in perm.publish], principal
 
     @pytest.mark.parametrize("principal", list(Principal))
     def test_no_principal_may_publish_the_whole_deadletter_subtree(self, principal: Principal) -> None:
@@ -1062,8 +1074,12 @@ class TestScopedCollectionsGrant:
                 continue
             assert resource.scope is None, f"{principal}: {resource.name} would deny its own reads"
             # a pod binds what the hub declared and holds no stream verb; an infra identity that
-            # declares what it opens keeps the management grant.
-            expected = JsCapability.KV_BUCKET_KEYS if principal in _POD_PRINCIPALS else JsCapability.FULL
+            # declares what it opens keeps the management grant. The registry binds the epoch
+            # bucket the hub declared, read only, to follow the access tables' generations.
+            binds_only = principal in _POD_PRINCIPALS or (
+                principal is Principal.REGISTRY and resource.name == f"{_NS}-epochs"
+            )
+            expected = JsCapability.KV_BUCKET_KEYS if binds_only else JsCapability.FULL
             assert resource.capability is expected, f"{principal}: {resource.name}"
 
     def test_the_registry_holds_the_bucket_its_own_source_of_truth_collection_runs_on(self) -> None:
@@ -2749,3 +2765,63 @@ class TestToolPodObjectStore:
             assert subject not in pod.subscribe
             assert subject in hub.subscribe
             assert subject not in agent.publish
+
+
+class TestCollectionKeysPurgeRequest:
+    """every tool pod may ask the hub to purge its retired collection keys; only the hub answers."""
+
+    def test_the_purge_request_is_tool_pod_publish_hub_subscribe(self) -> None:
+        subject = f"{_NS}.hub.collection_keys.purge"
+        pod = _build(Principal.TOOL_POD)
+        hub = _build(Principal.HUB)
+        agent = _build(Principal.AGENT_POD)
+        assert subject in pod.publish
+        assert subject not in pod.subscribe
+        assert subject in hub.subscribe
+        assert subject not in agent.publish
+
+
+class TestAclInvalidationSubjectsAreRetired:
+    """epoch-task-06 contract: the access tables' generations replaced the acl invalidation subjects."""
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_nobody_may_publish_them(self, principal: Principal) -> None:
+        perm = _build(principal)
+        assert not [s for s in perm.publish if ".acl." in s], f"{principal} may still publish an acl subject"
+
+    @pytest.mark.parametrize("principal", [p for p in Principal if p is not Principal.AGENT_POD])
+    def test_only_an_agent_pod_may_still_subscribe(self, principal: Principal) -> None:
+        perm = _build(principal)
+        assert not [s for s in perm.subscribe if ".acl." in s], f"{principal} may still subscribe an acl subject"
+
+    def test_an_agent_pod_one_release_back_is_not_refused_its_subscribe(self) -> None:
+        perm = _build(Principal.AGENT_POD)
+        assert {str(Subjects.acl_invalidate(kind)) for kind in ("membership", "assignment", "role")} <= set(
+            perm.subscribe
+        )
+
+
+class TestTheKvStreamNameIsComposedInOnePlace:
+    """a KV bucket's stream name has one public composer, beside the bucket-name composers.
+
+    Code that addresses a bucket's stream (a stream-info read, a purge, a withdraw) names it through
+    :func:`kv_stream_name`; the stream the bucket is declared as, and the stream a grant pins, are the
+    same composition, so the three can never name different streams.
+    """
+
+    def test_it_names_the_stream_nats_backs_a_bucket_with(self) -> None:
+        pointers = tool_pod_pointers_bucket_name(_POD_X, ns=_NS)
+        assert kv_stream_name(pointers) == f"KV_{pointers}"
+
+    def test_the_declared_stream_is_the_composed_one(self) -> None:
+        bucket = coordination_bucket_name("scope", "locks", ns=_NS)
+        declared = build_kv_stream_config(
+            bucket=bucket, ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+        )
+        assert declared.name == kv_stream_name(bucket)
+
+    def test_the_granted_stream_is_the_composed_one(self) -> None:
+        pointers = {
+            r.name: r for r in build_permissions(Principal.TOOL_POD, pod_id=_POD_X, object_store=True).js_resources
+        }[tool_pod_pointers_bucket_name(_POD_X, ns=_NS)]
+        assert pointers.stream_name == kv_stream_name(pointers.name)

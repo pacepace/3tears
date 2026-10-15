@@ -170,7 +170,7 @@ class TestInvocationInsertParams:
     """an invocation write binds every column at its placeholder."""
 
     async def test_full_row_round_trip(self) -> None:
-        """All eleven invocation columns map positionally."""
+        """All twelve invocation columns map positionally, v005's ``outcome_notes`` last."""
         agent_id = _new_uuid()
         invocation_id = _new_uuid()
         skill_id = _new_uuid()
@@ -190,6 +190,7 @@ class TestInvocationInsertParams:
             "outcome": "success",
             "outcome_source": "agent_marker",
             "notes": "n",
+            "outcome_notes": "o",
         }
         pool = _RecordingPool(status="INSERT 0 1")
         coll = object.__new__(AgentSkillInvocationCollection)
@@ -198,7 +199,7 @@ class TestInvocationInsertParams:
         [(sql, params)] = pool.calls
         upsert = _upsert(sql, params)
         assert upsert.table == "agent_skill_invocations"
-        assert len(upsert.columns) == 11
+        assert len(upsert.columns) == 12
         assert len(params) == len(upsert.columns)
         assert upsert.bound == data
 
@@ -300,15 +301,26 @@ class TestCounterMutationInvalidation:
     """Counter bumps drop the pk from L1/L2 so stale reads cannot survive."""
 
     async def test_bump_use_count_invalidates_each_pk(self) -> None:
-        """Every bumped skill's pk is invalidated after the bulk UPDATE."""
+        """Every bumped skill's pk is invalidated after the bulk UPDATE, in one call.
+
+        One call: the UPDATE is one commit, so its rows are one write-generation advance whose
+        broadcasts all carry one count; a call per row would advance once per row.
+        """
         pool = _RecordingPool()
         coll, invalidated = _bare_skill_collection(pool)
+        batches: list[list[Any]] = []
+
+        async def _record_many(entity_ids: Any, **_: Any) -> None:
+            batches.append(list(entity_ids))
+
+        coll.invalidate_cache_many = _record_many  # type: ignore[method-assign]
         agent_id = _new_uuid()
         skill_a = _new_uuid()
         skill_b = _new_uuid()
         await coll.bump_use_count(agent_id, [skill_a, skill_b])
         assert len(pool.calls) == 1
-        assert invalidated == [(agent_id, skill_a), (agent_id, skill_b)]
+        assert batches == [[(agent_id, skill_a), (agent_id, skill_b)]]
+        assert invalidated == []
 
     async def test_bump_use_count_empty_batch_no_invalidation(self) -> None:
         """An empty batch short-circuits: no UPDATE, no invalidation."""

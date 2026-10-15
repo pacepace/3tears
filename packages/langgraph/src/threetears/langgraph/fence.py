@@ -42,6 +42,7 @@ from langchain_core.messages import BaseMessage, SystemMessage
 from threetears.observe import get_logger
 
 __all__ = [
+    "closed_fences",
     "explained_fence",
     "is_fenced",
     "mint_nonce",
@@ -122,6 +123,27 @@ def is_fenced(text: str, nonce: str) -> bool:
     :rtype: bool
     """
     return f"<untrusted nonce={nonce}>" in text
+
+
+def closed_fences(text: str) -> str:
+    """``text``, with every fence it opens closed.
+
+    A result that fences parts of itself can be cut after it was written: to a
+    window, to a head, to a brief. A cut that falls inside a fence takes its
+    closing tag, and everything after it in the prompt then reads as inside.
+    Whoever shows such text after a cut passes it through here.
+
+    :param text: text that may open fences, possibly cut
+    :ptype text: str
+    :return: the text, each fence left open closed at its end
+    :rtype: str
+    """
+    for nonce in nonces_in(text):
+        opened = text.count(f"<untrusted nonce={nonce}>")
+        ended = text.count(f"</untrusted nonce={nonce}>")
+        if opened > ended:
+            text += f"\n</untrusted nonce={nonce}>" * (opened - ended)
+    return text
 
 
 def untrusted_rule(nonce: str) -> str:

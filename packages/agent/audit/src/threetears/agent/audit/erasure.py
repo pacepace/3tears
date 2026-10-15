@@ -65,15 +65,16 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import TYPE_CHECKING, Annotated, ClassVar, Final
+from typing import Annotated, Any, ClassVar, Final, TYPE_CHECKING
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, Field, ValidationError
+from threetears.core.security.door_request import omit_absent_proof
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 from threetears.core.security.delegated_token import AUDIT_ANONYMIZE_DOOR
 from threetears.core.security.door_request import AUDIT_ANONYMIZE_OP, DoorCredential
 from threetears.core.wire import TolerantWireModel
-from threetears.nats import RequestError, Subjects
+from threetears.nats import Subjects
+from threetears.nats.hub_requests import ask_hub
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -196,6 +197,17 @@ class AuditAnonymizeRequest(TolerantWireModel):
     correlation_id: UUID
     agent_id: UUID
     actor_user_ids: Annotated[list[UUID], Field(min_length=1, max_length=MAX_ANONYMIZE_ACTORS)]
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_proof(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``identity_proof`` off the wire when there is none, for a hub that predates it.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        return omit_absent_proof(handler(self))
 
 
 class AuditAnonymizeReply(BaseModel):
@@ -353,41 +365,22 @@ async def _send(
             }
         },
     )
-    try:
-        raw = await nats_client.request_raw(
-            subject=Subjects.hub_audit_anonymize(),
-            payload=request.model_dump_json().encode("utf-8"),
-            timeout=timedelta(seconds=timeout_seconds),
-        )
-    except RequestError as exc:
-        raise AuditAnonymizeUnavailableError(
-            f"audit anonymization request failed (correlation_id={correlation_id}): {exc}"
-        ) from exc
-    try:
-        reply = AuditAnonymizeReply.model_validate_json(raw)
-    except ValidationError as exc:
-        raise AuditAnonymizeUnavailableError(
-            f"audit anonymization reply did not decode (correlation_id={correlation_id}): {exc}"
-        ) from exc
-    # a refusal carrying NO correlation id is this batch's: a hub that could not decode the body had
-    # no id to echo, and filing its INVALID_REQUEST as a stray would tell the caller to retry a request
-    # the hub refuses every time. one carrying ANOTHER id -- a late answer to an earlier request, or a
-    # hub bug -- is not an answer to this batch, and neither is a success under another id.
-    answers_this_batch = reply.correlation_id == correlation_id or (not reply.success and reply.correlation_id is None)
-    if not answers_this_batch:
-        raise AuditAnonymizeUnavailableError(
-            f"audit anonymization reply carried correlation_id={reply.correlation_id}, not this batch's "
-            f"{correlation_id}"
-        )
-    if not reply.success and reply.error_code in _RETRYABLE_ERROR_CODES:
-        raise AuditAnonymizeUnavailableError(
-            f"audit anonymization failed hub-side (correlation_id={correlation_id}): "
-            f"{reply.error_code}: {reply.error_message or 'no details'}"
-        )
-    if not reply.success:
-        raise AuditAnonymizeRefusedError(
-            reply.error_code or "UNKNOWN", reply.error_message or "no details", correlation_id=correlation_id
-        )
+    # a refusal carrying NO correlation id is this batch's (a hub that could not decode the body had
+    # no id to echo); one carrying ANOTHER id, or a success under another or none, is not an answer
+    # to this batch (ask_hub's correlation rule)
+    reply = await ask_hub(
+        nats_client,
+        subject=Subjects.hub_audit_anonymize(),
+        request=request,
+        reply_type=AuditAnonymizeReply,
+        what="audit anonymization",
+        timeout_seconds=timeout_seconds,
+        unavailable=AuditAnonymizeUnavailableError,
+        refused=lambda refusal: AuditAnonymizeRefusedError(
+            refusal.error_code or "UNKNOWN", refusal.error_message or "no details", correlation_id=correlation_id
+        ),
+        retryable=_RETRYABLE_ERROR_CODES,
+    )
     if reply.rows_matched is None or reply.rows_changed is None:
         raise AuditAnonymizeUnavailableError(
             f"audit anonymization reported success but carried no counts (correlation_id={correlation_id})"

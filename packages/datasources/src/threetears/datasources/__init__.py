@@ -67,6 +67,7 @@ from threetears.datasources.geo_config import (
     GeometryConfig,
     GeometryKind,
     MeasureAggregation,
+    layer_name_fits,
 )
 from threetears.datasources.config import (
     BorrowedPoolConnectionConfig,
@@ -110,6 +111,7 @@ from threetears.datasources.query_client import (
 from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
 __all__ = [
+    "layer_name_fits",
     "MeasureAggregation",
     "GeometryKind",
     "GeometryConfig",

@@ -57,7 +57,7 @@ class TestConfigPropagationToDelegate:
 
         assert isinstance(wire_tool, NameMangledToolProxy)
         content = await wire_tool.ainvoke({"expression": "47 * 89"})
-        assert content == "4183"
+        assert content == "47 * 89 = 4183"
         assert content == await real_calculator.ainvoke({"expression": "47 * 89"})
 
     def test_real_builtin_tool_executes_successfully_through_the_proxy_sync(self) -> None:
@@ -65,7 +65,7 @@ class TestConfigPropagationToDelegate:
         [wire_tool], _reverse_map = build_name_translation([real_calculator])
 
         content = wire_tool.invoke({"expression": "47 * 89"})
-        assert content == "4183"
+        assert content == "47 * 89 = 4183"
         assert content == real_calculator.invoke({"expression": "47 * 89"})
 
     async def test_delegate_that_does_not_want_config_is_unaffected(self) -> None:
@@ -354,7 +354,7 @@ class TestRunAndArunAnswerAsInvokeDoes:
 
         content = await wire_tool.arun({"expression": "6 * 7"}, callbacks=[handler])
 
-        assert content == "42"
+        assert content == "6 * 7 = 42"
         assert handler.started == ["threetears.calculator"]
 
     def test_only_the_delegates_callbacks_fire_through_run(self) -> None:
@@ -363,5 +363,5 @@ class TestRunAndArunAnswerAsInvokeDoes:
 
         content = wire_tool.run({"expression": "6 * 7"}, callbacks=[handler])
 
-        assert content == "42"
+        assert content == "6 * 7 = 42"
         assert handler.started == ["threetears.calculator"]

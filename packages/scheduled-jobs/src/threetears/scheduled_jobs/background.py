@@ -13,7 +13,7 @@ outcome. Along the way it:
 
 - keeps **one fire per kind in flight**. In this process, a kind that is still running records
   its next fire as a success whose output says it was skipped and names the fire in flight.
-  Across pods, each fire holds :func:`threetears.nats.nats_distributed_lock` on
+  Across pods, each fire holds :func:`threetears.core.coordination.nats_distributed_lock` on
   :func:`in_flight_lock_key` of its kind for as long as it runs -- the job the tick lock used to do
   when fires ran inside it -- and a held lock records the same kind of skip. ``nats_client=None``
   is single-pod, exactly as for the tick.
@@ -77,7 +77,7 @@ from threetears.scheduled_jobs.events import (
 )
 from threetears.scheduled_jobs.metrics import ScheduledJobsMetricsEmitter, get_scheduled_jobs_emitter
 from threetears.scheduled_jobs.protocols import FireStore
-from threetears.scheduled_jobs.tick import DispatchCallback
+from threetears.scheduled_jobs.tick import DispatchCallback, _failed_output
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
 
 if TYPE_CHECKING:
@@ -319,7 +319,7 @@ class BackgroundDispatch:
     async def _run(self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID) -> None:
         self._started.add(fire_id)
         # local import: the same optional-NATS stance as the tick engine's own lock import.
-        from threetears.nats import LockHeld, nats_distributed_lock  # noqa: PLC0415
+        from threetears.core.coordination import LockHeld, nats_distributed_lock  # noqa: PLC0415
         from threetears.nats.errors import KvError  # noqa: PLC0415
 
         outcome: _Outcome | None = None
@@ -566,6 +566,7 @@ class BackgroundDispatch:
                     fire_id,
                     error=result.error or "dispatch returned status='failed' without an error string",
                     latency_ms=result.latency_ms,
+                    **_failed_output(result),
                 )
             else:
                 await self._fire_store.finalize_success(

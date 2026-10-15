@@ -3,7 +3,7 @@
 a **generic, payload-agnostic** primitive for "send a request to
 whichever pod currently *serves* a key, and get its reply back". this is
 the *messaging* half of a single-writer pattern: a separate election
-mechanism (:func:`threetears.nats.nats_distributed_lock`,
+mechanism (:func:`threetears.core.coordination.nats_distributed_lock`,
 :class:`threetears.core.coordination.KVLease`) decides *who* serves a
 given ``key``; this module only carries a request from any caller to
 that owner and the owner's reply back. the consumer ties the two
@@ -263,7 +263,7 @@ async def serve_owner(
 
     losing the lock cancels that body, so ``serve_owner`` exits and
     unsubscribes, and the ``async with`` raises
-    :class:`~threetears.nats.LockLost`.
+    :class:`~threetears.core.coordination.LockLost`.
 
     :param nats: connected canonical :class:`threetears.nats.NatsClient`
     :ptype nats: NatsClient
