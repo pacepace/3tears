@@ -174,7 +174,7 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
 
      The floor is sound on a client whose `price_ceiling` does not fall as a prompt grows, which holds for
      any ceiling priced from a bound on the prompt's length and a fixed output cap. It catches the ceilings the
-     output cap and the retry multiplier dominate, as in the incident above, whatever the transcript. A ceiling
+     output cap and the retry multiplier dominate, whatever the transcript. A ceiling
      a long transcript dominates it cannot see: a floor under the cap admits the arm, and that call is held to
      the cap as the run reserves it. A candidate's own calls are the kind's and are not priced. Wire it as
      `price_largest_call=lambda request: price_subject_call_floor(eval_host, request, judged_artifact=...)`,
@@ -309,8 +309,10 @@ asked for, and its summary says which model answered is unconfirmed
 
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which
-refuses `cost_usd`). `cost_usd` and `program_cost` also sum what a judge spent, which is measuring cost: never
-tested between arms, and labelled measuring spend wherever drawn.
+refuses `cost_usd`); the report heads it `Production cost`. `cost_usd` and `program_cost` also sum what a judge
+spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown. Where a
+reply costs under a cent on every arm, the report states both per 1,000 replies, and the heading says so
+(`Cost per 1,000 replies`, `Production cost ($/1,000 replies)`).
 
 **What an arm costs and what the program spent count different results.** A comparison cost — the
 candidate's own spend, `production_replicating_cost`, and every mean of it (`mean_prod_cost_usd` in a run
