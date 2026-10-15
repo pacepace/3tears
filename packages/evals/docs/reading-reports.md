@@ -87,9 +87,13 @@ template whose results are compared across arms, whatever its declared reading.
   words are held to the page's style (below).
 - **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size and
   the adjusted p folded; the guardrails; strata and per-label tables, folded.
-- **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`); one row per trial, its record folded
-  under `T4 · case 1 · cheaper candidate · failed`, never the start of what the case asked. A failed check is named
-  by its expression, as code (``check: `call_count("music.queue_track") >= 2` ``).
+- **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`), its trial ids last and muted, the
+  failed and lost ones first. Then the trials' census in one line (`180 trials ran. Of them 179 passed and 1
+  failed.`) and only what went wrong: one row per failed or lost trial, the failed first, and each one's record
+  under `T4 · case 1 · cheaper candidate · failed` (never the start of what the case asked), the first twelve open.
+  A failed check is named by its expression, as code (``check: `call_count("music.queue_track") >= 2` ``). The
+  passed trials are one closed `Passed trials` table (trial, case, arm, stored result), so each result id stays
+  reachable with `result_get`; when every trial passed, the census line stands alone.
 - **Not tested**, then **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the
   bundle) and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of art the page links,
   in one plain sentence.
