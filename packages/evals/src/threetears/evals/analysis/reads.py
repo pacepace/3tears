@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
+from threetears.evals.analysis.revisions import revision_label
 from threetears.evals.analysis.contention import marked_latency_sentence, withheld_latency
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
@@ -1540,9 +1541,10 @@ def _compare_per_template(
 
 
 def _template_name(load_template: Callable[[str], EvalTemplate], template_id: str) -> str:
-    """Best-effort human name for a template id (falls back to the id)."""
+    """Best-effort human name for a template id (falls back to the id), with its revision once it has more than one,
+    so two revisions of one name compared side by side read apart (:func:`~threetears.evals.analysis.revisions.revision_label`)."""
     try:
-        return load_template(template_id).name
+        return revision_label(load_template(template_id))
     except NotFoundError:
         # A run can outlive its template; degrade to the id, but leave a
         # trace so a persistently-missing template is diagnosable.

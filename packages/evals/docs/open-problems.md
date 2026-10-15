@@ -21,14 +21,20 @@ comparison still reads `improved`, `regressed` or `not_separated`; its equivalen
 "declare value_range on this measure to test equivalence", and a report says so once per measure. Fix, on the
 host's side: declare the measure's range.
 
-### A decision rule cannot yet settle switch on the overall pass rate
+### On a few cases only keep can settle a rate clause (accepted limit)
 
-A declared decision rule settles `keep` on what the run observed, and settles `switch` only on an interval: every arm
-at the case floor, and the contrast's interval inside the rule's margin. The bundle carries a contrast for each
-check's pass rate and for cost, but none for the overall trial pass rate. So a rule whose clause reads that rate
-(Discodon's G2: "no dimension drops by more than 10 points") reads `unsettled` ("no interval was computed on the pass
-rate") however many cases ran. This is the honest outcome: a switch is not shown. Fix: the bundle carries the overall
-pass-rate contrast, with its interval over cases, so the rule can settle `switch` on it.
+Decided with the fix that made a switch read the bounded interval (`.30`; no issue filed yet).
+
+A declared rule's rate clause settles `switch` only on the bounded interval, for the overall pass rate and each
+check's alike, and that interval holds its error rate at every n
+([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases it is wide. Even when both
+arms pass every trial, it allows a drop of 46 points at 7 cases in a family of one, 63 in a family of ten, and 13
+at 30 cases: no valid interval shows a rare large drop is absent from a few agreeing cases. So at 7 cases a 10-point
+clause settles `switch` only on a sweep (the candidate passes every trial the control fails), and otherwise reads
+`unsettled`, saying how far the interval reaches. `keep` still settles on what the run observed at any count.
+Discodon's G2 re-ask at 7 cases should expect `unsettled` on its rate clause unless the candidate's pass rate drops
+past the margin. Fix, on the host's side: more cases, or a wider margin the decision can live with. The t interval
+would settle sooner, but at the margin it said `switch` up to 14% of the time against the 2.5% it states.
 
 ### A guardrail is held only on a declared range (accepted limit)
 
@@ -50,6 +56,14 @@ unbounded measure be adopted, so the t breach is kept and the gap recorded as a 
 `tests/test_simulated_guardrails.py`. On a declared range the breach is the bounded test's, and holds its rate.
 
 ## Judging
+
+### An operator's new judge case joins the live revision
+
+Since `.30` the boot seed never adds a case to a judge template that already holds cases: the case waits for
+`reset_definitions`, which writes a new revision, and runs of two revisions never pool. An operator's own
+`judge_case_author` or `judge_cases_freeze` into such a template still adds to the revision in place, so runs of that
+judge template before and after the write share a revision id while their cases differ. Fix: an operator's write into
+a judge template that holds cases writes the next revision, as the reset does.
 
 ### A tier's bounds are conservative on a 1-5 scale
 

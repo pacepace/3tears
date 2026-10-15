@@ -149,6 +149,20 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 55/13: each family comparison carries its bounded interval, and the overall pass rate is compared as a reading
+    # of its own in the family of each question whose decision rule has a rate clause. A shape-only bump: the
+    # apparatus set and the cell model hold.
+    (
+        (55, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 

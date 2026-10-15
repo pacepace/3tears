@@ -611,6 +611,14 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # An authored judge case in a host's boot seed, which a production seed builds in memory
         # (`SeedCorpus(judge_cases=...)`) as well as reads from `judge_cases/*.json`.
         "threetears.evals.run.SeedJudgeCase",
+        # A named case set in a host's boot seed, which a production seed builds in memory
+        # (`SeedCorpus(case_sets=...)`) as well as reads from `case_sets/*.json`.
+        "threetears.evals.run.SeedCaseSet",
+        # A release step brings seeded definitions up to date: the drift read over its corpus, the reset, and the two
+        # catalogue actions a host mounts over them (Discodon runs the read and the reset as a release step).
+        "threetears.evals.run.definition_drift",
+        "threetears.evals.run.reset_definitions",
+        "threetears.evals.actions.definition_drift_actions",
         "threetears.evals.kernel.default_job_timeout",
         "threetears.evals.kernel.EvalCampaign",
         # The stored documents a host's kind and launcher build and its own code reads back.
@@ -819,8 +827,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.quick.WorldRunner",
         "threetears.evals.quick.run_cli",
         # What a `Result` hands back when it is read case by case, verdict by verdict, or label by label.
-        "threetears.evals.analysis.CaseResult",
-        "threetears.evals.analysis.LabelStatistics",
         "threetears.evals.analysis.Verdict",
         # How a report speaks: the prose lint every rendered sentence and a memo's are held to, the one seam an
         # identifier passes on its way to a reader, and the glossary of every term of art a page links.
@@ -898,7 +904,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.StyleProfile",
         "threetears.evals.kernel.host.Triggered",
         "threetears.evals.kernel.host.WorldConformanceError",
-        "threetears.evals.kernel.host.WorldConformanceReport",
         "threetears.evals.kernel.host.check_world_conformance",
         "threetears.evals.run.ArmPlan",
         "threetears.evals.run.ArmPrice",
@@ -941,7 +946,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.providers.Provider",
         # A production host's further bindings in `threetears.evals.analysis`: what Discodon's production code imports.
         "threetears.evals.analysis.AsRecordedReporterKind",
-        "threetears.evals.analysis.CampaignReadStore",
         "threetears.evals.analysis.REPORTER_KIND",
         "threetears.evals.analysis.ReporterKind",
         "threetears.evals.analysis.ReporterOverlays",
@@ -964,7 +968,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.DeliverySeam",
         "threetears.evals.kernel.DeliveryTicket",
         "threetears.evals.kernel.EvalJobTimeout",
-        "threetears.evals.kernel.ExclusionCause",
         "threetears.evals.kernel.ExternalRateTable",
         "threetears.evals.kernel.FIND_TEMPLATE",
         "threetears.evals.kernel.JUDGE_KIND_CONTRACT",
@@ -985,6 +988,8 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.SeedTemplate",
         "threetears.evals.kernel.ToolWrap",
         "threetears.evals.kernel.extract_json",
+        "threetears.evals.kernel.extract_json_array",
+        "threetears.evals.kernel.fold_phase_timings",
         "threetears.evals.kernel.prompt_drift",
         "threetears.evals.kernel.seed_digest",
         # A production host's further bindings in `threetears.evals.kernel.host`: what Discodon's production code
@@ -1075,7 +1080,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.schema.PROSE_SCHEMA_KEY",
         "threetears.evals.schema.ProviderFailure",
         "threetears.evals.schema.RESERVED_DIM_IDS",
-        "threetears.evals.schema.RefusedCall",
         "threetears.evals.schema.RubricAxis",
         "threetears.evals.schema.RubricProposal",
         "threetears.evals.schema.VariationAxis",

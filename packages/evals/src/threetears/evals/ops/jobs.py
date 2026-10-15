@@ -70,6 +70,7 @@ from threetears.evals.kernel.job_leases import (
 )
 from threetears.evals.run.lifecycle import require_cancellable
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.host.eval_host import CompletionRole
 from threetears.evals.schema.completion import BoundCompletionClient
@@ -816,6 +817,7 @@ async def start_paid_call[R: BaseModel](
     eval_host = host.eval_host
     client = eval_host.completion_clients(label)(role, model)
     try:
+        await refresh_prices(client)
         # Pricing reads the store's ledger of what the cap has already spent, so it runs off the loop.
         (admitted,) = await run_blocking(eval_host.blocking_executor, budget.admit, client, purpose, [call])
     # prawduct:ok-broad-except — not handled: a client that admitted nothing is released, and what refused is re-raised

@@ -125,7 +125,6 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`ProviderFailure`** · dataclass · What eval is allowed to know about a completion call that raised.
 - **`ProviderFailureDescriber`** · *host contract* · protocol · The host's mapping from its own exceptions onto `ProviderFailure`.
 - **`RecordedCall`** · model · One call a candidate made that succeeded — or, in a control end state, one it is stated to have made.
-- **`RefusedCall`** · model · One call a candidate made that its tool refused: nothing changed, and the refusal said why.
 - **`RoleUsage`** · *host contract* · model · Per-role token + cost observation for one `EvalResult`.
 - **`RubricDim`** · *host contract* · model · One judge-scored rubric dimension.
 - **`RubricProposal`** · model · The validated DRAFT the rubric proposer returns for operator review.
@@ -192,7 +191,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 2`
+  <br>`= 3`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 15`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -224,6 +223,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`extract_json`** · function · Extract a JSON object from provider output.
   <br>`extract_json(content: str) -> dict[str, Any]`
+- **`extract_json_array`** · function · Extract a JSON array from provider output, handling markdown code blocks.
+  <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
+- **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
+  <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
 - **`seed_digest`** · function · The canonical digest of a seed's content: what a host records when it seeds a slot from it.
@@ -287,8 +290,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 - **`AuthoredVerdict`** · type alias · An expected verdict as its author states it: a score on the criterion's scale (1-5 ordinal; 1 pass, 0 fail), or `"pass"` / `"fail"` on a pass/fail criterion.
   <br>`Annotated[int, Field(strict=True)] | Literal['pass', 'fail']`
-- **`ExclusionCause`** · literal · Why a result is left out of a measure.
-  <br>`'infra'` | `'truncated'` | `'judge_cannot_tell'`
 - **`MeritAxis`** · literal · The merit axes a measure can serve.
   <br>`'quality'` | `'cost'` | `'latency'` | `'reliability'`
 - **`ToolWrap`** · type alias · What the action seam is handed: maps the candidate's tools, by name, to the tools it should use — each declared recorded tool wrapped for the cassette run, every other one unchanged.
@@ -355,7 +356,6 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`Triggered`** · dataclass · State that arrives on a condition rather than at t=0.
 - **`UnsupportedSchemaError`** · exception · A schema uses a construct outside `HONOURED_KEYWORDS` — a gap to extend, never a value to pass.
 - **`WorldConformanceError`** · exception · An ENGINE gap: a check the kit cannot run, or a record its own vocabulary forbids.
-- **`WorldConformanceReport`** · dataclass · Every verdict from one run of the kit over one registry.
 - **`WorldDimension`** · *host contract* · dataclass · One state dimension a run may set, may read back, or may only witness.
 - **`WorldRegistry`** · *host contract* · class · One host's world declarations, its resolution table, and the algebra over them.
 
@@ -381,6 +381,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`build_judge_service(host: EvalHost, template: EvalTemplate, judge_model: str, selection: dict[str, str] | None = None, *, judged_artifact: JudgedArtifact) -> RunJudge`
 - **`create_template`** · function · Create and persist a template from an authoring definition.
   <br>`create_template(host: EvalHost, definition: dict[str, Any], *, scope_id: str, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> EvalTemplate`
+- **`definition_drift`** · *host contract* · function · Read every definition of a seed corpus against its scope's stored one. Writes nothing, spends nothing.
+  <br>`definition_drift(host: EvalHost, corpus: SeedCorpus, *, seeded_digests: Mapping[str, str] | None = None) -> DefinitionDrift`
 - **`delete_run`** · function · Delete a run, the results it owns, and its campaign memberships.
   <br>`delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]`
 - **`drive_conversation`** · async function · Run `driver`'s conversation from its first turn until it stops on a structural signal.
@@ -427,6 +429,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade`
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
+- **`reset_definitions`** · *host contract* · function · Write the corpus's content for the named definitions, each as a new revision or record, never in place.
+  <br>`reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], discard_customization: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset`
 - **`resolve_judge_pin`** · function · The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
   <br>`resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str`
 - **`run_blocking`** · *host contract* · async function · Run `fn(*args, **kwargs)` on `executor` and await its result.
@@ -467,6 +471,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`MeteredCallLedger`** · class · In-memory per-run ceiling on metered third-party calls.
 - **`MeteredCallTally`** · dataclass · What a run (or one cell's slice of it) metered, kept per provider.
 - **`RunnerOptions`** · *host contract* · dataclass · The run's own knobs that don't fit on the run document — per-run values, never host wiring.
+- **`SeedCaseSet`** · *host contract* · model · One named case set a seed corpus mints: a judge template's authored cases, listed by name, in order.
 - **`SeedCorpus`** · dataclass · A host's authored definitions for one scope, already constructed through their production models.
 - **`SeedJudgeCase`** · *host contract* · model · One authored judge case a seed corpus writes: `judge_case_author`'s arguments, its templates named by name.
 - **`SeedOutcome`** · dataclass · What one seeding pass did, per doc type.
@@ -568,12 +573,9 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
 - **`AsRecordedReporterKind`** · class · The memo each case's campaign actually got, replayed — the calibration candidate.
-- **`CampaignReadStore`** · protocol · The nine reads assembling a campaign's context bundle needs.
-- **`CaseResult`** · model · One case's answer on one repeat, every grade it got, and why it failed or was excluded.
 - **`ChartBlock`** · *host contract* · model · One of the two charts a report draws, with every value it draws, so it prints as a table too.
 - **`EvalSummary`** · *host contract* · model · One run, summarised.
 - **`GateResult`** · dataclass · What a gate read and what it came to.
-- **`LabelStatistics`** · model · One label's counts in a confusion matrix, and the precision, recall and F1 they give.
 - **`Report`** · *host contract* · model · A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states.
 - **`ReporterKind`** · class · A (prompt preset, generator model) candidate: generates a memo over each case's bundle.
 - **`ReporterOverlays`** · model · The one knob a reporter launch may turn: which preset of the analysis generator's prompt writes the memos.
@@ -804,6 +806,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
 
 **Functions**
 
+- **`definition_drift_actions`** · *host contract* · function · `definitions_drift` and `definitions_reset`, for the host's catalogue.
+  <br>`definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]`
 - **`eval_catalogue`** · function · The engine's catalogue, with the host's own actions after the engine's.
   <br>`eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue`
 - **`standard_tools`** · function · The two tools a host mounts by default: `<prefix>` and `<prefix>_admin`.
@@ -1076,7 +1080,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `54` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `55` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -1444,6 +1448,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
 | `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
+| `judge_cases_list` | `read` | `template_id` | List a judge template's stored cases: each id, criterion, expected verdict and whether it is live. |
 | `judge_case_author` | `write` | `template_id`, `criterion_template_id`, `criterion`, `output`, `case_material`, `expected`, `note`, `scenario?`, `subject?`, `judged_artifact?` | Write a judge case by hand: an output, the rubric dimension it is judged on, and its verdict. |
 | `judge_profiles_record` | `write` | `judge_run_ids` | Store what a judge campaign measured each judge to be, per criterion, for other campaigns to read. |
 | `judge_profiles_list` | `read` | `criterion_dim?` | List the stored judge profiles: each judge and criterion measured, on what, when, and its tier. |
@@ -1579,7 +1584,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `subject_id` | `string` | The subject the runs measure, as the host names it. |
 | `supersedes` | array of `string` | The live case(s) of this campaign and memo the freeze replaces, by id — needed to revise a case's labels or re-freeze moved evidence; every live case of the pair when it holds several. |
 | `template_filter` | `string` or `null` | Only calls made for this template, by id. |
-| `template_id` (on `sweep_launch`, `case_set_mint`, `run_launch`, `launch_estimate`, `reporter_case_freeze`, `reporter_cases_list`, `judge_cases_freeze`, `judge_case_author`) | `string` | A template's id, as templates_list names it. |
+| `template_id` (on `sweep_launch`, `case_set_mint`, `run_launch`, `launch_estimate`, `reporter_case_freeze`, `reporter_cases_list`, `judge_cases_freeze`, `judge_cases_list`, `judge_case_author`) | `string` | A template's id, as templates_list names it. |
 | `template_id` (on `campaign_create`) | `string` or `null` | A template's id, as templates_list names it. |
 | `template_name` | `string` | The judge template's name, unique in the scope. |
 | `test_case_ids` | array of `string` | The cases, in order, each a stored case of the template; a list the latest version already holds is refused. |

@@ -76,6 +76,7 @@ from threetears.evals.kernel.candidate_kind import (
     UnknownCandidateKind,
     VariantConfig,
 )
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.covariates import (
     count_delivered_turns,
     count_dropped_tool_calls,
@@ -3200,6 +3201,8 @@ async def judge_dims(
         dim_id = request.dim_id
         async with gate:
             try:
+                if sink is not None:
+                    await refresh_prices(judge_service.client_for(request))
                 held = sink.reserve("judge", judge_service.price_ceiling(request)) if sink is not None else None
             except CostCapReached as refused:
                 outcome = JudgeOutcome(score=None, error=f"not judged: {refused.detail}")

@@ -50,6 +50,11 @@ from threetears.evals.kernel.result_condition import CandidateFailureCause, Excl
 #: The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or
 #: compared: below it a t interval is too wide and unstable to read (:data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR`),
 #: so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
+#:
+#: The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too
+#: few, and no rate (a pass rate, pass^k) is estimated for an arm; a measure's mean is still shown with its interval,
+#: and a declared rule can still settle keep on what was observed, never switch. So a host's seed gate covers every
+#: template whose results are compared across arms, whatever its declared reading.
 MIN_CASES: Final = SMALL_N_BAND_FLOOR
 
 #: The share of an arm's trials whose loss to the test setup, alone or as the gap between two arms, means the run
@@ -310,11 +315,14 @@ def _rule_verdicts(bundle: AnalysisContextBundle) -> list[RuleVerdict]:
     control = _control_key(bundle)
     if not bundle.question_declared or control is None:
         return []
-    rules = [rule for question in _declared_questions(bundle) if (rule := parse_decision_rule(question.text))]
+    rules = [
+        (question.id, rule) for question in _declared_questions(bundle) if (rule := parse_decision_rule(question.text))
+    ]
     if not rules:
         return []
+    asked, rule = rules[0]
     return [
-        evaluate_rule(rules[0], rule_readings(bundle, control, board.variant_key))
+        evaluate_rule(rule, rule_readings(bundle, control, board.variant_key, question_id=asked))
         for board in bundle.scoreboard
         if board.variant_key != control
     ]
@@ -574,6 +582,8 @@ def _separated(
                 reading = measure_name(comparison.name, heading.reader_name if heading is not None else None)
                 if comparison.reading == "judged":
                     reading = f"{humanize('dimension', comparison.name)} (judged)"
+                elif comparison.reading == "trial":
+                    reading = "the pass rate"
                 line = f"{arm(comparison.contrast.variant_key)} {_SEPARATED_WORDS[comparison.verdict]} {reading}"
                 if line not in said:
                     said.append(line)

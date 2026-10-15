@@ -256,19 +256,42 @@ billed, so the price ceiling is one request's, but each refused send can take up
 **Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
 without the upstream figure is unpriced. A reply that carries no `is_byok` is unpriced too (`cost_usd` and
-`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
-for the matching `vendor/model` row, its `price_source` ending `;cache-approximate` when a prompt cache was read or
-written (the catalogue carries no cache rates). The `price_source` words are `PriceSource`'s (host contract, from
+`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is priced by the catalogue row
+for the matching `vendor/model`, from the same reading of the row as the price ceiling: at the tier its prompt fell
+in, its reasoning tokens at the reasoning rate where the row lists one apart from the completion rate, its cache reads
+and writes at their rates, plus the request fee. Where a price applies that the reply's counts cannot price (reasoning
+tokens it does not split out) the call is unpriced, never priced lower; its `price_source` ends `;cache-approximate`
+when a cache share was priced at a rate the row does not list for it. The `price_source` words are `PriceSource`'s (host contract, from
 `threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
 (the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
 `openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
-model's `price_ceiling` answers once its catalogue is loaded: `await clients.load_prices()` at boot, or
-`await catalogue.load()` on one you hand your models, and until then the engine refuses an out-of-run call under an
-enforced `out_of_run_cap_usd` rather than send one it cannot bound. A long-lived process is not priced from its first
+model's `price_ceiling` answers once its catalogue is loaded. The engine awaits the model's `refresh_prices()`
+before it prices a call, which loads it; `await clients.load_prices()` at boot reads it early and says which models
+it cannot price. A long-lived process is not priced from its first
 fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
 OpenRouter call, which its own figure prices), and `Catalogue.stale_since` and `refresh_failure` say the same.
+Several loads at once share one fetch.
+
+**The price ceiling is a true upper bound, or `None`.** `price_ceiling` bounds the prompt at one token per UTF-8 byte
+(after NFKC normalisation, where that is longer) plus a framing allowance, and prices it with every price the row
+lists: a prompt token at the dearest of the plain and cache rates, an output token (reasoning included) at the dearest
+of the completion, reasoning and output-image or -audio rates, the per-request fee, and a long-context tier wherever
+the prompt bound reaches it. A price it cannot bound (one it does not know, a web search on a model that searches
+unasked) answers `None`, logged once with the reason. So do rows older than `Catalogue.ceiling_stale_after`
+(`refresh_after` unless given), though a completion is still priced from them. Rows do not reach that age by sitting
+idle: before it prices a call, in a run or out of one, the engine awaits the client's `refresh_prices()` if it has
+one, which on `Model` refreshes rows past `refresh_after`. Only a refresh that failed leaves them old. Under an
+enforced cap, `None` refuses an out-of-run call, and lets a call in a run through unreserved only while the cap is not
+yet reached ([Cost and budgets](cost-and-budgets.md#caps)). A client of your own whose rates go stale offers the same
+`async refresh_prices()`. Optionally, to ride out a short outage without refusing calls, refresh more often than the
+bound (`Catalogue(refresh_after=timedelta(hours=1), ceiling_stale_after=timedelta(hours=6))`), or await
+`catalogue.load()` on a timer of your own; neither is needed for an idle host.
+
+`Model(timeout=..., headers=...)` sets up the client the model opens itself; beside `http=` they are refused, since a
+client you hand in is used as you built it. A catalogue you hand an `http` client fetches with that client's timeout;
+`CATALOGUE_FETCH_TIMEOUT_S` (30 seconds) is the one it uses on its own.
 
 **An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
 class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`
@@ -690,7 +713,7 @@ written under another cassette version is refused, by name, and you re-capture i
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v15.1), durable documents (v15.1), regenerable documents
-(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 54), the cell model
+(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 55), the cell model
 (`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions, each at its first
 public release's value. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
@@ -1355,13 +1378,16 @@ builds each through the door `judge_case_author` uses (`author_judge_case`: the 
 that words it, the verdict held to its scale) before anything is written, refusing the whole seed by name for any
 case authoring would refuse, then freezes it into its judge template after the templates are written, as the same
 `AuthoredJudgeCase` under the same content-derived id. A case already stored is reported `already present` under
-`judge_case`, and one whose words or verdict changed is a new case beside it, never an update. A launch naming no
-case set runs every live case of the judge template, so a host boots with its hard negatives in place and no
-authoring tool of its own over `judge_case_author`.
+`judge_case`. A launch naming no case set runs every live case of the judge template, so a host boots with its hard
+negatives in place and no authoring tool of its own over `judge_case_author`. **Since `.30` the seed fills a case only
+into a judge template holding no cases yet** (one it creates in the same pass, or an empty one): a new case, or one
+whose words or verdict changed, for a template that already holds cases would change what its runs were measured
+against under the same id. It is no longer written beside the old ones. It is withheld and reported under
+`needs_reset` on every boot, with any case set listing it, until you reset the template (below).
 
 **A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
 case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
-implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (in
+implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (host contract, from `threetears.evals.run`; in
 memory, `SeedCorpus(case_sets=...)`) with the set's `name`, its judge `template` by name and its `judge_cases` by
 their corpus names, in order. A judge case's corpus name is its file's name without `.json` (or its own `name`, which
 an in-memory case must set to be listed). A set naming a case twice, a case the corpus does not carry or a case of
@@ -1369,6 +1395,39 @@ another judge template refuses the whole corpus when it is built. Once the cases
 scope holds no version of is minted over their stored ids through `mint_case_set`, the path `case_set_mint` takes,
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
+
+**A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
+template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
+wrote, and a release step reads drift and resets what is behind, deliberately (never at boot, so a store an operator
+tuned is never rewritten by a deploy):
+
+```python
+from threetears.evals.run import definition_drift, reset_definitions
+
+corpus = boot_seed_corpus(scope_id)  # the SeedCorpus your boot seed loads for the scope
+drift = definition_drift(host, corpus, seeded_digests=PRE_30_DIGESTS)  # writes nothing
+print(drift.render())  # "drift: 1 stale, 0 customized, 1 unknown, 0 absent, 40 current", then each line not current
+if stale := drift.keys("stale"):
+    reset = reset_definitions(host, corpus, stale, require_known_tools_allowed=..., refuse_undeclared_world_seed=...,
+                              refuse_undeliverable_template=...)  # the same three checks the seed takes
+    print(reset.render())
+```
+
+A definition reads `current` (the corpus's), `stale` (what was seeded, and the corpus has moved), `customized`
+(changed since: edited, archived or deleted), `unknown` (no record: a row seeded before `.30`) or `absent` (the next
+boot seeds it). A reset never edits in place. A template's new content is its next **revision**: a new record under the
+same name (`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep
+the content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest
+revision. A judge case resets with its judge template, whose new revision holds the corpus's whole battery, and the
+corpus's case sets over it are minted again. The reset refuses `customized` and `unknown`, and a judge template holding
+live cases the corpus does not carry, unless `discard_customization=True`; it writes nothing when it refuses and names
+every refusal. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
+bundle), since their results are two datasets; two templates that only share a name at one revision number are not
+revisions of each other and are not refused. For rows seeded before `.30`, compute `corpus_digests(host, corpus)`
+over the corpus you seeded then (from your history) and pass it as `seeded_digests`: they read `stale` rather than
+`unknown`. A judge template whose boot reported `needs_reset` reads `stale`, and its reset writes the next revision
+with every corpus case. `definition_drift_actions(boot_seed_corpus, ...)` (from
+`threetears.evals.actions`) adds `definitions_drift` and `definitions_reset` to your catalogue.
 
 **A stored verdict is graded again through one door: `regrade`** (`threetears.evals.run`, and the `result_regrade`
 action). `await regrade(host, result_id, scope_id)` re-grades the result's check dims (its goal checks) from what its

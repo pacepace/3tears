@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis import frontier_text
+from threetears.evals.analysis import MIN_CASES, frontier_text
 from threetears.evals.analysis.lenses.frontier import FrontierResult, compute_frontier
 from threetears.evals.analysis.reads import frontier
 from threetears.evals.kernel import EvalStorage
@@ -37,8 +37,9 @@ def _score(case: int) -> int:
     return 4 + case % 2
 
 
-def _corpus(*, judged: bool) -> tuple[EvalRun, list[Any]]:
-    """One contestant over twenty cases, every attempt passing — its criteria judged, or only goal-checked."""
+def _corpus(*, judged: bool, cases: int = _CASES) -> tuple[EvalRun, list[Any]]:
+    """One contestant over ``cases`` cases (twenty unless said), every attempt passing — its criteria judged, or only
+    goal-checked."""
     run = make_eval_run(id="run-a", status="completed", k_runs=1, candidate_model="a")
     results = [
         make_eval_result(
@@ -65,7 +66,7 @@ def _corpus(*, judged: bool) -> tuple[EvalRun, list[Any]]:
             goal_state_outcomes=[GoalStateOutcome(expression="ok", passed=True)],
             usage=[RoleUsage(role="candidate", cost_usd=0.01)],
         )
-        for case in range(_CASES)
+        for case in range(cases)
     ]
     return run, results
 
@@ -144,3 +145,14 @@ def test_the_scope_frontier_reads_its_judges_tiers_from_the_scope() -> None:
     answered = frontier(storage, run.scope_id, list_runs=lambda scope_id, **_: [run], bar=0.5)
     (subject,) = answered["subjects"]
     assert subject["verdict"]["judge_evidence_tier"] == "calibrated"
+
+
+def test_a_pass_k_over_fewer_cases_than_the_floor_states_no_figure_and_over_enough_a_rate() -> None:
+    run, results = _corpus(judged=False, cases=3)
+    few = frontier_text(compute_frontier([run], results, bar=0.5, archived_run_ids=None))
+    assert "pass^1 over 3 case(s), too few to state as a rate (a rate needs 5)" in few
+    assert " of 3 case" not in few and "pass^1 1" not in few and "[" not in few.split("pass^1")[1].split(",")[0]
+
+    run, results = _corpus(judged=False, cases=MIN_CASES)
+    enough = frontier_text(compute_frontier([run], results, bar=0.5, archived_run_ids=None))
+    assert f"over {MIN_CASES} case(s)" in enough and "too few to state" not in enough

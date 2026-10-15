@@ -51,6 +51,7 @@ from threetears.evals.schema.models import (
     RepeatedScore,
 )
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose
 from threetears.evals.run.job_work import EvalActionJob, JobWork, action_job_work
@@ -437,6 +438,8 @@ async def estimate_judge_repeat(
     """
     prepared = await _prepare(host, run_id, scope_id, out_of_run_cap_usd=out_of_run_cap_usd, result_ids=result_ids)
     async with prepared.service:
+        for client, _ in prepared.calls:
+            await refresh_prices(client.inner)
         ceilings = [
             client.inner.price_ceiling(system=call.system, user=call.user, response_format=call.response_format)
             for client, calls in prepared.calls
@@ -503,6 +506,7 @@ async def judge_repeat_work(
     prepared = await _prepare(host, run_id, scope_id, out_of_run_cap_usd=out_of_run_cap_usd, result_ids=result_ids)
     try:
         for client, calls in prepared.calls:
+            await refresh_prices(client.inner)
             client.admit(calls)
     except BaseException:
         await prepared.service.aclose()

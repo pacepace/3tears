@@ -67,6 +67,7 @@ from threetears.evals.schema.models import (
     utc_now_iso,
 )
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_repeat import BudgetedJudgeClient, planned_judge_call
@@ -437,6 +438,8 @@ async def estimate_second_judge(
         seed=seed,
     )
     async with prepared.service:
+        for client, _ in prepared.calls:
+            await refresh_prices(client.inner)
         ceilings = [
             client.inner.price_ceiling(system=call.system, user=call.user, response_format=call.response_format)
             for client, calls in prepared.calls
@@ -586,6 +589,7 @@ async def second_judge_work(
     )
     try:
         for client, calls in prepared.calls:
+            await refresh_prices(client.inner)
             client.admit(calls)
     except BaseException:
         await prepared.service.aclose()

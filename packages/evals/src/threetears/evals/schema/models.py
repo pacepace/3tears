@@ -30,7 +30,7 @@ import json
 import math
 import re
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -1792,6 +1792,28 @@ class EvalTemplate(DurableDocumentModel):
     rubric: list[RubricDim] = Field(default_factory=list)
 
     # Lifecycle
+    revision: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Which revision of its name this record is: 1 for a template authored or seeded, and one past the "
+            "newest for each revision a definition reset writes (`threetears.evals.run.reset_definitions`). A "
+            "revision is a new record with a new id, never an edit, so every run, result and case keeps pointing at "
+            "the content it ran against; the name resolves to its newest non-archived revision, and an older one "
+            "stays readable by id. A template stored before `.30` reads as revision 1."
+        ),
+    )
+    seed_digest: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The digest of the content the boot seed or a definition reset wrote this record with "
+            "(`threetears.evals.run.corpus_digests`): content only, never ids, revision numbers or timestamps. "
+            "Compared with the record's own content it tells a seeded definition nobody edited from one an "
+            "operator changed. None for a record no seed wrote, and for one seeded before `.30`, which recorded "
+            "nothing."
+        ),
+    )
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
@@ -1825,6 +1847,22 @@ class EvalTemplate(DurableDocumentModel):
                 "writes a new value for every case; nominate an `enum` or `sample` axis"
             )
         return axes
+
+
+def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:
+    """The revision one template name resolves to: its newest non-archived one, else its newest.
+
+    Newest is the highest ``revision``, then the latest ``created_at``, then the id, so the answer does not depend on
+    the order a store returned the records in.
+
+    Args:
+        revisions: The records of one name, in any order.
+
+    Returns:
+        The current revision, or None for no records.
+    """
+    ordered = sorted(revisions, key=lambda t: (not t.archived, t.revision, t.created_at, t.id))
+    return ordered[-1] if ordered else None
 
 
 # =============================================================================
@@ -2012,6 +2050,17 @@ class JudgeConfig(DurableDocumentModel):
         ),
     )
 
+    seed_digest: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The digest of the content the boot seed or a definition reset wrote this record with "
+            "(`threetears.evals.run.corpus_digests`): content only, never ids, revision numbers or timestamps. "
+            "Compared with the record's own content it tells a seeded definition nobody edited from one an "
+            "operator changed. None for a record no seed wrote, and for one seeded before `.30`, which recorded "
+            "nothing."
+        ),
+    )
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
 
@@ -2092,6 +2141,17 @@ class CatalogRubricDim(DurableDocumentModel):
     )
     universal: bool = Field(default=False, description="True → applies to every subject.")
 
+    seed_digest: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The digest of the content the boot seed or a definition reset wrote this record with "
+            "(`threetears.evals.run.corpus_digests`): content only, never ids, revision numbers or timestamps. "
+            "Compared with the record's own content it tells a seeded definition nobody edited from one an "
+            "operator changed. None for a record no seed wrote, and for one seeded before `.30`, which recorded "
+            "nothing."
+        ),
+    )
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
@@ -2276,7 +2336,11 @@ class CaseSet(DurableDocumentModel):
 
     name: str = Field(min_length=1, description="The set's name, unique within its scope across its versions.")
     version: int = Field(ge=1, description="Minted from 1; each change to the set is the next version.")
-    template_id: str = Field(min_length=1, description="The template whose cases these are; every version shares it.")
+    template_id: str = Field(
+        min_length=1,
+        description="The template whose cases these are. Every version lists cases of one template name: a version "
+        "minted after the template's reset lists its newer revision's cases, and older versions keep the older one's.",
+    )
     test_case_ids: list[str] = Field(
         min_length=1, description="The frozen cases, in order — every one a case of the template in the scope."
     )
@@ -2284,6 +2348,17 @@ class CaseSet(DurableDocumentModel):
         default=True,
         description="Whether the set is followed over time (a standing suite) or was made for one launch. Metadata "
         "only: both are stored, versioned and launched alike.",
+    )
+    seed_digest: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The digest of the content the boot seed or a definition reset wrote this record with "
+            "(`threetears.evals.run.corpus_digests`): content only, never ids, revision numbers or timestamps. "
+            "Compared with the record's own content it tells a seeded definition nobody edited from one an "
+            "operator changed. None for a record no seed wrote, and for one seeded before `.30`, which recorded "
+            "nothing."
+        ),
     )
     created_at: str = Field(default_factory=utc_now_iso)
 
@@ -2426,6 +2501,15 @@ class EvalTestCase(DurableDocumentModel):
         ),
     )
 
+    seed_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The corpus name of the seed judge case this case was frozen from (`SeedJudgeCase.name`), set by the "
+            "boot seed and a definition reset; its `content_hash` is the digest of what was seeded. None for a case "
+            "no seed wrote, an unnamed corpus case, and one seeded before `.30`."
+        ),
+    )
     created_at: str = Field(default_factory=utc_now_iso)
 
     @field_validator("doc_type")

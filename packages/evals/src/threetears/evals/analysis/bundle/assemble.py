@@ -52,6 +52,7 @@ from threetears.evals.analysis.agreement import (
     person_scores_by_result,
 )
 from threetears.evals.analysis.judge_drift import judge_drift
+from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.analysis.judge_profiles import judged_ratings, judges_tiers
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.contention import (
@@ -77,7 +78,7 @@ from threetears.evals.analysis.lenses.program_budget import compute_program_budg
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
-from threetears.evals.kernel.declaration import resolve_declared_control
+from threetears.evals.kernel.declaration import CampaignDesign, resolve_declared_control
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,
@@ -149,6 +150,7 @@ from threetears.evals.analysis.bundle.comparisons import (
 )
 from threetears.evals.analysis.bundle.judges import _judge_change
 from threetears.evals.analysis.bundle.trials import trials_and_census
+from threetears.evals.analysis.report.decision import parse_decision_rule
 from threetears.evals.analysis.bundle.time_axis import _time_axis
 from threetears.evals.analysis.bundle.surface import _measure_catalog
 
@@ -342,6 +344,13 @@ def assemble_context_bundle(
 
     # Deterministic input order → deterministic lens output → stable fingerprint.
     runs = sorted(resolved, key=lambda r: (r.created_at, r.id))
+    # Before anything pools them: runs of two revisions of one template are two datasets (`revisions`), and the cell
+    # algebra below has no coordinate that would keep them apart.
+    refuse_pooled_revisions(
+        (run.template_id for run in runs),
+        lambda template_id: storage.load_template(template_id, scope_id),
+        what=f"campaign {campaign.name!r}",
+    )
     # When the campaign's evidence began: its earliest member run, archived ones included (an archived run's results
     # existed all the same). A question asked after it confirms nothing (`preregistered_questions`).
     first_run_at = min((run.created_at for run in loaded.values()), default=None)
@@ -722,6 +731,10 @@ def assemble_context_bundle(
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
         first_run_at=first_run_at,
+        # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold, in
+        # the family of each question whose decision rule reads it.
+        rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
+        pass_rate_questions=_pass_rate_questions(campaign.declared_design),
     )
     bundle.reading_scope = _reading_scope(
         campaign.declared_design, bundle.measure_catalog, bundle.judged_measures, first_run_at=first_run_at
@@ -790,6 +803,22 @@ def _criteria(runs: Sequence[EvalRun], storage: CampaignReadStore, scope_id: str
         for dimension in template.rubric:
             criteria.setdefault(dimension.name, dimension.description)
     return criteria
+
+
+def _pass_rate_questions(declared: CampaignDesign | None) -> frozenset[str]:
+    """The live questions whose declared decision rule reads the overall pass rate: each one with a rate clause.
+
+    Read by the one parser the page settles the rule with (:func:`~threetears.evals.analysis.report.decision.parse_decision_rule`),
+    so the contrast is in a family exactly when the rule it serves can read it.
+    """
+    if declared is None:
+        return frozenset()
+    return frozenset(
+        question.id
+        for question in declared.live_questions()
+        if (rule := parse_decision_rule(question.text)) is not None
+        and any(clause.kind == "rate_drop" for clause in rule.clauses)
+    )
 
 
 def _package_version() -> str | None:

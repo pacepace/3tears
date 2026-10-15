@@ -50,7 +50,7 @@ from threetears.evals.kernel.candidate_kind import (
     CostCapReached,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import call_ceiling
+from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.judge_cases import (
     JUDGE_CASE_KEY,
@@ -308,11 +308,14 @@ def _store_case(
     dim: str,
     case: JudgeCase,
     seen: set[str],
+    *,
+    seed_name: str | None = None,
 ) -> FrozenJudgeCase | None:
     """Write one frozen case as a test case of ``template`` unless it is stored already; ``None`` for a repeat.
 
     The id is derived from the template, the source result (an authored case: :data:`_AUTHORED_SOURCE`), the dim
-    and the case's content, so freezing or authoring the same thing twice names the stored case.
+    and the case's content, so freezing or authoring the same thing twice names the stored case. ``seed_name`` is
+    the corpus name a seeded case is written with; a case already stored is never rewritten to carry one.
     """
     digest = case.content_digest()
     source = _AUTHORED_SOURCE if source_result_id is None else source_result_id
@@ -332,6 +335,7 @@ def _store_case(
                 # summarised per criterion beside the pooled figure.
                 stratum=dim,
                 content_hash=digest,
+                seed_name=seed_name,
             )
         )
     return FrozenJudgeCase(
@@ -460,6 +464,33 @@ def author_judge_case(
             "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in refused.errors()),
             remedy="give a verdict the dimension's scale holds: 'pass' or 'fail' on pass/fail, 1 to 5 on ordinal",
         ) from refused
+
+
+def freeze_seeded_judge_case(
+    storage: EvalStorage, *, template: EvalTemplate, scope_id: str, authored: AuthoredJudgeCase, seed_name: str | None
+) -> FrozenJudgeCase:
+    """Freeze one seed corpus judge case into its judge template as :func:`freeze_judge_cases` freezes an authored one,
+    recording the corpus name it was seeded as on the stored case (``EvalTestCase.seed_name``).
+
+    Args:
+        storage: Where the case is written.
+        template: The judge template, loaded.
+        scope_id: The scope the case is stored in.
+        authored: The case, built through ``author_judge_case``.
+        seed_name: Its corpus name, or None for an unnamed corpus case.
+
+    Returns:
+        The case: created, or already stored (then left as it is).
+
+    Raises:
+        ValidationFailedError: The template is not of the judge kind.
+        StorageError: The case could not be persisted.
+    """
+    _judge_template(template)
+    case = JudgeCase.from_authored(authored)
+    frozen = _store_case(storage, template, scope_id, None, case.dim, case, set(), seed_name=seed_name)
+    assert frozen is not None, "a first freeze is never a repeat"
+    return frozen
 
 
 def freeze_judge_cases(
@@ -663,6 +694,10 @@ class _CellClient:
             The kind's client's own ceiling for the pair.
         """
         return call_ceiling(self.inner, system=system, user=user, response_format=response_format)
+
+    async def refresh_prices(self) -> None:
+        """Bring the forwarded-to client's prices up to date, as :func:`refresh_prices` asks of it."""
+        await refresh_prices(self.inner)
 
     async def aclose(self) -> None:
         """Release nothing: the client this forwards to is the kind's."""
@@ -892,6 +927,7 @@ class JudgeKind:
             except ValueError as exc:
                 return CandidateOutput(infra_errors=[f"apparatus: test case {test_case.id}'s judge case: {exc}"])
             try:
+                await refresh_prices(service.client_for(request))
                 held = sink.reserve("candidate", service.price_ceiling(request))
             except CostCapReached:
                 # The sink recorded the breach: the runner excludes this cell for the cap, with nothing spent.

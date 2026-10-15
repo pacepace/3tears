@@ -55,6 +55,7 @@ from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.identity import compute_content_hash
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, VariationAxis, VariationCounts
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import (
     AdmittedGeneration,
     OutOfRunBudget,
@@ -318,6 +319,7 @@ async def price_variations(
     planned = plan_variation_calls(template, n_variations, existing)
     if not planned:
         raise ValueError(f"template {template.id!r} has no llm-generated axis, so a generation of it makes no call")
+    await refresh_prices(llm)
     return budget.quote(llm, "variation", list(planned.values()))
 
 
