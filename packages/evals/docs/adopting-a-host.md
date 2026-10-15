@@ -690,7 +690,7 @@ written under another cassette version is refused, by name, and you re-capture i
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v15.1), durable documents (v15.1), regenerable documents
-(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 54), the cell model
+(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 55), the cell model
 (`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions, each at its first
 public release's value. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
