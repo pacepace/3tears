@@ -14,6 +14,7 @@ import string
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, Self, get_args
@@ -133,6 +134,20 @@ class Completion:
     pricing_stale_since: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class _ReadForCall:
+    """What a model's :meth:`Model.refresh_prices` read for the call it precedes: whose read it was, and why the
+    catalogue is unread, or ``None`` when it was read."""
+
+    live: _Live
+    unread: str | None
+
+
+#: The catalogue read the last ``refresh_prices`` in this task made, which the model's next call in the task takes as
+#: its own rather than reading again: one request, one catalogue fetch, even when that fetch failed.
+_READ_FOR_CALL: ContextVar[_ReadForCall | None] = ContextVar("threetears_evals_read_for_call", default=None)
+
+
 def _provider_of(model_id: str, provider: Provider | None, base_url: str | None) -> Provider:
     """The provider a model id goes to: as named; else OpenRouter for a ``vendor/model`` id, an OpenAI-compatible
     endpoint for a ``base_url``; a bare id with neither is refused, never guessed."""
@@ -207,6 +222,7 @@ class _Live:
         asked: WireSettings,
         catalogue: Catalogue,
         http: httpx.AsyncClient | None,
+        transport: httpx.AsyncBaseTransport | None,
         timeout: float | httpx.Timeout | None,
         headers: Mapping[str, str] | None,
     ) -> None:
@@ -218,36 +234,44 @@ class _Live:
         self._asked = asked
         self._catalogue = catalogue
         self._http = http
+        self._transport = transport
         self._timeout = _REQUEST_TIMEOUT if timeout is None else timeout
         self._headers = dict(headers) if headers is not None else None
-        self._owned: httpx.AsyncClient | None = None
+        self._opened: httpx.AsyncClient | None = None
         self._logged: set[tuple[str, ...]] = set()
         self._unbounded: set[str] = set()
-        self._catalogue_failure: str | None = None
 
     def _client(self) -> httpx.AsyncClient:
         if self._http is not None:
             return self._http
-        if self._owned is None:
-            self._owned = httpx.AsyncClient(timeout=self._timeout, headers=self._headers)
-        return self._owned
+        if self._opened is None:
+            self._opened = httpx.AsyncClient(timeout=self._timeout, headers=self._headers, transport=self._transport)
+        return self._opened
 
-    async def _load_catalogue(self) -> None:
-        """Read the catalogue, or refresh it once its rows expired; a first read that fails is logged, kept as the
-        reason calls go unpriced, and tried again. A refresh that fails keeps the rows, marked stale, without raising.
+    async def _read_catalogue(self) -> str | None:
+        """Read the catalogue, or refresh it once its rows expired: why it is unread, or ``None`` once read.
+
+        A first read that fails is logged and returned as the reason calls go unpriced, and tried by the next read. A
+        refresh that fails keeps the rows, marked stale, without raising (:meth:`Catalogue.load`).
         """
         try:
             await self._catalogue.load()
         except (httpx.HTTPError, ValueError) as failed:
-            self._catalogue_failure = f"the price catalogue could not be read ({type(failed).__name__}: {failed})"
+            unread = f"the price catalogue could not be read ({type(failed).__name__}: {failed})"
             log.warning(
-                "eval.providers catalogue unread provider=%s model=%s: %s",
-                self.provider,
-                self.model_name,
-                self._catalogue_failure,
+                "eval.providers catalogue unread provider=%s model=%s: %s", self.provider, self.model_name, unread
             )
-            return
-        self._catalogue_failure = None
+            return unread
+        return None
+
+    async def _read_for_call(self) -> str | None:
+        """The catalogue read this call makes: the one ``refresh_prices`` made for it in this task, taken once, or a
+        read of its own. Why the catalogue is unread, or ``None``."""
+        read = _READ_FOR_CALL.get()
+        if read is not None and read.live is self:
+            _READ_FOR_CALL.set(None)
+            return read.unread
+        return await self._read_catalogue()
 
     def _catalogue_id(self) -> str | None:
         """The catalogue's id for this model: its own on OpenRouter, the matching row's elsewhere."""
@@ -298,7 +322,7 @@ class _Live:
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
     ) -> Completion:  # Any: a JSON directive
         directive = directive_of(response_format)
-        await self._load_catalogue()
+        unread = await self._read_for_call()
         declared = self._declared()
         asked = replace(self._asked, strict_output=directive.asks_strict(self.provider))
         refused: list[tuple[dict[str, Any], ProviderError]] = []  # Any: a JSON body
@@ -336,7 +360,7 @@ class _Live:
         self._log_moves(negotiated.notes)
         status, body = negotiated.reply
         reply = read_reply(self.provider, self.model_name, status, body)
-        cost, source, unpriced, stale_since = self._price(reply)
+        cost, source, unpriced, stale_since = self._price(reply, unread)
         if reply.stop_reason == "truncated":
             log.warning(
                 "eval.providers reply read as truncated provider=%s model=%s provider_stop_reason=%s",
@@ -362,12 +386,13 @@ class _Live:
             pricing_stale_since=stale_since,
         )
 
-    def _price(self, reply: Reply) -> tuple[float | None, str | None, str | None, datetime | None]:
-        """The call's cost, its source, why it is unpriced, and when the catalogue rates pricing it went stale."""
+    def _price(self, reply: Reply, unread: str | None) -> tuple[float | None, str | None, str | None, datetime | None]:
+        """The call's cost, its source, why it is unpriced, and when the catalogue rates pricing it went stale;
+        ``unread`` is why the call's catalogue read failed, which unprices it while the catalogue holds no rows."""
         if self.provider == "openrouter":
             return (*reported_cost(reply.usage), None)
-        if self._catalogue_failure is not None:
-            return None, None, self._catalogue_failure, None
+        if not self._catalogue.loaded:
+            return None, None, unread or "the price catalogue has not been read", None
         matched = self._catalogue_id()
         rates = self._catalogue.rates(matched) if matched is not None else None
         if matched is None or rates is None:
@@ -390,7 +415,7 @@ class _Live:
         return float(dollars), source, None, self._catalogue.stale_since
 
     async def refresh_prices(self) -> None:
-        await self._load_catalogue()
+        _READ_FOR_CALL.set(_ReadForCall(self, await self._read_catalogue()))
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         matched = self._catalogue_id()
@@ -428,9 +453,9 @@ class _Live:
         return None
 
     async def aclose(self) -> None:
-        if self._owned is not None:
-            owned, self._owned = self._owned, None
-            await owned.aclose()
+        if self._opened is not None:
+            opened, self._opened = self._opened, None
+            await opened.aclose()
 
     async def __aenter__(self) -> Self:
         return self
@@ -463,6 +488,10 @@ class Model:
     (:func:`~threetears.evals.kernel.note_spend`), so a runner that calls a model reports what it cost with no
     ``Answer``.
 
+    **HTTP.** A model sends through a client it opens itself on its first live call, set up by ``transport=``,
+    ``timeout=`` and ``headers=``, or through one handed in with ``http=``. :meth:`aclose` closes the one it opened
+    (and with it, as ``httpx`` does, the transport it was opened on), and one handed in only with ``own_http=True``.
+
     Attributes:
         model_name: The model id, which every completion is attributed to.
         provider: The provider it goes to.
@@ -482,6 +511,8 @@ class Model:
         recording: str | os.PathLike[str] | None = None,
         catalogue: Catalogue | None = None,
         http: httpx.AsyncClient | None = None,
+        own_http: bool = False,
+        transport: httpx.AsyncBaseTransport | None = None,
         timeout: float | httpx.Timeout | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> None:
@@ -505,8 +536,12 @@ class Model:
             recording: A JSONL recording to replay, or to record into; a relative path is read beside the eval
                 file being loaded (``python -m threetears.evals FILE``), else in the working directory.
             catalogue: The price catalogue to share with other models, or ``None`` for one of its own.
-            http: An ``httpx.AsyncClient`` to send through (not closed by :meth:`aclose`), used as it is built, or
-                ``None`` to open one.
+            http: An ``httpx.AsyncClient`` to send through, used as it is built, or ``None`` to open one.
+            own_http: Whether the model owns ``http``, so :meth:`aclose` closes it; ``False`` leaves it the caller's.
+                Refused without ``http``.
+            transport: The ``httpx`` transport of the client the model opens itself (HTTP/2, a proxy, a test's mock),
+                or ``None`` for ``httpx``'s own. Closing the model closes it with that client, as ``httpx`` does, so
+                a transport shared between models is closed by the first one closed. Refused beside ``http``.
             timeout: The timeout of the client the model opens itself (seconds, or an ``httpx.Timeout``); ``None``
                 is 600 seconds a request, 20 to connect. Refused beside ``http``, whose own timeout holds.
             headers: Headers every request on the client the model opens itself carries; ``None`` for none. The
@@ -515,15 +550,17 @@ class Model:
 
         Raises:
             ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
-                variable), ``timeout`` or ``headers`` beside ``http``, or a setting that is the caller's error (an
-                effort that is neither a word nor a budget, a budget not below ``max_tokens``, an Anthropic budget
-                below 1024).
+                variable), ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it, or a
+                setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
+                ``max_tokens``, an Anthropic budget below 1024).
         """
-        if http is not None and (timeout is not None or headers is not None):
+        if http is not None and (transport is not None or timeout is not None or headers is not None):
             raise ValueError(
-                "timeout= and headers= set up the client the model opens itself, and http= hands it one: set them on "
-                "that client instead"
+                "transport=, timeout= and headers= set up the client the model opens itself, and http= hands it one: "
+                "set them on that client instead"
             )
+        if own_http and http is None:
+            raise ValueError("own_http=True says the model closes the client handed in with http=, and none was")
         self.model_name = id
         self.provider: Provider = _provider_of(id, provider, base_url)
         self.recording = beside_eval_file(recording) if recording is not None else None
@@ -535,9 +572,12 @@ class Model:
             "effort": effort,
             "recording": self.recording,
             "http": http,
+            "transport": transport,
             "timeout": timeout,
             "headers": headers,
         }
+        #: The client handed in that :meth:`aclose` closes, live or replaying: ``http`` when the model owns it.
+        self._owned_http = http if own_http else None
         asked = _asked(self.provider, max_tokens, effort, temperature)
         self._settings = ClientRequestSettings(
             max_tokens=asked.max_tokens or DEFAULT_MAX_TOKENS,
@@ -574,6 +614,7 @@ class Model:
             asked=asked,
             catalogue=catalogue if catalogue is not None else Catalogue(),
             http=http,
+            transport=transport,
             timeout=timeout,
             headers=headers,
         )
@@ -587,6 +628,10 @@ class Model:
 
     def derive(self, id: str | None = None, *, temperature: float | None, catalogue: Catalogue | None = None) -> Model:
         """This model's settings for another model id or temperature: how :class:`Clients` builds a role's client.
+
+        The new model sends through this one's ``http`` client but never owns it: closing it leaves the client open,
+        and the model that owns it (this one, with ``own_http=True``) closes it. Given a ``transport``, it opens a
+        client of its own on that same transport, which closing it closes.
 
         Args:
             id: The model id, or ``None`` for this one.
@@ -724,14 +769,22 @@ class Model:
 
         What the engine awaits before it prices a call (:func:`~threetears.evals.kernel.capped_completion.refresh_prices`),
         so a model idle past ``Catalogue.ceiling_stale_after`` is priced from fresh rows rather than refused. Loads
-        made together share one fetch. Never raises: a first read that fails leaves :meth:`price_ceiling` ``None``,
-        and a refresh that fails keeps the rows, stale, as a live call does; either is logged. Free while replaying.
+        made together share one fetch. The model's next :meth:`generate` in the same task takes this read as its own
+        rather than reading again, so one request makes at most one catalogue fetch: a read that failed is not tried
+        again by the call it was made for. Never raises: a first read that fails leaves :meth:`price_ceiling` ``None``
+        and the call unpriced, and a refresh that fails keeps the rows, stale, as a live call does; either is logged.
+        Free while replaying.
         """
         await self._client.refresh_prices()
 
     async def aclose(self) -> None:
-        """Close the HTTP client the model opened; one handed in is the caller's."""
-        await self._client.aclose()
+        """Close the HTTP client the model opened, and the one handed in when ``own_http=True``; either only once."""
+        owned, self._owned_http = self._owned_http, None
+        try:
+            await self._client.aclose()
+        finally:
+            if owned is not None:
+                await owned.aclose()
 
     async def __aenter__(self) -> Self:
         """Enter a scope that closes the model on exit."""
@@ -791,7 +844,10 @@ class Clients:
     sent as a budget wherever the provider takes one.
 
     The engine closes what it is handed after each unit of work; that releases nothing here, and :meth:`aclose`
-    closes every model once, at shutdown. Await :meth:`load_prices` at boot so every price ceiling can answer.
+    closes every model once, at shutdown, and then the ``http`` client when the factory owns it (``own_http=True``).
+    A role given as a :class:`Model` stays the caller's: the models built from it send through its ``http`` client
+    without closing it (:meth:`Model.derive`), and open their own on its ``transport``. Await :meth:`load_prices` at
+    boot so every price ceiling can answer.
     """
 
     def __init__(
@@ -800,6 +856,7 @@ class Clients:
         *,
         catalogue: Catalogue | None = None,
         http: httpx.AsyncClient | None = None,
+        own_http: bool = False,
         **roles: str | Model,
     ) -> None:
         """Hold the configuration; nothing is built and no key is read until a role is asked for.
@@ -807,13 +864,17 @@ class Clients:
         Args:
             default: The model a role named nowhere else gets, or ``None``.
             catalogue: The catalogue every model shares, or ``None`` for one of the factory's own.
-            http: The ``httpx.AsyncClient`` every model given by id sends through (not closed here), or ``None``
+            http: The ``httpx.AsyncClient`` every model given by id sends through, never closing it, or ``None``
                 for each to open its own.
+            own_http: Whether the factory owns ``http``, so :meth:`aclose` closes it after every model; ``False``
+                leaves it the caller's. Refused without ``http``.
             **roles: Role (``judge``, ``simulator``, ``analysis``, ``variation``, ``proposer``) -> its model.
 
         Raises:
-            ValueError: A keyword that is not one of the engine's roles.
+            ValueError: A keyword that is not one of the engine's roles, or ``own_http`` without ``http``.
         """
+        if own_http and http is None:
+            raise ValueError("own_http=True says the factory closes the client handed in with http=, and none was")
         if unknown := sorted(set(roles) - _ROLES):
             roles_text = ", ".join(sorted(_ROLES))
             raise ValueError(f"{unknown[0]!r} is not a role the engine asks a client for ({roles_text})")
@@ -821,6 +882,7 @@ class Clients:
         self._roles = dict(roles)
         self.catalogue = catalogue if catalogue is not None else Catalogue()
         self._http = http
+        self._owned_http = http if own_http else None
         self._models: dict[tuple[str, str, float | None], Model] = {}
 
     def __call__(
@@ -894,17 +956,25 @@ class Clients:
         return unpriced
 
     async def aclose(self) -> None:
-        """Close every model the factory built, and forget them; a failure to close one is raised once all are tried.
+        """Close every model the factory built, and forget them, then the ``http`` client it owns; a failure to close
+        one is raised once all are tried.
 
         Raises:
-            ExceptionGroup: One or more models failed to close.
+            ExceptionGroup: One or more models, or the client, failed to close.
         """
         models, self._models = list(self._models.values()), {}
+        owned, self._owned_http = self._owned_http, None
         failures: list[Exception] = []
         for model in models:
             try:
                 await model.aclose()
             except Exception as failure:  # collected, and raised below once every other model is closed
                 failures.append(failure)
+        if owned is not None:
+            try:
+                await owned.aclose()
+            except Exception as failure:  # collected with the models' and raised below
+                failures.append(failure)
         if failures:
-            raise ExceptionGroup(f"{len(failures)} of {len(models)} models failed to close", failures)
+            closed = f"{len(models)} models" + (" and the http client" if owned is not None else "")
+            raise ExceptionGroup(f"{len(failures)} of {closed} failed to close", failures)

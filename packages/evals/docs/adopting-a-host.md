@@ -227,7 +227,8 @@ async def build_host() -> EvalHost:
 
 `Clients` builds one `Model` per role, model and temperature, all sharing one `Catalogue` (OpenRouter's public model
 list, fetched once: the rates and the parameters each model takes) and what any of them learned from a refusal, and
-`await clients.aclose()` closes them at shutdown. A role is a model id or a `Model` whose settings that role's models
+`await clients.aclose()` closes them at shutdown (and the `http=` client handed to `Clients`, when it was handed with
+`own_http=True`). A role is a model id or a `Model` whose settings that role's models
 are built with: an id with a `/` goes to OpenRouter on `OPENROUTER_API_KEY`; a bare id needs
 `Model(id, provider="anthropic")` (`ANTHROPIC_API_KEY`) or `provider="openai"` (`OPENAI_API_KEY`), never guessed;
 `base_url=` takes any OpenAI-compatible endpoint. A missing key is refused when the model is built, naming the
@@ -272,7 +273,9 @@ fetch forever: the catalogue refreshes on the first live call after `refresh_aft
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
 OpenRouter call, which its own figure prices), and `Catalogue.stale_since` and `refresh_failure` say the same.
-Several loads at once share one fetch.
+Several loads at once share one fetch, and one request makes at most one: a model's call takes the read its
+`refresh_prices()` made for it in the same task as its own, so a read that failed (a first read included) is tried
+again by the next request, never by the call it was made for.
 
 **The price ceiling is a true upper bound, or `None`.** `price_ceiling` bounds the prompt at one token per UTF-8 byte
 (after NFKC normalisation, where that is longer) plus a framing allowance, and prices it with every price the row
@@ -289,9 +292,23 @@ yet reached ([Cost and budgets](cost-and-budgets.md#caps)). A client of your own
 bound (`Catalogue(refresh_after=timedelta(hours=1), ceiling_stale_after=timedelta(hours=6))`), or await
 `catalogue.load()` on a timer of your own; neither is needed for an idle host.
 
-`Model(timeout=..., headers=...)` sets up the client the model opens itself; beside `http=` they are refused, since a
-client you hand in is used as you built it. A catalogue you hand an `http` client fetches with that client's timeout;
-`CATALOGUE_FETCH_TIMEOUT_S` (30 seconds) is the one it uses on its own.
+**The HTTP client is the model's, or yours.** A `Model` opens its own client on its first live call, set up by
+`transport=` (any `httpx` transport: HTTP/2, a proxy, a test's mock), `timeout=` and `headers=`, and `aclose()` closes
+it, and with it, as `httpx` does, the transport it was opened on: a transport shared between models is closed by the
+first one closed. Or hand it a client with `http=`, used as you built it (beside it the other three are refused), and
+say who closes it: `own_http=True` makes it the model's, so `aclose()` closes it; the default leaves it yours. A model
+built from another (`derive()`, and so a `Clients` role given as a `Model`) sends through that one's `http` client
+without ever closing it, or opens its own on that one's `transport`. So a host building a model per unit of work needs
+no wrapper to release its client:
+
+```python
+model = Model(model_id, transport=httpx.AsyncHTTPTransport(http2=True), timeout=120.0, headers=attribution)
+...
+await model.aclose()  # closes the client it opened, and its transport
+```
+
+A catalogue you hand an `http` client fetches with that client's timeout; `CATALOGUE_FETCH_TIMEOUT_S` (30 seconds) is
+the one it uses on its own.
 
 **An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
 class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`
