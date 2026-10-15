@@ -104,8 +104,17 @@ from threetears.evals.analysis.report.words import (
     reading_name,
     stands_on_words,
 )
-from threetears.evals.analysis.reporting import self_judging_text
-from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, lint_prose, measure_name, sentences
+from threetears.evals.analysis.reporting import METRIC_TOTAL_MS, self_judging_text
+from threetears.evals.analysis.style import (
+    LABEL_CLAIMS,
+    ArmName,
+    arm_name,
+    code,
+    humanize,
+    lint_prose,
+    measure_name,
+    sentences,
+)
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.quantities import with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
@@ -522,6 +531,7 @@ def _scoreboard_blocks(
         DisclosureBlock(section="scoreboard", source="caveat", text=line, term="case floor")
         for line in caveat_lines(bundle, arm)
     ]
+    blocks += [DisclosureBlock(section="scoreboard", source="arms", text=line) for line in _label_claims(bundle, arm)]
     if other_causes:
         blocks.append(
             DisclosureBlock(
@@ -557,6 +567,53 @@ def _scoreboard_blocks(
             )
         )
     return blocks
+
+
+def _label_claims(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
+    """One line for each arm whose label claims, in a word :data:`~threetears.evals.analysis.style.LABEL_CLAIMS`
+    lists, what its own row against the control contradicts: ``The label 'cheaper candidate' says cheaper; it cost
+    more per reply than production.``
+
+    Cost is read on the scoreboard's cost per reply. Latency is read on each arm's turn time, only where every cell of
+    both arms read it serially (the page compares no contended latency), and contradicts a label only when every cell
+    of the arm sits on the other side of every cell of the control.
+    """
+    control = _control_key(bundle)
+    boards = {board.variant_key: board for board in bundle.scoreboard}
+    if control is None:
+        return []
+    contended = {cell.variant_key for cell in bundle.latency_contended_cells}
+    latencies: dict[str, list[float | None]] = {}
+    for cell in bundle.cell_measures:
+        summary = next((m for m in cell.measures.measures if m.name == METRIC_TOTAL_MS), None)
+        latencies.setdefault(cell.variant_key, []).append(summary.mean if summary is not None else None)
+
+    def clean(key: str) -> list[float] | None:
+        read = latencies.get(key, [])
+        if key in contended or not read or any(value is None for value in read):
+            return None
+        return [value for value in read if value is not None]
+
+    lines: list[str] = []
+    for key, board in boards.items():
+        if key == control:
+            continue
+        label = arm(key)
+        for word, claims, way in LABEL_CLAIMS:
+            if not re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", label, re.I):
+                continue
+            contrary = None
+            if claims == "cost":
+                ours, theirs = boards[control].reply_cost_usd, board.reply_cost_usd
+                if ours is not None and theirs is not None and (theirs > ours if way == "lower" else theirs < ours):
+                    contrary = f"it cost {'more' if way == 'lower' else 'less'} per reply than {arm(control)}"
+            elif (ours_read := clean(control)) is not None and (theirs_read := clean(key)) is not None:
+                longer, shorter = min(theirs_read) > max(ours_read), max(theirs_read) < min(ours_read)
+                if longer if way == "lower" else shorter:
+                    contrary = f"its replies took {'longer' if way == 'lower' else 'less time'} than {arm(control)}'s"
+            if contrary is not None:
+                lines.append(f"The label '{label}' says {word}; {contrary}.")
+    return lines
 
 
 def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
