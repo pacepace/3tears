@@ -164,6 +164,7 @@ def trials_and_census(
     rubric_threshold: int,
     catalog: Mapping[str, MetricDescriptor],
     load_trace: Callable[[EvalResult], EvalTrace | None],
+    names: Mapping[str, str] | None = None,
 ) -> TrialsAndCensus:
     """Every trial's row and every arm's census, over the campaign's results.
 
@@ -173,6 +174,7 @@ def trials_and_census(
         arm_order: The arms' variant keys in the order the bundle lists them; an arm absent here is listed after,
             by key.
         strata: Each test case's declared stratum, by case id.
+        names: The name each test case's author gave it, by case id, for the cases that have one.
         criteria: Each judged dimension's rubric criterion as the judge was asked it, by dimension name.
         rubric_threshold: The 1–5 level a judged dimension must reach to pass.
         catalog: The bundle's measure catalog.
@@ -193,7 +195,7 @@ def trials_and_census(
     )
     kept, omitted = _capped(ordered, MAX_TRIALS, weight=lambda result: _KEEP_WEIGHT[readings[result.id].state])
     traces = {result.id: load_trace(result) if result.has_trace else None for result in kept}
-    labels = _case_labels(kept, strata, traces)
+    labels = _case_labels(kept, strata, traces, names or {})
     rows = [
         _row(f"T{index}", result, readings[result.id], labels[result.test_case_id], strata, criteria, traces[result.id])
         for index, result in enumerate(kept, start=1)
@@ -245,16 +247,24 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
 
 
 def _case_labels(
-    kept: Sequence[EvalResult], strata: Mapping[str, str | None], traces: Mapping[str, EvalTrace | None]
+    kept: Sequence[EvalResult],
+    strata: Mapping[str, str | None],
+    traces: Mapping[str, EvalTrace | None],
+    names: Mapping[str, str],
 ) -> dict[str, str]:
-    """Each kept case's label: its stratum, then the first input its first kept trial's transcript recorded, else its id.
+    """Each kept case's label: the name its author gave it; else its stratum, then the first input its first kept
+    trial's transcript recorded, else its id.
 
-    Derived rather than declared: a test case carries no human label, and the first thing it asked, as the judge was
-    shown it, is evidence of what it is, where a guessed name would not be.
+    A given name is the one label a person chose, and the report names the case by it. The rest is derived rather
+    than declared: a generated test case carries no human label, and the first thing it asked, as the judge was shown
+    it, is evidence of what it is, where a guessed name would not be.
     """
     labels: dict[str, str] = {}
     for result in kept:
         if result.test_case_id in labels:
+            continue
+        if (given := names.get(result.test_case_id)) is not None:
+            labels[result.test_case_id] = given
             continue
         trace = traces.get(result.id)
         asked = trace.judge_evidence.case_material if trace is not None and trace.judge_evidence is not None else ""

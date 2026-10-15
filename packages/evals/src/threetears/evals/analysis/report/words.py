@@ -23,7 +23,7 @@ from threetears.evals.analysis.bundle.schema import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_index, resolve_reading, restated_dispersion
-from threetears.evals.analysis.report.figures import UNITLESS, measure_rulers
+from threetears.evals.analysis.report.figures import MeasureRuler, analysis_rulers
 from threetears.evals.analysis.report.model import CellValue, TableCell
 from threetears.evals.kernel.analysis_measures import BarDecision
 from threetears.evals.analysis.style import measure_name
@@ -241,7 +241,8 @@ def evidence_rows(
     """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
 
     A measure's value and spread are stated on its one ruler for the report
-    (:func:`~threetears.evals.analysis.report.figures.measure_rulers`); a judged score has no unit; a goal check's
+    (:func:`~threetears.evals.analysis.report.figures.analysis_rulers`): a share on 0–1 as a percent, a cost per
+    reply on the scale its heading names; a judged score on its dimension's; a goal check's
     pass rate is its count (``11 of 12``), as the scoreboard counts.
 
     Args:
@@ -253,16 +254,16 @@ def evidence_rows(
         One row per evidence row, in order.
     """
     surface = analysis.decision_surface
-    rulers = measure_rulers(surface)
+    rulers = analysis_rulers(analysis)
     rows: list[dict[str, TableCell]] = []
     for row in evidence:
-        ruler = rulers.get(row.measure_id, UNITLESS) if row.reading == "measure" else UNITLESS
+        ruler = rulers.of(row.measure_id, row.reading)
         values: dict[str, CellValue] = {
             "arm": arm(row.cell_ref),
-            "measure": reading_heading(surface, row.measure_id, row.reading),
+            "measure": ruler.scaled(reading_heading(surface, row.measure_id, row.reading)),
             # Cases, never trials: the count every interval is read over.
             "cases": row.n_cases,
-            "spread": _restated_spread(analysis, row, ruler.factor),
+            "spread": _restated_spread(analysis, row, ruler),
         }
         cells = {key: TableCell(value=value) for key, value in values.items()}
         cells["value"] = TableCell(value=row.value * ruler.factor, unit=ruler.unit)
@@ -283,9 +284,9 @@ def _passed_of(row: EvidenceRow) -> str | None:
     return f"{round(held)} of {row.n}" if abs(held - round(held)) < 1e-6 else None
 
 
-def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, factor: float) -> str:
+def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, ruler: MeasureRuler) -> str:
     """An evidence row's spread on its value's ruler: as stored where nothing is restated, else re-read off the surface."""
-    if factor == 1.0:
+    if ruler.factor == 1.0:
         return row.dispersion
     surface = analysis.decision_surface
     try:
@@ -293,7 +294,7 @@ def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, factor: float) ->
     except UnresolvableReference:
         facts = surface.measures.get(row.measure_id)
         return f"{row.dispersion} (in {facts.unit})" if facts is not None and facts.unit else row.dispersion
-    return restated_dispersion(resolved, factor)
+    return restated_dispersion(resolved, ruler.factor, unit=ruler.unit)
 
 
 def positions(numbers: list[int]) -> str:

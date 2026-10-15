@@ -38,6 +38,9 @@ _LABELLED = re.compile(r"^(?P<model>\S+) \((?P<label>[^()]+)\)$")
 #: What marks a name as code (a check expression) rather than an identifier: a call, a comparison or a quote.
 _EXPRESSION = re.compile(r"[()<>=\"']")
 _PAIR = re.compile(r"^(?P<axis>[\w.-]+)=(?P<level>.+)$")
+#: What marks a case label as no name: whitespace (a sentence, or a stratum before a label), the run of hex a
+#: generated id carries, or a bare number, which a sentence would read as a count.
+_NOT_A_NAME = re.compile(r"\s|[0-9a-f]{12,}|^\d+$")
 
 
 def humanize(kind: HumanizeKind, identifier: str) -> str:
@@ -50,8 +53,9 @@ def humanize(kind: HumanizeKind, identifier: str) -> str:
     Returns:
         A model id without its vendor prefix; an arm by its given label (else its model id, vendor dropped), its
         ``axis=level`` pairs read as words; a dimension with its underscores as spaces, but a check expression (a
-        call, a comparison, a quote) as written, since it is code; a case label on one line (empty when it is a
-        dump, so the caller names the case by number); a provider as given.
+        call, a comparison, a quote) as written, since it is code; a case label where it reads as a name someone
+        gave (``double-charge``: one token, not a generated id, not a bare number — empty for a dump, a sentence or
+        an id, so the caller names the case by number); a provider as given.
     """
     if (kind, identifier) in HUMANIZE_OVERRIDES:
         return HUMANIZE_OVERRIDES[(kind, identifier)]
@@ -65,7 +69,7 @@ def humanize(kind: HumanizeKind, identifier: str) -> str:
             return text
         return re.sub(r"[_.]+", " ", text).strip() or text
     if kind == "case":
-        return "" if is_dump(text) else text
+        return "" if is_dump(text) or _NOT_A_NAME.search(text) else text
     return text
 
 
@@ -148,13 +152,35 @@ GLOSSARY: dict[str, str] = {
     "trial": "One case run once on one arm.",
     "case": "One input the eval feeds every arm; repeats of a case are not independent.",
     "usable": "A trial the test setup did not spoil; only usable trials count for or against an arm.",
-    "lost": "A trial the test setup spoiled (a simulator, tool or judge failed), so it counts for no arm.",
+    "lost": (
+        "A trial that could not be scored because the test setup broke (a tool, simulator or judge), so it counts "
+        "for no arm."
+    ),
     "failed by check": "A trial that broke a rule code checks, such as a required tool call.",
     "failed by judge": "A trial the judge model scored below the bar on some dimension.",
     "cost per reply": "What production would spend per reply, from the models the arm runs.",
-    "case floor": "Five usable cases: below it a rate or a difference is too unstable to estimate.",
+    "case floor": (
+        "Five independent cases per arm: below it a gap has no interval; from there an interval says whether the "
+        "gap would hold on more cases."
+    ),
     "separated": "The difference from the control is larger than chance explains, after correcting for every test.",
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
+    "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
+    "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
+    "control mean": "The control's figure on the reading, over the cases the test read.",
+    "arm mean": "The arm's figure on the reading, over the same cases as the control's.",
+    "Hedges' g": (
+        "The change in units of the spread between trials, so readings on different scales compare; 0.2 is small, "
+        "0.8 large."
+    ),
+    "pairing r": "How much a case's result on one arm predicts its result on the other; high means pairing helped.",
+    "adjusted p": (
+        "The chance of a change this large with no real difference, raised to allow for every comparison tested; "
+        "under 0.05 counts as separated."
+    ),
+    "decision": "What the guardrail or bar came to on this arm: held or breached, cleared or missed, else undecided.",
+    "stratum": "A named group of cases the author set apart, read on its own beside the whole.",
+    "label": "One class a classifier may predict; precision and recall are read per label.",
     "margin": "The smallest change worth acting on, declared before the run.",
     "guardrail": "A reading an arm must not get worse on, whatever it gains elsewhere.",
     "bar": "A threshold a reading must clear on its own, without a control.",
@@ -166,6 +192,21 @@ GLOSSARY: dict[str, str] = {
     "judge": "The model that scores each trial's transcript against a rubric.",
     "calibrated": "A judge whose scores have been shown to agree with people's.",
     "marks": "✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.",
+    "ran": "Every trial the arm ran, usable or not.",
+    "passed": "Usable trials that met every check and cleared every judged bar.",
+    "flag": "A case the control passed and a candidate failed is a regression; one an arm has no usable trial of says so.",
+    "outcome": "How a trial ended: passed, failed, or lost to the test setup.",
+    "why": "Which check or judged dimension failed the trial, or what the test setup broke.",
+    "clause": "One condition of the decision rule, settled on its own; the rule switches only if every clause holds.",
+    "reading": "One thing measured on a trial: a check, a judged dimension, a cost or a time.",
+    "confidence": "How sure the analysis's writer was of the finding: low, medium, high or very high.",
+    "based on": (
+        "The evidence behind a finding: checks and measures, or a judge's scores and how far that judge has been "
+        "checked against people."
+    ),
+    "lever": "A setting the campaign can change, such as the model or a prompt; a finding names the levers it bears on.",
+    "leverage": "How much a next step would change what the campaign can decide, in the writer's judgement.",
+    "coverage": "How well the campaign swept a lever: measured, thin (too few repeats) or unswept (one level ran).",
 }
 
 #: Constructions a page never uses: meta-prose about the page itself, and hedges on a measured fact.
@@ -210,6 +251,9 @@ _KEY_VALUE = re.compile(r"\b[a-z_][a-z0-9_]*=[^\s,;)}=]+")
 _FACT_LINE = re.compile(r"^[A-Z][a-z ]+: .* · [A-Z][a-z ]+: ")
 _CODE_SPAN = re.compile(r"`[^`]*`")
 _CASE_NUMBER = re.compile(r"\bcase \d+\b")
+#: A line quoting something whole, as the first screen quotes the declared question (``Asked before the run: "…"``):
+#: the quotation is the page's data, held to no prose rule.
+_QUOTED_LINE = re.compile(r'^[A-Z][a-z]+(?: [a-z]+)*: ".+"$')
 
 
 @dataclass(frozen=True)
@@ -291,11 +335,12 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
     """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
 
     Headings and table headers are held to the header rule; prose lines to every rule. Table body cells, fenced
-    blocks, folded trial details and the methods' disclosures fold are data and quoted engine text, not prose.
+    blocks, folded trial details, the methods' disclosures fold and a line quoting something whole (the declared
+    question under the arms line) are data and quoted text, not prose.
 
     Args:
         markdown: The page.
-        question: The declared question, which only the title may carry.
+        question: The declared question, which only its own quoted line may carry.
         names: The arms' names, which head a column as a name, not a header's words.
 
     Returns:
@@ -324,6 +369,8 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
         if line.startswith("#"):
             heading = line.lstrip("#").strip()
             found += lint_prose(heading, header=number > 0)
+            continue
+        if _QUOTED_LINE.match(line):
             continue
         found += lint_prose(line.lstrip("-> *").strip(), question=question)
     return found

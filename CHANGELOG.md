@@ -6,6 +6,43 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the report reads as a result (evaladopt.31)
+
+Presentation only: `bundle.json` and every typed verdict are unchanged. The one machine-readable change is noted
+last.
+
+- **The page is Tufte's, not a dump.** `report.html` draws hairlines and whitespace, never boxes or washes; the
+  verdict line carries a thin rule in the hue of its kind (`data-tone`: decided, open, failed, summary); the
+  scoreboard is the key table, numerals right-aligned and tabular; a sticky text-only nav opens the section it
+  lands on; Cases, Trials, Not tested, Methods and the Glossary start folded (`<details class="section">` inside
+  the unchanged `<section id>`); every column header that is a term of art carries its one-sentence definition as
+  a hover title; light, dark, phone width and print. Still no script, no URL, no `url()`.
+- **Numbers a reader can hold.** A rate is a percent to one decimal (`98.9%`), a change in points
+  (`-1.1 pts [-4.2, 2] pts`), the interval's level in the column header (`Interval (99%)`) rather than in every
+  cell; a per-reply cost under a cent is stated per 1,000 replies (`Cost per 1,000 replies`, `$0.0459`).
+- **Each arm's value beside the control's.** The contrasts are one table: `Reading | ▸ control | arm | Change |
+  Interval | Verdict | Cases`, each value with its interval, the change drawn in the row as a small glyph on one
+  scale per unit (HTML) and printed as text (Markdown). The five standalone interval charts are gone; the outcome
+  bar is the page's one chart, each arm's label above a full-width bar, its key naming only the states that
+  occur. A one-arm page lists its readings over all cases.
+- **Only what went wrong is listed.** The Trials section opens with its census (`180 trials ran. Of them 179
+  passed and 1 failed.`), lists failed and lost trials only, opens the first twelve records, and folds the passed
+  trials into one table that keeps each result id reachable. The cases table puts failed ids first and mutes the
+  column.
+- **The first screen carries the minimum, and every fact that changes the reading.** The title is the campaign's
+  name; the declared question is quoted on its own line, and its decision rule opens the Decision section beside
+  its clauses (split where the parser splits it). A "too few cases" line says what is withheld and why
+  (`4 cases per arm: keep follows from the counts above. Whether the gap holds on more cases is not estimated: an
+  interval takes 5 independent cases.`) — the gap is measured and stated, only its interval is withheld — never a
+  bare number. An arm's label its row contradicts is said
+  under the scoreboard (`'cheaper candidate' is not cheaper: it cost more per reply than production.`). A finding
+  that stands on no reading is filed under Not tested; Coverage is folded into Methods.
+- **Machine-readable:** `Result.contrasts()` rows are the page's figures on the page's ruler and now carry
+  `unit`; `report.verdicts` and the bundle keep the measure's own units.
+- **Definition drift:** a judge case the host's `seeded_digests` do not name, under a template seeded before
+  `.30`, reads `stale` (never seeded; a reset writes it), one the map names but nothing stored matches reads
+  `customized`; `unknown` is only for a row with no record anywhere.
+
 ### 3tears-evals: one report path, verdict first
 
 - **A report is one page, written by code.** Every door (`compare(...).report`, `campaign_report`, the command
@@ -18,6 +55,20 @@ packages (bumped in lock-step).
 - **`Report.write(dir)` / `Comparison.write(dir)`** write one scriptless HTML page, its Markdown and `bundle.json`;
   the bundle is the machine form, and `report_read(format="json")` returns it. Two charts, an outcome bar and
   interval rows, are drawn as inline SVG with every value written as text.
+- **The first screen carries the minimum.** The title is a name: the campaign's, with what it compares where no
+  question was declared (`invoices: does v2 do better than v1?`); a declared question is quoted whole on its own
+  line under the arms (`Asked before the run: "…"`), never cut down to a title. Line 2 ends with the design
+  (`30 cases × 3 repeats`). An exploratory verdict reads `no difference found between v2 and v1 on any reading`,
+  a guardrail not held `Not yet shown safe: v2 on no invented total.`, and `exploratory` links to the glossary.
+  Under the scoreboard only what changes the reading stays: the case floor, an arm's label its own row
+  contradicts, or an arm whose every trial failed. What was not charted and where a cost is a floor are in the
+  Methods; the one failure cause beside checks and the judge heads its own column (`Model failed`) with no legend
+  line. A one-arm page heads its readings by stratum and label `Readings`, since
+  it contrasts nothing.
+- **A case is named as its author named it.** An `Eval`'s case `id` (`double-charge`) is stored as the test
+  case's `name` (`EvalTestCase.name`, durable 15.4: additive, in no identity key, so a renamed case keeps its id
+  and its history) and names the case everywhere the page names one — the verdict's misses, the cases table, a
+  trial's summary — where it reads as a name; a generated id, a bare number or a sentence is `case N` as before.
 - **Removed:** the `threetears.evals.vega` adapter and the `[vega]` extra, the chart renderer seam and
   `report_charts`, `ChartPalette` and `ChartFont`, the published Report JSON schema, the chart intent root
   `threetears.evals.analysis.viz`, the arm table and the decision surface table. The memo writer no longer writes

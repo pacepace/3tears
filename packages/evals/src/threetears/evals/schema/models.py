@@ -2473,6 +2473,18 @@ class EvalTestCase(DurableDocumentModel):
         ),
     )
 
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The name its author gave the case (`double-charge`), as an `Eval`'s case `id` names it. Metadata "
+            "beside `stratum`, never stimulus: the engine puts it in no prompt. The report names the case by it "
+            "where it reads as a name, and by its number otherwise. Not part of `content_hash` or of any identity "
+            "key, on the terms `stratum` is not: a case renamed in place keeps its id and its history. None when no "
+            "author named it; a generated case has none."
+        ),
+    )
+
     content_hash: str | None = Field(
         default=None,
         description=(
@@ -2522,16 +2534,17 @@ class EvalTestCase(DurableDocumentModel):
 
 
 class EvalCaseStratum(EvalDocumentModel):
-    """What the analysis reads off a test case: which case, and the stratum it declares.
+    """What the analysis reads off a test case: which case, the stratum it declares and the name its author gave it.
 
-    Read in place of the whole case wherever the stratum is all a reader needs — assembling a
-    campaign's bundle reads one per case its results name, and a case document carries the host's
-    whole stimulus. Built from a stored row reduced to these two fields, so it is on the document base
+    Read in place of the whole case wherever those are all a reader needs — assembling a campaign's
+    bundle reads one per case its results name, and a case document carries the host's whole
+    stimulus. Built from a stored row reduced to these three fields, so it is on the document base
     and hydrated like every other stored eval model, as :class:`EvalRunStamp` is for a run.
     """
 
     id: str
     stratum: str | None = EvalTestCase.model_fields["stratum"].default
+    name: str | None = EvalTestCase.model_fields["name"].default
 
 
 # =============================================================================

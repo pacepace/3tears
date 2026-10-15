@@ -17,7 +17,9 @@ Pinned here:
   next revision with every case. A first boot seeds a template and its cases together.
 - **A customized or unknown definition is refused**, nothing written, every refusal named; ``discard_customization``
   accepts it.
-- **A pre-.30 row** reads ``unknown``, or ``stale`` when the host supplies the digest of what it seeded then.
+- **A pre-.30 row** reads ``unknown``, or ``stale`` when the host supplies the digest of what it seeded then. The
+  supplied map is the whole of what the host seeded, so a judge case it does not name reads ``stale`` (never seeded,
+  a reset writes it without discard) and one it names that nothing stored matches reads ``customized`` (removed).
 - **The drift read writes nothing.**
 """
 
@@ -557,6 +559,75 @@ def test_an_unknown_row_is_reset_with_discard() -> None:
 
     assert (reset.reset[0].before, reset.reset[0].discarded) == ("unknown", True)
     assert _states(reset.after)[key] == "current"
+
+
+GROWN_KEY = f"judge_case/{JUDGE_NAME}/c"
+
+
+def _grown() -> SeedCorpus:
+    """The full corpus with a third judge case, ``c``, the seeded battery never held."""
+    return _full_corpus(judge_cases=(_judge_case("a"), _judge_case("b"), _judge_case("c")))
+
+
+def _seeded_before_30() -> EvalStorage:
+    """A seeded store whose templates carry no record of what seeded them, as a store seeded before .30 does."""
+    storage, _ = _seeded()
+    for template in storage.query_templates(TOYHOST_SCOPE):
+        storage.save_template(template.model_copy(update={"seed_digest": None}))
+    return storage
+
+
+def test_a_case_new_to_a_pre_30_battery_reads_stale_when_the_supplied_digests_do_not_name_it() -> None:
+    """The host's map is the whole of what it seeded: a case it does not name was never seeded, not unrecorded, so
+    it reads stale and a reset writes it with the template's next revision, no discard asked."""
+    storage = _seeded_before_30()
+    then = corpus_digests(toyhost_host(storage=storage), _full_corpus())
+    assert GROWN_KEY not in then
+
+    drift = _drift(storage, _grown(), seeded_digests=then)
+
+    reading = next(r for r in drift.readings if r.key == GROWN_KEY)
+    assert reading.state == "stale", drift.render()
+    assert reading.reason == (
+        f"new to the corpus; never seeded into {JUDGE_NAME!r} (the host's seeded digests do not name it), so only a "
+        "reset writes it"
+    )
+    assert drift.summary() == "drift: 2 stale, 0 customized, 0 unknown, 0 absent, 6 current", drift.render()
+    reset = _reset(storage, _grown(), [GROWN_KEY], seeded_digests=then)
+    entry = next(e for e in reset.reset if e.key == GROWN_KEY)
+    assert (entry.before, entry.written, entry.discarded) == ("stale", "a case of revision 2", False)
+    assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
+
+
+def test_a_case_the_supplied_digests_name_that_nothing_stored_matches_reads_customized() -> None:
+    """Seeded by the host's account and gone from the store: removed by an operator, as for any other definition
+    type, so a reset of it needs discard."""
+    storage = _seeded_before_30()
+    then = corpus_digests(toyhost_host(storage=storage), _grown())
+    assert GROWN_KEY in then
+
+    drift = _drift(storage, _grown(), seeded_digests=then)
+
+    reading = next(r for r in drift.readings if r.key == GROWN_KEY)
+    assert (reading.state, reading.seeded_source, reading.seeded_digest) == ("customized", "supplied", then[GROWN_KEY])
+    assert reading.reason == "seeded as its corpus content, since removed by an operator"
+    with pytest.raises(ConflictError, match="customized"):
+        _reset(storage, _grown(), [GROWN_KEY], seeded_digests=then)
+    reset = _reset(storage, _grown(), [GROWN_KEY], seeded_digests=then, discard_customization=True)
+    assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
+
+
+def test_a_case_new_to_a_pre_30_battery_reads_unknown_with_no_supplied_digests() -> None:
+    """With no map at all there is no record anywhere, and the reading stays unknown."""
+    storage = _seeded_before_30()
+
+    drift = _drift(storage, _grown())
+
+    reading = next(r for r in drift.readings if r.key == GROWN_KEY)
+    assert reading.state == "unknown", drift.render()
+    assert reading.reason == f"{JUDGE_NAME!r} was seeded before seeds recorded their cases"
+    with pytest.raises(ConflictError, match="unknown"):
+        _reset(storage, _grown(), [GROWN_KEY])
 
 
 def test_a_judge_template_whose_revision_holds_cases_the_corpus_does_not_carry_is_refused_without_discard() -> None:

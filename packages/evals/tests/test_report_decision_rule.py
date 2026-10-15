@@ -110,8 +110,14 @@ def test_equal_rates_on_too_few_cases_are_unsettled_not_switch() -> None:
     verdict = evaluate_rule(rule, equal)
     assert [clause.outcome for clause in verdict.clauses] == ["unsettled", "unsettled"]
     assert verdict.outcome == "unsettled"
-    assert verdict.clauses[0].reason == "4 cases cannot show the drop stays within 10 points (a rate needs 5)"
-    assert verdict.clauses[1].reason == "4 cases cannot show the cost is lower (a difference needs 5)"
+    # What is withheld and why, in the reader's terms: never a bare "needs 5".
+    assert verdict.clauses[0].reason == (
+        "4 cases cannot show the drop stays within 10 points, which takes an interval estimated only from 5 "
+        "independent cases"
+    )
+    assert verdict.clauses[1].reason == (
+        "4 cases cannot show the cost is lower, which takes an interval estimated only from 5 independent cases"
+    )
 
 
 def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
@@ -182,8 +188,9 @@ async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled:
     ]
     outcomes = [row["outcome"] for row in table.values() if row["outcome"] is not None]
     assert outcomes == ["settled: keep", "settled: keep"]
-    assert {"reading": "cost per reply", "control": "$0.003092", "candidate": "$0.003301"}.items() <= next(
-        row for row in table.values() if row["reading"] == "cost per reply"
+    # Under a cent per reply on every arm, the cost row reads per 1,000 replies, as the scoreboard does.
+    assert {"reading": "cost per 1,000 replies", "control": "$3.092", "candidate": "$3.301"}.items() <= next(
+        row for row in table.values() if row["reading"] == "cost per 1,000 replies"
     ).items()
 
 
@@ -285,7 +292,8 @@ async def test_four_cases_are_unsettled_on_the_case_floor() -> None:
     bundle, control, candidate = await _ruled([3] * 4, [3] * 4)
     assert _rate_clause(bundle, control, candidate) == (
         "unsettled",
-        "4 cases cannot show the drop stays within 10 points (a rate needs 5)",
+        "4 cases cannot show the drop stays within 10 points, which takes an interval estimated only from 5 "
+        "independent cases",
     )
 
 

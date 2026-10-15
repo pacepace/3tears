@@ -152,12 +152,13 @@ async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_he
     )
     markdown = report_markdown(report)
     titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
-    # Four numbers do not fit one sentence, so the size is said in the case floor line's own words.
+    # The two values plainly (the gap is measured and stated), then one sentence of what is withheld and why: the
+    # gap's interval, never the gap, and never a bare "needs 5".
     assert titles == [
-        "Cheaper candidate passed 2 of 12 on Label matched to production's 10; too few cases to estimate how large "
-        "the difference is.",
-        "Cheaper candidate cost $0.003301 per reply to production's $0.003092; how large the difference is needs 5 "
-        "cases.",
+        "Cheaper candidate passed 2 of 12 on Label matched to production's 10. Whether that gap holds on more cases "
+        "is not estimated below 5 independent cases.",
+        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092. Whether that gap holds on more "
+        "cases is not estimated below 5 independent cases.",
     ]
     assert "cannot statistically confirm" not in markdown.split("## Methods", 1)[0]
     # The body keeps what it adds and drops its hedge: the title already states code's counts.
@@ -165,6 +166,35 @@ async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_he
     assert said == "The candidate skipped the queue."
     disclosed = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and "disputes a difference" in b.text]
     assert len(disclosed) == 3 and DISPUTING in disclosed[0]
+    assert lint_page(markdown, question=G2_QUESTION) == []
+
+
+async def test_a_finding_naming_no_reading_is_noted_with_what_was_not_tested_and_leaves_the_memo() -> None:
+    comparison, bundle = await _compare(0.003301)
+    aliases = _aliases(comparison, bundle)
+    unread = {
+        **_finding("Turn latency comparison was withheld due to concurrent execution.", "match", {}),
+        "evidence": [],
+    }
+    report = await _memo_page(
+        comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases), unread], "Keep production."
+    )
+    markdown = report_markdown(report)
+    # Findings are evidence: one citing no reading is not one, so What it means holds the other alone.
+    titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
+    assert titles == ["The candidate skipped the queue"]
+    assert report.finding_count == 2 and not [b for b in report.blocks if b.finding == 1]
+    noted = "The analysis also noted: Turn latency comparison was withheld due to concurrent execution."
+    (said,) = [
+        b for b in report.blocks if isinstance(b, DisclosureBlock) and b.section == "not_tested" and b.source == "memo"
+    ]
+    assert said.text == noted
+    # After code's own Not-tested lines, before the folded disclosures.
+    section = [b for b in report.blocks if b.section == "not_tested"]
+    assert [b.fold for b in section[: section.index(said)]] == [None] * section.index(said)
+    assert all(b.fold is not None for b in section[section.index(said) + 1 :])
+    not_tested = markdown.split("\n## Not tested\n", 1)[1].split("\n## ", 1)[0]
+    assert noted in not_tested and markdown.count("Turn latency comparison") == 1
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
@@ -235,22 +265,29 @@ def test_a_keep_settles_every_rate_observed_past_the_margin_and_no_other() -> No
 
 
 def _label_lines(report: Report) -> list[str]:
+    """The first screen's caveat lines after the case floor's: an arm's label its own row contradicts."""
     return [
         block.text
         for block in report.blocks
-        if isinstance(block, DisclosureBlock) and block.section == "scoreboard" and block.text.startswith("The label")
+        if isinstance(block, DisclosureBlock)
+        and block.section == "scoreboard"
+        and block.source == "caveat"
+        and block.term is None
     ]
 
 
-async def test_a_cheaper_label_on_the_dearer_arm_gets_one_line_under_the_scoreboard() -> None:
+async def test_a_cheaper_label_on_the_dearer_arm_gets_one_line_on_the_first_screen() -> None:
     _, bundle = await _compare(0.003301)
     report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
-    line = "The label 'cheaper candidate' says cheaper; it cost more per reply than production."
+    line = "'cheaper candidate' is not cheaper: it cost more per reply than production."
     assert _label_lines(report) == [line]
     assert lint_prose(line) == []
     markdown = report_markdown(report)
     first = markdown.split("\n## ", 1)[0]
-    assert first.index("**Scoreboard**") < first.index(line), "under the scoreboard, on the first screen"
+    # A fact that changes how the verdict reads: on the first screen, directly after the case floor's caveat, and
+    # nowhere else.
+    floor = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.term == "case floor"]
+    assert floor and first.index(floor[0].text) < first.index(line) and markdown.count(line) == 1
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
@@ -263,9 +300,7 @@ async def test_a_label_its_row_agrees_with_gets_no_line() -> None:
 async def test_a_dearer_word_on_the_cheaper_arm_is_contradicted_too() -> None:
     _, bundle = await _compare(0.0029, candidate="deepseek-v4-flash (pricier candidate)")
     report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
-    assert _label_lines(report) == [
-        "The label 'pricier candidate' says pricier; it cost less per reply than production."
-    ]
+    assert _label_lines(report) == ["'pricier candidate' is not pricier: it cost less per reply than production."]
 
 
 def _with_turn_times(
@@ -298,9 +333,7 @@ async def test_a_faster_label_is_read_against_turn_time_only_when_read_serially(
     candidate = comparison.arm_variants["deepseek-v4-flash (faster candidate)"]
     slower = _with_turn_times(bundle, {production: 4000.0, candidate: 6000.0})
     report = build_code_only_report(slower, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
-    assert _label_lines(report) == [
-        "The label 'faster candidate' says faster; its replies took longer than production's."
-    ]
+    assert _label_lines(report) == ["'faster candidate' is not faster: its replies took longer than production's."]
     # The page compares no latency read under concurrency, so neither does the label line.
     contended = _with_turn_times(bundle, {production: 4000.0, candidate: 6000.0}, contended=[candidate])
     report = build_code_only_report(contended, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)

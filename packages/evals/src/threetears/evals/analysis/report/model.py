@@ -1,10 +1,12 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-question in plain words —, the arms line, the verdict line, the scoreboard and the caveats under it, in normal
-weight), the decision rule clause by clause where one is declared, what it means (the memo's findings, each a table
-code built and one sentence, then the contrasts against the control), the cases, the trials (one row each, every
-record folded), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
+campaign's name —, the arms line, the question declared before the run quoted, the verdict line, the
+scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
+qualification is a step down, in the sections), the decision rule clause by clause where one is declared, what it
+means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
+cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
+table), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
 of every term of art the page linked. Every count, rate, interval and cost in it is code's, computed from the
 evidence bundle the report carries (:attr:`Report.bundle`). Every string it prints is held to
 :mod:`~threetears.evals.analysis.style`.
@@ -14,12 +16,15 @@ what code says — the verdict, the basis, a table's caption, a reason something
 A code-only report (no analysis was generated) holds no ``text`` block at all, and its model refuses one, so a
 reader never takes code's computation for an analyst's judgement, or the reverse.
 
-**Two charts, drawn by the package.** A ``chart`` block is an outcome bar (one stacked bar per arm: passed, failed and
-lost by cause, every segment's count written beside it) or interval rows (a dot and its interval per row, with the
-value, the interval and the cases written as text). Both carry their values, so Markdown prints them as a table and
-HTML draws them as inline SVG (:mod:`~threetears.evals.analysis.report.svg`) beside the same table. A chart row is
-drawn only for an arm with :data:`~threetears.evals.analysis.report.verdict.MIN_CASES` usable cases and an
-interval, and a chart with no such row is not built.
+**One chart, and the intervals drawn inside the tables.** The page's one standalone ``chart`` block is the outcome
+bar (one stacked bar per arm: passed, failed and lost by cause, every segment's count written beside it). Every
+estimate's uncertainty is drawn where the estimate is read: a :class:`TableCell` holding a number may carry its
+interval (``low``, ``high``) and a declared ``margin``, and HTML draws them beside the number as a small glyph on one
+scale for the column (:mod:`~threetears.evals.analysis.report.svg`), the figures written in the row as text, so
+Markdown loses nothing. A ``chart`` block of interval rows (a dot and its interval per row) remains drawable, carrying
+its values so Markdown prints them as a table; the builder draws none, since the tables carry the intervals. A cell's
+interval is drawn only for an arm with :data:`~threetears.evals.analysis.report.verdict.MIN_CASES` usable cases
+and an interval computed.
 
 **The bundle is the machine form.** There is no published JSON of the report: a program reads ``bundle.json``,
 which :meth:`Report.write` puts beside the page, and the page names its fingerprint.
@@ -34,7 +39,7 @@ from typing import Annotated, Literal, Self, get_args
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialCheck, TrialJudgement, TrialState
-from threetears.evals.analysis.quantities import render_cell, with_unit
+from threetears.evals.analysis.quantities import number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
@@ -55,7 +60,9 @@ ReportSection = Literal[
 ]
 
 #: Each section's heading, in reading order — the order every serializer lays the sections out in, each three words
-#: or fewer. The first screen (``header`` and ``scoreboard``) carries no heading: it is the page's own head.
+#: or fewer. The first screen (``header`` and ``scoreboard``) carries no heading: it is the page's own head. A page
+#: reads its headings off :attr:`Report.section_titles`, which heads ``contrasts`` ``Readings`` where nothing is
+#: contrasted; the section's id stays ``contrasts`` either way.
 SECTION_TITLES: dict[str, str] = {
     "header": "",
     "scoreboard": "Scoreboard",
@@ -86,8 +93,11 @@ TextRole = Literal[
 ]
 
 #: Who a disclosure speaks for. ``arms``: the first screen's second line, each arm named in full once, the control
-#: marked. ``caveat``: a line under the scoreboard qualifying the result, in normal weight. ``basis``: whether a question was declared before the run (line 2). ``verdict``: the
-#: verdict line. ``design``, ``charts`` and ``cost``: the lines under the scoreboard. ``memo``: who wrote the memo,
+#: marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the scoreboard that changes how the
+#: verdict is read, in normal weight: the case floor, an arm's label that its own row contradicts. ``basis``: the
+#: question declared before the run, quoted under the arms line, and the decision rule it states, quoted at the head
+#: of the Decision section. ``verdict``: the verdict line. ``design``, ``charts`` and
+#: ``cost``: how the run was laid out, what was not charted and where a cost is a floor, in the methods. ``memo``: who wrote the memo,
 #: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
 #: grading its own model's answers. ``comparisons``: how the contrasts against the control were tested and
@@ -350,6 +360,30 @@ class TableCell(EvalDocumentModel):
             "report. Empty for a unitless number, for words, and wherever the column's header names the unit."
         ),
     )
+    low: float | None = Field(
+        default=None,
+        description=(
+            "The low end of the interval on the number, in `unit`, where the number has one: HTML draws the interval "
+            "beside the number as a small glyph, on one scale for every cell of the column in the same unit. None "
+            "where there is no interval, or the row writes it in a column of its own only."
+        ),
+    )
+    high: float | None = Field(default=None, description="The interval's high end, in `unit`; set with `low`.")
+    margin: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "A declared margin either side of zero, in `unit`, which the glyph draws as a quiet band; None where "
+            "none is declared or the number is not a difference."
+        ),
+    )
+    zero_line: bool = Field(
+        default=False,
+        description=(
+            "Whether the number is a difference, read against zero: the glyph holds zero on its scale and draws a "
+            "line there. False for a figure read on its own scale."
+        ),
+    )
 
     @model_validator(mode="after")
     def _a_unit_qualifies_a_number(self) -> Self:
@@ -358,13 +392,39 @@ class TableCell(EvalDocumentModel):
         Raises:
             ValueError: ``unit`` is set and ``value`` is not a number.
         """
-        if self.unit and (isinstance(self.value, bool) or not isinstance(self.value, int | float)):
+        if self.unit and not self.is_number:
             raise ValueError(f"a cell's unit qualifies a number, and this cell holds {self.value!r}")
         return self
 
+    @model_validator(mode="after")
+    def _an_interval_brackets_a_number(self) -> Self:
+        """Refuse an interval with one end, on anything but a number, or running backwards, and a margin alone.
+
+        Raises:
+            ValueError: ``low`` and ``high`` are not both set or both absent, the cell holds no number, ``low`` is
+                above ``high``, or ``margin`` is set with no interval.
+        """
+        if (self.low is None) != (self.high is None):
+            raise ValueError("a cell's interval has two ends, and this cell sets one")
+        if self.low is None:
+            if self.margin is not None:
+                raise ValueError("a cell's margin is drawn beside its interval, and this cell has none")
+            return self
+        if not self.is_number:
+            raise ValueError(f"a cell's interval brackets a number, and this cell holds {self.value!r}")
+        if self.high is not None and self.low > self.high:
+            raise ValueError(f"the cell's interval runs from {self.low} down to {self.high}")
+        return self
+
+    @property
+    def is_number(self) -> bool:
+        """Whether the cell holds a number (a boolean is not one)."""
+        return isinstance(self.value, int | float) and not isinstance(self.value, bool)
+
     @property
     def text(self) -> str:
-        """``value`` as every serializer prints it."""
+        """``value`` as every serializer prints it; the interval, where the cell has one, is the glyph's and the
+        row's own interval column's, never spelled here twice."""
         if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
             return with_unit(self.value, self.unit)
         return render_cell(self.value)
@@ -506,7 +566,7 @@ class ChartBlock(_Block):
                 counts = {segment.label: segment.count for segment in bar.segments}
                 body.append([bar.arm, str(bar.total), *(str(counts.get(label, 0)) for label in labels)])
             return headers, body
-        unit = f" ({self.unit})" if self.unit else ""
+        unit = f" ({unit_label(self.unit)})" if self.unit else ""
         headers = [
             "Row",
             f"Value{unit}",
@@ -516,21 +576,27 @@ class ChartBlock(_Block):
         ]
         body = []
         for row in self.rows:
-            cells = [row.label, interval_value_text(row.value), interval_text(row.low, row.high), str(row.n_cases)]
+            cells = [
+                row.label,
+                interval_value_text(row.value, self.unit),
+                interval_text(row.low, row.high, self.unit),
+                str(row.n_cases),
+            ]
             if len(headers) == 5:
                 cells.append(row.verdict or "—")
             body.append(cells)
         return headers, body
 
 
-def interval_value_text(value: float) -> str:
-    """A charted value as text, by the one number rule."""
-    return render_cell(value)
+def interval_value_text(value: float, unit: str = "") -> str:
+    """A charted value as text, by the one number rule, at the precision its unit is read to; the unit itself is
+    the header's."""
+    return number_in(value, unit)
 
 
-def interval_text(low: float, high: float) -> str:
-    """A charted interval as text: ``[low, high]``."""
-    return f"[{render_cell(low)}, {render_cell(high)}]"
+def interval_text(low: float, high: float, unit: str = "") -> str:
+    """A charted interval as text: ``[low, high]``, each end at the precision its unit is read to."""
+    return f"[{number_in(low, unit)}, {number_in(high, unit)}]"
 
 
 class TrialBlock(_Block):
@@ -554,7 +620,27 @@ class TrialBlock(_Block):
     judge: list[TrialJudgement] = Field(default_factory=list, description="What the judge said, per dimension.")
     error_words: str | None = Field(default=None, description="The recorded error, for a lost or failed trial.")
     result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
-    open: bool = Field(default=False, description="Whether HTML shows it open: a lost or failed trial, up to a cap.")
+    open: bool = Field(
+        default=False,
+        description="Whether the record is shown open, in HTML and Markdown: a failed or lost trial, up to a cap.",
+    )
+
+
+#: What kind of verdict the first screen's line is, for a page that sets each kind apart: ``decided`` (a declared
+#: rule or question settled it), ``open`` (too few cases, or no question was declared, so the line offers leads),
+#: ``failed`` (the test setup failed, so there is no verdict) and ``summary`` (one arm: a count, nothing to decide).
+_VerdictTone = Literal["decided", "open", "failed", "summary"]
+
+#: Each verdict rule's tone, keyed by :data:`~threetears.evals.analysis.report.verdict.VerdictRule` — by name, so the
+#: model imports nothing from the builder that applies the rules.
+_VERDICT_TONES: dict[str, _VerdictTone] = {
+    "setup": "failed",
+    "one_arm": "summary",
+    "rule": "decided",
+    "declared": "decided",
+    "too_small": "open",
+    "exploratory": "open",
+}
 
 
 class DisclosureBlock(_Block):
@@ -566,6 +652,27 @@ class DisclosureBlock(_Block):
     term: str | None = Field(
         default=None, description="The glossary term the line links to, where it uses one; None for none."
     )
+    # The tone's values are spelled here and on the method, not through the private alias: a type a public signature
+    # hands a host must be one it can name, and a Literal of strings needs no name.
+    tone: Literal["decided", "open", "failed", "summary"] | None = Field(
+        default=None,
+        description=(
+            "On the verdict line, what kind of verdict it is — decided, open, failed (the test setup) or summary (one "
+            "arm) — which HTML sets the line apart by. None on every other disclosure."
+        ),
+    )
+
+    @staticmethod
+    def verdict_tone(rule: str) -> Literal["decided", "open", "failed", "summary"]:
+        """The tone a verdict line is set in, by the rule that wrote it.
+
+        Args:
+            rule: The rule, as :func:`~threetears.evals.analysis.report.verdict.verdict_line` names it.
+
+        Returns:
+            The tone.
+        """
+        return _VERDICT_TONES[rule]
 
     @model_validator(mode="after")
     def _the_term_is_defined(self) -> Self:
@@ -576,6 +683,17 @@ class DisclosureBlock(_Block):
         """
         if self.term is not None and self.term not in GLOSSARY:
             raise ValueError(f"a disclosure links the term {self.term!r}, which the glossary does not define")
+        return self
+
+    @model_validator(mode="after")
+    def _the_tone_is_the_verdicts(self) -> Self:
+        """Refuse a tone on any line but the verdict's.
+
+        Raises:
+            ValueError: ``tone`` is set and ``source`` is not ``verdict``.
+        """
+        if self.tone is not None and self.source != "verdict":
+            raise ValueError(f"a tone sets the verdict line apart, and this disclosure speaks for {self.source!r}")
         return self
 
 
@@ -611,7 +729,13 @@ class Report(EvalDocumentModel):
     """A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states."""
 
     basis: ReportBasis = Field(description="`analysis` over a generated memo, `code_only` over the evidence alone.")
-    title: str = Field(min_length=1, description="The title line: the question the campaign asks, in plain words.")
+    title: str = Field(
+        min_length=1,
+        description=(
+            "The title line, a name: the campaign's, with what it compares where no question was declared "
+            "(`invoices: does v2 do better than v1?`)."
+        ),
+    )
     finding_count: int = Field(ge=0, description="How many findings the memo holds.")
     source: ReportSource = Field(description="What this is a report of.")
     blocks: list[ReportBlock] = Field(description="The report, in reading order.")
@@ -662,6 +786,21 @@ class Report(EvalDocumentModel):
         if authored := [index for index, block in enumerate(self.blocks) if isinstance(block, TextBlock)]:
             raise ValueError(f"a code-only report holds no author's words, and blocks {authored} are text blocks")
         return self
+
+    @property
+    def section_titles(self) -> dict[str, str]:
+        """Each section's heading on this page: :data:`SECTION_TITLES`, except that ``contrasts`` is headed
+        ``Readings`` where the page contrasts nothing — a one-arm page, whose section holds only the arm's readings
+        over all its cases, by stratum and by label — so no heading promises a comparison the page does not make."""
+        titles = dict(SECTION_TITLES)
+        readings_only = all(
+            isinstance(block, TableBlock) and block.name in ("readings", "strata", "labels")
+            for block in self.blocks
+            if block.section == "contrasts"
+        )
+        if readings_only:
+            titles["contrasts"] = "Readings"
+        return titles
 
     @property
     def terms(self) -> list[str]:

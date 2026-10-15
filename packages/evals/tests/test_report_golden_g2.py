@@ -60,10 +60,10 @@ def test_the_first_screen_says_the_judge_was_truncated_and_at_which_cap(g2: Repo
     assert "v4-flash lost 10 of 12 trials, most because the judge's reply was truncated" in first
 
 
-#: The first screen's opening lines, golden: the question as the title, then each arm named once with the control
-#: marked, and the date.
+#: The first screen's opening lines, golden: the name and what it compares as the title, then each arm named once
+#: with the control marked, the date and the design.
 TITLE = "Kairo queue discipline: does v4-flash do better than v4.1-flash?"
-ARMS = "v4.1-flash (control) vs v4-flash · 14 Oct 2026"
+ARMS = "v4.1-flash (control) vs v4-flash · 14 Oct 2026 · 4 cases × 3 repeats"
 SCOREBOARD_HEADER = "| Arm | Ran | Lost | Usable | Passed | Failed by check | Failed by judge | Cost per reply |"
 
 
@@ -93,9 +93,13 @@ def test_exactly_one_chart_is_drawn_and_it_is_the_outcome_bar(g2: Report) -> Non
     assert page.count('data-chart="outcome_bar"') == 1
     markdown = report_markdown(g2)
     assert markdown.count("**Outcomes**") == 1
-    # The case floor is a caveat under the scoreboard, in normal weight, after the result.
+    # The case floor is a caveat under the scoreboard, in normal weight, after the result: what is withheld under
+    # the floor and why, never a bare "needs 5".
     first = _first_screen_md(markdown)
-    caveat = "Too few cases to estimate a rate. Usable cases: v4.1-flash 3, v4-flash 1; a rate needs 5."
+    caveat = (
+        "Usable cases: v4.1-flash 3, v4-flash 1. Under 5 independent cases a rate is shown as a count, and whether "
+        "the arms' gap holds on more cases is not estimated."
+    )
     assert caveat in first.splitlines() and f"**{caveat}" not in first
     assert first.index(SCOREBOARD_HEADER) < first.index(caveat)
 
@@ -117,7 +121,10 @@ def test_the_scoreboard_is_a_bare_table_of_counts(g2: Report) -> None:
 def test_the_contrasts_collapse_to_one_line_under_the_case_floor(g2: Report, door: str) -> None:
     # The challenger kept 2 usable trials, both of one case: no contrast can resolve, and none is a row.
     page = report_html(g2) if door == "html" else report_markdown(g2)
-    assert "No contrast can resolve: a side has 1 usable case, and a difference needs 5." in page
+    assert (
+        "No contrast can resolve: a side has 1 usable case; a difference is tested only from 5 independent cases."
+        in page
+    )
     assert 'data-table="comparisons"' not in page and "| Reading | Arm | Change |" not in page
 
 

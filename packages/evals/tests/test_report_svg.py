@@ -1,12 +1,15 @@
-"""The report's two charts: inline SVG with every value written as text, nothing that runs, and nothing drawn thin.
+"""The report's marks: inline SVG with every value written as text, nothing that runs, and nothing drawn thin.
 
-- **Every mark's value is text.** An outcome bar writes each arm's count of every state, and an interval row its
-  value, interval and cases, so nothing is read off a length or a colour alone.
+- **Every mark's value is text.** An outcome bar writes each arm's count of every state, an interval row its value,
+  interval and cases, and an interval glyph sits in a row whose cells print its figures, so nothing is read off a
+  length or a colour alone.
 - **Nothing runs and nothing is fetched.** No ``<script>``, no ``on*=`` attribute, no URL — not even a
   ``url(#...)`` fill.
-- **A row needs its cases.** An arm with fewer than ``MIN_CASES`` usable cases is not drawn, and a chart left with
-  no row is not built at all; the scoreboard says once what was not charted.
-- **Light and dark.** The marks take their colours from the page's CSS variables, which are set for both.
+- **A row needs its cases.** An arm with fewer than ``MIN_CASES`` usable cases has no interval drawn, and a contrast
+  under the floor is no row at all; the methods say once what was not drawn.
+- **Light and dark.** The marks take their colours from the page's CSS variables, which are set for both; a glyph
+  is ink alone, its verdict the word beside it.
+- **A label is never cut.** An arm's label is the line above its bar, wrapped where it is long.
 """
 
 from __future__ import annotations
@@ -17,8 +20,17 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import ChartBlock, IntervalRow, MIN_CASES, OutcomeBar, OutcomeSegment, report_html
-from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg
+from threetears.evals.analysis import (
+    ChartBlock,
+    IntervalRow,
+    MIN_CASES,
+    OutcomeBar,
+    OutcomeSegment,
+    TableBlock,
+    report_html,
+)
+from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
+from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals import Eval
 
 
@@ -112,20 +124,76 @@ def _cases(n: int) -> list[dict[str, str]]:
     return [{"text": f"refund {index}", "label": "billing"} for index in range(n)]
 
 
-async def test_a_campaign_with_enough_cases_draws_its_contrast_as_interval_rows() -> None:
+async def test_a_campaign_with_enough_cases_draws_its_contrast_s_interval_in_the_row() -> None:
     ev = Eval(_cases(MIN_CASES + 3), {"never": _never, "classify": _classify}, ["label"])
     comparison = await ev.run(store=":memory:")
     charts = [block for block in comparison.report.blocks if isinstance(block, ChartBlock)]
-    assert [block.chart for block in charts] == ["outcome_bar", "interval_rows"]
+    assert [block.chart for block in charts] == ["outcome_bar"], "the outcome bar is the page's one chart"
+    (table,) = [b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "comparisons"]
+    assert table.rows and all(row["change"].low is not None and row["change"].zero_line for row in table.rows)
     page = report_html(comparison.report)
-    assert page.count("<svg") == 2 and 'class="visually-hidden"' in page
+    assert page.count('<svg class="viz"') == 1 and 'class="visually-hidden"' in page
+    assert page.count('<svg class="viz-glyph"') == len(table.rows)
+    # The scale's ends are written once under the table, not in every row.
+    assert page.count('<p class="axis">Change drawn from ') == 1
 
 
-async def test_an_arm_under_the_case_floor_is_not_charted_and_the_scoreboard_says_so_once() -> None:
+def test_a_glyph_is_ink_on_one_scale_with_its_numbers_in_its_title() -> None:
+    svg = interval_glyph_svg(-1.1, -4.2, 2.0, unit="pts", scale=(-7.0, 36.7), margin=5.0)
+    assert svg.startswith('<svg class="viz-glyph" viewBox="0 0 120 14" role="img">')
+    assert "<title>-1.1 pts, interval [-4.2, 2] pts, margin ±5 pts</title>" in svg
+    for mark in ("viz-track", "viz-zero", "viz-band", "viz-whisker", "viz-point"):
+        assert f'class="{mark}"' in svg, mark
+    assert "<script" not in svg and "url(" not in svg and "#" not in svg and "href" not in svg
+    # Ink alone: the point and the whisker take the page's ink, never a series colour.
+    assert "svg.viz-glyph .viz-point { fill: var(--viz-ink); }" in SVG_STYLE
+    assert "svg.viz-glyph .viz-whisker { stroke: var(--viz-ink)" in SVG_STYLE
+
+
+def test_a_glyph_off_zero_draws_no_zero_line_and_no_band() -> None:
+    svg = interval_glyph_svg(0.92, 0.85, 0.99, unit="s", scale=(0.8, 1.5))
+    assert 'class="viz-zero"' not in svg and 'class="viz-band"' not in svg
+    assert "<title>0.92 s, interval [0.85, 0.99] s</title>" in svg
+
+
+def test_the_key_names_only_the_states_that_occur_and_defines_lost_on_hover() -> None:
+    svg = chart_svg(_bar_chart(), chart_id="c1")
+    assert f"<title>{GLOSSARY['lost']}</title>" in svg and ">lost</text>" in svg
+    assert "lost to the test setup" not in svg
+    clean = ChartBlock(
+        section="scoreboard",
+        chart="outcome_bar",
+        title="t",
+        bars=[OutcomeBar(arm="a", segments=[OutcomeSegment(state="passed", label="passed", count=3)])],
+    )
+    svg = chart_svg(clean, chart_id="c2")
+    assert ">passed</text>" in svg and ">failed</text>" not in svg and ">lost</text>" not in svg
+
+
+def test_a_long_arm_label_is_wrapped_above_its_bar_never_cut() -> None:
+    label = "the cheaper candidate with a label long enough that a column of its own would have cut it short"
+    block = ChartBlock(
+        section="scoreboard",
+        chart="outcome_bar",
+        title="t",
+        bars=[OutcomeBar(arm=label, segments=[OutcomeSegment(state="passed", label="passed", count=3)])],
+    )
+    svg = chart_svg(block, chart_id="c1")
+    texts = re.findall(r"<text[^>]*>(?:<title>.*?</title>)?([^<]*)</text>", svg)
+    assert "…" not in svg and " ".join(texts).count(label) == 1
+    # The bar itself, not the key's swatch: it starts at the chart's left edge, under the label's line.
+    (bar_y,) = re.findall(r'<rect class="viz-passed" x="8\.0" y="(\d+)" width="[\d.]+" height="16"', svg)
+    (label_y,) = re.findall(r'<text x="8.0" y="([\d.]+)">the cheaper', svg)
+    assert float(label_y) < float(bar_y), "the label is the line above the bar"
+
+
+async def test_an_arm_under_the_case_floor_is_not_charted_and_the_caveat_says_so_once() -> None:
     ev = Eval(_cases(MIN_CASES - 1), {"never": _never, "classify": _classify}, ["label"])
     comparison = await ev.run(store=":memory:")
     charts = [block for block in comparison.report.blocks if isinstance(block, ChartBlock)]
     assert [block.chart for block in charts] == ["outcome_bar"]
     page = report_html(comparison.report)
     assert page.count("<svg") == 1
-    assert page.count(f"a rate needs {MIN_CASES}") == 1
+    # Under the floor on every arm, the one caveat under the scoreboard says so, and no "not charted" line repeats it.
+    assert page.count(f"Under {MIN_CASES} independent cases a rate is shown as a count") == 1
+    assert "Not charted" not in page

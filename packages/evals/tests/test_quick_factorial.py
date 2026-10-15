@@ -175,7 +175,9 @@ async def test_every_arm_is_named_by_both_coordinates_and_tested_against_the_con
     rows = {row["contrast"]: row for row in comparison.contrasts("accuracy")}
     assert set(rows) == {"callable prompt v2, model a", "callable prompt v1, model b", "callable prompt v2, model b"}
     assert {row["control"] for row in rows.values()} == {"callable prompt v1, model a"}
-    assert all(row["delta"] == pytest.approx(0.5) for row in rows.values()), "the careful rule reads every case"
+    # A row's figures are the page's, on its ruler: a share's change in points, and the row says so.
+    assert all(row["delta"] == pytest.approx(50.0) for row in rows.values()), "the careful rule reads every case"
+    assert {row["unit"] for row in rows.values()} == {"%"}
     # The arms return plain answers, so no spend was observed and cost is not a reading to test.
     assert {row["reading"] for row in comparison.contrasts()} == {"Accuracy"}
 
@@ -191,7 +193,7 @@ async def test_against_reads_the_same_runs_against_another_control_and_runs_noth
     rows = {row["contrast"]: row for row in on_b.contrasts("accuracy")}
     assert rows["callable prompt v2, model b"]["control"] == "callable prompt v1, model b"
     assert rows["callable prompt v2, model b"]["verdict"] == "not separated from the control"
-    assert rows["callable prompt v1, model a"]["delta"] == pytest.approx(-0.5)
+    assert rows["callable prompt v1, model a"]["delta"] == pytest.approx(-50.0)
     with pytest.raises(ValueError, match="names no arm"):
         await comparison.against("model=c, prompt=v1")
 
@@ -213,7 +215,7 @@ async def test_arms_naming_no_model_run_at_the_one_shared_model() -> None:
     assert comparison.factors == ("model", "prompt")
     assert {summary.candidate_model for summary in comparison.arms.values()} == {SHARED_ARM_MODEL}
     (row,) = comparison.contrasts("accuracy")
-    assert row["delta"] == pytest.approx(0.5)
+    assert row["delta"] == pytest.approx(50.0)
 
 
 @pytest.mark.parametrize(

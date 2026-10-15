@@ -17,7 +17,7 @@ contributes through four steps, in order:
 5. **Settled differences.** Where a clause the rule settled reads a finding's reading, a finding's sentence saying
    the evidence cannot confirm, establish or show the difference (:data:`_HEDGES`, a narrow set) disputes the rule:
    it is replaced by code's sentence on that reading, which states the counts and, under the case floor, that only
-   the size of the difference is not estimated. That replacement is disclosed in the methods too.
+   whether the gap would hold on more cases is not estimated. That replacement is disclosed in the methods too.
 
 What is left breaking a rule (a long sentence, too many numbers) is kept as written and listed, sentence by sentence,
 in the methods: ``style: N violations``.

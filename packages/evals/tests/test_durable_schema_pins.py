@@ -53,18 +53,18 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 15
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 3
+PINNED_DURABLE_SCHEMA_MINOR = 4
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "93795472f29c2c79245361043777a3c2b2bfe817c359f6b7f63d7be0d523cdec",
-    "case_set": "89a546d18c55d09c27f847f812537e034e7e7d8e8efc2c5ef000a6321c553d86",
-    "eval_template": "cb957505cef2a5f5ddec5a00aa8238cea3774aec136e844bd7ad56636bd5d6f6",
-    "eval_test_case": "57f32e12fab15665c533e26ca0be4d985f448f678e0a9fce2ba3385fc9b078c0",
-    "judge_config": "0015288012c337fc6d64a87d9ac8dc774a2ffa8b6d2e61793d3c7095a4b73836",
-    "judge_config_tombstone": "f9ab5524e0788f908e423271251879ab773c8f9ac1258cdbe66a08e388550af3",
-    "rubric_dim": "76767e57fc27a1986646d6e36f427c70f4057ba40ac2b71ef53a5d606156dd20",
-    "rubric_dim_tombstone": "470a3d92e2e79e3ffb88d43a2ab9938b99863e481fdb7ea9fe784a34e9a5dddb",
+    "calibration_rating": "7c873d1a6253010ba08579151cf699c4fc63d504faf8eb0d1006a4be29a246aa",
+    "case_set": "f0b0fe4db04500b0fcf7f134931ac163474142f74c7923ad68255e7b67515b83",
+    "eval_template": "1befec4fe114f4c9d87298541efdd6cedf8724de23f0a92ddb6a7ab6daed9cc9",
+    "eval_test_case": "df61d6cca1559fea61c020d31786b81d3f6457eeb69732b7d898fadf62c7ad51",
+    "judge_config": "8b1f7f6f677b5074f2d1d6375d843856d0d77a30bd1a4ef399e9303ef93eb3a9",
+    "judge_config_tombstone": "6e5251d3bdab3ab23ef05c20190346282231daf0bfd7ea5c9daf7890781513fb",
+    "rubric_dim": "2feaea768fc196cfaa7fe230330a21986f1deb7039ffa982541e49a77d22bcfe",
+    "rubric_dim_tombstone": "b30e0048c6a5db46f36887e53da4855ecd93161debec32365893efae982a1998",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.

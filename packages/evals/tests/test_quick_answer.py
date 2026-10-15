@@ -130,8 +130,10 @@ async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -
     tables = {block.name: block for block in comparison.report.blocks if isinstance(block, TableBlock)}
     by_reading = {row["reading"]: row for row in tables["comparisons"].values()}
     # The candidate's spend, not cost_usd, which sums a judge's spend too: what it cost to measure the arm.
-    assert "Measuring spend, all roles" not in by_reading
-    cost = by_reading["Production cost"]
-    assert cost["contrast"] == "cheaper"
+    assert not {reading for reading in by_reading if reading.startswith("Measuring spend")}
+    # Priced under a cent per reply on both arms, so the reading is headed per 1,000 replies.
+    cost = by_reading["Production cost ($/1,000 replies)"]
+    # Two arms: the candidate's figure heads its own column, by its name.
+    assert next(column.header for column in tables["comparisons"].columns if column.key == "arm") == "cheaper"
     assert cost["verdict"] == "improved on the control"
     assert isinstance(cost["change"], float) and cost["change"] < 0

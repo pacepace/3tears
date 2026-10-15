@@ -2082,8 +2082,8 @@ class TrialRow(EvalDocumentModel):
     case_label: str = Field(
         min_length=1,
         description=(
-            "The case as a reader names it: its stratum, then the first 80 characters of the first input its first "
-            "trial's transcript recorded, else its id."
+            "The case as a reader names it: the name its author gave it (`double-charge`); else its stratum, then "
+            "the first 80 characters of the first input its first trial's transcript recorded, else its id."
         ),
     )
     stratum: str | None = Field(default=None, description="The case's stratum; None when it declares none.")

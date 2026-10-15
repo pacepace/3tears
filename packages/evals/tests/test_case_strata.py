@@ -305,13 +305,14 @@ class TestTheReportCarriesStrata:
 
         headers = [column.header for column in table.columns]
         assert headers == ["Arm", "Reading", "All cases", "lookalike", "plain", NO_STRATUM]
+        # A share on 0–1 reads as a percent to one decimal, its spread beside it on the same scale.
         accuracy = _row(table, "sonnet", "Accuracy")
-        assert accuracy["all"].startswith("0.875 ± ") and accuracy["all"].endswith("(n=16)")
-        assert accuracy[_column(table, "lookalike")] == "0.3333 ± 0.3333 (n=3)"
-        assert accuracy[_column(table, "plain")] == "1 ± 0 (n=12)"
+        assert accuracy["all"].startswith("87.5% ± ") and accuracy["all"].endswith("(n=16)")
+        assert accuracy[_column(table, "lookalike")] == "33.3% ± 33.3 (n=3)"
+        assert accuracy[_column(table, "plain")] == "100% ± 0 (n=12)"
         # A rate over fewer cases than one is estimated on is stated as a count, never as a rate or an interval.
         assert _row(table, "sonnet", "Label matched")[_column(table, "lookalike")] == "1 of 3 (n=3)"
-        assert _row(table, "sonnet", "Label matched")[_column(table, "plain")] == "1 [0.7575, 1] (n=12)"
+        assert _row(table, "sonnet", "Label matched")[_column(table, "plain")] == "100% [75.8%, 100%] (n=12)"
 
     def test_the_arms_follow_the_decision_surfaces_row_order_and_the_table_states_it(self) -> None:
         """No control here, so no reference row: the arms alphabetically by name (#645)."""
@@ -338,7 +339,7 @@ class TestTheReportCarriesStrata:
         assert matrix[_column(table, "plain")] == "NONE → NONE: 12 (n=12)"
         recall = _row(table, "sonnet", "Recall of NONE")
         assert recall[_column(table, "lookalike")] == "1 of 3 (n=3)"
-        assert recall[_column(table, "plain")] == "1 [0.7575, 1] (n=12)"
+        assert recall[_column(table, "plain")] == "100% [75.8%, 100%] (n=12)"
         assert _row(table, "sonnet", f"{_TONE} (judged)")[_column(table, "lookalike")] == "2 ± 0 (n=3)"
 
     def test_a_stratum_below_the_floor_is_disclosed_by_name_and_count(self) -> None:
@@ -512,7 +513,7 @@ class TestGenerationAndTheStore:
         assert storage.load_case_strata(["a"], "another-scope") == []
         assert storage.load_case_strata([], _SCOPE) == []
 
-    def test_assembly_reads_only_each_cases_id_and_stratum(self) -> None:
+    def test_assembly_reads_only_each_cases_id_stratum_and_name(self) -> None:
         """A case carries the host's whole stimulus; assembling a bundle ships none of it."""
         store = _KeepRecordingStore()
         storage = EvalStorage(store)
@@ -526,4 +527,4 @@ class TestGenerationAndTheStore:
 
         bundle = _bundle(storage, campaign)
         assert [stratum.stratum for stratum in _cell(bundle, "sonnet").strata] == ["lookalike", "plain", None]
-        assert [keep for doc_type, keep in store.kept if doc_type == "eval_test_case"] == [("id", "stratum")]
+        assert [keep for doc_type, keep in store.kept if doc_type == "eval_test_case"] == [("id", "stratum", "name")]

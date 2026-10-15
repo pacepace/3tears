@@ -486,9 +486,10 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
+    # A margin on a share is stated in points, as the change it bounds is.
     assert (
         row["verdict"].startswith("improved")
-        and "immaterial: the observed delta is inside the margin of ±0.05 on Field accuracy, which does not show"
+        and "immaterial: the observed delta is inside the margin of ±5 pts on Field accuracy, which does not show"
         in row["verdict"]
     )
     assert "materiality threshold" not in row["verdict"], "the reader's words: the margin they declared"
@@ -510,7 +511,7 @@ def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> No
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
-    assert row["verdict"].startswith("equivalent") and "(margin ±0.25)" in row["verdict"]
+    assert row["verdict"].startswith("equivalent") and "(margin ±25 pts)" in row["verdict"]
     assert "does not show" not in row["verdict"]
 
 
@@ -620,8 +621,10 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     (stats,) = [row for row in folded.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
     assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"
-    assert stats["control_mean"] == pytest.approx(0.5)
-    assert isinstance(row["interval"], str) and row["interval"].endswith("at 95%")
+    # A share's mean is on the percent ruler, its interval in points; the level sits once in the column's header.
+    assert stats["control_mean"] == pytest.approx(50.0)
+    assert isinstance(row["interval"], str) and row["interval"].endswith(" pts")
+    assert next(column.header for column in table.columns if column.key == "interval") == "Interval (95%)"  # type: ignore[attr-defined]
     assert stats["hedges_g"] is not None and stats["hedges_g"] > 0
 
 

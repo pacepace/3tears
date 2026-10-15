@@ -47,17 +47,18 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from typing import Literal, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import ABSENT, format_number
 from threetears.evals.analysis.references import cell_aliases, cell_of_alias, require_cell, resolve_reading
-from threetears.evals.analysis.report.figures import UNITLESS, MeasureRuler, measure_rulers
-from threetears.evals.analysis.quantities import UNSPACED_UNITS
+from threetears.evals.analysis.report.figures import MeasureRuler, report_rulers
+from threetears.evals.analysis.quantities import UNSPACED_UNITS, is_money
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel.campaign import ReadingKind
-from threetears.evals.kernel.metrics import goal_check_measure, goal_check_of
+from threetears.evals.kernel.metrics import MetricDescriptor, goal_check_measure, goal_check_of
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 
 #: The statistics a measure reference may name: its mean, n and zero count, and its distribution's points.
@@ -122,16 +123,17 @@ def state_in_prose(value: float, ruler: MeasureRuler) -> str:
         ruler: Its measure's ruler; :data:`~threetears.evals.analysis.report.figures.UNITLESS` for a judged score.
 
     Returns:
-        The value's text: money as ``$0.012``, anything else joined to its unit where one is known.
+        The value's text: money as ``$0.012`` (``$3.1 per 1,000 replies`` on that ruler), a share as ``99%``,
+        anything else joined to its unit where one is known.
     """
-    factor, shown = ruler
-    scaled = value * factor
-    if shown == "usd":
-        return f"{'-' if scaled < 0 else ''}${prose_number(abs(scaled))}"
+    scaled = value * ruler.factor
+    if is_money(ruler.unit):
+        money = f"{'-' if scaled < 0 else ''}${prose_number(abs(scaled))}"
+        return f"{money} {ruler.per}" if ruler.per else money
     text = prose_number(scaled)
-    if not shown:
+    if not ruler.unit:
         return text
-    return f"{text}{shown}" if shown in UNSPACED_UNITS else f"{text} {shown}"
+    return f"{text}{ruler.unit}" if ruler.unit in UNSPACED_UNITS else f"{text} {ruler.unit}"
 
 
 def parse_reference(inner: str) -> tuple[str, str, str, str]:
@@ -174,12 +176,17 @@ def parse_reference(inner: str) -> tuple[str, str, str, str]:
     return cell, measure_id, reading, stat
 
 
-def render_reference(surface: DecisionSurface, inner: str) -> str:
+def render_reference(
+    surface: DecisionSurface, inner: str, catalog: Mapping[str, MetricDescriptor] | None = None
+) -> str:
     """Resolve one reference against the surface and state its value.
 
     Args:
         surface: The analysis's decision surface.
         inner: The text between the braces.
+        catalog: The bundle's ``measure_catalog``, which says which measures are shares stated as percents
+            (:func:`~threetears.evals.analysis.report.figures.report_rulers`); None reads the engine's own
+            descriptions alone.
 
     Returns:
         The value as a reader sees it: a count bare, a check's pass rate as ``<passed> of <evaluated>``,
@@ -190,7 +197,7 @@ def render_reference(surface: DecisionSurface, inner: str) -> str:
     """
     cell, measure_id, reading, stat = parse_reference(inner)
     cell_ref = cell_of_alias(surface, cell)
-    ruler = measure_rulers(surface).get(measure_id, UNITLESS) if reading == "measure" else UNITLESS
+    ruler = report_rulers(surface, catalog).of(measure_id, reading)
     if reading == "measure":
         counts = _category_counts(surface, inner, cell_ref, measure_id, stat)
         if counts is not None:
@@ -259,13 +266,16 @@ def _category_counts(surface: DecisionSurface, inner: str, cell_ref: str, measur
     return format_number(summary.categories[category])
 
 
-def render_text(surface: DecisionSurface, text: str, *, where: str) -> str:
+def render_text(
+    surface: DecisionSurface, text: str, *, where: str, catalog: Mapping[str, MetricDescriptor] | None = None
+) -> str:
     """Replace every figure reference in one piece of prose with its value.
 
     Args:
         surface: The analysis's decision surface.
         text: The prose as the model wrote it.
         where: Where it sits in the document, for the refusal.
+        catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it.
 
     Returns:
         The prose with each reference rendered.
@@ -276,14 +286,16 @@ def render_text(surface: DecisionSurface, text: str, *, where: str) -> str:
 
     def render(match: re.Match[str]) -> str:
         try:
-            return render_reference(surface, match.group(1))
+            return render_reference(surface, match.group(1), catalog)
         except UnresolvableReference as unresolved:
             raise UnresolvableReference(f"{where}: {unresolved}") from unresolved
 
     return FIGURE_REFERENCE.sub(render, text)
 
 
-def render_prose_figures(document: AuthoredAnalysis, surface: DecisionSurface) -> AuthoredAnalysis:
+def render_prose_figures(
+    document: AuthoredAnalysis, surface: DecisionSurface, catalog: Mapping[str, MetricDescriptor] | None = None
+) -> AuthoredAnalysis:
     """Render every figure reference in the document, or refuse the first that names nothing.
 
     Every string in the document is walked, not a list of prose fields: a list would silently skip
@@ -293,6 +305,7 @@ def render_prose_figures(document: AuthoredAnalysis, surface: DecisionSurface) -
     Args:
         document: The validated authored document.
         surface: The decision surface its references resolve against.
+        catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it.
 
     Returns:
         The document with every reference replaced by its value.
@@ -303,7 +316,7 @@ def render_prose_figures(document: AuthoredAnalysis, surface: DecisionSurface) -
 
     def walk(value: object, where: str) -> object:
         if isinstance(value, str):
-            return render_text(surface, value, where=where)
+            return render_text(surface, value, where=where, catalog=catalog)
         if isinstance(value, dict):
             return {key: walk(item, f"{where}.{key}" if where else key) for key, item in value.items()}
         if isinstance(value, list):

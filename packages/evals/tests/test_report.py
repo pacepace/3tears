@@ -44,6 +44,7 @@ from threetears.evals.analysis import (
     set_campaign_control,
 )
 from threetears.evals.analysis.report.build import contrast_rows
+from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report.figures import measure_rulers
 from threetears.evals.analysis.report.model import table_row
 from threetears.evals.kernel.campaign import EvalAnalysis
@@ -74,32 +75,35 @@ class TestTheToyAnalysisSerializesTwoWays:
         finding = analysis.document.findings[0]
         lines = markdown.splitlines()
 
-        # The declared question is the title; the arms are line 2; who wrote the memo is in the methods.
+        # The campaign's name is the title; the arms are line 2; the declared question is quoted whole under them;
+        # who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
-        # The question as declared, its first letter capitalized: a title starts with a capital.
-        assert report.title == "Is the wider chunk worth what it costs to retrieve?"
+        assert report.title == "chunk width sweep"
         assert lines[0] == f"# {report.title}"
         assert lines[1].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
+        assert lines[3] == 'Asked before the run: "Is the wider chunk worth what it costs to retrieve?"'
         assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown
         # A finding leads with its headline, unnumbered: nothing on the page cites a finding by number.
         assert f"**{finding.title}**" in markdown and "**F1." not in markdown
         assert "**Readings**" in markdown and "| Arm | Turn time | Cases |" in markdown
-        (chart,) = _finding_charts(report)
-        assert f"**{chart.title}**" in markdown
-        assert "| " + " | ".join(chart.values_table()[0]) + " |" in markdown
+        # The finding's intervals are drawn in that table's rows, so no chart of them follows it.
+        assert not _finding_charts(report) and "**Turn time**" not in markdown
         assert f"Caveat (sampling): {finding.caveats[0].text}" in markdown
         assert "## Methods" in markdown
 
-    async def test_html_carries_the_same_and_draws_each_chart_inline(self, toy: tuple[Any, Any, Report]) -> None:
+    async def test_html_carries_the_same_and_draws_the_chart_and_the_intervals_inline(
+        self, toy: tuple[Any, Any, Report]
+    ) -> None:
         _, _, report = toy
         page = report_html(report)
-        (chart,) = _finding_charts(report)
 
         assert page.startswith("<!doctype html>")
         assert page.index("<header>") < page.index(f"<h1>{_escaped(report.title)}</h1>") < page.index("</header>")
-        assert 'data-chart="interval_rows"' in page and 'data-chart="outcome_bar"' in page
-        assert f"<caption>{_escaped(chart.title)}</caption>" in page
-        assert page.count("<svg") == page.count('<table class="visually-hidden">')
+        # The outcome bar is the page's one chart, beside its hidden table; the finding's intervals are glyphs in
+        # its readings table, whose rows already print every figure a glyph draws.
+        assert 'data-chart="outcome_bar"' in page and 'data-chart="interval_rows"' not in page
+        assert page.count('<svg class="viz"') == page.count('<table class="visually-hidden">') == 1
+        assert page.count('<svg class="viz-glyph"') == 2
 
 
 def _escaped(text: str) -> str:
@@ -152,18 +156,23 @@ class TestTheToyReportsContent:
         )
         assert [row["cases"] for row in table.values()] == [row.n_cases for row in evidence]
 
-    async def test_a_finding_s_evidence_is_drawn_as_interval_rows_on_the_same_ruler(
+    async def test_a_finding_s_evidence_carries_its_intervals_in_the_table_on_the_same_ruler(
         self, toy: tuple[Any, EvalAnalysis, Report]
     ) -> None:
         _, analysis, report = toy
-        (chart,) = _finding_charts(report)
         (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "evidence"]
+        evidence = analysis.resolutions[0].evidence
+        surface = analysis.decision_surface
+        factor = measure_rulers(surface)[evidence[0].measure_id].factor
 
-        assert chart.finding == 0 and chart.chart == "interval_rows" and chart.unit == "s"
-        assert [row.value for row in chart.rows] == pytest.approx([row["reading_0"] for row in table.values()])
-        assert [row.n_cases for row in chart.rows] == [row.n_cases for row in analysis.resolutions[0].evidence]
-        # The chart follows the evidence table it draws, inside its finding.
-        assert report.blocks.index(table) < report.blocks.index(chart)
+        # Each arm's cell carries the interval its cell holds on the reading, restated onto the same ruler.
+        cells = [row["reading_0"] for row in table.rows]
+        assert all(cell.unit == "s" and not cell.zero_line for cell in cells)
+        resolved = [resolve_reading(surface, row.cell_ref, row.measure_id, row.reading) for row in evidence]
+        assert [cell.low for cell in cells] == pytest.approx([r.ci_low * factor for r in resolved])  # type: ignore[operator]
+        assert [cell.high for cell in cells] == pytest.approx([r.ci_high * factor for r in resolved])  # type: ignore[operator]
+        assert all(cell.low <= cell.value <= cell.high for cell in cells)  # type: ignore[operator]
+        assert not _finding_charts(report)
 
     async def test_the_recommendation_rests_on_its_finding(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
@@ -184,19 +193,25 @@ class TestTheToyReportsContent:
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.
         texts = [block.text for block in notes if isinstance(block, DisclosureBlock)]
         assert any(text.startswith("Model identity unconfirmed:") for text in texts)
-        assert all(block.fold == "Disclosures" for block in notes)
+        # After the table: the memo's coverage map in its own fold, then the engine's disclosures in theirs.
+        assert {block.fold for block in notes} == {"Coverage", "Disclosures"}
         # The memo is never introduced: the page does not describe itself.
         assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "Written by" in b.text]
 
     async def test_the_coverage_map_is_joined_to_the_findings_and_counted(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
         (coverage,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "coverage"]
-        (headline,) = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
-        # A finding is cited by the headline the page prints for it, never by a number.
-        assert coverage.section == "memo" and coverage.values()[0]["findings"] == headline.rstrip(".")
+        # The map restates no finding: it counts them, in the methods' Coverage fold, after the methods table.
+        assert coverage.section == "methods" and coverage.fold == "Coverage"
+        assert coverage.values()[0]["findings"] == "1 finding"
+        methods = [block for block in report.blocks if block.section == "methods"]
+        assert isinstance(methods[0], TableBlock) and methods[0].name == "methods" and methods[1] is coverage
         unnamed = [row for row in coverage.values() if row["findings"] == "no finding"]
         said = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.text.startswith("Levers no finding")]
-        assert len(said) == (1 if unnamed else 0)
+        assert len(said) == (1 if unnamed else 0) and all(b.fold == "Coverage" for b in said)
+        # In a fold of its own name the table is titled once, by the fold.
+        assert "<details><summary>Coverage</summary>\n\n| Lever | Coverage |" in report_markdown(report)
+        assert "**Coverage**" not in report_markdown(report)
 
     async def test_the_service_refuses_an_analysis_it_does_not_hold(self, toy: tuple[EvalHost, Any, Any]) -> None:
         host, analysis, _ = toy
@@ -472,10 +487,12 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     )
     (scoreboard,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "scoreboard"]
     assert sum(str(row["arm"]).startswith("▸ ") for row in scoreboard.values()) == 1
-    # Each reading tested on enough cases is drawn as interval rows of the difference, a zero line beneath it.
-    drawn = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "contrasts"]
-    assert {block.title.removeprefix("Change in ") for block in drawn} >= {"Field accuracy", "Turn time"}
-    assert all(block.zero_line and block.chart == "interval_rows" for block in drawn)
+    # Each reading tested on enough cases carries the interval on its change in its own row, read against zero;
+    # no chart of the differences stands apart from the table.
+    changes = {str(row["reading"].value): row["change"] for row in comparisons.rows}
+    assert {reading for reading, cell in changes.items() if cell.low is not None} >= {"Field accuracy", "Turn time"}
+    assert all(cell.zero_line for cell in changes.values() if cell.low is not None)
+    assert not [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "contrasts"]
 
 
 def test_a_contrast_states_its_figures_on_the_measure_s_one_ruler() -> None:
@@ -487,9 +504,12 @@ def test_a_contrast_states_its_figures_on_the_measure_s_one_ruler() -> None:
     assert (turn_time["arm_mean"].value, turn_time["arm_mean"].unit) == (1.42, "s")
     (comparisons,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "comparisons"]
     (shown,) = [row for row in comparisons.rows if row["reading"].value == "Turn time"]
-    assert (shown["change"].text, shown["interval"].text) == ("0.5 s", "[0.4498, 0.5502] s at 99%")
+    # The level every interval holds at is said once, in the column's header, never in each cell.
+    assert (shown["change"].text, shown["interval"].text) == ("0.5 s", "[0.4498, 0.5502] s")
+    assert next(column.header for column in comparisons.columns if column.key == "interval") == "Interval (99%)"
+    # A program's row has no header, so its interval says its level.
     (row,) = [row for row in contrast_rows(report.bundle) if row["reading"] == "Turn time"]
     assert row["change"] == "0.5 s [0.4498, 0.5502] s at 99%"
-    # A reading with no unit is stated as a bare number.
+    # A share on 0–1 is stated as a percent, its cell restated onto that ruler.
     (accuracy,) = [row for row in statistics.rows if row["reading"].value == "Field accuracy"]
-    assert (accuracy["arm_mean"].text, accuracy["arm_mean"].unit) == ("0.91", "")
+    assert (accuracy["arm_mean"].text, accuracy["arm_mean"].unit) == ("91%", "%")

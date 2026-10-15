@@ -55,6 +55,28 @@ a good arm, which is the lesser harm, and refusing every breach without a range 
 unbounded measure be adopted, so the t breach is kept and the gap recorded as a strict xfail in
 `tests/test_simulated_guardrails.py`. On a declared range the breach is the bounded test's, and holds its rate.
 
+## Reporting
+
+### Latency read under concurrency is withheld rather than reported with a flag
+
+No issue filed yet. A result whose latency was read while other cells or runs executed beside it
+(`execution_mode: concurrent`) is left out of every latency comparison, bar and ranking, and the page says so once
+in the methods' disclosures; a campaign whose runs were all concurrent reports no latency at all, so a question
+asking "at lower cost per turn, and no slower?" gets no reading on speed and nothing on the first screen says why.
+Open: whether withholding is right, or whether a contended latency should be reported with a flag that says what it
+was read under (the way an unpriced cost is a floor the page names), and what a reader should see instead of
+silence, on the first screen, when the one reading a question asks about was withheld. Discodon's G2 (2026-10) hit
+this: 19 of 24 results were concurrent, and the only trace was a memo finding citing no reading.
+
+### The analysis writer may propose a next step naming no reading
+
+No issue filed yet. A memo's next step, and a recommendation's revisit-when, are the writer's words held to the
+page's style, and nothing holds them to a reading: G2's "revisit when at least 20 independent cases confirm whether
+the candidate meets the queue checks and yields lower cost" said nothing about latency, the reading its own finding
+had just said was withheld. The generator should refuse a next step or a revisit-when that names no reading the
+surface holds, as it refuses a finding whose evidence names a cell it does not hold. Not built: the next-step and
+revisit-when models carry no `evidence`, so there is nothing to resolve yet.
+
 ## Judging
 
 ### An operator's new judge case joins the live revision
