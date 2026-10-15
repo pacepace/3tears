@@ -14,7 +14,9 @@
 4. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
    difference is called; the case floor itself is a caveat line under the scoreboard (:func:`caveat_lines`).
 5. **A declared question.** What its contrasts and guardrails came to, in their own verdict words.
-6. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or that none did.
+6. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or that no difference was found on any
+   reading. A guardrail an arm is not shown safe on is a second sentence: ``Not yet shown safe: v2 on no invented
+   total.``
 
 **A cause cannot exist without its words.** Every way a trial is lost (:data:`LOSS_CAUSE_WORDS`) and every way one
 fails (:data:`FAIL_CAUSE_WORDS`) is worded here, with the remedy a reader acts on, and each table is checked against
@@ -271,11 +273,7 @@ def verdict_line(
     return VerdictLine(
         rule="exploratory",
         text="Exploratory: "
-        + (
-            "; ".join(leads)
-            if leads
-            else f"{_others(bundle, arm)} separated from {_control(bundle, arm)} on no reading"
-        )
+        + ("; ".join(leads) if leads else f"no difference found between {_every_arm(bundle, arm)} on any reading")
         + "."
         + _guardrail_words(bundle, arm),
     )
@@ -302,12 +300,9 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             cases = f"{small[0].usable_cases} cases per arm"
         else:
             cases = "Usable cases " + ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
-        return [
-            f"{cases}: enough to apply the rule, too few to estimate how large the difference is "
-            f"(that needs {MIN_CASES})."
-        ]
+        return [f"{cases}: enough to apply the rule, too few to size the difference (needs {MIN_CASES})."]
     named = ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
-    return [f"Too few cases to estimate a rate. Usable cases: {named}; a rate needs {MIN_CASES}."]
+    return [f"Too few usable cases to estimate a rate: {named} (needs {MIN_CASES})."]
 
 
 def _rule_verdicts(bundle: AnalysisContextBundle) -> list[RuleVerdict]:
@@ -334,17 +329,11 @@ def _control_key(bundle: AnalysisContextBundle) -> str | None:
     return control if any(board.variant_key == control for board in bundle.scoreboard) else None
 
 
-def _control(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """The control by name, or the first arm where none resolved."""
+def _every_arm(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
+    """Every arm by name, the control last: ``v2 and v1``, ``v2, v3 and v1``."""
     key = _control_key(bundle) or bundle.scoreboard[0].variant_key
-    return arm(key)
-
-
-def _others(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """Every arm but the control, by name."""
-    key = _control_key(bundle) or bundle.scoreboard[0].variant_key
-    others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != key]
-    return " and ".join(others) if len(others) <= 2 else f"{', '.join(others[:-1])} and {others[-1]}"
+    names = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != key] + [arm(key)]
+    return " and ".join(names) if len(names) <= 2 else f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def _one_arm(bundle: AnalysisContextBundle, name: str, case_name: Callable[[str], str]) -> str:
@@ -501,17 +490,24 @@ def _cost_per_case(bundle: AnalysisContextBundle) -> str | None:
     return f"${format_number(sum(cost or 0.0 for cost in spent) / cases)}"
 
 
+#: How the verdict leads a guardrail an arm is not shown safe on, by the guardrail's decision, the breached first.
+_GUARDRAIL_LEADS: dict[str, str] = {"breached": "Guardrail breached", "undecided": "Not yet shown safe"}
+
+
 def _guardrail_words(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """`` Guardrail undecided for v2: …`` for each arm a guardrail leaves not shown safe; empty when none."""
+    """`` Not yet shown safe: v2 on no invented total.`` — one sentence per decision naming each arm and its
+    guardrails; empty when every guardrail held."""
     said = []
-    for decision, words in (("breached", "breached"), ("undecided", "undecided")):
+    for decision, lead in _GUARDRAIL_LEADS.items():
         by_arm: dict[str, list[str]] = {}
         for check in bundle.guardrails.checks:
             if check.decision == decision:
                 names = by_arm.setdefault(arm(check.contrast.variant_key), [])
                 if humanize("dimension", check.name) not in names:
                     names.append(humanize("dimension", check.name))
-        said += [f" Guardrail {words} for {name}: {', '.join(names)}." for name, names in sorted(by_arm.items())]
+        if by_arm:
+            arms = "; ".join(f"{name} on {', '.join(names)}" for name, names in sorted(by_arm.items()))
+            said.append(f" {lead}: {arms}.")
     return "".join(said)
 
 
@@ -549,14 +545,14 @@ def _declared(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str |
     clauses = []
     questions = _declared_questions(bundle)
     for index, question in enumerate(questions, start=1):
-        # The title carries the question's words; the verdict names it, never repeats it.
+        # The first screen quotes the question's words; the verdict names it, never repeats it.
         lead = "Declared question" if len(questions) == 1 else f"Question {index}"
         separated = _separated(bundle, arm, question_id=question.id, every_family=False)
         tested = any(family.question_id == question.id for family in bundle.multiple_comparisons.families)
         if separated:
             clauses.append(f"{lead}: " + "; ".join(separated))
         elif tested:
-            clauses.append(f"{lead}: no arm separated from {_control(bundle, arm)}")
+            clauses.append(f"{lead}: no difference found between {_every_arm(bundle, arm)}")
         else:
             clauses.append(f"{lead}: not tested")
     if not clauses:

@@ -6,9 +6,10 @@ is ``<details>``; moving between the screens is ``#`` anchors. The two charts ar
 (:mod:`~threetears.evals.analysis.report.svg`), each beside a visually hidden table of the values it draws, so a
 screen reader and a page with styles off lose nothing.
 
-**The first screen is the page's ``<header>``**: the title (the question), the arms line (always line 2), the verdict
-line, the scoreboard with its outcome bar, and the caveats in normal weight. Everything a reader needs to decide
-whether to read on is there, written by code. Every term of art links to the glossary at the foot of the page.
+**The first screen is the page's ``<header>``**: the title (the campaign's name), the arms line (always line 2), the
+declared question quoted whole where there is one, the verdict line, the scoreboard with its outcome bar, and the one
+caveat in normal weight that changes how the verdict is read. Everything a reader needs to decide whether to read on
+is there, written by code. Every term of art links to the glossary at the foot of the page.
 
 **Depth on demand, with the least ink.** The result, the decision rule, what it means and the contrasts are open;
 the cases, the trials, what was not tested, the methods and the glossary each sit in a closed ``<details>`` whose
@@ -158,7 +159,8 @@ _CODE = re.compile(r"`([^`]+)`")
 #: A trial id in a table cell, linked to its drill-down.
 _TRIAL_ID = re.compile(r"\bT\d+\b")
 
-#: A case as the cases table numbers it, whose number its row's anchor is made of.
+#: A case as the cases table numbers it, whose number its row's anchor is made of; a case named by its author anchors
+#: by its name (``case-double-charge``).
 _CASE_NUMBER = re.compile(r"case (\d+)")
 
 #: A cell of words at least this long is prose, laid out to wrap at a measure rather than widen its column.
@@ -191,31 +193,36 @@ def report_html(report: Report) -> str:
         *(_block(block, index) for index, block in enumerate(head)),
         "</header>",
     ]
+    titles = report.section_titles
     sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN and section != "glossary"]
     present = [section for section in sections if any(block.section == section for block in report.blocks)]
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append(
-        "<nav>" + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in nav) + "</nav>"
+        "<nav>" + "".join(f'<a href="#{section}">{_escape(titles[section])}</a>' for section in nav) + "</nav>"
     )
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
-        parts.extend(_section(section, _folded(blocks), count=_section_count(section, blocks)))
+        parts.extend(_section(section, titles[section], _folded(blocks), count=_section_count(section, blocks)))
         parts.append("</section>")
     if report.terms:
         entries = "".join(
             f'<dt id="g-{_slug(term)}">{_escape(term)}</dt><dd>{_escape(GLOSSARY[term])}</dd>' for term in report.terms
         )
         parts.append('<section id="glossary">')
-        parts.extend(_section("glossary", [f'<dl class="glossary">{entries}</dl>'], count=None))
+        parts.extend(_section("glossary", titles["glossary"], [f'<dl class="glossary">{entries}</dl>'], count=None))
         parts.append("</section>")
     parts += ["</article>", "</body>", "</html>"]
     return "\n".join(parts) + "\n"
 
 
-def _section(section: str, body: Sequence[str], *, count: int | None) -> list[str]:
-    """A section's heading and body: open, or closed in a ``<details>`` whose summary is the heading and its size."""
-    heading = f"<h2>{_escape(SECTION_TITLES[section])}</h2>"
+def _section(section: str, title: str, body: Sequence[str], *, count: int | None) -> list[str]:
+    """A section's heading and body: open, or closed in a ``<details>`` whose summary is the heading and its size.
+
+    ``title`` is the heading as this page heads the section (:attr:`Report.section_titles`), which can differ from
+    the section's fixed id: a one-arm page heads ``contrasts`` as ``Readings``.
+    """
+    heading = f"<h2>{_escape(title)}</h2>"
     if section not in _FOLDED_SECTIONS:
         return [heading, *body]
     size = f' <span class="count">· {count}</span>' if count is not None else ""
@@ -344,8 +351,9 @@ def _grid(block: TableBlock) -> str:
             cells.append(f"<td{css}>{text}</td>")
         anchor = ""
         # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
-        if block.name == "cases" and "case" in row and (number := _CASE_NUMBER.fullmatch(row["case"].text)):
-            anchor = f' id="case-{number.group(1)}"'
+        if block.name == "cases" and "case" in row:
+            number = _CASE_NUMBER.fullmatch(row["case"].text)
+            anchor = f' id="case-{number.group(1) if number else _slug(row["case"].text)}"'
         # A passed trial has no record of its own, so the link every table makes of its id lands on its row here.
         elif block.name == "passed_trials" and "trial" in row and _TRIAL_ID.fullmatch(row["trial"].text):
             anchor = f' id="{row["trial"].text}"'

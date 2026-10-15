@@ -121,11 +121,12 @@ async def test_a_campaign_with_enough_cases_draws_its_contrast_as_interval_rows(
     assert page.count("<svg") == 2 and 'class="visually-hidden"' in page
 
 
-async def test_an_arm_under_the_case_floor_is_not_charted_and_the_scoreboard_says_so_once() -> None:
+async def test_an_arm_under_the_case_floor_is_not_charted_and_the_caveat_says_so_once() -> None:
     ev = Eval(_cases(MIN_CASES - 1), {"never": _never, "classify": _classify}, ["label"])
     comparison = await ev.run(store=":memory:")
     charts = [block for block in comparison.report.blocks if isinstance(block, ChartBlock)]
     assert [block.chart for block in charts] == ["outcome_bar"]
     page = report_html(comparison.report)
     assert page.count("<svg") == 1
-    assert page.count(f"a rate needs {MIN_CASES}") == 1
+    # Under the floor on every arm, the one caveat under the scoreboard says so, and no "not charted" line repeats it.
+    assert page.count(f"(needs {MIN_CASES})") == 1 and "Not charted" not in page

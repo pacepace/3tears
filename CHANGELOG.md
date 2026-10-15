@@ -18,6 +18,21 @@ packages (bumped in lock-step).
 - **`Report.write(dir)` / `Comparison.write(dir)`** write one scriptless HTML page, its Markdown and `bundle.json`;
   the bundle is the machine form, and `report_read(format="json")` returns it. Two charts, an outcome bar and
   interval rows, are drawn as inline SVG with every value written as text.
+- **The first screen carries the minimum.** The title is a name: the campaign's, with what it compares where no
+  question was declared (`invoices: does v2 do better than v1?`); a declared question is quoted whole on its own
+  line under the arms (`Asked before the run: "…"`), never cut down to a title. Line 2 ends with the design
+  (`30 cases × 3 repeats`). An exploratory verdict reads `no difference found between v2 and v1 on any reading`,
+  a guardrail not held `Not yet shown safe: v2 on no invented total.`, and `exploratory` links to the glossary.
+  Under the scoreboard only what changes the reading stays: the case floor
+  (`4 cases per arm: enough to apply the rule, too few to size the difference (needs 5).`) or an arm whose every
+  trial failed. An arm's label its own row contradicts opens the Contrasts; what was not charted and where a cost
+  is a floor are in the Methods; the one failure cause beside checks and the judge heads its own column
+  (`Model failed`) with no legend line. A one-arm page heads its readings by stratum and label `Readings`, since
+  it contrasts nothing.
+- **A case is named as its author named it.** An `Eval`'s case `id` (`double-charge`) is stored as the test
+  case's `name` (`EvalTestCase.name`, durable 15.4: additive, in no identity key, so a renamed case keeps its id
+  and its history) and names the case everywhere the page names one — the verdict's misses, the cases table, a
+  trial's summary — where it reads as a name; a generated id, a bare number or a sentence is `case N` as before.
 - **Removed:** the `threetears.evals.vega` adapter and the `[vega]` extra, the chart renderer seam and
   `report_charts`, `ChartPalette` and `ChartFont`, the published Report JSON schema, the chart intent root
   `threetears.evals.analysis.viz`, the arm table and the decision surface table. The memo writer no longer writes

@@ -668,10 +668,9 @@ def assemble_context_bundle(
     # the reference, then the arms by name), which the writer reads and the frozen surface keeps.
     control = design.control_arm.variant_key if design.control_arm is not None else None
     names = arm_names(bundle.variant_index)
-    case_strata = {
-        case.id: case.stratum
-        for case in storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
-    }
+    case_facts = storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
+    case_strata = {case.id: case.stratum for case in case_facts}
+    case_names = {case.id: case.name for case in case_facts if case.name}
     bundle.cell_measures = _cell_measures(
         cells,
         results_by_cell,
@@ -755,6 +754,7 @@ def assemble_context_bundle(
             *sorted((key for key in names if key != control), key=lambda key: (names[key], key)),
         ],
         strata=case_strata,
+        names=case_names,
         criteria=_criteria(runs, storage, scope_id),
         rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
         catalog=bundle.measure_catalog,

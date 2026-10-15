@@ -1653,7 +1653,8 @@ async def run_arms(
 
     Args:
         cases: The cases, each a JSON object. Its reserved keys (:data:`RESERVED_CASE_KEYS`) are read and withheld:
-            ``id`` names it in its results and errors (a case with none is called by its position, from ``0``),
+            ``id`` names it in its results, its errors and on the report's page (a case with none is called by its
+            position, from ``0``, and numbered on the page),
             ``stratum`` is the kind of case it is, stored as its test case's stratum so the summary reads every
             measure again per stratum, and ``world`` is its starting state on a world with state.
         arms: The arms, distinct — no two at one model and one level of every lever — which the caller holds.
@@ -1740,6 +1741,8 @@ async def run_arms(
             scope_id=scope_id,
             template_id=template_id,
             stratum=None if strata is None else strata[index],
+            # The author's own id names the case on the page; a case called by its position gets no name there.
+            name=names[index] if "id" in plain_cases[index] else None,
             variation_params=stored_variation(case),
             host_payload=_case_payload(
                 case, None if labels is None else labels[index], None if seeds is None else seeds[index]

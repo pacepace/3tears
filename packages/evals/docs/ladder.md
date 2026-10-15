@@ -255,12 +255,12 @@ And what the report (`.evals/reports/invoices/report.md`, the same page as `repo
 
 ```text
 # invoices: does v2 do better than v1?
-v1 (control) vs v2 · 14 Oct 2026
-**Exploratory: v2 separated from v1 on no reading. Guardrail undecided for v2: no invented total.**
+v1 (control) vs v2 · 14 Oct 2026 · 30 cases × 3 repeats
+**Exploratory: no difference found between v2 and v1 on any reading. Not yet shown safe: v2 on no invented total.**
 v2 is not known to be safe on the guardrail No invented total score.
 | Number score | v2 | 0.1667 | [-0.01363, 0.347] at 99% | not separated from the control | 30 paired |
 | No invented total score | v2 | 0.9889 | 0.9889 | 30 paired | 0 | [-0.1343, 0.1343] at 95% | 0.02 | undecided: not shown held, so not known to be safe (the interval on the difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within it nor beyond it) |
-| T12 | case 2 | v2 | failed | model failed |
+| T12 | c02 | v2 | failed | model failed |
 ```
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
