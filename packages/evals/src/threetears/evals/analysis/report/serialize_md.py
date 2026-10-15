@@ -4,8 +4,8 @@ Every block the page draws is printed here, in the page's order: the title on li
 the scoreboard; a chart is its title and the table of the values it draws, so a reader of Markdown can check every
 number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. An
 outcome bar whose every column is one of the scoreboard's prints nothing here: its table would repeat the scoreboard. What
-the page folds (a trial's record, a finding's evidence, the engine's disclosures) is a ``<details>`` here as well.
-Deterministic: one report renders to one string.
+the page folds (a trial's record, a finding's evidence, the engine's disclosures) is a ``<details>`` here as well,
+open where the page shows it open. Deterministic: one report renders to one string.
 """
 
 from __future__ import annotations
@@ -148,8 +148,10 @@ def trial_summary(block: TrialBlock) -> str:
 
 
 def _trial(block: TrialBlock) -> list[str]:
-    """One trial's record, closed: what it asked, what the judge saw and said, what failed, and where it is stored."""
-    lines = [f'<details id="{block.trial_id}"><summary>{trial_summary(block)}</summary>', ""]
+    """One trial's record, open when the block says so: what it asked, what the judge saw and said, what failed,
+    and where it is stored."""
+    opened = " open" if block.open else ""
+    lines = [f'<details id="{block.trial_id}"{opened}><summary>{trial_summary(block)}</summary>', ""]
     if block.cause_words:
         lines += [f"Why: {_one_line(block.cause_words)}", ""]
     if block.first_input:
@@ -170,7 +172,8 @@ def _trial(block: TrialBlock) -> list[str]:
         lines += ["What the judge said:"]
         for entry in block.judge:
             score = "could not tell" if entry.score is None else f"{entry.score} ({entry.scale})"
-            asked = f" Asked: {_one_line(entry.criterion)}." if entry.criterion else ""
+            # A criterion is written as a sentence of its own, so one that already ends is not ended twice.
+            asked = f" Asked: {_one_line(entry.criterion).rstrip('.')}." if entry.criterion else ""
             lines.append(f"- **{entry.dim}**: {score}.{asked} {_one_line(entry.reason)}".rstrip())
         lines.append("")
     if block.error_words:

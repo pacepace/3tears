@@ -16,8 +16,9 @@ The page, screen by screen:
 3. **What it means.** Each finding as one sentence its writer wrote and a table code built from the readings it
    chose, everything else in a closed ``Evidence`` fold; the recommendations and next steps. Then the contrasts that
    can resolve (one line when none can), the guardrails, and the readings by stratum and label.
-4. **Cases** and **Trials.** One row per case, each arm's trials as marks; one row per trial, each record folded
-   under ``T4 · case 1 · arm · outcome``.
+4. **Cases** and **Trials.** One row per case, each arm's trials as marks, its trial ids last and the failed ones
+   first; then the trials' census in one line and only what went wrong: a row and a record (``T4 · case 1 · arm ·
+   outcome``, open up to a cap) per failed or lost trial, and every passed trial as one row of a closed table.
 5. **Not tested** and **Methods.** What the campaign could not speak to; then a table (arms, judge, settings sent,
    cost, the analysis's writer, the bundle) and the engine's disclosures folded.
 """
@@ -2430,6 +2431,14 @@ def _label_blocks(surface: DecisionSurface, names: dict[str, ArmName]) -> list[R
 #: A trial's state as a mark in the cases table, always beside words for a lost one.
 _MARKS = {"passed": "✓", "failed": "✗", "lost": "–"}
 
+#: The order the trials section lists what went wrong in: a failure (a record a reader reads) before a loss (the
+#: test setup's), and a passed trial last, wherever trials are listed by state.
+_STATE_ORDER = {"failed": 0, "lost": 1, "passed": 2}
+
+#: How many failed or lost records the page shows open, in the trials table's order. Twelve reads every failure of
+#: a small campaign without a click, and a campaign that failed hundreds still scrolls; the rest stay closed.
+_OPEN_TRIALS = 12
+
 
 def _case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
     """Each case's number, as the cases table numbers it: by label, from 1."""
@@ -2475,7 +2484,9 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             row["stratum"] = trials[0].stratum
         for index, key in enumerate(arms):
             row[f"arm_{index}"] = _marks([trial for trial in trials if trial.arm == key])
-        row["trials"] = " ".join(trial.trial_id for trial in trials)
+        # The ids are navigation, not information: the failed and lost ones lead, since those are the records a
+        # reader clicks through to; the passed ones follow, each a row of the closed table.
+        row["trials"] = " ".join(trial.trial_id for trial in _wrong_first(trials))
         rows.append(row)
     blocks: list[ReportBlock] = [
         TableBlock(
@@ -2542,20 +2553,53 @@ def _trial_why(trial: TrialRow) -> str | None:
     return cause_short(trial.cause or "unknown")
 
 
+def _wrong_first(trials: Sequence[TrialRow]) -> list[TrialRow]:
+    """``trials`` with the failed ones first, then the lost, then the passed, each group as the bundle numbers it."""
+    return sorted(trials, key=lambda trial: _STATE_ORDER[trial.state])
+
+
+def _census_line(bundle: AnalysisContextBundle) -> str:
+    """The trials' census in one line, from the scoreboard, which counts every trial whether listed or not.
+
+    ``180 trials ran. Of them 179 passed and 1 failed.`` The lost are counted only when there are any. Two
+    sentences, the second opening on a word: the page's sentence rule would read a second sentence opening on a
+    digit as the first one's tail, and four counts in one sentence is a table.
+    """
+    boards = bundle.scoreboard
+    ran = sum(board.ran for board in boards)
+    passed = sum(board.passed for board in boards)
+    failed = sum(sum(board.failed.values()) for board in boards)
+    lost = sum(sum(board.lost.values()) for board in boards)
+    opened = f"{ran} trial{'' if ran == 1 else 's'} ran."
+    if passed == ran:
+        return f"{opened} {'It' if ran == 1 else 'Every one'} passed."
+    counts = [f"{passed} passed", f"{failed} failed", *([f"{lost} were lost"] if lost else [])]
+    return f"{opened} Of them {', '.join(counts[:-1])} and {counts[-1]}."
+
+
 def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
-    """One row per trial, then one closed fold per trial: what it asked, what the judge saw and said, and why."""
+    """The census in one line, then only what went wrong, then the passed trials folded away in one place.
+
+    A campaign that ran hundreds of trials and failed one is read for that one: the table lists the failed trials
+    first and the lost ones after, each by trial id, and each has a record (what it asked, what the judge saw and
+    said, and why) in the same order, the first :data:`_OPEN_TRIALS` shown open. A passed trial has nothing to
+    read, so it is one row of a closed table, there so its stored result stays reachable with ``result_get``.
+    When every trial passed the line stands alone.
+    """
     if not bundle.trials:
         return []
-    blocks: list[ReportBlock] = []
+    blocks: list[ReportBlock] = [DisclosureBlock(section="trials", source="runs", text=_census_line(bundle))]
     arms = len(bundle.scoreboard)
     exclusions = arm_exclusions(bundle)
     case_name = _case_namer(bundle)
+    wrong = [trial for trial in _wrong_first(bundle.trials) if trial.state != "passed"]
     rows: list[dict[str, CellValue]] = []
-    for trial in bundle.trials:
-        words: CauseWords | None = None
+    records: list[ReportBlock] = []
+    for position, trial in enumerate(wrong):
+        words: CauseWords
         if trial.state == "lost":
             words = loss_words(trial.cause or "unknown", exclusions=exclusions.get(trial.arm, ()), arms=arms)
-        elif trial.state == "failed":
+        else:
             words = fail_words(trial.cause or "unknown")
         why = _trial_why(trial)
         rows.append(
@@ -2567,7 +2611,7 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
                 "why": why,
             }
         )
-        blocks.append(
+        records.append(
             TrialBlock(
                 section="trials",
                 anchor=trial.trial_id,
@@ -2576,7 +2620,7 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
                 arm=arm(trial.arm),
                 repeat=trial.repeat,
                 state=trial.state,
-                cause_words=None if words is None else f"{words.words}. {words.remedy[:1].upper()}{words.remedy[1:]}.",
+                cause_words=f"{words.words}. {words.remedy[:1].upper()}{words.remedy[1:]}.",
                 why=why,
                 first_input=trial.first_input,
                 excerpt=trial.excerpt,
@@ -2584,24 +2628,57 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
                 judge=list(trial.judge),
                 error_words=trial.error_words,
                 result_id=trial.result_id,
+                open=position < _OPEN_TRIALS,
             )
         )
-    table = TableBlock(
-        section="trials",
-        name="trials",
-        title="Trials",
-        columns=[
-            TableColumn(key="trial", header="Trial", term="trial"),
-            TableColumn(key="case", header="Case"),
-            TableColumn(key="arm", header="Arm"),
-            TableColumn(key="outcome", header="Outcome"),
-            TableColumn(key="why", header="Why"),
-        ],
-        rows=[table_row(row) for row in rows],
-        order="as the bundle numbers them",
-        total_rows=len(rows),
-    )
-    return [table, *blocks]
+    if rows:
+        blocks.append(
+            TableBlock(
+                section="trials",
+                name="trials",
+                title="Trials",
+                columns=[
+                    TableColumn(key="trial", header="Trial", term="trial"),
+                    TableColumn(key="case", header="Case"),
+                    TableColumn(key="arm", header="Arm"),
+                    TableColumn(key="outcome", header="Outcome"),
+                    TableColumn(key="why", header="Why"),
+                ],
+                rows=[table_row(row) for row in rows],
+                order="the failed first, then the lost, each by trial id",
+                total_rows=len(rows),
+            )
+        )
+    blocks += records
+    passed = [
+        {
+            "trial": trial.trial_id,
+            "case": case_name(trial.case_id),
+            "arm": arm(trial.arm),
+            "result": code(trial.result_id),
+        }
+        for trial in bundle.trials
+        if trial.state == "passed"
+    ]
+    if passed:
+        blocks.append(
+            TableBlock(
+                section="trials",
+                name="passed_trials",
+                title="Passed trials",
+                columns=[
+                    TableColumn(key="trial", header="Trial", term="trial"),
+                    TableColumn(key="case", header="Case"),
+                    TableColumn(key="arm", header="Arm"),
+                    TableColumn(key="result", header="Stored result"),
+                ],
+                rows=[table_row(row) for row in passed],
+                order="as the bundle numbers them",
+                total_rows=len(passed),
+                details=True,
+            )
+        )
+    return blocks
 
 
 # =============================================================================

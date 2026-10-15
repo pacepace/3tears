@@ -124,6 +124,7 @@ details.trial > summary { font-size: 0.9375rem; }
 details.trial dl { margin: 8px 0 0; font-size: 0.9375rem; }
 details.trial dt { font-weight: 600; margin-top: 8px; }
 details.trial dd { margin: 2px 0 0 0; }
+.trial-links { color: var(--muted); font-size: 0.875rem; }
 dl.glossary { margin: 12px 0 0; }
 dl.glossary dt { font-weight: 600; margin-top: 10px; }
 dl.glossary dd { margin: 2px 0 0 16px; max-width: 72ch; }
@@ -334,12 +335,19 @@ def _grid(block: TableBlock) -> str:
             text = _code(cell.text)
             if (block.name == "cases" and column.key == "trials") or (block.name == "trials" and column.key == "trial"):
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
-            css = classes[column.key] or (' class="prose"' if len(cell.text) >= _PROSE_CELL else "")
+            if block.name == "cases" and column.key == "trials":
+                # Navigation beside the marks, not information: the stylesheet mutes it.
+                css = ' class="trial-links"'
+            else:
+                css = classes[column.key] or (' class="prose"' if len(cell.text) >= _PROSE_CELL else "")
             cells.append(f"<td{css}>{text}</td>")
         anchor = ""
         # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
         if block.name == "cases" and "case" in row and (number := _CASE_NUMBER.fullmatch(row["case"].text)):
             anchor = f' id="case-{number.group(1)}"'
+        # A passed trial has no record of its own, so the link every table makes of its id lands on its row here.
+        elif block.name == "passed_trials" and "trial" in row and _TRIAL_ID.fullmatch(row["trial"].text):
+            anchor = f' id="{row["trial"].text}"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
     return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
@@ -374,7 +382,8 @@ def _chart(block: ChartBlock, chart_id: str) -> str:
 
 
 def _trial(block: TrialBlock) -> str:
-    """One trial's record, closed: what it asked, what the judge saw and said, what failed, and where it is stored."""
+    """One trial's record, open when the block says so: what it asked, what the judge saw and said, what failed,
+    and where it is stored."""
     parts: list[str] = []
     if block.cause_words:
         parts.append(f"<dt>Why</dt><dd>{_escape(block.cause_words)}</dd>")
