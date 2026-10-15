@@ -180,6 +180,42 @@ def test_a_campaign_spanning_a_reset_refuses_to_pool_the_two_revisions() -> None
     assert [cell.n_cases for bundle in each for cell in bundle.cells] == [4, 7], "each revision reads alone"
 
 
+def test_two_templates_sharing_a_name_at_revision_one_are_not_two_revisions_and_pool() -> None:
+    """Only a reset writes a revision, always one past the newest: two records under one name, each revision 1, are
+    two templates that share a name, and a campaign over runs of both is no pooling of revisions."""
+    storage, _ = memory_storage()
+    first, second = (_template("four cases").model_copy(update={"id": f"one-name-{n}"}) for n in (1, 2))
+    for template in (first, second):
+        storage.save_template(template)
+    assert first.id != second.id and first.name == second.name and (first.revision, second.revision) == (1, 1)
+    _run_on(storage, first, "run-first", 4)
+    _run_on(storage, second, "run-second", 4)
+    profile = toyhost_profile()
+
+    created = create_campaign(
+        storage,
+        {"name": "one name", "subject_id": "subject-1", "behavior": "b", "run_ids": ["run-first", "run-second"]},
+        scope_id=TOYHOST_SCOPE,
+        created_by="t",
+        profile=profile,
+        exploratory=True,
+    )
+    alone = create_campaign(
+        storage,
+        {"name": "first only", "subject_id": "subject-1", "behavior": "b", "run_ids": ["run-first"]},
+        scope_id=TOYHOST_SCOPE,
+        created_by="t",
+        profile=profile,
+        exploratory=True,
+    )
+    add_runs_to_campaign(storage, alone.id, TOYHOST_SCOPE, ["run-second"])
+    bundle = assemble_context_bundle(_campaign(["run-first", "run-second"]), storage=storage, profile=profile)
+
+    assert created.run_ids == ["run-first", "run-second"]
+    assert storage.load_campaign(alone.id, TOYHOST_SCOPE).run_ids == ["run-first", "run-second"]  # type: ignore[union-attr]
+    assert bundle.cells, "the bundle assembles"
+
+
 # --- the record, the drift read, and a reset per doc type --------------------------------------------------------
 
 JUDGE_NAME = "Faithfulness judge"

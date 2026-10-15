@@ -33,6 +33,9 @@ def refuse_pooled_revisions(
 ) -> None:
     """Refuse a set of runs that holds more than one revision of one template.
 
+    Two templates under one name at one revision number are not two revisions (a reset always writes the next
+    number), so they are not refused.
+
     Args:
         template_ids: The template each run ran; None for an ad-hoc run, which pools with none of them.
         load_template: Reads a template by id, archived or not; None when it no longer resolves, which can say
@@ -42,14 +45,16 @@ def refuse_pooled_revisions(
     Raises:
         ValidationFailedError: Naming each template whose runs span revisions, and every revision held.
     """
-    # Keyed by id, not by revision number: two records an older writer left under one name at one number are two
-    # definitions all the same.
+    # A revision is what a reset writes: a record one past the newest under its name, so two revisions of one template
+    # always differ in number. Two records under one name at one number are not revisions of each other but two
+    # templates that share a name (two authored or seeded separately, each revision 1), and runs of the two pool as a
+    # campaign's runs of any two templates do. So a name spans revisions only when it holds more than one number.
     revisions: dict[str, dict[str, int]] = {}
     for template_id in sorted({template_id for template_id in template_ids if template_id}):
         template = load_template(template_id)
         if template is not None:
             revisions.setdefault(template.name, {})[template_id] = template.revision
-    spanning = {name: held for name, held in sorted(revisions.items()) if len(held) > 1}
+    spanning = {name: held for name, held in sorted(revisions.items()) if len(set(held.values())) > 1}
     if spanning:
         named = "; ".join(
             f"{name!r} "
