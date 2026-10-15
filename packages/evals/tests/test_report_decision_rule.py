@@ -28,6 +28,7 @@ from threetears.evals.analysis.report.decision import (
 )
 from threetears.evals.analysis.style import lint_prose
 from threetears.evals.kernel.declaration import Question
+from threetears.evals.kernel.metrics import goal_check_measure
 import pytest
 
 from packages.evals.tests.g2_support import G2_QUESTION, g2_ruled_report
@@ -313,3 +314,53 @@ async def test_a_check_clause_no_longer_switches_on_a_t_interval_the_bounded_one
     # Read on the t interval, as .29 read it, the same clause switched.
     on_t = replace(readings, rates=(replace(label, interval=check.interval),))
     assert evaluate_rule(rule, on_t).clauses[0].outcome == "switch"
+
+
+async def test_a_goal_check_carried_as_a_mean_is_read_as_its_count_with_its_bounded_interval() -> None:
+    """A goal check reaches the bundle as a mean of 0s and 1s, not a rate: the rule reads it as the count it is.
+
+    The ruled campaign's label check stands in for one: its per-cell summary and its contrast, renamed to a goal
+    check's measure and carried as a mean, as a goal check's are.
+    """
+    bundle, control, candidate = await _ruled([3, 3, 3, 3, 3, 3, 2], [3] * 7)
+    check = goal_check_measure('call_count("music.queue_track") >= 2')
+    cells = [
+        cell.model_copy(
+            update={
+                "measures": cell.measures.model_copy(
+                    update={
+                        "measures": [
+                            *cell.measures.measures,
+                            *(
+                                summary.model_copy(update={"name": check, "rate": None, "n_true": None})
+                                for summary in cell.measures.measures
+                                if summary.name == "accuracy"
+                            ),
+                        ]
+                    }
+                )
+            }
+        )
+        for cell in bundle.cell_measures
+    ]
+    families = [
+        family.model_copy(
+            update={
+                "comparisons": [
+                    *family.comparisons,
+                    *(c.model_copy(update={"name": check}) for c in family.comparisons if c.name == "accuracy"),
+                ]
+            }
+        )
+        for family in bundle.multiple_comparisons.families
+    ]
+    as_goal_check = bundle.model_copy(
+        update={
+            "cell_measures": cells,
+            "multiple_comparisons": bundle.multiple_comparisons.model_copy(update={"families": families}),
+        }
+    )
+    (contrast,) = [c for family in families for c in family.comparisons if c.name == check]
+    (rate,) = [rate for rate in rule_readings(as_goal_check, control, candidate).rates if rate.measure == check]
+    assert (rate.control_passed, rate.control_n, rate.candidate_passed, rate.candidate_n) == (20, 21, 21, 21)
+    assert rate.interval == contrast.bounded_interval

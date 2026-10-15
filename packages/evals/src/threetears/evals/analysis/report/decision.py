@@ -41,7 +41,8 @@ from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisCon
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import measure_name
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 #: What a clause reads: a pass rate that must not drop by more than a margin, or a cost that must be lower.
 ClauseKind = Literal["rate_drop", "cost_lower", "unread"]
@@ -318,6 +319,20 @@ def _contrast(
     return None
 
 
+def _held(summary: MeasureSummary) -> int | None:
+    """How many of a pass/fail reading's observations passed: a rate's count, or a goal check's mean times its n.
+
+    A goal check reaches the bundle as a mean of 0s and 1s, not a rate, and is the same proportion: its count is the
+    mean times the observations, read only where that is whole. None for any other reading.
+    """
+    if summary.rate is not None and summary.n_true is not None:
+        return summary.n_true
+    if goal_check_of(summary.name) is None or summary.mean is None or summary.n <= 0:
+        return None
+    count = summary.mean * summary.n
+    return round(count) if abs(count - round(count)) <= 1e-6 else None
+
+
 def _compared_as(name: str) -> str:
     """The measure a check's pass rate is compared on: a label's ``match`` as ``accuracy``, its mean, else itself.
 
@@ -340,7 +355,8 @@ def _bounded_better_way(comparison: FamilyComparison | None) -> tuple[float, flo
 def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -> RuleReadings:
     """The figures a rule is read against for one candidate arm, from the bundle alone.
 
-    The pass rates are every trial's, then each check's pass rate the arms' cells carry; each arm's lost trials are
+    The pass rates are every trial's, then each check's pass rate the arms' cells carry (a goal check's as its mean
+    times its observations, the count it is: :func:`_held`); each arm's lost trials are
     trials it could still add. Each rate carries its contrast's bounded interval, the one a switch reads, where the
     bundle computed one (the overall pass rate's is its ``trial`` contrast). Cost is each arm's cost per reply, with
     the cost contrast's interval. Each arm carries its usable cases.
@@ -373,9 +389,11 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
     measures: dict[str, dict[str, tuple[int, int]]] = {}
     for cell in bundle.cell_measures:
         for summary in cell.measures.measures:
-            if summary.rate is None or summary.n_true is None or summary.name.startswith("classifier:"):
+            if (held := _held(summary)) is None or summary.name.startswith("classifier:"):
                 continue
-            measures.setdefault(summary.name, {})[cell.variant_key] = (summary.n_true, summary.n)
+            # An arm over several rigs is counted over all of them, as its trials are.
+            passed, n = measures.setdefault(summary.name, {}).get(cell.variant_key, (0, 0))
+            measures[summary.name][cell.variant_key] = (passed + held, n + summary.n)
     for name, by_arm in sorted(measures.items()):
         if control in by_arm and candidate in by_arm:
             descriptor = bundle.measure_catalog.get(name)
