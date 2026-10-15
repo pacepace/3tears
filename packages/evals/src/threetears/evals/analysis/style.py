@@ -38,6 +38,9 @@ _LABELLED = re.compile(r"^(?P<model>\S+) \((?P<label>[^()]+)\)$")
 #: What marks a name as code (a check expression) rather than an identifier: a call, a comparison or a quote.
 _EXPRESSION = re.compile(r"[()<>=\"']")
 _PAIR = re.compile(r"^(?P<axis>[\w.-]+)=(?P<level>.+)$")
+#: What marks a case label as no name: whitespace (a sentence, or a stratum before a label), the run of hex a
+#: generated id carries, or a bare number, which a sentence would read as a count.
+_NOT_A_NAME = re.compile(r"\s|[0-9a-f]{12,}|^\d+$")
 
 
 def humanize(kind: HumanizeKind, identifier: str) -> str:
@@ -50,8 +53,9 @@ def humanize(kind: HumanizeKind, identifier: str) -> str:
     Returns:
         A model id without its vendor prefix; an arm by its given label (else its model id, vendor dropped), its
         ``axis=level`` pairs read as words; a dimension with its underscores as spaces, but a check expression (a
-        call, a comparison, a quote) as written, since it is code; a case label on one line (empty when it is a
-        dump, so the caller names the case by number); a provider as given.
+        call, a comparison, a quote) as written, since it is code; a case label where it reads as a name someone
+        gave (``double-charge``: one token, not a generated id, not a bare number — empty for a dump, a sentence or
+        an id, so the caller names the case by number); a provider as given.
     """
     if (kind, identifier) in HUMANIZE_OVERRIDES:
         return HUMANIZE_OVERRIDES[(kind, identifier)]
@@ -65,7 +69,7 @@ def humanize(kind: HumanizeKind, identifier: str) -> str:
             return text
         return re.sub(r"[_.]+", " ", text).strip() or text
     if kind == "case":
-        return "" if is_dump(text) else text
+        return "" if is_dump(text) or _NOT_A_NAME.search(text) else text
     return text
 
 
@@ -210,6 +214,9 @@ _KEY_VALUE = re.compile(r"\b[a-z_][a-z0-9_]*=[^\s,;)}=]+")
 _FACT_LINE = re.compile(r"^[A-Z][a-z ]+: .* · [A-Z][a-z ]+: ")
 _CODE_SPAN = re.compile(r"`[^`]*`")
 _CASE_NUMBER = re.compile(r"\bcase \d+\b")
+#: A line quoting something whole, as the first screen quotes the declared question (``Asked before the run: "…"``):
+#: the quotation is the page's data, held to no prose rule.
+_QUOTED_LINE = re.compile(r'^[A-Z][a-z]+(?: [a-z]+)*: ".+"$')
 
 
 @dataclass(frozen=True)
@@ -291,11 +298,12 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
     """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
 
     Headings and table headers are held to the header rule; prose lines to every rule. Table body cells, fenced
-    blocks, folded trial details and the methods' disclosures fold are data and quoted engine text, not prose.
+    blocks, folded trial details, the methods' disclosures fold and a line quoting something whole (the declared
+    question under the arms line) are data and quoted text, not prose.
 
     Args:
         markdown: The page.
-        question: The declared question, which only the title may carry.
+        question: The declared question, which only its own quoted line may carry.
         names: The arms' names, which head a column as a name, not a header's words.
 
     Returns:
@@ -324,6 +332,8 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
         if line.startswith("#"):
             heading = line.lstrip("#").strip()
             found += lint_prose(heading, header=number > 0)
+            continue
+        if _QUOTED_LINE.match(line):
             continue
         found += lint_prose(line.lstrip("-> *").strip(), question=question)
     return found

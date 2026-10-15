@@ -34,34 +34,59 @@ The invoices example (rung 3) renders this, verbatim:
 
 ```markdown
 # invoices: does v2 do better than v1?
-v1 (control) vs v2 · 14 Oct 2026
+v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 
-**Exploratory: v2 separated from v1 on no reading. Guardrail undecided for v2: no invented total.**
+**Exploratory: no difference found between v2 and v1 on any reading. Not yet shown safe: v2 on no invented total.**
 
 **Scoreboard**
 
-| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Failed otherwise | Cost per 1,000 replies |
+| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |
 |---|---|---|---|---|---|---|---|
 | ▸ v1 | 90 | 90 | 90 | 0 | 0 | 0 | $0.0459 |
 | v2 | 90 | 90 | 89 | 0 | 0 | 1 | $0.07036 |
 ```
 
-- **Title**: the declared question in plain words, or the campaign's name and what it compares.
-- **Line 2**: each arm named in full once (`deepseek-v4.1-flash (production, control)`), then the date. After that
-  an arm is its given label (`production`), the control marked `▸` in a table. Only line 2 and the verdict name a
-  model.
-- **Verdict**, written by code and never by a memo, result first. The first rule that fires: the test setup lost too
-  much (`No verdict: the test setup failed, not the models.`, the arm, the cause, the fix); one arm
-  (`emails: 27/30 cases passed; 3 misses: …`); a declared decision rule, in plain counts with each arm by its model
-  (`Keep production: deepseek-v4-flash passed 2 of 12 trials to deepseek-v4.1-flash's 10, and cost more per reply.`);
-  which arm passed more, when an arm is under the case floor; a declared question's contrasts; `Exploratory:` and
-  what separated.
-- **Scoreboard**: a bare table of counts and the cost per reply. Then the outcome bar (in Markdown, its table only
-  where it splits a cause the scoreboard lumps together), then the caveats in normal weight (the case floor: five
-  usable cases before a rate is estimated), never bold, never first. Where a declared rule settled keep under the
-  floor, the caveat says the rule was read on the counts and only the size of the difference is not estimated.
-  Where an arm's label claims a cost or speed its own row contradicts, one line says so (`The label 'cheaper
-  candidate' says cheaper; it cost more per reply than production.`); latency only where it was read serially.
+A campaign with a question declared before the run (rung 5's G2) opens the same way, with the question quoted
+whole between the arms and the verdict:
+
+```markdown
+# G2: Kairo queue discipline
+deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · 4 cases × 3 repeats
+
+Asked before the run: "On Kairo's queue-discipline regression set (dj_queue_discipline_v5), does deepseek-v4-flash hold every pass/fail queue-discipline dimension within 10 points of deepseek-v4.1-flash's pass rate, at lower cost per turn? Decision rule: switch Kairo's model only if no dimension drops by more than 10 points AND the cost per turn is lower; otherwise keep deepseek-v4.1-flash."
+
+**Keep production: deepseek-v4-flash passed 2 of 12 trials to deepseek-v4.1-flash's 10, and cost more per reply.**
+```
+
+The first screen carries the minimum a reader needs to grasp the result; every caveat and nuance is one step down.
+
+- **Title**: a name — the campaign's (`G2: Kairo queue discipline`), with what it compares where no question was
+  declared before the run (`invoices: does v2 do better than v1?`). A declared question is never cut down to a
+  title.
+- **Line 2**: each arm named in full once (`deepseek-v4.1-flash (production, control)`), then the date, then the
+  design (`30 cases × 3 repeats`). After that an arm is its given label (`production`), the control marked `▸` in
+  a table. Only line 2 and the verdict name a model.
+- **Line 3**, where a question was declared before the run: the question quoted whole, `Asked before the run:
+  "…"`. It is the contract the verdict and the Decision section read, so it is never paraphrased.
+- **Verdict**, written by code and never by a memo, result first: one sentence for the decision, a second only for
+  a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
+  models.`, the arm, the cause, the fix); one arm (`emails: 25/30 cases passed; 5 misses: double-charge,
+  refund-after-cancel, …`, each case by the name its author gave it, else `case N`); a declared decision rule, in
+  plain counts with each arm by its model (`Keep production: deepseek-v4-flash passed 2 of 12 trials to
+  deepseek-v4.1-flash's 10, and cost more per reply.`); which arm passed more, when an arm is under the case floor;
+  a declared question's contrasts; `Exploratory:` (linked to the glossary) and what separated, or `no difference
+  found between v2 and v1 on any reading`. A guardrail an arm is not shown safe on is the second sentence:
+  `Not yet shown safe: v2 on no invented total.`
+- **Scoreboard**: a bare table of counts and the cost per reply; a failure cause beside checks and the judge heads
+  its own column (`Model failed`) where it is the only one, and the outcome bar names each where there are several.
+  Then the outcome bar (in Markdown, its table only where it splits a cause the scoreboard lumps together). Under
+  it, at most one line, in normal weight, never bold, never first, and only where it changes how the verdict is
+  read: the case floor (five usable cases before a rate is estimated: `4 cases per arm: enough to apply the rule,
+  too few to size the difference (needs 5).` where a declared rule settled keep on the counts, `Too few usable
+  cases to estimate a rate: …` otherwise), or an arm whose every trial failed. Everything else is a step down: an
+  arm's label that its own row contradicts (`The label 'cheaper candidate' says cheaper; it cost more per reply
+  than production.`, latency only where it was read serially) opens the Contrasts; what was not charted and where
+  a cost is a floor are in the Methods.
 
 The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too few,
 and no rate (a pass rate, pass^k) is estimated for an arm: a pass rate reads as a count, and pass^k states only the cases it rests on. A measure's mean is shown with its
@@ -85,11 +110,19 @@ template whose results are compared across arms, whatever its declared reading.
   sit in a closed `Evidence` fold. Where a declared rule settled every clause, its question has no answer line: the
   verdict and the Decision table answer it; a clause left open is the one line (`Still open: whether …`). The memo's
   words are held to the page's style (below).
-- **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size and
-  the adjusted p folded; the guardrails; strata and per-label tables, folded.
-- **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`); one row per trial, its record folded
-  under `T4 · case 1 · cheaper candidate · failed`, never the start of what the case asked. A failed check is named
-  by its expression, as code (``check: `call_count("music.queue_track") >= 2` ``).
+- **Contrasts**: an arm's label its own row contradicts, first; the contrasts that can resolve, one line when none
+  can under the case floor, with the effect size and the adjusted p folded; the guardrails; strata and per-label
+  tables, folded. A one-arm page contrasts nothing, so the section is headed **Readings** (its id stays
+  `contrasts`).
+- **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`), its trial ids last and muted, the
+  failed and lost ones first. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
+  name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
+  line (`180 trials ran. Of them 179 passed and 1 failed.`) and only what went wrong: one row per failed or lost
+  trial, the failed first, and each one's record under `T4 · double-charge · cheaper candidate · failed` (never the
+  start of what the case asked), the first twelve open. A failed check is named by its expression, as code
+  (``check: `call_count("music.queue_track") >= 2` ``). The passed trials are one closed `Passed trials` table
+  (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
+  the census line stands alone.
 - **Not tested**, then **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the
   bundle) and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of art the page links,
   in one plain sentence.
@@ -556,7 +589,8 @@ stratum, under `by stratum:` in `render()`, with the same too-few-cases warning.
 **Identity.** A stratum enters no identity key, and two arms run over the same cases share their strata. It is
 not part of `content_hash` either, which digests what the candidate is given. So re-labelling a case keeps the
 case: an `Eval` stores a changed stratum on the same test case, and every run over it, earlier
-ones included, is then read under the new one.
+ones included, is then read under the new one. A case's given `id` is stored on the same terms, as the test case's
+`name`: the page names the case by it, and renaming a case keeps the case.
 
 ## How far a judged score can be leaned on: evidence tiers
 

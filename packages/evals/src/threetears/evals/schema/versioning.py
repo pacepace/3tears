@@ -434,7 +434,12 @@ DURABLE_SCHEMA_VERSION: int = 15
 #:   the next as a new record. None is in no digest pre-image, and a template stored before reads as revision 1, the
 #:   only one its name had. An older build that ignores this field reads the document correctly, and its writes leave
 #:   it true.
-DURABLE_SCHEMA_MINOR: int = 3
+#: - **v15.4** — a case carries the name its author gave it: ``EvalTestCase.name`` (default None: no author named
+#:   it, or it was stored before the field existed), metadata beside ``stratum`` that the report names the case by
+#:   where it reads as a name. In no digest pre-image and in no identity key: a case renamed in place keeps its id
+#:   and its history. An older build that ignores this field reads the document correctly, and its writes leave it
+#:   true.
+DURABLE_SCHEMA_MINOR: int = 4
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 #: The registered durable steps, oldest first: ``[s.from_version for s in DURABLE_UPGRADERS]`` is

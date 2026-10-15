@@ -6,9 +6,16 @@ is ``<details>``; moving between the screens is ``#`` anchors. The two charts ar
 (:mod:`~threetears.evals.analysis.report.svg`), each beside a visually hidden table of the values it draws, so a
 screen reader and a page with styles off lose nothing.
 
-**The first screen is the page's ``<header>``**: the title (the question), the arms line (always line 2), the verdict
-line, the scoreboard with its outcome bar, and the caveats in normal weight. Everything a reader needs to decide
-whether to read on is there, written by code. Every term of art links to the glossary at the foot of the page.
+**The first screen is the page's ``<header>``**: the title (the campaign's name), the arms line (always line 2), the
+declared question quoted whole where there is one, the verdict line, the scoreboard with its outcome bar, and the one
+caveat in normal weight that changes how the verdict is read. Everything a reader needs to decide whether to read on
+is there, written by code. Every term of art links to the glossary at the foot of the page.
+
+**Depth on demand, with the least ink.** The result, the decision rule, what it means and the contrasts are open;
+the cases, the trials, what was not tested, the methods and the glossary each sit in a closed ``<details>`` whose
+summary is the section heading, so a reader opens what they came for. The stylesheet draws hairlines, not boxes:
+hierarchy is type size, weight and spacing, a thin rule in a hue is the only tint (the verdict line's kind, a failed
+or lost trial), and every meaning a colour carries is also in words.
 
 The author's words are Markdown; this renders the part of it a memo uses — paragraphs, bullet lists, ``**bold**``
 and ``code`` — over text escaped first, so nothing an author wrote can become markup.
@@ -35,49 +42,116 @@ from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, tria
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg
 from threetears.evals.analysis.style import GLOSSARY
 
-#: The page's stylesheet: the system's own fonts (named once, as variables — the page loads no font), a readable measure, light and dark from the reader's setting (and a
-#: ``data-theme`` a host's page may set), with the charts' own classes after it.
+#: The page's stylesheet: the system's own fonts (named once, as variables — the page loads no font), a readable
+#: measure, light and dark from the reader's setting (and a ``data-theme`` a host's page may set), with the charts'
+#: own classes after it. Every colour is a variable both schemes define; spacing is on one scale (4, 8, 16, 24, 40).
+#: The tone hues set the verdict line's kind and a failed or lost trial apart by a thin rule only, never a wash.
 _STYLE = """
-:root { color-scheme: light dark; --fg: #1d1d1f; --muted: #5f6368; --bg: #ffffff; --rule: #d9d9de; --note: #f4f4f6;
-  --verdict: #fff4e5; --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+:root { color-scheme: light dark; --fg: #1d1d1f; --muted: #5f6368; --bg: #ffffff; --rule: #e3e3e8;
+  --rule-strong: #c4c4cc; --tone-decided: #2a78d6; --tone-open: #b8791a; --tone-failed: #d2501f;
+  --tone-summary: #8a8a92; --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #3a3a42; --note: #222228;
-    --verdict: #2b2418; }
+  :root:not([data-theme="light"]) { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #2c2c33;
+    --rule-strong: #4a4a54; --tone-decided: #4a90e2; --tone-open: #d9a44a; --tone-failed: #e0623a;
+    --tone-summary: #8a8a92; }
 }
-:root[data-theme="dark"] { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #3a3a42; --note: #222228;
-  --verdict: #2b2418; }
-body { font: 16px/1.55 var(--font-sans); color: var(--fg); background: var(--bg);
-  margin: 0 auto; padding: 24px 16px 64px; max-width: 1040px; }
-h1 { font-size: 1.45rem; line-height: 1.3; margin: 0 0 6px; }
-h2 { font-size: 1.25rem; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
-h3 { font-size: 1.05rem; margin: 24px 0 6px; }
-header { border-bottom: 2px solid var(--rule); padding-bottom: 12px; }
-.arms { margin: 0 0 8px; color: var(--muted); }
-.finding { margin: 18px 0 6px; }
-a.term { font-size: 0.8rem; color: var(--muted); }
-.verdict { background: var(--verdict); border-left: 4px solid var(--muted); padding: 10px 14px; margin: 8px 0 12px; }
-nav { font-size: 0.9rem; margin: 12px 0; }
-nav a { margin-right: 14px; }
-.facts, .order, .line { color: var(--muted); font-size: 0.9rem; }
-.disclosure, .caveat { background: var(--note); border-left: 3px solid var(--rule); padding: 8px 12px; margin: 10px 0; }
-.table-wrap { overflow-x: auto; margin: 8px 0; }
-table { border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
-th, td { border-bottom: 1px solid var(--rule); padding: 4px 10px; text-align: left; vertical-align: top; }
-th { font-weight: 600; }
-figure { margin: 16px 0; }
-figcaption { margin-bottom: 6px; font-weight: 600; }
-details { margin: 8px 0; }
-details > summary { cursor: pointer; }
-details.trial { border: 1px solid var(--rule); border-radius: 4px; padding: 6px 10px; }
-details.trial dl { margin: 8px 0 0; }
-details.trial dt { font-weight: 600; margin-top: 8px; }
-details.trial dd { margin: 2px 0 0 0; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--note); padding: 8px; margin: 4px 0;
-  font: 0.85rem/1.45 var(--font-mono); max-height: 28rem; overflow-y: auto; }
+:root[data-theme="dark"] { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #2c2c33; --rule-strong: #4a4a54;
+  --tone-decided: #4a90e2; --tone-open: #d9a44a; --tone-failed: #e0623a; --tone-summary: #8a8a92; }
+html { scroll-padding-top: 48px; }
+body { font: 16px/1.5 var(--font-sans); color: var(--fg); background: var(--bg); margin: 0 auto;
+  padding: 24px 16px 64px; max-width: 1040px; }
+h1 { font-size: 1.6rem; line-height: 1.25; letter-spacing: -0.01em; margin: 0 0 8px; max-width: 60ch; }
+h2 { font-size: 1.25rem; line-height: 1.3; font-weight: 600; margin: 40px 0 12px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule); }
+h3, figcaption { font-size: 0.9375rem; font-weight: 600; margin: 24px 0 4px; }
+a { color: inherit; text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 2px; }
+a:hover { text-decoration-color: var(--fg); }
+a.term { font-size: 0.8125rem; color: var(--muted); text-decoration: underline dotted; }
+th a { text-decoration: underline dotted; }
 p, li, .disclosure, .caveat { max-width: 75ch; }
 code { font-family: var(--font-mono); font-size: 0.9em; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; padding: 0 0 0 12px;
+  border-left: 1px solid var(--rule); font: 0.8125rem/1.45 var(--font-mono); max-height: 24rem; overflow-y: auto; }
+header { padding: 0 0 16px; }
+.arms { margin: 0 0 16px; color: var(--muted); }
+.verdict { font-size: 1.125rem; line-height: 1.4; margin: 16px 0 24px; padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--rule-strong); }
+.verdict[data-tone="decided"] { border-left-color: var(--tone-decided); }
+.verdict[data-tone="open"] { border-left-color: var(--tone-open); }
+.verdict[data-tone="failed"] { border-left-color: var(--tone-failed); }
+.verdict[data-tone="summary"] { border-left-color: var(--tone-summary); }
+.facts, .order, .line { color: var(--muted); font-size: 0.875rem; }
+.line { margin: 4px 0; }
+.line[data-source="caveat"] { color: var(--fg); font-size: 0.9375rem; }
+nav { position: sticky; top: 0; z-index: 1; display: flex; gap: 20px; overflow-x: auto; white-space: nowrap;
+  font-size: 0.875rem; padding: 10px 0; margin: 0 0 8px; background: var(--bg); border-bottom: 1px solid var(--rule); }
+nav a { color: var(--muted); text-decoration: none; }
+nav a:hover { color: var(--fg); }
+.table-wrap { overflow: auto; max-height: 80vh; margin: 4px 0 8px; }
+table { border-collapse: separate; border-spacing: 0; font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 20px 6px 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); }
+th:last-child, td:last-child { padding-right: 0; }
+thead th { font-weight: 600; border-bottom: 1px solid var(--rule-strong); position: sticky; top: 0;
+  background: var(--bg); }
+th.num, td.num { text-align: right; }
+td.key { font-weight: 600; }
+td.prose { max-width: 36ch; }
+[data-table="scoreboard"] table { font-size: 1rem; }
+figure { margin: 16px 0; overflow-x: auto; }
+figcaption { margin: 0 0 4px; }
+details { margin: 8px 0; }
+summary { cursor: pointer; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\\203A"; display: inline-block; width: 1em; color: var(--muted); transition: transform 0.1s; }
+details[open] > summary::before { transform: rotate(90deg); }
+details.section { margin: 40px 0 0; }
+details.section > summary { padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
+details.section > summary > h2 { display: inline; margin: 0; padding: 0; border: 0; }
+.section-body { scroll-margin-top: 48px; }
+.count { color: var(--muted); font-size: 0.9375rem; }
+details.fold, details[data-table] { margin: 8px 0 16px; }
+details.fold > summary, details[data-table] > summary { font-size: 0.875rem; color: var(--muted); }
+.finding { font-size: 1.0625rem; margin: 28px 0 8px; }
+p[data-role] > strong:first-child, .caveat > strong:first-child { font-size: 0.8125rem; color: var(--muted);
+  letter-spacing: 0.02em; }
+.disclosure, .caveat { font-size: 0.875rem; color: var(--muted); margin: 8px 0; padding: 0 0 0 12px;
+  border-left: 1px solid var(--rule-strong); }
+details.trial { margin: 0; padding: 8px 0 8px 12px; border-top: 1px solid var(--rule);
+  border-left: 2px solid transparent; }
+details.trial:last-of-type { border-bottom: 1px solid var(--rule); }
+details.trial[data-state="failed"] { border-left-color: var(--tone-failed); }
+details.trial[data-state="lost"] { border-left-color: var(--tone-summary); }
+details.trial > summary { font-size: 0.9375rem; }
+details.trial dl { margin: 8px 0 0; font-size: 0.9375rem; }
+details.trial dt { font-weight: 600; margin-top: 8px; }
+details.trial dd { margin: 2px 0 0 0; }
+.trial-links { color: var(--muted); font-size: 0.875rem; }
+dl.glossary { margin: 12px 0 0; }
+dl.glossary dt { font-weight: 600; margin-top: 10px; }
+dl.glossary dd { margin: 2px 0 0 16px; max-width: 72ch; }
+@media (max-width: 480px) {
+  h1 { font-size: 1.35rem; }
+  .verdict { font-size: 1rem; }
+  nav { gap: 16px; }
+}
+@media print {
+  nav { display: none; }
+  body { padding: 0; max-width: none; }
+  .table-wrap { overflow: visible; max-height: none; }
+  thead th { position: static; }
+  figure { overflow: visible; }
+  svg.viz { min-width: 0; }
+  details.trial, .table-wrap, figure { break-inside: avoid; }
+}
 """
+
+#: The sections a reader opens on demand: everything after the result, the decision, what it means and the contrasts.
+_FOLDED_SECTIONS: frozenset[str] = frozenset({"cases", "trials", "not_tested", "methods", "glossary"})
+
+#: The folded sections whose own table lists every one of their units, so the summary can say how many: the cases.
+#: Not the trials — their table lists only the failed and lost, and the section's census line counts the rest.
+_COUNTED_SECTIONS: frozenset[str] = frozenset({"cases"})
 
 #: Inline Markdown a memo uses, applied to text already escaped — so its delimiters are the only markup it can make.
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -86,8 +160,12 @@ _CODE = re.compile(r"`([^`]+)`")
 #: A trial id in a table cell, linked to its drill-down.
 _TRIAL_ID = re.compile(r"\bT\d+\b")
 
-#: A case as the cases table numbers it, whose number its row's anchor is made of.
+#: A case as the cases table numbers it, whose number its row's anchor is made of; a case named by its author anchors
+#: by its name (``case-double-charge``).
 _CASE_NUMBER = re.compile(r"case (\d+)")
+
+#: A cell of words at least this long is prose, laid out to wrap at a measure rather than widen its column.
+_PROSE_CELL = 40
 
 
 def report_html(report: Report) -> str:
@@ -116,28 +194,65 @@ def report_html(report: Report) -> str:
         *(_block(block, index) for index, block in enumerate(head)),
         "</header>",
     ]
+    titles = report.section_titles
     sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN and section != "glossary"]
     present = [section for section in sections if any(block.section == section for block in report.blocks)]
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append(
-        "<nav>" + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in nav) + "</nav>"
+        "<nav>"
+        + "".join(f'<a href="#{_section_anchor(section)}">{_escape(titles[section])}</a>' for section in nav)
+        + "</nav>"
     )
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
-        parts.append(f"<h2>{_escape(SECTION_TITLES[section])}</h2>")
-        parts.extend(_folded(blocks))
+        parts.extend(_section(section, titles[section], _folded(blocks), count=_section_count(section, blocks)))
         parts.append("</section>")
     if report.terms:
         entries = "".join(
             f'<dt id="g-{_slug(term)}">{_escape(term)}</dt><dd>{_escape(GLOSSARY[term])}</dd>' for term in report.terms
         )
-        parts.append(
-            f'<section id="glossary"><h2>{SECTION_TITLES["glossary"]}</h2>'
-            f'<details class="glossary"><summary>Terms used on this page</summary><dl>{entries}</dl></details></section>'
-        )
+        parts.append('<section id="glossary">')
+        parts.extend(_section("glossary", titles["glossary"], [f'<dl class="glossary">{entries}</dl>'], count=None))
+        parts.append("</section>")
     parts += ["</article>", "</body>", "</html>"]
     return "\n".join(parts) + "\n"
+
+
+def _section(section: str, title: str, body: Sequence[str], *, count: int | None) -> list[str]:
+    """A section's heading and body: open, or closed in a ``<details>`` whose summary is the heading and its size.
+
+    ``title`` is the heading as this page heads the section (:attr:`Report.section_titles`), which can differ from
+    the section's fixed id: a one-arm page heads ``contrasts`` as ``Readings``.
+
+    A closed section's body is one element with an id of its own (``cases-body``), the one the nav links: a browser
+    opens a closed ``<details>`` for a link that lands inside its content and not for one that lands on the
+    ``<section>`` around it, which would scroll to a shut summary. Every id inside the fold — a trial, a case, a
+    term — is inside that element too, so a link to any of them opens the fold as well.
+    """
+    heading = f"<h2>{_escape(title)}</h2>"
+    if section not in _FOLDED_SECTIONS:
+        return [heading, *body]
+    size = f' <span class="count">· {count}</span>' if count is not None else ""
+    return [
+        f'<details class="section"><summary>{heading}{size}</summary>',
+        f'<div class="section-body" id="{_section_anchor(section)}">',
+        *body,
+        "</div></details>",
+    ]
+
+
+def _section_anchor(section: str) -> str:
+    """The id a link to a section lands on: the section itself when open, its body inside the fold when closed."""
+    return f"{section}-body" if section in _FOLDED_SECTIONS else section
+
+
+def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> int | None:
+    """How many units a section lists in full (its cases), for its closed summary; None for every other section."""
+    if section not in _COUNTED_SECTIONS:
+        return None
+    table = next((block for _, block in blocks if isinstance(block, TableBlock) and block.name == section), None)
+    return None if table is None else table.total_rows
 
 
 def _folded(blocks: Sequence[tuple[int, ReportBlock]]) -> list[str]:
@@ -214,7 +329,13 @@ def _table(block: TableBlock) -> str:
 def _header(text: str, term: str | None) -> str:
     """A column header, linked to its glossary entry where it is a term of art; a code span (a check) as code."""
     shown = _code(text)
-    return f'<a href="#g-{_slug(term)}">{shown}</a>' if term else shown
+    return _term_link(term, shown) if term else shown
+
+
+def _term_link(term: str, label: str, *, css: str = "") -> str:
+    """A link to a glossary term, its sentence as the link's title so a hover reads it without leaving the place."""
+    style = f' class="{css}"' if css else ""
+    return f'<a{style} href="#g-{_slug(term)}" title="{_escape(GLOSSARY[term])}">{label}</a>'
 
 
 def _code(text: str) -> str:
@@ -223,22 +344,54 @@ def _code(text: str) -> str:
 
 
 def _grid(block: TableBlock) -> str:
-    """A table of served cells' text, scrolling inside its own box rather than widening the page."""
-    head = "".join(f'<th scope="col">{_header(column.header, column.term)}</th>' for column in block.columns)
+    """A table of served cells' text, scrolling inside its own box rather than widening the page.
+
+    A column of numbers is classed ``num`` on every cell, header included, so the stylesheet right-aligns it; a cell
+    of prose is classed ``prose`` so it wraps at a measure instead of widening its column.
+    """
+    classes = {column.key: _column_class(block, column.key) for column in block.columns}
+    head = "".join(
+        f'<th scope="col"{classes[column.key]}>{_header(column.header, column.term)}</th>' for column in block.columns
+    )
     body = []
     for row in block.rows:
         cells = []
         for column in block.columns:
-            text = _code(row[column.key].text)
+            cell = row[column.key]
+            text = _code(cell.text)
             if (block.name == "cases" and column.key == "trials") or (block.name == "trials" and column.key == "trial"):
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
-            cells.append(f"<td>{text}</td>")
+            if block.name == "cases" and column.key == "trials":
+                # Navigation beside the marks, not information: the stylesheet mutes it.
+                css = ' class="trial-links"'
+            else:
+                css = classes[column.key] or (' class="prose"' if len(cell.text) >= _PROSE_CELL else "")
+            cells.append(f"<td{css}>{text}</td>")
         anchor = ""
         # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
-        if block.name == "cases" and "case" in row and (number := _CASE_NUMBER.fullmatch(row["case"].text)):
-            anchor = f' id="case-{number.group(1)}"'
+        if block.name == "cases" and "case" in row:
+            number = _CASE_NUMBER.fullmatch(row["case"].text)
+            anchor = f' id="case-{number.group(1) if number else _slug(row["case"].text)}"'
+        # A passed trial has no record of its own, so the link every table makes of its id lands on its row here.
+        elif block.name == "passed_trials" and "trial" in row and _TRIAL_ID.fullmatch(row["trial"].text):
+            anchor = f' id="{row["trial"].text}"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
     return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
+def _column_class(block: TableBlock, key: str) -> str:
+    """The class attribute a column's cells share: ``num`` for a column of numbers, with ``key`` on the scoreboard's
+    passed column, the one a reader weighs first; empty for a column of words.
+
+    A column is numeric when it holds a number and nothing but numbers and absences (a dash in a column of numbers
+    sits with the numbers, not with the words).
+    """
+    values = [row[key].value for row in block.rows]
+    numbers = [value for value in values if isinstance(value, int | float) and not isinstance(value, bool)]
+    if not numbers or len(numbers) + values.count(None) != len(values):
+        return ""
+    emphasis = " key" if block.name == "scoreboard" and key == "passed" else ""
+    return f' class="num{emphasis}"'
 
 
 def _chart(block: ChartBlock, chart_id: str) -> str:
@@ -256,7 +409,8 @@ def _chart(block: ChartBlock, chart_id: str) -> str:
 
 
 def _trial(block: TrialBlock) -> str:
-    """One trial's record, closed: what it asked, what the judge saw and said, what failed, and where it is stored."""
+    """One trial's record, open when the block says so: what it asked, what the judge saw and said, what failed,
+    and where it is stored."""
     parts: list[str] = []
     if block.cause_words:
         parts.append(f"<dt>Why</dt><dd>{_escape(block.cause_words)}</dd>")
@@ -296,11 +450,12 @@ def _disclosure(block: DisclosureBlock) -> str:
     """Something code had to say: the first screen's lines as lines, every other one set apart from the author's."""
     text = _code(block.text)
     if block.term is not None:
-        text += f' <a class="term" href="#g-{_slug(block.term)}">({_escape(block.term)})</a>'
+        text += " " + _term_link(block.term, f"({_escape(block.term)})", css="term")
     if block.source == "arms":
         return f'<p class="arms">{text}</p>'
     if block.source == "verdict":
-        return f'<p class="verdict"><strong>{text}</strong></p>'
+        tone = f' data-tone="{_escape(block.tone)}"' if block.tone is not None else ""
+        return f'<p class="verdict"{tone}><strong>{text}</strong></p>'
     if block.section in FIRST_SCREEN:
         return f'<p class="line" data-source="{_escape(block.source)}">{text}</p>'
     return f'<p class="disclosure" data-source="{_escape(block.source)}">{text}</p>'

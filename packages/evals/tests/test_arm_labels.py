@@ -489,7 +489,10 @@ class TestAnAnalysisReportNamesArmsByTheRule:
         assert {"item": "Arms", "value": "; ".join(names)} in facts.values()
         assert "**Deferred:** Keep the current assistant prompt." in report_markdown(report).splitlines()
         assert f"| Arms | {'; '.join(names)} |" in report_markdown(report)
-        assert f"<td>{html.escape('; '.join(names))}</td>" in report_html(report)
+        # A cell of words long enough is classed prose, so the page wraps it at a measure; the words are unchanged.
+        cell = html.escape("; ".join(names))
+        page = report_html(report)
+        assert f"<td>{cell}</td>" in page or f'<td class="prose">{cell}</td>' in page
 
     def test_the_evidence_names_the_cells_alike(self, named: tuple[Report, list[str]]) -> None:
         report, names = named

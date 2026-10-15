@@ -99,7 +99,8 @@ class TestATableServesItsCells:
         report = await g2_report()
         report = report.model_copy(update={"blocks": [*report.blocks, _table()]})
         assert "| b | 1234 |" in report_markdown(report) and "| a | — |" in report_markdown(report)
-        assert "<td>b</td><td>1234</td>" in report_html(report)
+        # A column of numbers is classed for right alignment; the served text is unchanged.
+        assert '<td>b</td><td class="num">1234</td>' in report_html(report)
 
 
 # =============================================================================

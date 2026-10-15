@@ -64,25 +64,29 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
     assert lines[0] == "# G2: can the cheaper model replace production?"
-    assert (
-        lines[1] == "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026"
+    assert lines[1] == (
+        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
+        "4 cases × 3 repeats"
     )
-    assert lines[3].startswith("**Keep production: ")
+    # The question declared before the run is quoted whole, as the contract the verdict reads, then the verdict.
+    assert lines[3] == f'Asked before the run: "{G2_QUESTION}"'
+    assert lines[5].startswith("**Keep production: ")
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
-    assert lines[5:8] == [
+    assert lines[7:10] == [
         "**Scoreboard**",
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[9] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
+    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
-    # The rule settled keep on the counts, so the floor caveat says what four cases can and cannot do.
-    caveat = (
-        "4 cases per arm: enough to apply the rule, too few to estimate how large the difference is (that needs 5)."
-    )
+    # The rule settled keep on the counts, so the floor caveat says what four cases can and cannot do — and it is
+    # the one line under the scoreboard: the design is on line 2, the label's claim is in the contrasts.
+    caveat = "4 cases per arm: enough to apply the rule, too few to size the difference (needs 5)."
     assert caveat in first.splitlines(), "the case floor, in normal weight"
     assert "Too few cases to estimate a rate" not in first
     assert first.index("**Keep production") < first.index("**Scoreboard**") < first.index(caveat)
+    assert first.rstrip().endswith(caveat), "nothing under the scoreboard but the caveat"
+    assert "The label 'cheaper candidate' says cheaper" not in first
 
 
 async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2_ruled: tuple[Result, Report]) -> None:
@@ -93,19 +97,27 @@ async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2
     assert report_html(report).count('data-chart="outcome_bar"') == 1
 
 
-async def test_the_question_is_the_title_and_never_repeated_in_the_body(g2_ruled: tuple[Result, Report]) -> None:
+async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
+    g2_ruled: tuple[Result, Report],
+) -> None:
     _, report = g2_ruled
     markdown = report_markdown(report)
-    assert "does deepseek-v4-flash hold every pass/fail queue-discipline dimension" not in markdown
+    assert markdown.count("does deepseek-v4-flash hold every pass/fail queue-discipline dimension") == 1
+    (asked,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    assert asked.section == "header" and asked.text == f'Asked before the run: "{G2_QUESTION}"'
+    assert f'<p class="line" data-source="basis">{html.escape(asked.text)}</p>' in report_html(report)
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
 async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
+    # The quoted question aside too: it is the author's words, whole.
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    sections = re.split(r"\n## ", report_markdown(report).replace(verdict, "")) + [
-        _visible_text(part).replace(verdict, "") for part in report_html(report).split("<h2>")
+    (asked,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    quoted = report_markdown(report).replace(verdict, "").replace(asked, "")
+    sections = re.split(r"\n## ", quoted) + [
+        _visible_text(part).replace(verdict, "").replace(asked, "") for part in report_html(report).split("<h2>")
     ]
     assert "deepseek-v4-flash passed" in verdict
     for section in sections:
@@ -152,6 +164,16 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
         assert page.index('id="glossary"') > page.index('id="methods"'), "the glossary folds last"
 
 
+async def test_every_link_on_the_page_lands_on_one_id_the_page_has() -> None:
+    # The only links are ``#`` anchors, and a passed trial, which has no record, is reached at its table row.
+    for report in await _pages():
+        page = report_html(report)
+        linked = set(re.findall(r'href="#([^"]+)"', page))
+        ids = re.findall(r'\sid="([^"]+)"', page)
+        assert linked and linked <= set(ids), f"{report.title}: dangling {sorted(linked - set(ids))}"
+        assert len(ids) == len(set(ids)), f"{report.title}: an id twice"
+
+
 async def test_the_glossary_lists_only_what_the_page_uses_and_explains_the_control_mark(
     g2_ruled: tuple[Result, Report],
 ) -> None:
@@ -170,9 +192,123 @@ async def test_one_arm_reads_n_of_n_cases_passed_first() -> None:
     assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: case \d(, case \d)*", verdict.text), verdict.text
 
 
+async def test_one_arm_heads_its_readings_as_readings_since_nothing_is_contrasted() -> None:
+    one = await Eval(CASES, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
+    assert one.report.section_titles["contrasts"] == "Readings"
+    markdown = report_markdown(one.report)
+    assert "\n## Readings\n" in markdown and "## Contrasts" not in markdown
+    page = report_html(one.report)
+    assert '<section id="contrasts">\n<h2>Readings</h2>' in page and '<a href="#contrasts">Readings</a>' in page
+
+
+async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_otherwise() -> None:
+    named = [{**case, "id": f"queue-{index}"} for index, case in enumerate(CASES)]
+    one = await Eval(named, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
+    report = one.report
+    (verdict,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: queue-\d(, queue-\d)*", verdict.text), verdict.text
+    (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
+    assert sorted(row["case"] for row in cases.values()) == [f"queue-{index}" for index in range(4)]
+    # Only a failed or lost trial has a record, so its summary is read off the first record the page lays out; a
+    # passed trial names its case in the closed table instead.
+    trials = [block for block in report.blocks if isinstance(block, TrialBlock)]
+    assert trials and all(re.fullmatch(r"queue-\d", trial.case_label) for trial in trials)
+    first = trials[0]
+    assert f"{first.trial_id} · {first.case_label} · production · {first.state}" in report_markdown(report)
+    (passed,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "passed_trials"]
+    assert all(re.fullmatch(r"queue-\d", str(row["case"])) for row in passed.values())
+    # The row anchors by the name; a numbered case keeps anchoring by its number.
+    assert '<tr id="case-queue-0">' in report_html(report) and 'id="case-1"' not in report_html(report)
+    comparison = await Eval(CASES, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2).run(
+        store=":memory:"
+    )
+    assert '<tr id="case-1">' in report_html(comparison.report)
+
+
 # =============================================================================
-# Trials: one row each, a record folded under a summary that is never the world dump
+# Trials: the census, then only what went wrong, each record under a summary that is never the world dump
 # =============================================================================
+
+
+def _trials_section(report: Report) -> tuple[DisclosureBlock, TableBlock | None, list[TrialBlock], TableBlock | None]:
+    """The census line, the failed-and-lost table, the records and the passed table, as the page lays them out."""
+    blocks = [block for block in report.blocks if block.section == "trials"]
+    census = blocks[0]
+    assert isinstance(census, DisclosureBlock)
+    wrong = [b for b in blocks if isinstance(b, TableBlock) and b.name == "trials"]
+    passed = [b for b in blocks if isinstance(b, TableBlock) and b.name == "passed_trials"]
+    records = [b for b in blocks if isinstance(b, TrialBlock)]
+    # The census, the table of what went wrong, the records, then the passed trials folded: in that order.
+    kinds = [("census" if b is census else b.name if isinstance(b, TableBlock) else "record") for b in blocks]
+    assert kinds == [
+        "census",
+        *(["trials"] if wrong else []),
+        *(["record"] * len(records)),
+        *(["passed_trials"] if passed else []),
+    ]
+    return census, wrong[0] if wrong else None, records, passed[0] if passed else None
+
+
+async def test_the_trials_section_lists_only_what_went_wrong_and_folds_the_passed(
+    g2_ruled: tuple[Result, Report],
+) -> None:
+    _, report = g2_ruled
+    census, table, records, passed = _trials_section(report)
+    assert census.text == "24 trials ran. Of them 12 passed and 12 failed."
+    failed = [trial for trial in report.bundle.trials if trial.state == "failed"]
+    assert table is not None and [row["trial"] for row in table.values()] == [trial.trial_id for trial in failed]
+    assert {row["outcome"] for row in table.values()} == {"failed"}
+    assert [block.trial_id for block in records] == [trial.trial_id for trial in failed]
+    assert all(block.open for block in records), "twelve failed, every record open"
+    assert passed is not None and passed.details and passed.title == "Passed trials"
+    assert [column.header for column in passed.columns] == ["Trial", "Case", "Arm", "Stored result"]
+    assert [row["result"] for row in passed.values()] == [
+        f"`{trial.result_id}`" for trial in report.bundle.trials if trial.state == "passed"
+    ]
+    # The cases table's links: the failed ids first, then the passed, so a row's marks lead to its records.
+    (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
+    states = {trial.trial_id: trial.state for trial in report.bundle.trials}
+    for row in cases.values():
+        listed = [states[trial_id] for trial_id in str(row["trials"]).split()]
+        assert listed == sorted(listed, key=lambda state: state == "passed"), row["trials"]
+    # Both doors: the records open, the passed table a closed fold with its table set off by blank lines.
+    markdown = report_markdown(report)
+    assert f'<details id="{failed[0].trial_id}" open><summary>' in markdown
+    assert "<details><summary>Passed trials</summary>\n\n| Trial | Case | Arm | Stored result |" in markdown
+    assert "|\n\n</details>" in markdown
+    page = report_html(report)
+    assert page.count('<td class="trial-links">') == len(cases.rows)
+    assert f'<details class="trial" id="{failed[0].trial_id}" data-state="failed" open>' in page
+    assert page.count('<details data-table="passed_trials"><summary>Passed trials</summary>') == 1
+
+
+async def test_the_records_open_up_to_a_cap_and_the_lost_follow_the_failed() -> None:
+    every = await Eval(CASES, {"a": answering(0, 0.001), "b": answering(0, 0.001)}, ["label"], k=3).run(
+        store=":memory:"
+    )
+    census, table, records, passed = _trials_section(every.report)
+    assert census.text == "24 trials ran. Of them 0 passed and 24 failed."
+    assert table is not None and len(table.rows) == 24 and passed is None
+    assert [block.open for block in records] == [True] * 12 + [False] * 12
+    assert report_markdown(every.report).count("Passed trials") == 0
+    # G2 as it ran: every usable trial passed, and the lost ones are listed, each with its cause.
+    census, table, records, passed = _trials_section(await g2_report())
+    assert census.text == "24 trials ran. Of them 10 passed, 0 failed and 14 were lost."
+    assert table is not None and {row["outcome"] for row in table.values()} == {"lost"}
+    assert all(str(row["why"]).startswith("lost: ") for row in table.values())
+    assert passed is not None and len(passed.rows) == 10
+    assert len(records) == 14 and sum(block.open for block in records) == 12
+
+
+async def test_when_every_trial_passed_the_census_line_stands_alone() -> None:
+    clean = await Eval(CASES, {"a": answering(99, 0.001)}, ["label"], k=1).run(store=":memory:")
+    census, table, records, passed = _trials_section(clean.report)
+    assert census.text == "4 trials ran. Every one passed."
+    assert table is None and records == [] and passed is not None and len(passed.rows) == 4
+    markdown = report_markdown(clean.report)
+    assert "| Trial | Case | Arm | Outcome | Why |" not in markdown
+    assert markdown.count("<summary>Passed trials</summary>") == 1
+    assert lint_page(markdown, names={"a"}) == []
 
 
 async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> None:

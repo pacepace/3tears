@@ -47,6 +47,10 @@ def test_snake_case_names_read_as_words_and_reserved_axes_by_their_plain_name() 
     assert humanize("model", "deepseek/deepseek-v4-flash") == "deepseek-v4-flash"
     assert humanize("case", 'The world as it stood before the persona\'s first turn: ## music { "catalog": [') == ""
     assert humanize("case", "clean") == "clean"
+    # A case is named by what its author called it; a derived label, a generated id or a bare number is no name.
+    assert humanize("case", "double-charge") == "double-charge" and humanize("case", "c01") == "c01"
+    assert humanize("case", "plain: eval-6dad555b3db40e35-0") == ""
+    assert humanize("case", "eval-6dad555b3db40e35-0") == "" and humanize("case", "7") == ""
 
 
 def test_the_v26_scoreboard_header_breaks_the_rules_it_was_ruled_on() -> None:
