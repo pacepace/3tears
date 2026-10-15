@@ -15,6 +15,7 @@ refresh that fails keeps the last rows, logs the failure, and marks the catalogu
 (:attr:`Catalogue.stale_since`, :attr:`Catalogue.refresh_failure`), which every completion it then prices carries
 (``Completion.pricing_stale_since``): never silent, and never failing the call. The failed refresh is tried again on
 the first load :data:`RETRY_AFTER_FAILURE` later (sooner when ``refresh_after`` is shorter), not on every call.
+Callers loading at once share one fetch, and its result or its error.
 
 **A price ceiling is a true upper bound, or none.** :meth:`Catalogue.ceiling` bounds one call from every price the
 row lists, not only its base rates: a prompt token at the highest of the plain, cache-read and cache-write rates, an
@@ -238,7 +239,8 @@ class Catalogue:
         self._due = 0.0
         self._stale_since: datetime | None = None
         self._refresh_failure: str | None = None
-        self._lock = asyncio.Lock()
+        #: The load in flight, which every caller arriving while it runs awaits rather than fetching again.
+        self._in_flight: asyncio.Task[None] | None = None
         self.learned = LearnedSettings(
             client="eval.providers",
             declared_by="catalogue",
@@ -269,13 +271,22 @@ class Catalogue:
         A first read that fails raises and keeps nothing, so the next load fetches again. A refresh that fails keeps
         the rows read before, logs the failure and marks them stale (:attr:`stale_since`, :attr:`refresh_failure`)
         rather than raising, and the next load :data:`RETRY_AFTER_FAILURE` later (or ``refresh_after``, when that is
-        shorter) tries again; one that succeeds clears the mark.
+        shorter) tries again; one that succeeds clears the mark. Loads made while one is in flight share it: one
+        fetch, whose result or error each of them sees. A caller cancelled while waiting cancels only its own wait.
 
         Raises:
             httpx.HTTPError: The first fetch failed or answered with a failure status.
             ValueError: The first fetch's body is not JSON, or holds no ``data`` list.
         """
-        async with self._lock:
+        if self._rows is not None and time.monotonic() < self._due:
+            return
+        if self._in_flight is None:
+            self._in_flight = asyncio.create_task(self._load_once())
+        await asyncio.shield(self._in_flight)
+
+    async def _load_once(self) -> None:
+        """The one load every caller arriving while it runs awaits; it clears itself when it ends."""
+        try:
             if self._rows is not None and time.monotonic() < self._due:
                 return
             try:
@@ -303,6 +314,8 @@ class Catalogue:
             self._due = self._read_monotonic + self.refresh_after.total_seconds()
             self._stale_since = None
             self._refresh_failure = None
+        finally:
+            self._in_flight = None
 
     async def _fetch(self) -> dict[str, _Row]:
         """One fetch of the catalogue, read into rows.

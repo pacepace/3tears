@@ -317,3 +317,29 @@ async def test_a_bound_above_refresh_after_keeps_the_ceiling_through_a_failed_re
     await shared.load()
     assert server.fetches == 2 and shared.stale_since is not None
     assert model("anthropic/claude-haiku-5.5", shared).price_ceiling(system="", user="x") is not None
+
+
+# --- one load in flight ------------------------------------------------------------------------------------------
+
+
+async def test_loads_made_together_during_a_failing_first_fetch_share_one_fetch_and_its_error() -> None:
+    server = CatalogueServer((503, {"error": "down"}), (200, {"data": ROWS}))
+    shared = server.catalogue()
+    outcomes = await asyncio.gather(*(shared.load() for _ in range(5)), return_exceptions=True)
+    assert server.fetches == 1, "five callers, one fetch"
+    assert all(isinstance(outcome, httpx.HTTPStatusError) for outcome in outcomes)
+    assert not shared.loaded
+
+    await asyncio.gather(*(shared.load() for _ in range(5)))
+    assert server.fetches == 2 and shared.loaded, "a load after the failure fetches again, once"
+
+
+async def test_a_cancelled_caller_does_not_cancel_the_load_the_others_await() -> None:
+    server = CatalogueServer((200, {"data": ROWS}))
+    shared = server.catalogue()
+    first = asyncio.create_task(shared.load())
+    second = asyncio.create_task(shared.load())
+    await asyncio.sleep(0)
+    first.cancel()
+    await second
+    assert server.fetches == 1 and shared.loaded
