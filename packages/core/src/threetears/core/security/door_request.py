@@ -66,6 +66,8 @@ from threetears.core.security.pop import access_token_hash, make_pop_proof
 from threetears.core.security.service_envelope import EnvelopeJwksSource
 
 __all__ = [
+    "COLLECTION_KEYS_PURGE_DOOR",
+    "COLLECTION_KEYS_PURGE_OP",
     "ProvenDoorRequest",
     "omit_absent_proof",
     "APPROVAL_RECORD_DOOR",
@@ -122,6 +124,9 @@ APPROVAL_RECORD_DOOR: Final[str] = "hub.approval.record"
 #: names them: a caller proves its own token, so a tool pod holding an agent's token cannot spend
 #: as that agent. Each is its door window's name too.
 GATEWAY_COMPLETION_DOOR: Final[str] = "gateway.completion"
+#: the collection keys purge door, which no delegated token names: only a tool pod purges its own keys,
+#: presenting its own token (:mod:`threetears.core.collections.key_purge`)
+COLLECTION_KEYS_PURGE_DOOR: Final[str] = "hub.collection_keys.purge"
 GATEWAY_EMBEDDING_DOOR: Final[str] = "gateway.embedding"
 
 # each single-operation door's operation, as the proof binds it; an ``l3.*`` request's is its
@@ -131,6 +136,7 @@ ENGAGEMENT_SCOPE_OP: Final[str] = "scope"
 NAMESPACE_DISCOVER_OP: Final[str] = "discover"
 AUDIT_ANONYMIZE_OP: Final[str] = "anonymize"
 APPROVAL_RECORD_OP: Final[str] = "record"
+COLLECTION_KEYS_PURGE_OP: Final[str] = "purge"
 GATEWAY_COMPLETION_OP: Final[str] = "complete"
 GATEWAY_EMBEDDING_OP: Final[str] = "embed"
 

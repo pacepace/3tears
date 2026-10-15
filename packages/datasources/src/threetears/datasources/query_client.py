@@ -369,7 +369,11 @@ class RelationFingerprintGroup(BaseModel):
     digest: str
 
 
-class DatasourceExportRequest(BaseModel):
+#: fields that would name the pod an export ask is about; the hub answers only for the verified caller
+_POD_NAMING_FIELDS: Final[frozenset[str]] = frozenset({"tool_pod_id", "pod_id", "principal_id", "agent_id"})
+
+
+class DatasourceExportRequest(TolerantWireModel):
     """ask the hub to have the warehouse write a ``SELECT``'s rows to the datasource's export bucket.
 
     A separate ask from a query, granted on its own: the hub runs it only for a caller it would let
@@ -388,12 +392,11 @@ class DatasourceExportRequest(BaseModel):
     :raises ValueError: when the destination is not a plain relative path
     """
 
-    model_config = ConfigDict(extra="forbid")
-
     select: str
     destination: str
     #: divide the files by this column, one directory per value (``column=value/``). A hub that
-    #: predates it refuses the field as unknown, so it is left off the wire when not asked for
+    #: predates it refuses the field as unknown (the request was strict there), so it is left off the
+    #: wire when not asked for
     partition_by: str | None = None
 
     @field_validator("partition_by")
@@ -446,7 +449,7 @@ class DatasourceExportRequest(BaseModel):
 DatasourceExportResult = ExportResult
 
 
-class DatasourceExportDeleteRequest(BaseModel):
+class DatasourceExportDeleteRequest(TolerantWireModel):
     """ask the hub to delete an export the caller has read and proven: every version under its destination.
 
     Admitted on the export's record, not on a grant: the hub deletes only an export it recorded
@@ -460,7 +463,9 @@ class DatasourceExportDeleteRequest(BaseModel):
     :raises ValueError: when the destination is not a plain relative path
     """
 
-    model_config = ConfigDict(extra="forbid")
+    #: the pod is the verified caller: a field naming one is refused, never ignored and answered for
+    #: whoever the token names
+    refused_fields: ClassVar[frozenset[str]] = _POD_NAMING_FIELDS
 
     destination: str
 
@@ -479,7 +484,7 @@ class DatasourceExportDeleteRequest(BaseModel):
         return value
 
 
-class DatasourceExportListRequest(BaseModel):
+class DatasourceExportListRequest(TolerantWireModel):
     """ask the hub which exports it holds a record of for the caller, on this datasource: one page.
 
     It names no pod. The hub answers for the pod its verified identity token names and for no
@@ -491,7 +496,9 @@ class DatasourceExportListRequest(BaseModel):
     :ptype cursor: str | None
     """
 
-    model_config = ConfigDict(extra="forbid")
+    #: the pod is the verified caller: a field naming one is refused, never ignored and answered for
+    #: whoever the token names
+    refused_fields: ClassVar[frozenset[str]] = _POD_NAMING_FIELDS
 
     cursor: str | None = None
 

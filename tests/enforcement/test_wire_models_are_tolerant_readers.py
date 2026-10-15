@@ -30,6 +30,10 @@ _WIRE_MODELS: dict[str, str] = {
     "threetears.datasources.geo_reload.GeoLayersReloadedRequest": "the hub, from a tool pod",
     "threetears.agent.audit.envelope.AuditEvent": "the hub's audit consumer, from every producer",
     "threetears.agent.audit.erasure.AuditAnonymizeRequest": "the hub, from an agent or tool pod",
+    "threetears.core.collections.key_purge.CollectionKeysPurgeRequest": "the hub, from a tool pod",
+    "threetears.datasources.query_client.DatasourceExportRequest": "the hub, from a tool pod",
+    "threetears.datasources.query_client.DatasourceExportDeleteRequest": "the hub, from a tool pod",
+    "threetears.datasources.query_client.DatasourceExportListRequest": "the hub, from a tool pod",
 }
 
 _SOURCE_ROOTS = tuple(

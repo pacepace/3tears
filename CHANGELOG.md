@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### The collection keys purge door takes proofs; develop's purge and export requests read tolerantly
+
+- `threetears.core.collections.key_purge`: develop's tool-pod purge, in the door scheme. The pod
+  presents its own token and, given its key (`pop_key`), proves possession of it at
+  `COLLECTION_KEYS_PURGE_DOOR` (`hub.collection_keys.purge`) for `COLLECTION_KEYS_PURGE_OP`. Its
+  `CollectionKeysPurgeRequest` is a `ProvenDoorRequest` and a `TolerantWireModel`. It lives in core
+  because the nats package cannot depend on the door scheme. `threetears.nats.collection_key_requests`
+  keeps the strict request and client for pods released before it.
+- `DatasourceExportRequest`, `DatasourceExportDeleteRequest` and `DatasourceExportListRequest` are
+  tolerant readers: a newer pod's added field is ignored. The delete and list requests refuse a
+  field naming a pod (`tool_pod_id`, `pod_id`, `principal_id`, `agent_id`) rather than ignore it,
+  since the hub answers both only for the verified caller.
+- The four are in the wire inventory (`tests/enforcement/test_wire_models_are_tolerant_readers.py`).
+
 ### A catalogue name is compared with an array as text
 
 - YugabyteDB 2026.1.1.1 mis-evaluates a `name` column compared with a `text[]`:
