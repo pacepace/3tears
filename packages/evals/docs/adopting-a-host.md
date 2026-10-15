@@ -1476,6 +1476,18 @@ changed, for a template already holding cases is withheld under `needs_reset` un
 A case whose content the revision already holds is `already present`, so cases your own seed wrote before `.32` with
 the same content are kept as they are.
 
+**A stored case is renamed through the package, never by writing its document.** The seed and a reset fill a name
+only into a case they write, so `case_rename(host, scope_id, case_id, name)` (from `threetears.evals.ops`, over your
+`EvalHost`; the `cases_rename` action takes `test_case_id` and `case_name`) is how an operator's rename lands. It
+writes the case's `name` and nothing else, through the store's own write path for a case, so the case keeps its id,
+its `content_hash`, every result measured against it and its seed record (`seed_name`, `seed_digest`: a renamed seeded
+case still reads stale or customized by its content alone), and the next report calls it by the new name. It answers
+with a `CaseRenamed` (the case's id, its old and its new name). It refuses, as the action does, a name the report
+would not print (`humanize("case", name)` empty: spaces, a bare number, a generated id, over 40 characters), a name
+another case of the same template or of a case set listing it already carries (`ConflictError`), and an unknown case
+(`NotFoundError`). A reset writes the corpus's names into the template's next revision, so a rename the corpus should
+keep belongs in the corpus too.
+
 **A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
 case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
 implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (host contract, from `threetears.evals.run`; in

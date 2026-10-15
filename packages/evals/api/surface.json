@@ -6546,6 +6546,11 @@
       "signature": "campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing",
       "tier": "stable"
     },
+    "threetears.evals.ops.case_rename": {
+      "kind": "function",
+      "signature": "case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseRenamed",
+      "tier": "host-contract"
+    },
     "threetears.evals.ops.case_set_mint": {
       "kind": "function",
       "signature": "case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> CaseSetLine",
@@ -6555,6 +6560,11 @@
       "kind": "function",
       "signature": "case_sets_list(host: EvalHost, scope_id: str, *, name: str | None = None) -> CaseSetListing",
       "tier": "stable"
+    },
+    "threetears.evals.ops.CaseRenamed": {
+      "kind": "model",
+      "signature": "CaseRenamed(test_case_id: str, old_name: str | None, new_name: str)",
+      "tier": "host-contract"
     },
     "threetears.evals.ops.CaseSetLine": {
       "kind": "model",

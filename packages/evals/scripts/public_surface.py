@@ -655,6 +655,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.generation_ceiling_s",
         "threetears.evals.analysis.judge_phase_ceiling_s",
         "threetears.evals.ops.run_label",
+        # The write that renames a stored case, which a host otherwise made by writing the case document itself.
+        "threetears.evals.ops.case_rename",
+        "threetears.evals.ops.CaseRenamed",
         # What the host guide tells a host to call, build, catch, type against or read in its prose: the cost-cap
         # wrapper and the error a refused reservation raises, the strict reply projection and the schema it refuses,
         # the reader of a boot seed directory, a measure's per-entry marker, the narrow store ports a function types
@@ -1190,7 +1193,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 523  # The host's imports set it on 2026-10-15: nothing a host imports is provisional.
+DECLARED_CEILING = 525  # The host's imports set it on 2026-10-15; .33 adds the case rename a host calls.
 
 
 def tier_of(qualified: str) -> Tier:
