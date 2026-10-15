@@ -1157,7 +1157,7 @@ def _settled_sentence(
     """A finding's one reading, which a clause of the declared rule settled, as code says it: the counts, candidate
     first, and under the case floor that only the size of the difference is not estimated.
 
-    ``Cheaper candidate passed 6 of 12 on `call_count("music.queue_track") >= 2` to production's 11; too few cases to
+    ``Cheaper candidate passed 6 of 12 on `call_count("inventory.place_order") >= 2` to production's 11; too few cases to
     estimate how large the difference is.`` The size is said as ``needs 5 cases`` where the sentence stays within the
     page's numeral limit, in the case floor line's own words otherwise. None where no settled clause reads the
     finding's one reading on the control and the candidate.

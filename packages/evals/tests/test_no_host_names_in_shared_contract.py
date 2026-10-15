@@ -295,6 +295,11 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # A host noun appearing HERE would mean the empty-slots-only rule
     # had been written against one host's vocabulary, so it is scanned rather than exempted.
     "run/definition_seed.py",
+    # What the seed wrote, as content digests, and the drift read and reset over them: which seeded definitions moved
+    # and the next revision a reset writes. A host's corpus arrives as data, so a host noun here would be one host's
+    # definitions written into the reset every host's seeded definitions go through.
+    "run/definition_digests.py",
+    "run/definition_drift.py",
     # The authoring family — template, catalog rubric-dim and judge-config CRUD and the
     # engine's authoring refusals — over the storage it writes through. What only a host can
     # answer (its tool catalog, its world's seed walk, its kind capability table) arrives as a
