@@ -126,7 +126,7 @@ quota the host declares, shared across runs.
 
 ### A world with state has no recorded lookups
 
-Planned for .28 (no issue filed yet). A `World` with state refuses `recording=`, since its tools move the state it
+Not built (no issue filed yet). A `World` with state refuses `recording=`, since its tools move the state it
 is graded on, and one world cannot also hold stateless lookups whose answers are recorded, while `as_host` refuses
 evals on two worlds, so no host can pair the two. Rung 4 (`examples/4-booking/`) therefore has no recorded tool
 lookup beside its calendar: every tool it calls runs live in each cell.

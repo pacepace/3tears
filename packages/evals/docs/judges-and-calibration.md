@@ -387,8 +387,8 @@ estimate back by that point. The price is width: the closer the judge tracks peo
 to the judge-only one; the less it does, the closer it is to an interval on the ratings alone.
 
 It never replaces the judge's figure. The judge's mean is what the judge said; this is what people would have
-said, estimated. The code-only report's strata table prints it after the judge's figure, here for a judge biased 0.8 high over
-a true mean of 3 (one draw of the simulation below):
+said, estimated. The report's `By stratum` table, drawn where the cases declare strata, prints it after the
+judge's figure, here for a judge biased 0.8 high over a true mean of 3 (one draw of the simulation below):
 
 ```text
 3.63 ± 0.1271 (n=90 over 30 cases); with people's ratings: 2.846 [2.566, 3.127] (rectifier -0.7839; 24 rated by people)
