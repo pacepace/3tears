@@ -3,8 +3,9 @@
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
 question in plain words —, the arms line, the verdict line, the scoreboard and the caveats under it, in normal
 weight), the decision rule clause by clause where one is declared, what it means (the memo's findings, each a table
-code built and one sentence, then the contrasts against the control), the cases, the trials (one row each, every
-record folded), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
+code built and one sentence, then the contrasts against the control), the cases, the trials (the census in a line,
+then a row and a record per failed or lost trial, the passed ones one closed table), what was not tested, the
+methods (a table, then the engine's disclosures folded), and the glossary
 of every term of art the page linked. Every count, rate, interval and cost in it is code's, computed from the
 evidence bundle the report carries (:attr:`Report.bundle`). Every string it prints is held to
 :mod:`~threetears.evals.analysis.style`.
@@ -554,7 +555,10 @@ class TrialBlock(_Block):
     judge: list[TrialJudgement] = Field(default_factory=list, description="What the judge said, per dimension.")
     error_words: str | None = Field(default=None, description="The recorded error, for a lost or failed trial.")
     result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
-    open: bool = Field(default=False, description="Whether HTML shows it open: a lost or failed trial, up to a cap.")
+    open: bool = Field(
+        default=False,
+        description="Whether the record is shown open, in HTML and Markdown: a failed or lost trial, up to a cap.",
+    )
 
 
 class DisclosureBlock(_Block):
