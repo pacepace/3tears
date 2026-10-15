@@ -165,6 +165,22 @@ GLOSSARY: dict[str, str] = {
     ),
     "separated": "The difference from the control is larger than chance explains, after correcting for every test.",
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
+    "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
+    "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
+    "control mean": "The control's figure on the reading, over the cases the test read.",
+    "arm mean": "The arm's figure on the reading, over the same cases as the control's.",
+    "Hedges' g": (
+        "The change in units of the spread between trials, so readings on different scales compare; 0.2 is small, "
+        "0.8 large."
+    ),
+    "pairing r": "How much a case's result on one arm predicts its result on the other; high means pairing helped.",
+    "adjusted p": (
+        "The chance of a change this large with no real difference, raised to allow for every comparison tested; "
+        "under 0.05 counts as separated."
+    ),
+    "decision": "What the guardrail or bar came to on this arm: held or breached, cleared or missed, else undecided.",
+    "stratum": "A named group of cases the author set apart, read on its own beside the whole.",
+    "label": "One class a classifier may predict; precision and recall are read per label.",
     "margin": "The smallest change worth acting on, declared before the run.",
     "guardrail": "A reading an arm must not get worse on, whatever it gains elsewhere.",
     "bar": "A threshold a reading must clear on its own, without a control.",
@@ -178,19 +194,6 @@ GLOSSARY: dict[str, str] = {
     "marks": "✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.",
     "ran": "Every trial the arm ran, usable or not.",
     "passed": "Usable trials that met every check and cleared every judged bar.",
-    "change": "The arm's mean minus the control's, in the reading's own units; a negative change is lower.",
-    "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
-    "control mean": "The control's average on the reading, over its usable trials.",
-    "arm mean": "The arm's average on the reading, over its usable trials.",
-    "Hedges' g": (
-        "The change in units of the spread between trials, so readings on different scales compare; 0.2 is small, "
-        "0.8 large."
-    ),
-    "pairing r": "How alike the two arms were case by case; near 1, the cases drove most of the spread, not the arms.",
-    "adjusted p": (
-        "The chance of a change this large with no real difference, raised to allow for every comparison tested; "
-        "under 0.05 counts as separated."
-    ),
     "flag": "A case the control passed and a candidate failed is a regression; one an arm has no usable trial of says so.",
     "outcome": "How a trial ended: passed, failed, or lost to the test setup.",
     "why": "Which check or judged dimension failed the trial, or what the test setup broke.",
@@ -204,8 +207,6 @@ GLOSSARY: dict[str, str] = {
     "lever": "A setting the campaign can change, such as the model or a prompt; a finding names the levers it bears on.",
     "leverage": "How much a next step would change what the campaign can decide, in the writer's judgement.",
     "coverage": "How well the campaign swept a lever: measured, thin (too few repeats) or unswept (one level ran).",
-    "stratum": "A named group of cases, declared before the run, read on its own as well as with the rest.",
-    "decision": "Where a guardrail or a bar came out: held, breached or undecided; cleared, missed or undecided.",
 }
 
 #: Constructions a page never uses: meta-prose about the page itself, and hedges on a measured fact.

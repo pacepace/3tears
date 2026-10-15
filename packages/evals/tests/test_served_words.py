@@ -67,7 +67,15 @@ def test_a_cells_number_is_joined_to_its_unit() -> None:
 
 def test_a_cell_stores_its_value_never_its_text() -> None:
     """The text is derived on every read, so a stored word can never drift from the value it states."""
-    assert TableCell(value=0.5).model_dump(mode="json") == {"value": 0.5, "unit": ""}
+    # The value, its unit, and the interval and margin a glyph draws beside it where the cell has them.
+    assert TableCell(value=0.5).model_dump(mode="json") == {
+        "value": 0.5,
+        "unit": "",
+        "low": None,
+        "high": None,
+        "margin": None,
+        "zero_line": False,
+    }
     with pytest.raises(ValueError, match="extra"):
         TableCell.model_validate({"value": 0.5, "text": "a lie"})
 

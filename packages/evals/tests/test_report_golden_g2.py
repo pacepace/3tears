@@ -121,7 +121,10 @@ def test_the_scoreboard_is_a_bare_table_of_counts(g2: Report) -> None:
 def test_the_contrasts_collapse_to_one_line_under_the_case_floor(g2: Report, door: str) -> None:
     # The challenger kept 2 usable trials, both of one case: no contrast can resolve, and none is a row.
     page = report_html(g2) if door == "html" else report_markdown(g2)
-    assert "No contrast can resolve: a side has 1 usable case, and a difference needs 5." in page
+    assert (
+        "No contrast can resolve: a side has 1 usable case; a difference is estimated only from 5 independent cases."
+        in page
+    )
     assert 'data-table="comparisons"' not in page and "| Reading | Arm | Change |" not in page
 
 
