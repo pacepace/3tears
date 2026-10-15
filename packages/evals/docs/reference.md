@@ -192,7 +192,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 2`
+  <br>`= 3`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 15`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -380,6 +380,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`build_judge_service(host: EvalHost, template: EvalTemplate, judge_model: str, selection: dict[str, str] | None = None, *, judged_artifact: JudgedArtifact) -> RunJudge`
 - **`create_template`** · function · Create and persist a template from an authoring definition.
   <br>`create_template(host: EvalHost, definition: dict[str, Any], *, scope_id: str, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> EvalTemplate`
+- **`definition_drift`** · *host contract* · function · Read every definition of a seed corpus against its scope's stored one. Writes nothing, spends nothing.
+  <br>`definition_drift(host: EvalHost, corpus: SeedCorpus, *, seeded_digests: Mapping[str, str] | None = None) -> DefinitionDrift`
 - **`delete_run`** · function · Delete a run, the results it owns, and its campaign memberships.
   <br>`delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]`
 - **`drive_conversation`** · async function · Run `driver`'s conversation from its first turn until it stops on a structural signal.
@@ -426,6 +428,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade`
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
+- **`reset_definitions`** · *host contract* · function · Write the corpus's content for the named definitions, each as a new revision or record, never in place.
+  <br>`reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], discard_customization: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset`
 - **`resolve_judge_pin`** · function · The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
   <br>`resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str`
 - **`run_blocking`** · *host contract* · async function · Run `fn(*args, **kwargs)` on `executor` and await its result.
@@ -568,12 +572,9 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
 - **`AsRecordedReporterKind`** · class · The memo each case's campaign actually got, replayed — the calibration candidate.
-- **`CampaignReadStore`** · protocol · The nine reads assembling a campaign's context bundle needs.
-- **`CaseResult`** · model · One case's answer on one repeat, every grade it got, and why it failed or was excluded.
 - **`ChartBlock`** · *host contract* · model · One of the two charts a report draws, with every value it draws, so it prints as a table too.
 - **`EvalSummary`** · *host contract* · model · One run, summarised.
 - **`GateResult`** · dataclass · What a gate read and what it came to.
-- **`LabelStatistics`** · model · One label's counts in a confusion matrix, and the precision, recall and F1 they give.
 - **`Report`** · *host contract* · model · A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states.
 - **`ReporterKind`** · class · A (prompt preset, generator model) candidate: generates a memo over each case's bundle.
 - **`ReporterOverlays`** · model · The one knob a reporter launch may turn: which preset of the analysis generator's prompt writes the memos.
@@ -804,6 +805,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
 
 **Functions**
 
+- **`definition_drift_actions`** · *host contract* · function · `definitions_drift` and `definitions_reset`, for the host's catalogue.
+  <br>`definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]`
 - **`eval_catalogue`** · function · The engine's catalogue, with the host's own actions after the engine's.
   <br>`eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue`
 - **`standard_tools`** · function · The two tools a host mounts by default: `<prefix>` and `<prefix>_admin`.

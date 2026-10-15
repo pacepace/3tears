@@ -212,6 +212,17 @@ from threetears.evals.run.ceilings import (
 )
 from threetears.evals.run.curation import CurationStore, UnreadableRunDeleteStore
 from threetears.evals.run.definition_seed import SeedCaseSet, SeedCorpus, SeedJudgeCase, SeedOutcome
+from threetears.evals.run.definition_drift import (
+    DefinitionDrift,
+    DefinitionReading,
+    DefinitionReset,
+    DefinitionState,
+    ResetDefinition,
+    corpus_digests,
+    definition_drift,
+    definition_key,
+    reset_definitions,
+)
 from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
@@ -300,6 +311,15 @@ __all__ = [
     "SeedCorpus",
     "SeedJudgeCase",
     "SeedOutcome",
+    "DefinitionDrift",
+    "DefinitionReading",
+    "DefinitionReset",
+    "DefinitionState",
+    "ResetDefinition",
+    "corpus_digests",
+    "definition_drift",
+    "definition_key",
+    "reset_definitions",
     "SimulatorCall",
     "SimulatorReplyInvalid",
     "SimulatorTurn",

@@ -127,15 +127,19 @@ def test_a_seeded_case_is_the_case_judge_case_author_writes_and_a_second_boot_wr
     assert [(c.test_case_id, c.created) for c in report.cases] == [(case_id, False)], "one door, one case"
 
 
-def test_a_case_whose_verdict_changed_is_a_new_case_beside_the_stored_one() -> None:
+def test_a_case_whose_verdict_changed_is_withheld_for_a_reset_and_the_stored_one_stands() -> None:
+    """A changed case would join a battery runs were measured against, under the same revision id, so the seed writes
+    it only through a reset (``needs_reset``); it used to be written beside the stored one."""
     storage, _ = memory_storage()
     _stored_templates(storage)
     _seed(storage, SeedCorpus(scope_id=TOYHOST_SCOPE, judge_cases=(_case(),)))
 
     moved = _seed(storage, SeedCorpus(scope_id=TOYHOST_SCOPE, judge_cases=(_case(expected=2),)))
 
-    assert (moved.created["judge_case"], moved.skipped["judge_case"]) == (1, 0)
-    assert len(storage.query_test_cases(TOYHOST_SCOPE)) == 2, "never an update: the stored case stands"
+    assert (moved.created["judge_case"], moved.skipped["judge_case"]) == (0, 0)
+    (key,) = moved.needs_reset["judge_case"]
+    assert key.startswith(f"{JUDGE_NAME}/") and "RESET IT" in moved.summary()
+    assert len(storage.query_test_cases(TOYHOST_SCOPE)) == 1, "never an update, and never a second case beside it"
 
 
 def test_the_templates_a_case_names_may_come_from_the_same_corpus() -> None:

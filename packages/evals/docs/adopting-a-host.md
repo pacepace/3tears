@@ -1355,9 +1355,12 @@ builds each through the door `judge_case_author` uses (`author_judge_case`: the 
 that words it, the verdict held to its scale) before anything is written, refusing the whole seed by name for any
 case authoring would refuse, then freezes it into its judge template after the templates are written, as the same
 `AuthoredJudgeCase` under the same content-derived id. A case already stored is reported `already present` under
-`judge_case`, and one whose words or verdict changed is a new case beside it, never an update. A launch naming no
-case set runs every live case of the judge template, so a host boots with its hard negatives in place and no
-authoring tool of its own over `judge_case_author`.
+`judge_case`. A launch naming no case set runs every live case of the judge template, so a host boots with its hard
+negatives in place and no authoring tool of its own over `judge_case_author`. **Since `.30` the seed fills a case only
+into a judge template holding no cases yet** (one it creates in the same pass, or an empty one): a new case, or one
+whose words or verdict changed, for a template that already holds cases would change what its runs were measured
+against under the same id. It is no longer written beside the old ones. It is withheld and reported under
+`needs_reset` on every boot, with any case set listing it, until you reset the template (below).
 
 **A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
 case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
@@ -1369,6 +1372,38 @@ another judge template refuses the whole corpus when it is built. Once the cases
 scope holds no version of is minted over their stored ids through `mint_case_set`, the path `case_set_mint` takes,
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
+
+**A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
+template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
+wrote, and a release step reads drift and resets what is behind, deliberately (never at boot, so a store an operator
+tuned is never rewritten by a deploy):
+
+```python
+from threetears.evals.run import definition_drift, reset_definitions
+
+corpus = boot_seed_corpus(scope_id)  # the SeedCorpus your boot seed loads for the scope
+drift = definition_drift(host, corpus, seeded_digests=PRE_30_DIGESTS)  # writes nothing
+print(drift.render())  # "drift: 1 stale, 0 customized, 1 unknown, 0 absent, 40 current", then each line not current
+if stale := drift.keys("stale"):
+    reset = reset_definitions(host, corpus, stale, require_known_tools_allowed=..., refuse_undeclared_world_seed=...,
+                              refuse_undeliverable_template=...)  # the same three checks the seed takes
+    print(reset.render())
+```
+
+A definition reads `current` (the corpus's), `stale` (what was seeded, and the corpus has moved), `customized`
+(changed since: edited, archived or deleted), `unknown` (no record: a row seeded before `.30`) or `absent` (the next
+boot seeds it). A reset never edits in place. A template's new content is its next **revision**: a new record under the
+same name (`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep
+the content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest
+revision. A judge case resets with its judge template, whose new revision holds the corpus's whole battery, and the
+corpus's case sets over it are minted again. The reset refuses `customized` and `unknown`, and a judge template holding
+live cases the corpus does not carry, unless `discard_customization=True`; it writes nothing when it refuses and names
+every refusal. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
+bundle), since their results are two datasets. For rows seeded before `.30`, compute `corpus_digests(host, corpus)`
+over the corpus you seeded then (from your history) and pass it as `seeded_digests`: they read `stale` rather than
+`unknown`. A judge template whose boot reported `needs_reset` reads `stale`, and its reset writes the next revision
+with every corpus case. `definition_drift_actions(boot_seed_corpus, ...)` (from
+`threetears.evals.actions`) adds `definitions_drift` and `definitions_reset` to your catalogue.
 
 **A stored verdict is graded again through one door: `regrade`** (`threetears.evals.run`, and the `result_regrade`
 action). `await regrade(host, result_id, scope_id)` re-grades the result's check dims (its goal checks) from what its

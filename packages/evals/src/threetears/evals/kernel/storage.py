@@ -78,6 +78,7 @@ from threetears.evals.schema.models import (
     JudgeConfigTombstone,
     case_set_doc_id,
     eval_trace_doc_id,
+    current_revision,
 )
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, refuse_on_event_loop
@@ -685,6 +686,10 @@ class CaseSetStore(Protocol):
         """See :meth:`EvalStorage.load_test_cases_by_ids`."""
         ...
 
+    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
+        """See :meth:`EvalStorage.load_template`; read for the name a set's template and a new version's share."""
+        ...
+
 
 class CassetteStore(Protocol):
     """The recordings a capture run made and a replay run is served."""
@@ -941,15 +946,16 @@ class EvalStorage:
         return self._load(EvalTemplate, template_id, scope_id)
 
     def load_template_by_name(self, name: str, scope_id: str) -> EvalTemplate | None:
-        """Load a template by ``name`` within a scope.
+        """Load the template a ``name`` resolves to within a scope: its current revision.
 
-        Names are unique within a scope by convention (upsert by id, so two templates with the
-        same name and different ids can coexist; first match wins).
+        A name holds one record per revision (``EvalTemplate.revision``; a definition reset writes the next as a new
+        record), so it resolves to its newest non-archived revision, and, when every revision is archived, to its
+        newest one. An older revision stays readable by id (:meth:`load_template`). Newest is the highest
+        ``revision``, then the latest ``created_at``, then the id, so two records an older writer left under one name
+        resolve the same way on every read.
         """
-        items = self._store.by_doc_type("eval_template", scope_id, name=name, limit=1)
-        if not items:
-            return None
-        return self._hydrate(EvalTemplate, items[0])
+        revisions = self._hydrate_all(EvalTemplate, self._store.by_doc_type("eval_template", scope_id, name=name))
+        return current_revision(revisions)
 
     def query_templates(
         self,
