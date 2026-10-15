@@ -132,7 +132,6 @@ async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -
     # The candidate's spend, not cost_usd, which sums a judge's spend too: what it cost to measure the arm.
     assert "Measuring spend, all roles" not in by_reading
     cost = by_reading["Production cost"]
-    assert cost["contrast"] == "candidate=cheaper"
+    assert cost["contrast"] == "cheaper"
     assert cost["verdict"] == "improved on the control"
-    (statistics,) = [row for row in tables["comparison_statistics"].values() if row["reading"] == "Production cost"]
-    assert isinstance(statistics["delta"], float) and statistics["delta"] < 0
+    assert isinstance(cost["change"], float) and cost["change"] < 0

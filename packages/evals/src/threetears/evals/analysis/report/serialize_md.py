@@ -1,9 +1,11 @@
 """The report as Markdown — the form an agent reads and a pull request quotes, with the page's values and order.
 
-Every block the page draws is printed here, in the page's order: the title on line 1, the basis on line 2, the
-verdict, the scoreboard; a chart is its title and the table of the values it draws, so a reader of Markdown can
-check every number a picture would have shown, and a chart the page leaves out (too few cases, no interval) is left
-out here too, by the same block list. Deterministic: one report renders to one string.
+Every block the page draws is printed here, in the page's order: the title on line 1, the arms on line 2, the verdict,
+the scoreboard; a chart is its title and the table of the values it draws, so a reader of Markdown can check every
+number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. An
+outcome bar whose every column is one of the scoreboard's prints nothing here: its table would repeat the scoreboard. What
+the page folds (a trial's record, a finding's evidence, the engine's disclosures) is a ``<details>`` here as well.
+Deterministic: one report renders to one string.
 """
 
 from __future__ import annotations
@@ -16,13 +18,17 @@ from threetears.evals.analysis.report.model import (
     SECTION_TITLES,
     ChartBlock,
     DisclosureBlock,
-    Fact,
     Report,
     ReportBlock,
     TableBlock,
     TextBlock,
     TrialBlock,
 )
+from threetears.evals.analysis.report.verdict import cause_short
+from threetears.evals.analysis.style import GLOSSARY
+
+#: How an answer's resolution leads it.
+RESOLUTION_WORDS = {"answered": "Answered", "partial": "Partly answered", "unanswerable": "Unanswerable"}
 
 
 def report_markdown(report: Report) -> str:
@@ -35,20 +41,58 @@ def report_markdown(report: Report) -> str:
         The Markdown text, ending in a newline.
     """
     lines = [f"# {_one_line(report.title)}"]
-    head = [block for block in report.blocks if block.section in FIRST_SCREEN]
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _repeats_scoreboard(block)]
     for index, block in enumerate(head):
-        # Line 2 is the basis, directly under the title: every other block is set off by a blank line.
+        # Line 2 is the arms, directly under the title: every other block is set off by a blank line.
         lines += [*([] if index == 0 else [""]), *_block(block)]
     for section in SECTION_TITLES:
-        if section in FIRST_SCREEN:
+        if section in FIRST_SCREEN or section == "glossary":
             continue
-        blocks = [block for block in report.blocks if block.section == section]
+        blocks = [block for block in report.blocks if block.section == section and not _repeats_scoreboard(block)]
         if not blocks:
             continue
         lines += ["", f"## {SECTION_TITLES[section]}"]
-        for block in blocks:
-            lines += ["", *_block(block)]
+        lines += _folded(blocks)
+    if report.terms:
+        lines += ["", f"## {SECTION_TITLES['glossary']}", ""]
+        lines += [f"- **{term}**: {GLOSSARY[term]}" for term in report.terms]
     return "\n".join(lines) + "\n"
+
+
+#: The failure causes the scoreboard gives a column of their own, as an outcome bar labels them.
+_SCOREBOARD_FAILURES = frozenset(f"failed: {cause_short(cause)}" for cause in ("check", "judged"))
+
+
+def _repeats_scoreboard(block: ReportBlock) -> bool:
+    """Whether a block is an outcome bar whose table would only repeat the scoreboard's numbers.
+
+    The scoreboard has a column for passed, failed by check and failed by judge, and one each for every other failure
+    cause and every loss cause together; a bar with at most one of each of those last two maps onto it column for
+    column. A bar that splits them further says something the scoreboard does not, and is printed.
+    """
+    if not isinstance(block, ChartBlock) or block.chart != "outcome_bar" or block.section != "scoreboard":
+        return False
+    segments = [segment for bar in block.bars for segment in bar.segments]
+    other = {s.label for s in segments if s.state == "failed" and s.label not in _SCOREBOARD_FAILURES}
+    lost = {s.label for s in segments if s.state == "lost"}
+    return len(other) <= 1 and len(lost) <= 1
+
+
+def _folded(blocks: Sequence[ReportBlock]) -> list[str]:
+    """A section's blocks, each consecutive run naming one fold inside one ``<details>``."""
+    lines: list[str] = []
+    open_fold: str | None = None
+    for block in blocks:
+        if block.fold != open_fold:
+            if open_fold is not None:
+                lines += ["", "</details>"]
+            if block.fold is not None:
+                lines += ["", f"<details><summary>{block.fold}</summary>"]
+            open_fold = block.fold
+        lines += ["", *_block(block)]
+    if open_fold is not None:
+        lines += ["", "</details>"]
+    return lines
 
 
 def _block(block: ReportBlock) -> list[str]:
@@ -56,10 +100,12 @@ def _block(block: ReportBlock) -> list[str]:
     if isinstance(block, TextBlock):
         return _text(block)
     if isinstance(block, TableBlock):
-        return [f"**{block.title}** ({block.order})", "", *_table(block)]
+        if block.details:
+            return [f"<details><summary>{block.title}</summary>", "", *_table(block), "", "</details>"]
+        return [f"**{block.title}**", "", *_table(block)]
     if isinstance(block, ChartBlock):
         headers, rows = block.values_table()
-        return [f"**Chart: {block.title}**", "", *markdown_table(headers, rows)]
+        return [f"**{block.title}**", "", *markdown_table(headers, rows)]
     if isinstance(block, TrialBlock):
         return _trial(block)
     return _disclosure(block)
@@ -67,53 +113,69 @@ def _block(block: ReportBlock) -> list[str]:
 
 def _text(block: TextBlock) -> list[str]:
     """An author's words, laid out by what they were written as."""
-    body = block.body.strip()
-    rests = f" Rests on {', '.join(f'F{number}' for number in block.rests_on_numbers)}." if block.rests_on else ""
-    facts = _facts(block.facts)
+    body = _one_line(block.body.strip())
+    facts = {fact.name: fact.value for fact in block.facts}
     if block.role == "finding_title":
-        heading = f"### F{block.finding_number}. {_one_line(body)}"
-        return [heading, "", facts] if facts else [heading]
-    if block.role in ("answer", "recommendation", "next_step"):
-        lead = {"answer": "", "recommendation": "**Recommendation:** ", "next_step": "**Next:** "}[block.role]
-        return [f"- {lead}{_one_line(body)}" + (f" — {facts}." if facts else "") + rests]
-    if block.role in ("revisit_when", "next_step_why"):
-        label = "Revisit when" if block.role == "revisit_when" else "Why"
-        return [f"  - {label}: {_one_line(body)}"]
+        # A finding leads with its headline, unnumbered: nothing on the page cites it by number.
+        return [f"**{body}**"]
+    if block.role == "answer":
+        lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
+        return [f"**{lead}.** {body}" if lead else body]
+    if block.role == "recommendation":
+        disposition = facts.get("Disposition", "")
+        return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}" if disposition else body]
+    if block.role == "next_step":
+        return [f"**Next:** {body}"]
+    if block.role == "revisit_when":
+        return [f"Revisit when: {body}"]
     if block.role == "caveat":
-        return [f"> **Caveat** ({facts}): {_one_line(body)}"]
+        return [f"Caveat ({facts.get('Kind', 'unkinded')}): {body}"]
     if block.role == "carried_forward":
-        return [f"Carried forward: {_one_line(body)}"]
-    return [body + rests]
+        return [f"Carried forward: {body}"]
+    return [block.body.strip()]
 
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
-    """Something code had to say: the first screen's lines as lines, the verdict in bold, every other one quoted."""
+    """Something code had to say: the verdict in bold, every other line plain."""
     if block.source == "verdict":
         return [f"**{_one_line(block.text)}**"]
-    if block.section in FIRST_SCREEN:
-        return [_one_line(block.text)]
-    return [f"> {_one_line(block.text)}"]
+    return [_one_line(block.text)]
+
+
+def trial_summary(block: TrialBlock) -> str:
+    """A trial's one-line summary: ``T4 · case 1 · candidate · failed`` — never the start of what it asked."""
+    return f"{block.trial_id} · {block.case_label} · {block.arm} · {block.state}"
 
 
 def _trial(block: TrialBlock) -> list[str]:
-    """One trial's drill-down, as a heading and its fields."""
-    state = block.state if block.cause_words is None else f"{block.state}: {block.cause_words}"
-    lines = [f"### {block.trial_id} — {_one_line(block.case_label)} · {block.arm} · repeat {block.repeat} · {state}"]
+    """One trial's record, closed: what it asked, what the judge saw and said, what failed, and where it is stored."""
+    lines = [f'<details id="{block.trial_id}"><summary>{trial_summary(block)}</summary>', ""]
+    if block.cause_words:
+        lines += [f"Why: {_one_line(block.cause_words)}", ""]
     if block.first_input:
-        lines += ["", "What the case asked:", "", *_fenced(block.first_input)]
+        lines += ["What the case asked:", "", *_fenced(block.first_input), ""]
     if block.excerpt:
-        lines += ["", "What the judge saw (its last part):", "", *_fenced(block.excerpt)]
+        lines += ["What the judge saw (its last part):", "", *_fenced(block.excerpt), ""]
     if block.failed_checks:
-        lines += ["", "Failed checks:", *(f"- {check.name}: `{check.expression}`" for check in block.failed_checks)]
+        # A name that only restates the expression ("Pass rate of <expression>") adds nothing beside it.
+        lines += [
+            "Failed checks:",
+            *(
+                f"- `{check.expression}`" if check.expression in check.name else f"- {check.name}: `{check.expression}`"
+                for check in block.failed_checks
+            ),
+            "",
+        ]
     if block.judge:
-        lines += ["", "What the judge said:"]
+        lines += ["What the judge said:"]
         for entry in block.judge:
             score = "could not tell" if entry.score is None else f"{entry.score} ({entry.scale})"
             asked = f" Asked: {_one_line(entry.criterion)}." if entry.criterion else ""
             lines.append(f"- **{entry.dim}**: {score}.{asked} {_one_line(entry.reason)}".rstrip())
+        lines.append("")
     if block.error_words:
-        lines += ["", "Recorded error:", "", *_fenced(block.error_words)]
-    lines += ["", f"Stored result: `{block.result_id}` (read it with result_get)."]
+        lines += ["Recorded error:", "", *_fenced(block.error_words), ""]
+    lines += [f"Stored result: `{block.result_id}` (read it with result_get).", "", "</details>"]
     return lines
 
 
@@ -150,11 +212,6 @@ def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> lis
     return lines
 
 
-def _facts(facts: Sequence[Fact]) -> str:
-    """Facts code states beside an author's words, on one line."""
-    return " · ".join(f"{fact.name}: {fact.value}" if fact.name != "See" else f"See {fact.value}" for fact in facts)
-
-
 def _cell(text: str) -> str:
     """Text a table cell can hold: one line, its pipes escaped."""
     return _one_line(text).replace("|", "\\|")
@@ -166,6 +223,8 @@ def _one_line(text: str) -> str:
 
 
 __all__ = [
+    "RESOLUTION_WORDS",
     "markdown_table",
     "report_markdown",
+    "trial_summary",
 ]

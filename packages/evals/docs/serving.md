@@ -165,7 +165,7 @@ Each flag passes to one `start_run` argument: `--model` to `models`, `--k` to `k
 
 ### `report` and `bundle`
 
-`report` prints the campaign's report (see [Reading reports](reading-reports.md#the-report-one-page-verdict-first)) —
+`report` prints the campaign's report (see [Reading reports](reading-reports.md#the-report-one-page-result-first)) —
 its analysis, or, when it has none, a code-only report of its evidence. `bundle` prints, as JSON, the analysis
 bundle a generation would read inside a wrapper (`BundleInspection`) that adds its campaign, scope and
 fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command calls a model.
@@ -447,7 +447,7 @@ The FastMCP transport (`threetears.evals.transports.fastmcp`) needs the extra; t
 pip install "3tears-evals[fastmcp]"
 ```
 
-That is the form once 0.68.0 is on PyPI. Until then, install the extra from the repository at the tag
+That is the form once 0.69.0 is on PyPI. Until then, install the extra from the repository at the tag
 [the README names](../README.md#install):
 `pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
 

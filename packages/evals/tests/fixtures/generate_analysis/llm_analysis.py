@@ -17,9 +17,10 @@ directory, ``python llm_analysis.py`` runs it too, and writes ``./eval-analysis/
 The campaign's two classifiers are keyword rules, so the campaign always runs offline and free. With
 ``ANTHROPIC_API_KEY`` set, Claude writes the repair, one call for under a cent. Without it, it replays
 ``recordings/llm_analysis.jsonl``, what Claude wrote when the run was recorded, and calls nothing. A recording
-answers only the prompt it was made for, and the prompt is the bundle, which names this run's ids and times: so a
-replay hands the writer the bundle the recording was made from, ``recordings/llm_analysis.bundle.json``, not this
-run's. ``RECORD=1 python llm_analysis.py``, with the key set, records both again.
+answers only the prompt it was made for, and the prompt is the bundle, which names this run's ids and times, and the
+writer's instructions: so a replay hands the writer the bundle and the instructions the recording was made from,
+``recordings/llm_analysis.bundle.json`` and ``recordings/llm_analysis.prompt.txt``, not this run's.
+``RECORD=1 python llm_analysis.py``, with the key set, records all three again.
 """
 
 import asyncio
@@ -51,6 +52,8 @@ FIRST_DRAFT = Path(__file__).with_name("llm_analysis_first_draft.json")
 RECORDING = Path(__file__).with_name("recordings") / "llm_analysis.jsonl"
 #: The bundle the recording was made from: what a replay hands the writer.
 RECORDED_BUNDLE = RECORDING.with_name("llm_analysis.bundle.json")
+#: The writer's prompt the recording was made under: a replay hands the writer it too, as the shipped one moves on.
+RECORDED_PROMPT = RECORDING.with_name("llm_analysis.prompt.txt")
 RERECORD = "RECORD=1 python llm_analysis.py"
 
 # -----------------------------------------------------------------------------
@@ -180,21 +183,25 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
     frozen.write_text(inspected.bundle.to_json(indent=2), encoding="utf-8")
     print(f"Froze the evidence into {frozen}, fingerprint {inspected.bundle.fingerprint()}")
 
+    prompt = EVAL_ANALYSIS_GEN_DEFAULT
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        if not RECORDED_BUNDLE.is_file():
+        if not RECORDED_BUNDLE.is_file() or not RECORDED_PROMPT.is_file():
             raise SystemExit(
-                f"{RECORDED_BUNDLE} is missing, and the recording answers only it; {RERECORD} records both"
+                f"{RECORDED_BUNDLE} or {RECORDED_PROMPT} is missing, and the recording answers only them; {RERECORD} "
+                "records all three"
             )
         frozen = RECORDED_BUNDLE  # this run's bundle is a prompt the recording never answered
+        prompt = RECORDED_PROMPT.read_text(encoding="utf-8")  # nor is the shipped prompt, once it has moved on
         print(f"Replaying: the writer reads {RECORDED_BUNDLE.name}, the bundle the recording was made from.")
     elif os.environ.get("RECORD") == "1":
         shutil.copyfile(frozen, RECORDED_BUNDLE)  # the bundle a replay will hand the writer
+        RECORDED_PROMPT.write_text(EVAL_ANALYSIS_GEN_DEFAULT, encoding="utf-8")  # and the prompt
     bundle = AnalysisContextBundle.from_json(frozen.read_text(encoding="utf-8"))  # the writer reads only the file
 
     try:
         analysis, _insights = await generate_analysis(
             bundle,  # the whole context: nothing else is read while the analysis is written
-            prompt=EVAL_ANALYSIS_GEN_DEFAULT,
+            prompt=prompt,
             model=MODEL,
             client=writer(llm),
             prompt_id="eval_analysis_gen",

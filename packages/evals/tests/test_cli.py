@@ -122,10 +122,10 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
     title = out.splitlines()[0]
-    assert title.startswith(f"# {campaign.name} · ") and title.endswith(" · no analysis written")
-    assert out.splitlines()[1].startswith("EXPLORATORY") or out.splitlines()[1].startswith("Question declared")
-    assert f"> {NO_ANALYSIS}" in out and out.count(NO_ANALYSIS) == 1
-    assert "**Scoreboard: " in out and "## Cases" in out and "## Methods and disclosures" in out
+    assert title.startswith(f"# {campaign.name}")
+    assert out.splitlines()[3].startswith("**")  # the verdict, under the title and the arms
+    assert f"| Analysis | {NO_ANALYSIS} |" in out and out.count(NO_ANALYSIS) == 1
+    assert "**Scoreboard**" in out and "## Cases" in out and "## Methods" in out
 
 
 def test_report_is_the_report_read_actions_report(capsys: pytest.CaptureFixture[str]) -> None:
@@ -169,7 +169,7 @@ def test_report_writes_the_page_its_markdown_and_its_bundle_to_out(
 
     page = (out / "report.html").read_text(encoding="utf-8")
     assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and "<script" not in page.lower()
-    assert (out / "report.md").read_text(encoding="utf-8").startswith(f"# {campaign.name} · ")
+    assert (out / "report.md").read_text(encoding="utf-8").startswith(f"# {campaign.name}")
     assert AnalysisContextBundle.from_json((out / "bundle.json").read_text(encoding="utf-8")).campaign_id == campaign.id
     assert capsys.readouterr().out == (
         f"wrote the code-only report of campaign {campaign.id} to {out}: report.html, bundle.json, report.md\n"

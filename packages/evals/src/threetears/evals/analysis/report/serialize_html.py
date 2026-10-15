@@ -6,9 +6,9 @@ is ``<details>``; moving between the screens is ``#`` anchors. The two charts ar
 (:mod:`~threetears.evals.analysis.report.svg`), each beside a visually hidden table of the values it draws, so a
 screen reader and a page with styles off lose nothing.
 
-**The first screen is the page's ``<header>``**: the title line, the basis line (always line 2), the verdict line,
-and the scoreboard with its outcome bar. Everything a reader needs to decide whether to read on is there, written by
-code.
+**The first screen is the page's ``<header>``**: the title (the question), the arms line (always line 2), the verdict
+line, the scoreboard with its outcome bar, and the caveats in normal weight. Everything a reader needs to decide
+whether to read on is there, written by code. Every term of art links to the glossary at the foot of the page.
 
 The author's words are Markdown; this renders the part of it a memo uses — paragraphs, bullet lists, ``**bold**``
 and ``code`` — over text escaped first, so nothing an author wrote can become markup.
@@ -25,14 +25,15 @@ from threetears.evals.analysis.report.model import (
     SECTION_TITLES,
     ChartBlock,
     DisclosureBlock,
-    Fact,
     Report,
     ReportBlock,
     TableBlock,
     TextBlock,
     TrialBlock,
 )
+from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, trial_summary
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg
+from threetears.evals.analysis.style import GLOSSARY
 
 #: The page's stylesheet: the system's own fonts (named once, as variables — the page loads no font), a readable measure, light and dark from the reader's setting (and a
 #: ``data-theme`` a host's page may set), with the charts' own classes after it.
@@ -52,7 +53,9 @@ h1 { font-size: 1.45rem; line-height: 1.3; margin: 0 0 6px; }
 h2 { font-size: 1.25rem; margin: 36px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
 h3 { font-size: 1.05rem; margin: 24px 0 6px; }
 header { border-bottom: 2px solid var(--rule); padding-bottom: 12px; }
-.basis { font-weight: 600; margin: 0 0 8px; }
+.arms { margin: 0 0 8px; color: var(--muted); }
+.finding { margin: 18px 0 6px; }
+a.term { font-size: 0.8rem; color: var(--muted); }
 .verdict { background: var(--verdict); border-left: 4px solid var(--muted); padding: 10px 14px; margin: 8px 0 12px; }
 nav { font-size: 0.9rem; margin: 12px 0; }
 nav a { margin-right: 14px; }
@@ -113,21 +116,45 @@ def report_html(report: Report) -> str:
         *(_block(block, index) for index, block in enumerate(head)),
         "</header>",
     ]
-    sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN]
+    sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN and section != "glossary"]
     present = [section for section in sections if any(block.section == section for block in report.blocks)]
+    nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append(
-        "<nav>"
-        + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in present)
-        + "</nav>"
+        "<nav>" + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in nav) + "</nav>"
     )
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
         parts.append(f"<h2>{_escape(SECTION_TITLES[section])}</h2>")
-        parts.extend(_block(block, index) for index, block in blocks)
+        parts.extend(_folded(blocks))
         parts.append("</section>")
+    if report.terms:
+        entries = "".join(
+            f'<dt id="g-{_slug(term)}">{_escape(term)}</dt><dd>{_escape(GLOSSARY[term])}</dd>' for term in report.terms
+        )
+        parts.append(
+            f'<section id="glossary"><h2>{SECTION_TITLES["glossary"]}</h2>'
+            f'<details class="glossary"><summary>Terms used on this page</summary><dl>{entries}</dl></details></section>'
+        )
     parts += ["</article>", "</body>", "</html>"]
     return "\n".join(parts) + "\n"
+
+
+def _folded(blocks: Sequence[tuple[int, ReportBlock]]) -> list[str]:
+    """A section's blocks, each consecutive run naming one fold inside one closed ``<details>``."""
+    parts: list[str] = []
+    open_fold: str | None = None
+    for index, block in blocks:
+        if block.fold != open_fold:
+            if open_fold is not None:
+                parts.append("</details>")
+            if block.fold is not None:
+                parts.append(f'<details class="fold"><summary>{_escape(block.fold)}</summary>')
+            open_fold = block.fold
+        parts.append(_block(block, index))
+    if open_fold is not None:
+        parts.append("</details>")
+    return parts
 
 
 def _block(block: ReportBlock, index: int) -> str:
@@ -144,62 +171,66 @@ def _block(block: ReportBlock, index: int) -> str:
 
 
 def _text(block: TextBlock) -> str:
-    """An author's words, laid out by what they were written as, with code's facts beside them."""
-    facts = _facts(block.facts)
-    rests = (
-        '<p class="facts">Rests on '
-        + ", ".join(f'<a href="#F{number}">F{number}</a>' for number in block.rests_on_numbers)
-        + ".</p>"
-        if block.rests_on
-        else ""
-    )
+    """An author's words, laid out by what they were written as."""
+    facts = {fact.name: fact.value for fact in block.facts}
+    body = _inline(_one_line(block.body))
     if block.role == "finding_title":
         anchor = f' id="{_escape(block.anchor)}"' if block.anchor else ""
-        heading = f"<h3{anchor}>F{block.finding_number}. {_inline(_one_line(block.body))}</h3>"
-        return heading + (f'<p class="facts">{facts}</p>' if facts else "")
+        return f'<p class="finding"{anchor}><strong>{body}</strong></p>'
+    if block.role == "answer":
+        lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
+        return '<p data-role="answer">' + (f"<strong>{_escape(lead)}.</strong> " if lead else "") + f"{body}</p>"
+    if block.role == "recommendation":
+        disposition = facts.get("Disposition", "")
+        lead = f"<strong>{_escape(disposition[:1].upper() + disposition[1:])}:</strong> " if disposition else ""
+        return f'<p data-role="recommendation">{lead}{body}</p>'
+    if block.role == "next_step":
+        return f'<p data-role="next_step"><strong>Next:</strong> {body}</p>'
+    if block.role == "revisit_when":
+        return f"<p><em>Revisit when:</em> {body}</p>"
     if block.role == "caveat":
-        caveat = f'<strong>Caveat</strong> <span class="facts">({facts})</span>'
-        return f'<div class="caveat">{caveat} {_markdown(block.body)}</div>'
-    if block.role in ("revisit_when", "next_step_why"):
-        label = "Revisit when" if block.role == "revisit_when" else "Why"
-        return f"<div><em>{label}:</em> {_markdown(block.body)}</div>"
+        return f'<div class="caveat"><strong>Caveat</strong> ({_escape(facts.get("Kind", "unkinded"))}): {body}</div>'
     if block.role == "carried_forward":
-        return f"<div><em>Carried forward:</em> {_markdown(block.body)}</div>"
-    if block.role in ("recommendation", "next_step"):
-        lead = "Recommendation: " if block.role == "recommendation" else "Next: "
-        body = f"<p><strong>{lead}{_inline(_one_line(block.body))}</strong></p>"
-    else:
-        body = _markdown(block.body)
-    return (
-        f'<div data-role="{_escape(block.role)}">{body}'
-        + (f'<p class="facts">{facts}</p>' if facts else "")
-        + f"{rests}</div>"
-    )
+        return f"<p><em>Carried forward:</em> {body}</p>"
+    return f'<div data-role="{_escape(block.role)}">{_markdown(block.body)}</div>'
 
 
 def _table(block: TableBlock) -> str:
-    """A table block: its caption and order, its rows, or a line saying it has none; folded when it is drill-down."""
+    """A table block: its title and rows, or a line saying it has none; folded when it is drill-down."""
     if not block.rows:
         grid = '<p class="order">(no rows)</p>'
     else:
         grid = _grid(block)
         if block.total_rows > len(block.rows):
             grid += f'<p class="order">{len(block.rows)} of {block.total_rows} rows shown.</p>'
-    caption = f'<strong>{_escape(block.title)}</strong> <span class="order">({_escape(block.order)})</span>'
+    title = _escape(block.title)
     if block.details:
-        return f'<details data-table="{_escape(block.name)}"><summary>{caption}</summary>{grid}</details>'
-    return f'<div class="table-block" data-table="{_escape(block.name)}"><p>{caption}</p>{grid}</div>'
+        return f'<details data-table="{_escape(block.name)}"><summary>{title}</summary>{grid}</details>'
+    if block.fold is not None:
+        return f'<div class="table-block" data-table="{_escape(block.name)}">{grid}</div>'
+    return f'<div class="table-block" data-table="{_escape(block.name)}"><h3>{title}</h3>{grid}</div>'
+
+
+def _header(text: str, term: str | None) -> str:
+    """A column header, linked to its glossary entry where it is a term of art; a code span (a check) as code."""
+    shown = _code(text)
+    return f'<a href="#g-{_slug(term)}">{shown}</a>' if term else shown
+
+
+def _code(text: str) -> str:
+    """Text escaped, its code spans (a check's expression, a call to copy) set as code."""
+    return _CODE.sub(r"<code>\1</code>", _escape(text))
 
 
 def _grid(block: TableBlock) -> str:
     """A table of served cells' text, scrolling inside its own box rather than widening the page."""
-    head = "".join(f'<th scope="col">{_escape(column.header)}</th>' for column in block.columns)
+    head = "".join(f'<th scope="col">{_header(column.header, column.term)}</th>' for column in block.columns)
     body = []
     for row in block.rows:
         cells = []
         for column in block.columns:
-            text = _escape(row[column.key].text)
-            if block.name == "cases" and column.key == "trials":
+            text = _code(row[column.key].text)
+            if (block.name == "cases" and column.key == "trials") or (block.name == "trials" and column.key == "trial"):
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
             cells.append(f"<td>{text}</td>")
         anchor = ""
@@ -225,20 +256,20 @@ def _chart(block: ChartBlock, chart_id: str) -> str:
 
 
 def _trial(block: TrialBlock) -> str:
-    """One trial's drill-down: what it asked, what the judge saw and said, what failed, and where the record is."""
-    state = block.state if block.cause_words is None else f"{block.state}: {block.cause_words}"
-    summary = (
-        f"<strong>{_escape(block.trial_id)}</strong> · {_escape(block.case_label)} · {_escape(block.arm)} · "
-        f"repeat {block.repeat} · {_escape(state)}"
-    )
+    """One trial's record, closed: what it asked, what the judge saw and said, what failed, and where it is stored."""
     parts: list[str] = []
+    if block.cause_words:
+        parts.append(f"<dt>Why</dt><dd>{_escape(block.cause_words)}</dd>")
     if block.first_input:
         parts.append(f"<dt>What the case asked</dt><dd><pre>{_escape(block.first_input)}</pre></dd>")
     if block.excerpt:
         parts.append(f"<dt>What the judge saw (its last part)</dt><dd><pre>{_escape(block.excerpt)}</pre></dd>")
     if block.failed_checks:
         checks = "".join(
-            f"<li>{_escape(check.name)}: <code>{_escape(check.expression)}</code></li>" for check in block.failed_checks
+            f"<li><code>{_escape(check.expression)}</code></li>"
+            if check.expression in check.name
+            else f"<li>{_escape(check.name)}: <code>{_escape(check.expression)}</code></li>"
+            for check in block.failed_checks
         )
         parts.append(f"<dt>Failed checks</dt><dd><ul>{checks}</ul></dd>")
     if block.judge:
@@ -257,36 +288,27 @@ def _trial(block: TrialBlock) -> str:
     opened = " open" if block.open else ""
     return (
         f'<details class="trial" id="{_escape(block.trial_id)}" data-state="{_escape(block.state)}"{opened}>'
-        f"<summary>{summary}</summary><dl>{''.join(parts)}</dl></details>"
+        f"<summary>{_escape(trial_summary(block))}</summary><dl>{''.join(parts)}</dl></details>"
     )
 
 
 def _disclosure(block: DisclosureBlock) -> str:
     """Something code had to say: the first screen's lines as lines, every other one set apart from the author's."""
-    if block.source == "basis":
-        return f'<p class="basis">{_escape(block.text)}</p>'
+    text = _code(block.text)
+    if block.term is not None:
+        text += f' <a class="term" href="#g-{_slug(block.term)}">({_escape(block.term)})</a>'
+    if block.source == "arms":
+        return f'<p class="arms">{text}</p>'
     if block.source == "verdict":
-        return f'<p class="verdict"><strong>{_escape(block.text)}</strong></p>'
+        return f'<p class="verdict"><strong>{text}</strong></p>'
     if block.section in FIRST_SCREEN:
-        return f'<p class="line" data-source="{_escape(block.source)}">{_escape(block.text)}</p>'
-    return f'<div class="disclosure" data-source="{_escape(block.source)}">{_escape(block.text)}</div>'
+        return f'<p class="line" data-source="{_escape(block.source)}">{text}</p>'
+    return f'<p class="disclosure" data-source="{_escape(block.source)}">{text}</p>'
 
 
-def _facts(facts: Sequence[Fact]) -> str:
-    """Facts code states beside an author's words, escaped, on one line; a ``See`` fact's cases linked."""
-    rendered = []
-    for fact in facts:
-        if fact.name == "See":
-            links = ", ".join(
-                f'<a href="#case-{number.group(1)}">{_escape(case)}</a>'
-                if (number := _CASE_NUMBER.fullmatch(case))
-                else _escape(case)
-                for case in fact.value.split(", ")
-            )
-            rendered.append(f"See {links}")
-        else:
-            rendered.append(f"{_escape(fact.name)}: {_escape(fact.value)}")
-    return " · ".join(rendered)
+def _slug(term: str) -> str:
+    """A glossary term as an anchor id."""
+    return re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-")
 
 
 def _markdown(text: str) -> str:

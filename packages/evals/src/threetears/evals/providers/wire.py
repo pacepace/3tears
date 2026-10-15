@@ -421,9 +421,10 @@ def reported_cost(usage: Mapping[str, Any]) -> tuple[float | None, str | None, s
     """OpenRouter's own figure for a call: the cost, where it came from, and why it is unpriced.
 
     Under bring-your-own-key (``is_byok``) ``cost`` is OpenRouter's fee alone and the upstream bills the key
-    separately, which the reply states as ``cost_details.upstream_inference_cost``: the call cost their sum, and a
-    BYOK reply missing the upstream figure is unpriced rather than understated. Otherwise the cost is ``cost``. A reply
-    with no cost is unpriced, never ``0``.
+    separately, which the reply states as ``cost_details.upstream_inference_cost``. So three cases: ``is_byok`` is
+    ``True``, the call cost their sum, and a reply missing the upstream figure is unpriced rather than understated;
+    ``is_byok`` is ``False``, the cost is ``cost``; ``is_byok`` is absent (or not a bool), the reply cannot say whether
+    ``cost`` is the whole price or the fee alone, so it is unpriced. A reply with no cost is unpriced, never ``0``.
 
     Args:
         usage: The reply's ``usage`` object.
@@ -434,7 +435,10 @@ def reported_cost(usage: Mapping[str, Any]) -> tuple[float | None, str | None, s
     cost = usage.get("cost")
     if not isinstance(cost, int | float) or isinstance(cost, bool):
         return None, None, "OpenRouter's reply carried no cost"
-    if usage.get("is_byok") is not True:
+    byok = usage.get("is_byok")
+    if not isinstance(byok, bool):
+        return None, None, "OpenRouter's reply carried no is_byok, so its cost may be OpenRouter's fee alone"
+    if not byok:
         return float(cost), PriceSource.OPENROUTER_REPORTED, None
     upstream = _mapping(usage.get("cost_details")).get("upstream_inference_cost")
     if not isinstance(upstream, int | float) or isinstance(upstream, bool):

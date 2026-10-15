@@ -536,7 +536,7 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 
 #: The host contract: every public name a host binds to, by ``root.name``. Each moves only with a
 #: ``MIGRATIONS.toml`` record and a deprecation cycle (the old name keeps working beside the new one for one minor
-#: release), from 0.68.0 on. :data:`STABLE` holds the rest of the declared surface; every other public name is
+#: release), from 0.69.0 on. :data:`STABLE` holds the rest of the declared surface; every other public name is
 #: ``provisional``.
 #:
 #: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/ladder.md``, the
@@ -647,6 +647,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # is asked for, so a host's client sends what the run records as asked.
         "threetears.evals.run.SIMULATOR_REQUEST_SETTINGS",
         "threetears.evals.analysis.analysis_gen_request_settings_for",
+        # The case floor below which no rate or difference is estimated, which a host's seed gate holds its templates to.
+        "threetears.evals.analysis.MIN_CASES",
         "threetears.evals.testing.CompletionGuard",
         "threetears.evals.testing.JobsConformanceHost",
         "threetears.evals.testing.jobs_conformance_cases",
@@ -803,8 +805,6 @@ STABLE: frozenset[str] = frozenset(
     {
         # Rungs 0 and 1: the command line a TOML file or a host's own entry runs through, its exit codes, and the
         # quick path's seams beside the root's names: a grader, a measure, a world's runner and outcome, a calibration.
-        "threetears.evals.quick.DEFAULT_PROG",
-        "threetears.evals.quick.ENGINE_COMMANDS",
         "threetears.evals.quick.EXIT_FAILED",
         "threetears.evals.quick.EXIT_GATE_FAILED",
         "threetears.evals.quick.EXIT_OK",
@@ -817,12 +817,17 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.quick.Measure",
         "threetears.evals.quick.WorldOutcome",
         "threetears.evals.quick.WorldRunner",
-        "threetears.evals.quick.build_parser",
         "threetears.evals.quick.run_cli",
         # What a `Result` hands back when it is read case by case, verdict by verdict, or label by label.
         "threetears.evals.analysis.CaseResult",
         "threetears.evals.analysis.LabelStatistics",
         "threetears.evals.analysis.Verdict",
+        # How a report speaks: the prose lint every rendered sentence and a memo's are held to, the one seam an
+        # identifier passes on its way to a reader, and the glossary of every term of art a page links.
+        "threetears.evals.analysis.GLOSSARY",
+        "threetears.evals.analysis.StyleViolation",
+        "threetears.evals.analysis.humanize",
+        "threetears.evals.analysis.lint_prose",
         # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
         # evidence-tier and profile readings over them, as `docs/judges-and-calibration.md` runs them.
         "threetears.evals.analysis.inter_judge_agreement",
@@ -980,8 +985,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.SeedTemplate",
         "threetears.evals.kernel.ToolWrap",
         "threetears.evals.kernel.extract_json",
-        "threetears.evals.kernel.extract_json_array",
-        "threetears.evals.kernel.fold_phase_timings",
         "threetears.evals.kernel.prompt_drift",
         "threetears.evals.kernel.seed_digest",
         # A production host's further bindings in `threetears.evals.kernel.host`: what Discodon's production code

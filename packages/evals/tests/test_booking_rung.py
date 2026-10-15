@@ -35,6 +35,7 @@ from packages.evals.tests.ladder_support import (
     stated_spend,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 RUNG = EXAMPLES / "4-booking"
@@ -79,6 +80,7 @@ async def test_offline_it_replays_the_loop_and_grades_the_day_each_cell_left(
     result = await module.booking.run(store=":memory:")
 
     assert len(served.calls) == recorded_spend(RECORDING)[0], "every recorded turn is replayed, and no other"
+    assert page_violations(result.report) == []
     summary, host = result.summary, result.host
     assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_excluded) == (12, 3, 0)
     assert summary.errors == []

@@ -200,7 +200,12 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert line.id == status.analysis_id
     markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
-    assert markdown.body.startswith(f"# {fixture.campaign.name}")
+    # The page is that campaign's: titled by its declared question (first letter capitalized), as every page with a
+    # declared question is; a campaign that declares none is titled by its name.
+    design = fixture.campaign.declared_design
+    assert design is not None
+    (question,) = design.questions
+    assert markdown.body.startswith(f"# {question.text[:1].upper()}{question.text[1:]}\n")
     assert f"**{line.verdict}**" in markdown.body and line.findings >= 1
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert "<script" not in html.body.lower()

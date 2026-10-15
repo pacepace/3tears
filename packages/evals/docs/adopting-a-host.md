@@ -255,7 +255,8 @@ billed, so the price ceiling is one request's, but each refused send can take up
 
 **Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
-without the upstream figure is unpriced. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
+without the upstream figure is unpriced. A reply that carries no `is_byok` is unpriced too (`cost_usd` and
+`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
 for the matching `vendor/model` row, its `price_source` ending `;cache-approximate` when a prompt cache was read or
 written (the catalogue carries no cache rates). The `price_source` words are `PriceSource`'s (host contract, from
 `threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
@@ -852,7 +853,7 @@ launch (a witnessed session, a run your host assembles) is validated as strictly
 
 ## Stability tiers
 
-**Every public name has a tier, and the tier is what a release promises about it.** From 0.68.0, the first tagged
+**Every public name has a tier, and the tier is what a release promises about it.** From 0.69.0, the first tagged
 release, on:
 
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
@@ -895,14 +896,14 @@ def test_we_bind_only_declared_names() -> None:
 When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
 records it under that release: the old name, its new home or `removed`, and why. A `stable` or `provisional` name
 has no shim at the old name; a `host-contract` one keeps working for a minor release first (above). The record starts
-at 0.68.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
+at 0.69.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
 (`https://github.com/pacepace/3tears/blob/<tag>/packages/evals/MIGRATIONS.toml`) or in a checkout. In a checkout,
 the release notes are printed from it, so they hold the full old-to-new map:
 
 ```bash
-uv run python packages/evals/scripts/release_notes.py v0.68.0
+uv run python packages/evals/scripts/release_notes.py v0.69.0
 ```
 
 Each line reads `old → new`, grouped under the reason for the move. Changes that are not a public name, such as
@@ -930,7 +931,7 @@ snapshot:
 - **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
   section to exactly the names that left a root between that tag and this version's. Before the version is
   tagged, it compares against the working tree. `since` is always a final release tag (`v<x>.<y>.<z>`). A tag
-  from before the package existed (`v0.67.0`, for 0.68.0) has an empty surface. A checkout without the tags fails
+  from before the package existed (`v0.68.0`, for 0.69.0) has an empty surface. A checkout without the tags fails
   this check rather than passing it.
 - **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
   it. Two different objects under one name always fail: rename one.

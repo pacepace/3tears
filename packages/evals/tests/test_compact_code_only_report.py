@@ -36,8 +36,8 @@ CASES = [
     {"text": "an oak", "label": "plant"},
 ]
 
-CONTROL_ARM = "candidate=control (control)"
-CANDIDATE_ARM = "candidate=candidate"
+CONTROL_ARM = "▸ control"
+CANDIDATE_ARM = "candidate"
 
 
 async def right(case: Mapping[str, Any]) -> str:
@@ -127,8 +127,8 @@ class TestPerLabelStatisticsAreOneTable:
         assert "A label an arm never predicted has no precision" in said
 
         markdown = report_markdown(comparison.report)
-        assert "**Per-label precision, recall and F1**" in markdown
-        assert "| animal | candidate=candidate | — | 0 of 4 (n=4 over 2 cases) | — |" in markdown
+        assert "<summary>Per label</summary>" in markdown
+        assert "| animal | candidate | — | 0 of 4 (n=4 over 2 cases) | — |" in markdown
 
     async def test_no_per_label_chart_and_no_notice_for_one(self) -> None:
         report = (await _classifier()).report

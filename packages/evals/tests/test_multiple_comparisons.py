@@ -621,7 +621,7 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
 
     assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"
     assert stats["control_mean"] == pytest.approx(0.5)
-    assert isinstance(stats["interval"], str) and stats["interval"].endswith("at 95%")
+    assert isinstance(row["interval"], str) and row["interval"].endswith("at 95%")
     assert stats["hedges_g"] is not None and stats["hedges_g"] > 0
 
 

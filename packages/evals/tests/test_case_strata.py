@@ -365,7 +365,7 @@ class TestTheReportCarriesStrata:
         report = _code_only(_bundle(*_mixed()))
 
         markdown = report_markdown(report)
-        assert "**By stratum**" in markdown and "| lookalike |" in markdown and TOO_FEW_CASES in markdown
+        assert "<summary>By stratum</summary>" in markdown and "| lookalike |" in markdown and TOO_FEW_CASES in markdown
         html = report_html(report)
         assert "By stratum" in html and 'data-source="strata"' in html
 

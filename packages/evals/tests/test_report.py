@@ -43,6 +43,7 @@ from threetears.evals.analysis import (
     report_markdown,
     set_campaign_control,
 )
+from threetears.evals.analysis.report.build import contrast_rows
 from threetears.evals.analysis.report.figures import measure_rulers
 from threetears.evals.analysis.report.model import table_row
 from threetears.evals.kernel.campaign import EvalAnalysis
@@ -73,20 +74,21 @@ class TestTheToyAnalysisSerializesTwoWays:
         finding = analysis.document.findings[0]
         lines = markdown.splitlines()
 
-        # The campaign's name leads the title line, and the line names who wrote the memo.
+        # The declared question is the title; the arms are line 2; who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
-        assert report.title.startswith("chunk width sweep · ") and report.title.endswith(
-            f"analysis by {analysis.generation.generator_model}"
-        )
+        # The question as declared, its first letter capitalized: a title starts with a capital.
+        assert report.title == "Is the wider chunk worth what it costs to retrieve?"
         assert lines[0] == f"# {report.title}"
-        assert lines[1].startswith("Question declared before the run: ")
-        assert f"### F1. {finding.title}" in markdown
-        assert "**Evidence**" in markdown and "| Arm | Measure | Value | Cases | Spread |" in markdown
+        assert lines[1].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
+        assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown
+        # A finding leads with its headline, unnumbered: nothing on the page cites a finding by number.
+        assert f"**{finding.title}**" in markdown and "**F1." not in markdown
+        assert "**Readings**" in markdown and "| Arm | Turn time | Cases |" in markdown
         (chart,) = _finding_charts(report)
-        assert f"**Chart: {chart.title}**" in markdown
+        assert f"**{chart.title}**" in markdown
         assert "| " + " | ".join(chart.values_table()[0]) + " |" in markdown
-        assert f"> **Caveat** (Kind: sampling): {finding.caveats[0].text}" in markdown
-        assert "## Methods and disclosures" in markdown
+        assert f"Caveat (sampling): {finding.caveats[0].text}" in markdown
+        assert "## Methods" in markdown
 
     async def test_html_carries_the_same_and_draws_each_chart_inline(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
@@ -119,7 +121,8 @@ class TestTheToyReportsContent:
         order = list(SECTION_TITLES)
         seen = list(dict.fromkeys(block.section for block in report.blocks))
         assert seen == [section for section in order if section in seen]
-        assert set(seen) == set(order)
+        # No decision rule is declared, and the glossary is the serializers', drawn from the blocks' terms.
+        assert set(seen) == set(order) - {"decision", "glossary"}
 
     async def test_an_authors_caveat_is_attached_to_its_finding_as_written(
         self, toy: tuple[Any, EvalAnalysis, Report]
@@ -142,8 +145,11 @@ class TestTheToyReportsContent:
         # Code's numbers, stated on each measure's one ruler for the report (a latency in s where the surface is).
         rulers = measure_rulers(analysis.decision_surface)
         stated = [row.value * (rulers[row.measure_id].factor if row.reading == "measure" else 1.0) for row in evidence]
-        assert [row["value"] for row in table.values()] == pytest.approx(stated)
-        assert any(cell["value"].unit == "s" for cell in table.rows), "the toy's turn time reads in s on its surface"
+        # One row per arm, one column per reading: the toy's finding reads one measure on each arm.
+        assert [row["reading_0"] for row in table.values()] == pytest.approx(stated)
+        assert any(cell["reading_0"].unit == "s" for cell in table.rows), (
+            "the toy's turn time reads in s on its surface"
+        )
         assert [row["cases"] for row in table.values()] == [row.n_cases for row in evidence]
 
     async def test_a_finding_s_evidence_is_drawn_as_interval_rows_on_the_same_ruler(
@@ -154,7 +160,7 @@ class TestTheToyReportsContent:
         (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "evidence"]
 
         assert chart.finding == 0 and chart.chart == "interval_rows" and chart.unit == "s"
-        assert [row.value for row in chart.rows] == pytest.approx([row["value"] for row in table.values()])
+        assert [row.value for row in chart.rows] == pytest.approx([row["reading_0"] for row in table.values()])
         assert [row.n_cases for row in chart.rows] == [row.n_cases for row in analysis.resolutions[0].evidence]
         # The chart follows the evidence table it draws, inside its finding.
         assert report.blocks.index(table) < report.blocks.index(chart)
@@ -170,25 +176,27 @@ class TestTheToyReportsContent:
     ) -> None:
         _, analysis, report = toy
         generation = analysis.generation
-        disclosures = [block for block in report.blocks if isinstance(block, DisclosureBlock)]
-        (label, *_) = [block for block in disclosures if block.section == "memo"]
-        assert label.text.startswith(f"Written by {generation.generator_model} from the evidence below")
-        methods = [block for block in disclosures if block.section == "methods"]
-        texts = [block.text for block in methods]
+        (table, *notes) = [block for block in report.blocks if block.section == "methods"]
+        assert isinstance(table, TableBlock) and table.name == "methods"
+        rows = {str(row["item"]): str(row["value"]) for row in table.values()}
+        assert generation.generator_model in rows["Analysis"] and generation.prompt_id in rows["Analysis"]
+        assert generation.bundle_fingerprint in rows["Bundle"]
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.
+        texts = [block.text for block in notes if isinstance(block, DisclosureBlock)]
         assert any(text.startswith("Model identity unconfirmed:") for text in texts)
-        (writer,) = [block.text for block in methods if block.source == "memo"]
-        assert generation.prompt_id in writer and generation.generated_at in writer
-        assert methods[-1].source == "generation" and generation.bundle_fingerprint in methods[-1].text
+        assert all(block.fold == "Disclosures" for block in notes)
+        # The memo is never introduced: the page does not describe itself.
+        assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "Written by" in b.text]
 
     async def test_the_coverage_map_is_joined_to_the_findings_and_counted(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
         (coverage,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "coverage"]
-        assert coverage.section == "memo" and coverage.values()[0]["findings"] == "F1"
-        assert any(
-            isinstance(block, DisclosureBlock) and "lever(s) in the coverage map" in block.text
-            for block in report.blocks
-        )
+        (headline,) = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
+        # A finding is cited by the headline the page prints for it, never by a number.
+        assert coverage.section == "memo" and coverage.values()[0]["findings"] == headline.rstrip(".")
+        unnamed = [row for row in coverage.values() if row["findings"] == "no finding"]
+        said = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.text.startswith("Levers no finding")]
+        assert len(said) == (1 if unnamed else 0)
 
     async def test_the_service_refuses_an_analysis_it_does_not_hold(self, toy: tuple[EvalHost, Any, Any]) -> None:
         host, analysis, _ = toy
@@ -363,9 +371,9 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
     def test_it_is_code_only_and_its_memo_section_says_so(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
         assert report.basis == "code_only" and report.finding_count == 0
-        (first,) = [block for block in report.blocks if block.section == "memo"][:1]
-        assert isinstance(first, DisclosureBlock) and (first.source, first.text) == ("memo", NO_ANALYSIS)
-        assert report.title.endswith(" · no analysis written")
+        (methods,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "methods"]
+        assert {"item": "Analysis", "value": NO_ANALYSIS} in methods.values()
+        assert "analysis" not in report.title
 
     def test_it_holds_no_authors_words(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
@@ -381,19 +389,16 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
 
     def test_it_ends_on_how_it_was_computed(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
-        last = report.blocks[-1]
-        assert isinstance(last, DisclosureBlock) and last.source == "generation"
-        assert report.source.bundle_fingerprint in last.text and "bundle.json beside this page" in last.text
-        assert any(
-            isinstance(block, DisclosureBlock) and block.text.startswith("No memo was written: no model was called")
-            for block in report.blocks
-        )
+        (methods, *notes) = [block for block in report.blocks if block.section == "methods"]
+        assert isinstance(methods, TableBlock) and all(block.fold == "Disclosures" for block in notes)
+        (bundle,) = [row["value"] for row in methods.values() if row["item"] == "Bundle"]
+        assert report.source.bundle_fingerprint in str(bundle) and "bundle.json beside this page" in str(bundle)
 
     def test_it_serializes_as_one_page_and_its_markdown(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
         markdown = report_markdown(report)
         assert report.source.campaign_name
-        assert markdown.startswith(f"# {report.source.campaign_name} · ")
+        assert markdown.startswith(f"# {report.title}\n")
         assert markdown.count(NO_ANALYSIS) == 1
         page = report_html(report)
         assert 'data-basis="code_only"' in page and 'data-chart="outcome_bar"' in page
@@ -454,9 +459,10 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     tables = {block.name: block for block in report.blocks if isinstance(block, TableBlock)}
     comparisons, statistics = tables["comparisons"], tables["comparison_statistics"]
     assert statistics.details and len(statistics.rows) == len(comparisons.rows)
-    # The question in the words it was asked, never its id.
+    # The page names the question by its number; a program reads it in the words it was asked, never its id.
     asked = next(q.text for q in campaign.declared_design.questions if q.id == "q-chunk-width")
-    assert comparisons.rows and {row["question"] for row in statistics.values()} == {asked}
+    assert comparisons.rows and {row["question"] for row in statistics.values()} == {"Q1"}
+    assert {row["question"] for row in contrast_rows(report.bundle)} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}
     assert by_reading["Field accuracy"] == "improved on the control"
     assert by_reading["Turn time"] == "regressed from the control"
@@ -465,10 +471,10 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
         for block in report.blocks
     )
     (scoreboard,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "scoreboard"]
-    assert sum(str(row["arm"]).endswith("(control)") for row in scoreboard.values()) == 1
+    assert sum(str(row["arm"]).startswith("▸ ") for row in scoreboard.values()) == 1
     # Each reading tested on enough cases is drawn as interval rows of the difference, a zero line beneath it.
     drawn = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "contrasts"]
-    assert {block.title.split(":")[0] for block in drawn} >= {"Field accuracy", "Turn time"}
+    assert {block.title.removeprefix("Change in ") for block in drawn} >= {"Field accuracy", "Turn time"}
     assert all(block.zero_line and block.chart == "interval_rows" for block in drawn)
 
 
@@ -477,12 +483,13 @@ def test_a_contrast_states_its_figures_on_the_measure_s_one_ruler() -> None:
     _, report = _controlled()
     (statistics,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "comparison_statistics"]
     (turn_time,) = [row for row in statistics.rows if row["reading"].value == "Turn time"]
-    assert [turn_time[key].text for key in ("control_mean", "arm_mean", "delta")] == ["0.92 s", "1.42 s", "0.5 s"]
+    assert [turn_time[key].text for key in ("control_mean", "arm_mean")] == ["0.92 s", "1.42 s"]
     assert (turn_time["arm_mean"].value, turn_time["arm_mean"].unit) == (1.42, "s")
-    assert turn_time["interval"].text == "[0.4498, 0.5502] s at 99%"
     (comparisons,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "comparisons"]
-    (shown,) = [row for row in comparisons.values() if row["reading"] == "Turn time"]
-    assert shown["change"] == "0.5 s [0.4498, 0.5502] s at 99%"
+    (shown,) = [row for row in comparisons.rows if row["reading"].value == "Turn time"]
+    assert (shown["change"].text, shown["interval"].text) == ("0.5 s", "[0.4498, 0.5502] s at 99%")
+    (row,) = [row for row in contrast_rows(report.bundle) if row["reading"] == "Turn time"]
+    assert row["change"] == "0.5 s [0.4498, 0.5502] s at 99%"
     # A reading with no unit is stated as a bare number.
     (accuracy,) = [row for row in statistics.rows if row["reading"].value == "Field accuracy"]
     assert (accuracy["arm_mean"].text, accuracy["arm_mean"].unit) == ("0.91", "")

@@ -156,6 +156,24 @@ class TestWordsAndEvidenceReadOnTheRuler:
         )
         assert stated["spread"].text == "sem 0.04; 95% CI [0.8, 1.1]"
 
+    def test_a_goal_check_s_pass_rate_is_stated_as_its_count(self) -> None:
+        surface = _surface(threshold=1500.0)
+        subject = SimpleNamespace(decision_surface=surface)
+        cell = surface.cells[0]
+        row = EvidenceRow(
+            cell_ref=cell_ref(cell.variant_key, cell.apparatus_class_id),
+            measure_id='goal_state:call_count("music.queue_track") >= 2',
+            reading="measure",
+            value=11 / 12,
+            n=12,
+            n_cases=4,
+            dispersion="sem 0.08",
+        )
+        (stated,) = evidence_rows(subject, [row], lambda ref: ref)  # type: ignore[arg-type]
+        # As the scoreboard counts, never 0.9167; the check named by its expression, as code.
+        assert stated["value"].text == "11 of 12"
+        assert stated["measure"].text == '`call_count("music.queue_track") >= 2`'
+
 
 class TestARunSummaryStatesAMeasureOnOneRuler:
     def test_its_mean_minimum_and_maximum_read_in_one_unit(self) -> None:

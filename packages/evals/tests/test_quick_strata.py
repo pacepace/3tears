@@ -153,12 +153,12 @@ class TestAComparisonReadsEachArmPerKind:
 
         rendered = report_markdown(comparison.report)
         assert "By stratum" in rendered
-        assert "A stratum needs at least 10 cases" in rendered
+        assert "a stratum needs at least 10 cases" in rendered
         rows = comparison.strata(reading="Accuracy")
         assert [row["arm"] for row in rows] == ["baseline", "candidate"]
         assert all(set(row["strata"]) == {"lookalike", "plain"} for row in rows)
         candidate = comparison.strata("candidate", reading="cases")
-        assert len(candidate) == 1 and candidate[0]["label"] == "candidate=candidate"
+        assert len(candidate) == 1 and candidate[0]["label"] == "candidate"
         assert TOO_FEW_CASES in candidate[0]["strata"]["lookalike"]
         assert TOO_FEW_CASES not in candidate[0]["strata"]["plain"]
         assert all(summary.strata for summary in comparison.arms.values())

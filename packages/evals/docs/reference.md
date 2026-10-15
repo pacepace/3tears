@@ -224,10 +224,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`extract_json`** · function · Extract a JSON object from provider output.
   <br>`extract_json(content: str) -> dict[str, Any]`
-- **`extract_json_array`** · function · Extract a JSON array from provider output, handling markdown code blocks.
-  <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
-- **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
-  <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
 - **`seed_digest`** · function · The canonical digest of a seed's content: what a host records when it seeds a slot from it.
@@ -531,6 +527,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`generation_ceiling_s`** · function · The wall-clock ceiling of one `generate_analysis`, derived from the ceilings it wraps.
   <br>`generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float`
+- **`humanize`** · function · An identifier as a reader is shown it after its first mention.
+  <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble a campaign's context bundle and return it, without generating.
   <br>`inspect_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> BundleInspection`
 - **`inter_judge_agreement`** · function · Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
@@ -549,6 +547,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`judge_phase_ceiling_s(*, judge_dims: int, judge_concurrency: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
   <br>`judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement`
+- **`lint_prose`** · function · Every rule `text` breaks.
+  <br>`lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]`
 - **`read_judge_temperatures`** · function · Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
 - **`refuse_undeliverable_reporter_template`** · function · Refuse a reporter template that asks for apparatus a memo writer cannot honour, or gives its judge nothing to score.
@@ -579,6 +579,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ReporterOverlays`** · model · The one knob a reporter launch may turn: which preset of the analysis generator's prompt writes the memos.
 - **`RequestSettingsReading`** · *host contract* · model · What one role asked for and what its calls were actually sent with, across the results read.
 - **`SentSettingsShare`** · *host contract* · model · One value a role's calls were sent with, and how many of the role's units carried it.
+- **`StyleViolation`** · dataclass · One rule a piece of text breaks.
 - **`Verdict`** · model · One verdict the report states, typed: what a program reads instead of the words printed from it.
 
 **Types**
@@ -596,6 +597,9 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= 13`
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · The analysis generator's default system prompt.
 - **`GATE_TOKENS`** · constant (tuple) · Every token, in the order the module docstring lists them.
+- **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
+- **`MIN_CASES`** · *host contract* · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
+  <br>`= 5`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 
@@ -685,8 +689,6 @@ The host bridge: an eval's host, the command line, and a measure declared on the
 
 - **`as_host`** · *host contract* · function · A host for these evals: the vocabulary their graders, levers and world need, over one store.
   <br>`as_host(evals: Sequence[Eval], *, store: DocumentStore | str | os.PathLike[str] | None, clients: CompletionClients | None = None) -> EvalHost`
-- **`build_parser`** · function · The command line's parser.
-  <br>`build_parser(prog: str = 'python -m threetears.evals', *, takes_host: bool = True, commands: Sequence[HostCommand] = ()) -> argparse.ArgumentParser`
 - **`measure`** · *host contract* · function · Declare the measure a function computes, on the function: `@measure(higher_is_better=True, ...)`.
   <br>`measure(*, name: str | None = None, reader_name: str | None = None, description: str | None = None, family: str = 'mechanical', transferability_class: str = 'mechanical', attribution_scope: str = 'end_to_end', data_type: str = 'numeric', **declared: Any) -> Callable[[Callable[..., Any]], Measure]`
 - **`run_cli`** · function · Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
@@ -708,9 +710,6 @@ The host bridge: an eval's host, the command line, and a measure declared on the
 
 **Constants**
 
-- **`DEFAULT_PROG`** · constant (str) · The program name the command line prints when it is run as `python -m threetears.evals`.
-  <br>`= 'python -m threetears.evals'`
-- **`ENGINE_COMMANDS`** · constant (tuple) · The commands the engine itself carries; a host command may take none of these names.
 - **`EXIT_FAILED`** · constant (int) · Exit code: the command failed on an error nothing anticipated — a host factory, a launcher or a handler raising, or the engine's own fault.
   <br>`= 3`
 - **`EXIT_GATE_FAILED`** · constant (int) · Exit code: `gate` read a verdict its `--fail-on` names.
@@ -972,7 +971,7 @@ A campaign's report: one page, the bundle it was computed from, and the typed ve
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `basis` | `ReportBasis` | required | `analysis` over a generated memo, `code_only` over the evidence alone. |
-| `title` | `str` | required | The title line: the campaign, its arms, the date and the basis. |
+| `title` | `str` | required | The title line: the question the campaign asks, in plain words. |
 | `finding_count` | `int` | required | How many findings the memo holds. |
 | `source` | `ReportSource` | required | What this is a report of. |
 | `blocks` | `list[ReportBlock]` | required | The report, in reading order. |
@@ -1006,6 +1005,7 @@ What the analysis's author wrote, exactly as written, with the facts code states
 | `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
+| `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['text']` | `'text'` | Which kind of block this is. |
 | `role` | `TextRole` | required | What the author wrote it as. |
 | `body` | `ModelProse` | required | The author's words, Markdown allowed; empty where the author left a required field blank. |
@@ -1021,6 +1021,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
+| `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['table']` | `'table'` | Which kind of block this is. |
 | `name` | `str` | required | Which table this is, e.g. `scoreboard`, `comparisons`, `cases`. |
 | `title` | `str` | required | The table's heading. |
@@ -1040,6 +1041,7 @@ One of the two charts a report draws, with every value it draws, so it prints as
 | `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
+| `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['chart']` | `'chart'` | Which kind of block this is. |
 | `chart` | `ChartKind` | required | `outcome_bar` or `interval_rows`. |
 | `title` | `str` | required | What the chart shows. |
@@ -1059,9 +1061,11 @@ Something code must tell the reader that no author wrote — one idea.
 | `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
+| `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['disclosure']` | `'disclosure'` | Which kind of block this is. |
 | `source` | `DisclosureSource` | required | What the disclosure speaks for. |
 | `text` | `str` | required | The disclosure, one sentence or a few. |
+| `term` | `str \| None` | `None` | The glossary term the line links to, where it uses one; None for none. |
 
 <a id="analysis-bundle"></a>
 ### `AnalysisContextBundle`

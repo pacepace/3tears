@@ -21,6 +21,15 @@ comparison still reads `improved`, `regressed` or `not_separated`; its equivalen
 "declare value_range on this measure to test equivalence", and a report says so once per measure. Fix, on the
 host's side: declare the measure's range.
 
+### A decision rule cannot yet settle switch on the overall pass rate
+
+A declared decision rule settles `keep` on what the run observed, and settles `switch` only on an interval: every arm
+at the case floor, and the contrast's interval inside the rule's margin. The bundle carries a contrast for each
+check's pass rate and for cost, but none for the overall trial pass rate. So a rule whose clause reads that rate
+(Discodon's G2: "no dimension drops by more than 10 points") reads `unsettled` ("no interval was computed on the pass
+rate") however many cases ran. This is the honest outcome: a switch is not shown. Fix: the bundle carries the overall
+pass-rate contrast, with its interval over cases, so the rule can settle `switch` on it.
+
 ### A guardrail is held only on a declared range (accepted limit)
 
 Decided with the fix that made `held` a bounded test's claim (no issue filed yet; tracked with

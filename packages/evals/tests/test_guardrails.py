@@ -292,19 +292,22 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         assert scope.exploratory_measures == [] and scope.exploratory_dimensions == []
         assert scope.disclosure is not None and "every finding it supports is exploratory" in scope.disclosure
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
-        # Said once, as the report's basis line; no reading's line repeats it.
+        # Said once, as the verdict line's lead; no reading's line repeats it.
         said = [
             b
             for b in report.blocks
-            if isinstance(b, DisclosureBlock) and ("EXPLORATORY" in b.text or b.source == "scope")
+            if isinstance(b, DisclosureBlock) and ("Exploratory" in b.text or b.source == "scope")
         ]
-        assert [(b.section, b.source) for b in said] == [("header", "basis")]
-        assert said[0].text.startswith("EXPLORATORY — no question was declared before the run")
+        assert [(b.section, b.source) for b in said] == [("header", "verdict")]
+        assert said[0].text.startswith("Exploratory: ")
 
     def test_the_code_only_report_names_the_exploratory_readings_where_questions_are_declared(self):
         cost = Question(id="q-cheaper", text="is it cheaper?", merit_axes=["cost"])
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), questions=[cost])
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
-        assert said.section == "memo" and f"{CAPABILITY} (judged)" in said.text
-        assert BOUNDARY not in said.text
+        # One sentence, then the readings listed once each in a table beside it.
+        (listed,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "unasked"]
+        named = [str(row["reading"]) for row in listed.values()]
+        assert said.section == listed.section == "not_tested" and f"{CAPABILITY} (judged)" in named
+        assert not any(BOUNDARY in name for name in named) and BOUNDARY not in said.text

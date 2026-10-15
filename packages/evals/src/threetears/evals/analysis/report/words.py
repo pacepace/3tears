@@ -26,7 +26,9 @@ from threetears.evals.analysis.references import cell_index, resolve_reading, re
 from threetears.evals.analysis.report.figures import UNITLESS, measure_rulers
 from threetears.evals.analysis.report.model import CellValue, TableCell
 from threetears.evals.kernel.analysis_measures import BarDecision
+from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier, VariantIndexEntry
+from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
 
 
@@ -152,6 +154,25 @@ def reading_name(name: str) -> str:
     return ENGINE_WORDS.get(name, name)
 
 
+def reading_heading(surface: DecisionSurface, name: str, reading: str = "measure") -> str:
+    """A reading as the page heads it, in a column, a row or a chart's title.
+
+    A goal check by its expression, verbatim as code (:func:`~threetears.evals.analysis.style.measure_name`); any
+    other reading by the surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
+
+    Args:
+        surface: The decision surface the reading is on.
+        name: The measure's key, or a judged dimension's name.
+        reading: ``judged`` for a judged dimension; anything else reads a measure.
+
+    Returns:
+        The heading.
+    """
+    if reading != "judged" and goal_check_of(name) is not None:
+        return measure_name(name)
+    return reading_name(surface.measure_heading(name, reading))
+
+
 def cell_arm_labels(surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry]) -> dict[str, str]:
     """Name every cell on the surface by its arm, adding the test setup only where one arm ran under two.
 
@@ -217,7 +238,8 @@ def evidence_rows(
     """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
 
     A measure's value and spread are stated on its one ruler for the report
-    (:func:`~threetears.evals.analysis.report.figures.measure_rulers`); a judged score has no unit.
+    (:func:`~threetears.evals.analysis.report.figures.measure_rulers`); a judged score has no unit; a goal check's
+    pass rate is its count (``11 of 12``), as the scoreboard counts.
 
     Args:
         analysis: The analysis the evidence was resolved under.
@@ -234,15 +256,28 @@ def evidence_rows(
         ruler = rulers.get(row.measure_id, UNITLESS) if row.reading == "measure" else UNITLESS
         values: dict[str, CellValue] = {
             "arm": arm(row.cell_ref),
-            "measure": reading_name(surface.measure_heading(row.measure_id, row.reading)),
+            "measure": reading_heading(surface, row.measure_id, row.reading),
             # Cases, never trials: the count every interval is read over.
             "cases": row.n_cases,
             "spread": _restated_spread(analysis, row, ruler.factor),
         }
         cells = {key: TableCell(value=value) for key, value in values.items()}
         cells["value"] = TableCell(value=row.value * ruler.factor, unit=ruler.unit)
+        if (passed := _passed_of(row)) is not None:
+            cells["value"] = TableCell(value=passed)
         rows.append({key: cells[key] for key, _ in EVIDENCE_COLUMNS})
     return rows
+
+
+def _passed_of(row: EvidenceRow) -> str | None:
+    """A goal check's pass rate as the scoreboard counts it (``11 of 12``); None for any other reading.
+
+    A check holds or not on each observation, so its rate times its observations is the count that held.
+    """
+    if row.reading != "measure" or goal_check_of(row.measure_id) is None or row.n <= 0:
+        return None
+    held = row.value * row.n
+    return f"{round(held)} of {row.n}" if abs(held - round(held)) < 1e-6 else None
 
 
 def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, factor: float) -> str:
@@ -282,6 +317,7 @@ __all__ = [
     "counted",
     "evidence_rows",
     "positions",
+    "reading_heading",
     "reading_name",
     "stands_on_words",
     "worded",

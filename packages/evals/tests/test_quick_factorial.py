@@ -173,8 +173,8 @@ async def test_the_campaign_declares_one_axis_per_factor_at_the_levels_the_runs_
 async def test_every_arm_is_named_by_both_coordinates_and_tested_against_the_control() -> None:
     comparison = await _factorial()
     rows = {row["contrast"]: row for row in comparison.contrasts("accuracy")}
-    assert set(rows) == {"callable.prompt=v2, model=a", "callable.prompt=v1, model=b", "callable.prompt=v2, model=b"}
-    assert {row["control"] for row in rows.values()} == {"callable.prompt=v1, model=a"}
+    assert set(rows) == {"callable prompt v2, model a", "callable prompt v1, model b", "callable prompt v2, model b"}
+    assert {row["control"] for row in rows.values()} == {"callable prompt v1, model a"}
     assert all(row["delta"] == pytest.approx(0.5) for row in rows.values()), "the careful rule reads every case"
     # The arms return plain answers, so no spend was observed and cost is not a reading to test.
     assert {row["reading"] for row in comparison.contrasts()} == {"Accuracy"}
@@ -189,9 +189,9 @@ async def test_against_reads_the_same_runs_against_another_control_and_runs_noth
     assert on_b.arms == comparison.arms and on_b.control == "model=b, prompt=v1"
     assert on_b.name == f"{comparison.name}, against model=b, prompt=v1"
     rows = {row["contrast"]: row for row in on_b.contrasts("accuracy")}
-    assert rows["callable.prompt=v2, model=b"]["control"] == "callable.prompt=v1, model=b"
-    assert rows["callable.prompt=v2, model=b"]["verdict"] == "not separated from the control"
-    assert rows["callable.prompt=v1, model=a"]["delta"] == pytest.approx(-0.5)
+    assert rows["callable prompt v2, model b"]["control"] == "callable prompt v1, model b"
+    assert rows["callable prompt v2, model b"]["verdict"] == "not separated from the control"
+    assert rows["callable prompt v1, model a"]["delta"] == pytest.approx(-0.5)
     with pytest.raises(ValueError, match="names no arm"):
         await comparison.against("model=c, prompt=v1")
 
@@ -202,8 +202,8 @@ async def test_a_one_factor_comparison_is_read_against_another_control_too() -> 
     flipped = await comparison.against("careful")
     (row,) = flipped.contrasts("accuracy")
     assert (row["contrast"], row["control"], row["verdict"]) == (
-        "candidate=hasty",
-        "candidate=careful",
+        "hasty",
+        "careful",
         "regressed from the control",
     )
 
@@ -240,18 +240,18 @@ async def test_arms_named_as_models_keep_their_names_as_the_runs_models() -> Non
     assert comparison.arms["model=careful"].candidate_model == "careful"
     assert comparison.arms["model=careful"].arm is None
     (row,) = comparison.contrasts("accuracy")
-    assert (row["arm"], row["contrast"], row["control"]) == ("model=careful", "model=careful", "model=hasty")
+    assert (row["arm"], row["contrast"], row["control"]) == ("model=careful", "careful", "hasty")
 
 
 async def test_a_callers_host_without_the_arm_lever_names_single_factor_arms_as_models() -> None:
     comparison = await _factorial({"hasty": hasty, "careful": careful}, host=callable_host())
     assert comparison.factors == ("model",)
     (row,) = comparison.contrasts("accuracy")
-    assert (row["arm"], row["contrast"]) == ("careful", "model=careful")
+    assert (row["arm"], row["contrast"]) == ("careful", "careful")
 
 
 async def test_a_callers_host_declaring_the_arm_lever_names_arms_on_it() -> None:
     host = as_host([Eval(CASES, {"hasty": hasty, "careful": careful}, ["label"])], store=":memory:")
     comparison = await _factorial({"hasty": hasty, "careful": careful}, host=host)
     (row,) = comparison.contrasts("accuracy")
-    assert (row["arm"], row["contrast"], row["control"]) == ("careful", "candidate=careful", "candidate=hasty")
+    assert (row["arm"], row["contrast"], row["control"]) == ("careful", "careful", "hasty")

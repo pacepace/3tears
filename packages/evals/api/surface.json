@@ -1813,8 +1813,8 @@
     },
     "threetears.evals.kernel.extract_json_array": {
       "kind": "function",
-      "signature": "extract_json_array(text: str) -> list[dict[str, Any]]",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.FIND_ANALYSIS": {
       "kind": "constant (str)",
@@ -1883,8 +1883,8 @@
     },
     "threetears.evals.kernel.fold_phase_timings": {
       "kind": "function",
-      "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.FRONTIER_RANKING_MEASURE": {
       "kind": "constant (str)",
@@ -4508,7 +4508,7 @@
     },
     "threetears.evals.analysis.ChartBlock": {
       "kind": "model",
-      "signature": "ChartBlock(section: ReportSection, finding: int | None = None, rests_on: list[int] = list(), anchor: str | None = None, kind: Literal['chart'] = 'chart', chart: ChartKind, title: str, bars: list[OutcomeBar] = list(), rows: list[IntervalRow] = list(), unit: str = '', zero_line: bool = False, margin: float | None = None)",
+      "signature": "ChartBlock(section: ReportSection, finding: int | None = None, rests_on: list[int] = list(), anchor: str | None = None, fold: str | None = None, kind: Literal['chart'] = 'chart', chart: ChartKind, title: str, bars: list[OutcomeBar] = list(), rows: list[IntervalRow] = list(), unit: str = '', zero_line: bool = False, margin: float | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.analysis.ChartKind": {
@@ -4906,6 +4906,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.GLOSSARY": {
+      "kind": "constant (dict)",
+      "signature": "",
+      "tier": "stable"
+    },
     "threetears.evals.analysis.GoalCheckProofReading": {
       "kind": "model",
       "signature": "",
@@ -4938,6 +4943,16 @@
     },
     "threetears.evals.analysis.HistoryResult": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.humanize": {
+      "kind": "function",
+      "signature": "humanize(kind: HumanizeKind, identifier: str) -> str",
+      "tier": "stable"
+    },
+    "threetears.evals.analysis.HumanizeKind": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -5151,6 +5166,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.lint_prose": {
+      "kind": "function",
+      "signature": "lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]",
+      "tier": "stable"
+    },
     "threetears.evals.analysis.list_analyses": {
       "kind": "function",
       "signature": "",
@@ -5254,7 +5274,7 @@
     "threetears.evals.analysis.MIN_CASES": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.multi_rig_variants": {
       "kind": "function",
@@ -5726,6 +5746,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.StyleViolation": {
+      "kind": "dataclass",
+      "signature": "StyleViolation(rule: Literal['banned', 'long_sentence', 'numerals', 'question', 'header', 'dash_chain', 'key_value', 'facts'], text: str, detail: str)",
+      "tier": "stable"
+    },
     "threetears.evals.analysis.SubjectFrontier": {
       "kind": "model",
       "signature": "",
@@ -6183,18 +6208,18 @@
     },
     "threetears.evals.quick.build_parser": {
       "kind": "function",
-      "signature": "build_parser(prog: str = 'python -m threetears.evals', *, takes_host: bool = True, commands: Sequence[HostCommand] = ()) -> argparse.ArgumentParser",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.quick.DEFAULT_PROG": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.quick.ENGINE_COMMANDS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.quick.EXIT_FAILED": {
       "kind": "constant (int)",

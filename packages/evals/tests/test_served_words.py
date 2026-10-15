@@ -153,6 +153,21 @@ class TestTheRunSummaryServesItsLines:
         judge = RoleSpend(role="judge", calls=1, cost_usd=0.01)
         assert _summary(max_cost_usd_origin="uncapped", spend=[judge]).spend_cap_text is not None
 
+    def test_a_measure_no_result_carries_is_counted_in_one_line_never_printed_alone(self) -> None:
+        """The host team's read of G2: fifteen ``no result carries it`` lines buried the three that mattered."""
+        uncarried = [_measure(f"unused_{index}", n=0, mean=None, minimum=None, maximum=None) for index in range(15)]
+        summary = _summary(measures=[_measure("accuracy", mean=0.75), *uncarried])
+        printed = summary.render()
+        assert "no result carries it" not in printed
+        assert printed.count("unused_") == 15, "named once each, in the one line"
+        assert summary.uncarried_text is not None and summary.uncarried_text.startswith(
+            "not shown, carried by no result: 15 measures ("
+        )
+        assert [line for line in printed.splitlines() if "carried by no result" in line] == [
+            f"  {summary.uncarried_text}"
+        ]
+        assert _summary(measures=[_measure("accuracy")]).uncarried_text is None
+
     def test_every_measure_state(self) -> None:
         summary = _summary(
             measures=[

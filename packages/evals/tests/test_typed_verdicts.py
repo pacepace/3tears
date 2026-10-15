@@ -95,10 +95,10 @@ class TestTheReportCarriesTypedVerdicts:
         typed = comparison.verdicts(kind="contrast")
         assert [row["verdict"] for row in table.values()] == [verdict.words for verdict in typed]
         by_arm = {verdict.arm: verdict for verdict in typed}
-        assert (by_arm["candidate=worse"].outcome, by_arm["candidate=worse"].reason) == ("regressed", "separated")
-        assert by_arm["candidate=same"].outcome in ("not_separated", "untested")
-        assert by_arm["candidate=same"].reason in ("no_margin", "untestable")
-        assert all(not verdict.guardrail and verdict.control == "candidate=current" for verdict in typed)
+        assert (by_arm["worse"].outcome, by_arm["worse"].reason) == ("regressed", "separated")
+        assert by_arm["same"].outcome in ("not_separated", "untested")
+        assert by_arm["same"].reason in ("no_margin", "untestable")
+        assert all(not verdict.guardrail and verdict.control == "current" for verdict in typed)
 
     async def test_contrasts_rows_carry_the_typed_outcome_beside_the_words(self) -> None:
         comparison = await _compare({"current": 0, "worse": 30})
@@ -172,7 +172,7 @@ class TestTheGate:
     async def test_a_comparison_gates_its_own_verdicts(self) -> None:
         comparison = await _compare({"current": 0, "worse": 30})
         result = comparison.gate()
-        assert result.outcome == "failed" and [verdict.arm for verdict in result.failures] == ["candidate=worse"]
+        assert result.outcome == "failed" and [verdict.arm for verdict in result.failures] == ["worse"]
         assert "gate FAILED" in result.render() and "regressed from the control" in result.render()
         better = await _compare({"current": 30, "better": 0}, scope="typed-better")
         assert better.gate().outcome == "passed"
@@ -202,21 +202,21 @@ class TestAQuickGuardrailIsATypedVerdictTheGateReads:
         )
         typed = {verdict.arm: verdict for verdict in comparison.verdicts("no_leak", kind="guardrail")}
         assert {arm: verdict.outcome for arm, verdict in typed.items()} == {
-            "candidate=same": "held",
-            "candidate=leaky": "breached",
-            "candidate=slip": "undecided",
+            "same": "held",
+            "leaky": "breached",
+            "slip": "undecided",
         }
         assert all(verdict.guardrail and verdict.margin == 0.1 for verdict in typed.values())
-        assert typed["candidate=same"].margin_source == "measure"
+        assert typed["same"].margin_source == "measure"
         rows = {row["arm"]: row for row in comparison.guardrails()}
-        assert {f"candidate={arm}": row["decision"] for arm, row in rows.items()} == {
+        assert {arm: row["decision"] for arm, row in rows.items()} == {
             arm: verdict.words for arm, verdict in typed.items()
         }, "the table prints each typed verdict's words"
 
         result = comparison.gate(readings=["no_leak"])
         assert result.outcome == "failed"
-        assert {verdict.arm for verdict in result.failures} == {"candidate=leaky", "candidate=slip"}
-        assert comparison.gate(["breached"], readings=["no_leak"]).failures == (typed["candidate=leaky"],)
+        assert {verdict.arm for verdict in result.failures} == {"leaky", "slip"}
+        assert comparison.gate(["breached"], readings=["no_leak"]).failures == (typed["leaky"],)
         lenient = comparison.gate(["regressed"], readings=["no_leak"])
         assert lenient.outcome == "undecided" and not lenient.passed, "an undecided guardrail is never a pass"
 
@@ -236,7 +236,7 @@ class TestTheCommandLineGate:
         assert off_loop(self._gate, comparison) == EXIT_GATE_FAILED == 4
         out = capsys.readouterr().out
         assert out.startswith("gate FAILED: 1 of 1 verdict(s)")
-        assert "failed: Correct score, candidate=worse vs candidate=current: regressed from the control" in out
+        assert "failed: Correct score, worse vs current: regressed from the control" in out
 
     async def test_a_breached_guardrail_exits_4(self, capsys: pytest.CaptureFixture[str]) -> None:
         comparison = await _guarded(CASES[:40], {"current": _leaks(0), "leaky": _leaks(12)}, "cli-breached")

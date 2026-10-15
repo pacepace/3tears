@@ -416,7 +416,9 @@ async def test_a_completion_meets_the_port_and_reports_what_was_sent() -> None:
 @pytest.mark.parametrize(
     ("usage", "cost", "source", "why"),
     [
-        ({"cost": 0.0003}, 0.0003, "openrouter:reported", None),
+        ({"cost": 0.0003}, None, None, "carried no is_byok"),
+        ({"cost": 0.0003, "is_byok": "false"}, None, None, "carried no is_byok"),
+        ({"cost": 0.0003, "is_byok": False}, 0.0003, "openrouter:reported", None),
         ({"cost": 0.0, "is_byok": False}, 0.0, "openrouter:reported", None),
         (
             {"cost": 0.0001, "is_byok": True, "cost_details": {"upstream_inference_cost": 0.002}},
@@ -440,9 +442,9 @@ async def test_openrouter_is_priced_by_its_own_figure_and_absent_is_unpriced_nev
 async def test_the_client_writes_exactly_the_price_source_words_a_host_compares_with() -> None:
     byok = {"cost": 0.0001, "is_byok": True, "cost_details": {"upstream_inference_cost": 0.002}}
     upstream = await model("deepseek/deepseek-v4-flash", Scripted(chat(usage=byok))).generate(system="", user="x")
-    reported = await model("deepseek/deepseek-v4-flash", Scripted(chat(usage={"cost": 0.1}))).generate(
-        system="", user="x"
-    )
+    reported = await model(
+        "deepseek/deepseek-v4-flash", Scripted(chat(usage={"cost": 0.1, "is_byok": False}))
+    ).generate(system="", user="x")
     direct = await model("claude-haiku-5-5", Scripted(message()), provider="anthropic").generate(system="", user="x")
 
     assert upstream.price_source is PriceSource.OPENROUTER_REPORTED_UPSTREAM
@@ -542,7 +544,7 @@ async def test_a_failed_refresh_keeps_the_last_rates_and_marks_the_pricing_stale
     assert stale.pricing_stale_since == shared.stale_since
     assert "could not be refreshed (HTTPStatusError" in (shared.refresh_failure or "")
     router = await model(
-        "deepseek/deepseek-v4-flash", Scripted(chat(usage={"cost": 0.001})), catalogue=shared
+        "deepseek/deepseek-v4-flash", Scripted(chat(usage={"cost": 0.001, "is_byok": False})), catalogue=shared
     ).generate(system="", user="x")
     assert shared.stale_since is not None, "the second refresh failed too"
     assert router.pricing_stale_since is None, "OpenRouter's own figure priced it, not the stale rates"

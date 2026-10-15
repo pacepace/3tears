@@ -163,8 +163,8 @@ async def test_every_contrast_row_names_its_arm_by_the_callers_key() -> None:
     rows = comparison.contrasts()
     assert sorted(row["arm"] for row in rows) == ["candidate", "other"]
     assert {row["contrast"]: row["arm"] for row in rows} == {
-        "candidate=candidate": "candidate",
-        "candidate=other": "other",
+        "candidate": "candidate",
+        "other": "other",
     }
 
 
@@ -219,6 +219,6 @@ async def test_a_judged_comparison_discloses_the_arm_whose_answers_the_judges_mo
     )
     disclosures = [block.text for block in comparison.report.blocks if isinstance(block, DisclosureBlock)]
     (said,) = [text for text in disclosures if text.startswith("self-judging")]
-    assert "arm candidate=same-model's answers" in said and "may favour that arm" in said
+    assert "arm same-model's answers" in said and "may favour that arm" in said
     assert said in report_markdown(comparison.report)
     assert comparison.arms["baseline"].judge_shares_candidate_model == []

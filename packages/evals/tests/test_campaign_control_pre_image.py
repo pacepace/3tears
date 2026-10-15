@@ -424,7 +424,7 @@ async def test_the_adoption_check_and_the_report_name_the_arm_the_realized_desig
     assert analysis.decision_surface.control_variant_key == expected
     report = build_report(analysis)
     (scoreboard,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "scoreboard"]
-    assert sum(str(row["arm"]).endswith(" (control)") for row in scoreboard.values()) == 1
+    assert sum(str(row["arm"]).startswith("▸ ") for row in scoreboard.values()) == 1
     assert report.bundle.design.control_arm is not None and report.bundle.design.control_arm.variant_key == expected
 
 
@@ -769,7 +769,7 @@ def test_the_split_is_disclosed_in_the_bundle_and_the_code_only_report() -> None
     texts = [getattr(block, "text", None) for block in report.blocks]
     assert earlier.disclosure in texts
     (scoreboard,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "scoreboard"]
-    assert sum(str(row["arm"]).endswith(" (control)") for row in scoreboard.values()) == 1, (
+    assert sum(str(row["arm"]).startswith("▸ ") for row in scoreboard.values()) == 1, (
         "the earlier cells are never a second control"
     )
     assert bundle.design.control_arm is not None and stored_key != bundle.design.control_arm.variant_key

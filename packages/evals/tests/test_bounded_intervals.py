@@ -224,8 +224,8 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
     single = [summary for summary in rates if summary.n_independent == 1]
     assert single and all(summary.ci_low is None and summary.ci_high is None for summary in single)
     # On the page, a rate on fewer cases than one is read on is a count, never an interval.
-    per_label = report_markdown(report).split("**Per-label precision, recall and F1**", 1)[1].split("\n\n>", 1)[0]
-    assert "| negative | model=_loose | 2 of 2 (n=2 over 1 case) |" in per_label
+    per_label = report_markdown(report).split("<details><summary>Per label</summary>", 1)[1].split("</details>", 1)[0]
+    assert "| negative | _loose | 2 of 2 (n=2 over 1 case) |" in per_label
     assert not re.search(r"\[[\d.]+, [\d.]+\]", per_label)
 
 

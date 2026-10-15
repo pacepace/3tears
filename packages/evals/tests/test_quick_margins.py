@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import DisclosureBlock, inspect_campaign_bundle
+from threetears.evals.analysis import DisclosureBlock, TableBlock, inspect_campaign_bundle
 from threetears.evals import Answer, Eval, Result, grader
 from threetears.evals.analysis import report_markdown
 from threetears.evals.kernel import RUN_MARGIN_MEASURES, ValidationFailedError, run_margin_refusal
@@ -83,6 +83,12 @@ def _no_margin_lines(comparison: Result) -> list[str]:
     ]
 
 
+def _no_margin_advice(comparison: Result) -> dict[str, str]:
+    """The no-margin table: each reading, named once, with how it takes a margin."""
+    tables = [b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "no_margin"]
+    return {str(row["reading"]): str(row["declare"]) for table in tables for row in table.values()}
+
+
 class TestADeclaredMargin:
     async def test_two_arms_inside_it_read_equivalent_with_the_margin_named(self) -> None:
         """Alike on all 48 cases. One miss among them is shown inside 0.1 in only 18 of the 48 places the bounded
@@ -92,6 +98,7 @@ class TestADeclaredMargin:
         assert row["verdict"].startswith("equivalent to the control") and "(margin ±0.1)" in row["verdict"]
         assert row["delta"] == 0.0
         assert _no_margin_lines(comparison) == [], "every tested measure declares a margin"
+        assert _no_margin_advice(comparison) == {}
 
     async def test_a_bool_scorer_s_margin_comes_with_its_range_and_a_float_scorer_s_with_the_one_declared(self) -> None:
         host = callable_host([correct, wordy], margins={"correct": 0.1, "wordy": 2.0}, ranges={"wordy": (0, 50)})
@@ -162,18 +169,22 @@ class TestNoMargin:
         comparison = await _compare()
         assert _row(comparison, "correct")["verdict"].startswith("not separated")
         (line,) = _no_margin_lines(comparison)
-        assert "Correct score" in line and "not separated never means the arms are alike" in line
-        assert "grader(correct, margin=...)" in line
+        assert "not separated never means the arms are alike" in line
+        # One sentence, then each reading once in a table, with how it takes a margin.
+        advice = _no_margin_advice(comparison)
+        assert "grader(correct, margin=...)" in advice["Correct score"]
         (block,) = [b for b in comparison.report.blocks if isinstance(b, DisclosureBlock) and b.text == line]
         assert block.section == "not_tested", "said with what the campaign could not test"
+        (table,) = [b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "no_margin"]
+        assert table.section == "not_tested"
 
     async def test_on_a_classifier_it_names_accuracy_and_the_one_way_to_declare_it(self) -> None:
         arms = {"current": _answers(0), "cheaper": _answers(1)}
         comparison = await _run(CASES, arms, ["label"], "margins-accuracy", 2)
         (line,) = _no_margin_lines(comparison)
-        assert "No margin is declared on Accuracy" in line
-        assert "Declare a margin on Accuracy on the classifier's field (grader('<field>', margin=...))" in line
-        assert "scorer" not in line, "accuracy takes a margin of its own: no duplicate scorer is needed"
+        advice = _no_margin_advice(comparison)
+        assert advice["Accuracy"] == "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+        assert "scorer" not in line + advice["Accuracy"], "accuracy takes a margin of its own: no duplicate scorer"
 
 
 async def _classify(margin: Any, *, n: int = len(CASES), scope_id: str = "acc") -> Result:
@@ -354,8 +365,8 @@ class TestTheNoMarginLineAdvisesEachKindOfMeasure:
             return Answer("right", model="m", input_tokens=10, output_tokens=1, cost_usd=0.001 * (1 + case["n"] % 2))
 
         comparison = await _run(CASES, {"current": priced, "cheaper": priced}, ["label", correct], "no-margin-kinds", 1)
-        (line,) = _no_margin_lines(comparison)
-        assert "Declare a margin on Correct score where it is graded (grader(correct, margin=...))" in line
-        assert "Declare a margin on Accuracy on the classifier's field (grader('<field>', margin=...))" in line
-        assert "No comparison can declare one on Production cost" in line
-        assert "Production cost where it is graded" not in line and "Production cost on the classifier's" not in line
+        (_line,) = _no_margin_lines(comparison)
+        advice = _no_margin_advice(comparison)
+        assert advice["Correct score"] == "where it is graded: `grader(correct, margin=...)`"
+        assert advice["Accuracy"] == "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+        assert advice["Production cost"] == "cannot: the engine owns its description"
