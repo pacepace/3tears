@@ -34,6 +34,7 @@ What a completion carries, member by member:
 
 ``Model.price_ceiling`` bounds a call before it is made from every price the catalogue lists for the model, or answers
 ``None`` saying why (logged), never a lower figure; rows older than ``Catalogue.ceiling_stale_after`` bound nothing.
+A host handing the catalogue its own ``httpx`` client matches :data:`CATALOGUE_FETCH_TIMEOUT_S` on it.
 
 **This module is the package's public root** for the client. A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -41,12 +42,13 @@ and only the names in ``__all__``.
 
 from __future__ import annotations
 
-from threetears.evals.providers.catalogue import Catalogue
+from threetears.evals.providers.catalogue import CATALOGUE_FETCH_TIMEOUT_S, Catalogue
 from threetears.evals.providers.failures import Provider, ProviderError, describe_failure
 from threetears.evals.providers.model import Clients, Completion, Model
 from threetears.evals.providers.wire import PriceSource
 
 __all__ = [
+    "CATALOGUE_FETCH_TIMEOUT_S",
     "Catalogue",
     "Clients",
     "Completion",

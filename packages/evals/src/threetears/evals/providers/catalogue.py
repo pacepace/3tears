@@ -45,7 +45,13 @@ import httpx
 from threetears.evals.negotiation import LearnedSettings
 from threetears.evals.schema.logs import get_logger
 
-__all__ = ["DEFAULT_REFRESH_AFTER", "OPENROUTER_MODELS_URL", "RETRY_AFTER_FAILURE", "Catalogue"]
+__all__ = [
+    "CATALOGUE_FETCH_TIMEOUT_S",
+    "DEFAULT_REFRESH_AFTER",
+    "OPENROUTER_MODELS_URL",
+    "RETRY_AFTER_FAILURE",
+    "Catalogue",
+]
 
 log = get_logger(__name__)
 
@@ -59,8 +65,9 @@ RETRY_AFTER_FAILURE: Final = timedelta(minutes=5)
 #: OpenRouter's public model catalogue.
 OPENROUTER_MODELS_URL: Final = "https://openrouter.ai/api/v1/models"
 
-#: How long the catalogue fetch may take, in seconds, on a client the catalogue opens itself.
-_FETCH_TIMEOUT_S: Final = 30.0
+#: How long the catalogue fetch may take, in seconds, on a client the catalogue opens itself. A host handing the
+#: catalogue its own client (``Catalogue(http=...)``) sets that client's timeout, and matches this one with it.
+CATALOGUE_FETCH_TIMEOUT_S: Final = 30.0
 
 #: The per-token prices a prompt token can be billed at: the plain rate, and a cache read or write of it.
 _INPUT_PRICES: Final = frozenset({"prompt", "input_cache_read", "input_cache_write", "input_cache_write_1h"})
@@ -210,7 +217,8 @@ class Catalogue:
 
         Args:
             url: The catalogue's URL.
-            http: The client to fetch it with (not closed here), or ``None`` to open one for the fetch.
+            http: The client to fetch it with (not closed here), or ``None`` to open one for the fetch, with a
+                timeout of :data:`CATALOGUE_FETCH_TIMEOUT_S`. A client handed in keeps its own settings.
             refresh_after: How long the rows read are kept before the next load fetches them again; zero refreshes
                 on every load.
             ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them; older, it answers
@@ -327,7 +335,7 @@ class Catalogue:
         if self._http is not None:
             response = await self._http.get(self.url)
         else:
-            async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT_S, follow_redirects=True) as owned:
+            async with httpx.AsyncClient(timeout=CATALOGUE_FETCH_TIMEOUT_S, follow_redirects=True) as owned:
                 response = await owned.get(self.url)
         response.raise_for_status()
         payload = response.json()

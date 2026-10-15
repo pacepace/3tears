@@ -59,7 +59,8 @@ log = get_logger(__name__)
 #: The output cap a :class:`Model` sends when given none: Anthropic requires one, and a price ceiling needs one.
 DEFAULT_MAX_TOKENS: Final = 8192
 
-#: How long one request may take, in seconds, on a client the model opens itself. Nothing is retried.
+#: How long one request may take, in seconds, on a client the model opens itself, unless ``timeout=`` says
+#: otherwise. Nothing is retried.
 _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
 
 #: The tokens a price ceiling allows for a prompt's framing beyond its text (role markers, a schema's re-encoding).
@@ -206,6 +207,8 @@ class _Live:
         asked: WireSettings,
         catalogue: Catalogue,
         http: httpx.AsyncClient | None,
+        timeout: float | httpx.Timeout | None,
+        headers: Mapping[str, str] | None,
     ) -> None:
         self.model_name = model_name
         self.provider: Provider = provider
@@ -215,6 +218,8 @@ class _Live:
         self._asked = asked
         self._catalogue = catalogue
         self._http = http
+        self._timeout = _REQUEST_TIMEOUT if timeout is None else timeout
+        self._headers = dict(headers) if headers is not None else None
         self._owned: httpx.AsyncClient | None = None
         self._logged: set[tuple[str, ...]] = set()
         self._unbounded: set[str] = set()
@@ -224,7 +229,7 @@ class _Live:
         if self._http is not None:
             return self._http
         if self._owned is None:
-            self._owned = httpx.AsyncClient(timeout=_REQUEST_TIMEOUT)
+            self._owned = httpx.AsyncClient(timeout=self._timeout, headers=self._headers)
         return self._owned
 
     async def _load_catalogue(self) -> None:
@@ -460,6 +465,8 @@ class Model:
         recording: str | os.PathLike[str] | None = None,
         catalogue: Catalogue | None = None,
         http: httpx.AsyncClient | None = None,
+        timeout: float | httpx.Timeout | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         """Build the client; nothing is sent until the first call.
 
@@ -481,13 +488,25 @@ class Model:
             recording: A JSONL recording to replay, or to record into; a relative path is read beside the eval
                 file being loaded (``python -m threetears.evals FILE``), else in the working directory.
             catalogue: The price catalogue to share with other models, or ``None`` for one of its own.
-            http: An ``httpx.AsyncClient`` to send through (not closed by :meth:`aclose`), or ``None`` to open one.
+            http: An ``httpx.AsyncClient`` to send through (not closed by :meth:`aclose`), used as it is built, or
+                ``None`` to open one.
+            timeout: The timeout of the client the model opens itself (seconds, or an ``httpx.Timeout``); ``None``
+                is 600 seconds a request, 20 to connect. Refused beside ``http``, whose own timeout holds.
+            headers: Headers every request on the client the model opens itself carries; ``None`` for none. The
+                provider's key and version headers, which each request sets, win over one of the same name. Refused
+                beside ``http``, whose own headers hold.
 
         Raises:
             ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
-                variable), or a setting that is the caller's error (an effort that is neither a word nor a budget, a
-                budget not below ``max_tokens``, an Anthropic budget below 1024).
+                variable), ``timeout`` or ``headers`` beside ``http``, or a setting that is the caller's error (an
+                effort that is neither a word nor a budget, a budget not below ``max_tokens``, an Anthropic budget
+                below 1024).
         """
+        if http is not None and (timeout is not None or headers is not None):
+            raise ValueError(
+                "timeout= and headers= set up the client the model opens itself, and http= hands it one: set them on "
+                "that client instead"
+            )
         self.model_name = id
         self.provider: Provider = _provider_of(id, provider, base_url)
         self.recording = beside_eval_file(recording) if recording is not None else None
@@ -499,6 +518,8 @@ class Model:
             "effort": effort,
             "recording": self.recording,
             "http": http,
+            "timeout": timeout,
+            "headers": headers,
         }
         asked = _asked(self.provider, max_tokens, effort, temperature)
         self._settings = ClientRequestSettings(
@@ -536,6 +557,8 @@ class Model:
             asked=asked,
             catalogue=catalogue if catalogue is not None else Catalogue(),
             http=http,
+            timeout=timeout,
+            headers=headers,
         )
         if self.recording is None:
             self._client = live

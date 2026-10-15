@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 import pytest
 
-from threetears.evals.providers import Catalogue, Model
+from threetears.evals.providers import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, Model
 
 #: Anthropic's Haiku: a long-context tier from 100,000 prompt tokens, cache reads and writes (five-minute and
 #: one-hour), and a web-search price for searches the client never asks for.
@@ -343,3 +343,89 @@ async def test_a_cancelled_caller_does_not_cancel_the_load_the_others_await() ->
     first.cancel()
     await second
     assert server.fetches == 1 and shared.loaded
+
+
+# --- the client a model opens for itself -------------------------------------------------------------------------
+
+
+class Opened:
+    """Stands in for ``httpx.AsyncClient``: builds the real one over a scripted transport, keeping what it was asked
+    for and each request's headers and timeout."""
+
+    def __init__(self, answer: Mapping[str, Any]) -> None:
+        self._real = httpx.AsyncClient
+        self._answer = answer
+        self.asked: list[dict[str, Any]] = []
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, **options: Any) -> httpx.AsyncClient:
+        if "transport" in options:  # a test's own scripted client, not one the code under test opens
+            return self._real(**options)
+        self.asked.append(options)
+        return self._real(transport=httpx.MockTransport(self._answered), **options)
+
+    def _answered(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(200, json=self._answer)
+
+
+@pytest.fixture
+def opened(monkeypatch: pytest.MonkeyPatch) -> Opened:
+    stand_in = Opened(ANTHROPIC_REPLY)
+    monkeypatch.setattr(httpx, "AsyncClient", stand_in)
+    return stand_in
+
+
+async def test_a_model_opens_its_client_with_the_timeout_and_headers_it_was_given(opened: Opened) -> None:
+    shared = catalogue()
+    claude = Model(
+        "claude-haiku-5-5",
+        provider="anthropic",
+        api_key="test-key",
+        catalogue=shared,
+        timeout=45.0,
+        headers={"x-title": "my-evals", "x-api-key": "not-this-one"},
+    )
+    await claude.generate(system="", user="x")
+    await claude.aclose()
+    sent = opened.requests[-1]
+    assert sent.extensions["timeout"] == {"connect": 45.0, "read": 45.0, "write": 45.0, "pool": 45.0}
+    assert sent.headers["x-title"] == "my-evals"
+    assert sent.headers["x-api-key"] == "test-key", "the request's own key wins over a header of the same name"
+
+
+async def test_a_model_given_no_timeout_opens_its_client_with_the_default(opened: Opened) -> None:
+    claude = Model("claude-haiku-5-5", provider="anthropic", api_key="test-key", catalogue=catalogue())
+    await claude.generate(system="", user="x")
+    await claude.aclose()
+    assert opened.requests[-1].extensions["timeout"] == {"connect": 20.0, "read": 600.0, "write": 600.0, "pool": 600.0}
+
+
+def test_timeout_or_headers_beside_a_client_handed_in_is_refused() -> None:
+    http = httpx.AsyncClient(timeout=7.0, headers={"x-title": "mine"})
+    for options in ({"timeout": 5.0}, {"headers": {"x-title": "theirs"}}):
+        with pytest.raises(ValueError, match="set them on that client instead"):
+            Model("vendor/x", api_key="test-key", http=http, **options)
+    Model("vendor/x", api_key="test-key", http=http)
+    assert http.timeout.read == 7.0 and http.headers["x-title"] == "mine", "a client handed in is used as built"
+
+
+async def test_derive_keeps_the_timeout_and_headers(opened: Opened) -> None:
+    template = Model("claude-haiku-5-5", provider="anthropic", api_key="test-key", timeout=9.0, headers={"x-a": "b"})
+    derived = template.derive(temperature=None, catalogue=catalogue())
+    await derived.generate(system="", user="x")
+    await derived.aclose()
+    assert opened.requests[-1].extensions["timeout"]["read"] == 9.0 and opened.requests[-1].headers["x-a"] == "b"
+
+
+async def test_a_catalogue_opens_its_fetch_with_the_exported_timeout(opened: Opened) -> None:
+    assert CATALOGUE_FETCH_TIMEOUT_S == 30.0
+    with pytest.raises(ValueError, match="holds no `data` list"):
+        await Catalogue().load()  # the stand-in answers a reply, not a catalogue: the fetch is what is read here
+    timeout = CATALOGUE_FETCH_TIMEOUT_S
+    assert opened.requests[-1].extensions["timeout"] == {
+        "connect": timeout,
+        "read": timeout,
+        "write": timeout,
+        "pool": timeout,
+    }
