@@ -2206,9 +2206,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     # `judge_shares_candidate_model` — added; `package_version` is carried and left out of the fingerprint. 55: each
     # family comparison's `bounded_interval` (the interval a non-inferiority claim reads), and the overall pass rate
     # compared as a `trial` reading in the family of each question whose decision rule reads it, which moves that
-    # family's size and adjusted p's over unchanged runs.
+    # family's size and adjusted p's over unchanged runs. 56: a declared question's decision rule is typed
+    # (`declared_design.questions[].decision`, `RateDrop` and `CostLower` clauses) where a rule was parsed from its
+    # words; a question whose words state a rule and that declares none typed reads no rule, so the pass rate leaves
+    # its family.
     schema_version: int = Field(
-        default=55, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=56, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---

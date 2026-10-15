@@ -1,8 +1,8 @@
 """A declared decision rule, read clause by clause, on the G2 campaign's own numbers.
 
-G2 (2026-10) declared: "switch Kairo's model only if no dimension drops by more than 10 points AND the cost per turn
-is lower; otherwise keep deepseek-v4.1-flash", and ran 4 cases × 3 repeats: production passed 10 of 12, the cheaper
-candidate 2 of 12, at a cost per reply of 0.003092 against 0.003301. Its memo called the question unanswerable,
+G2 (2026-10) declared: switch only if no pass rate drops by more than 10 points and the cheaper model costs less per
+reply, otherwise keep production (``RateDrop(max_points=10)`` and ``CostLower()``), and ran 4 cases × 3 repeats:
+production passed 10 of 12, the cheaper candidate 2 of 12, at a cost per reply of 0.003092 against 0.003301. Its memo called the question unanswerable,
 because four cases are under the floor for estimating a rate. Neither clause needs that floor to settle ``keep``: a
 cost observed higher, and a pass rate whose observed drop is past the margin, are enough not to switch. Settling
 ``switch`` is another matter: it needs every arm at the case floor and an interval that bounds the clause.
@@ -10,11 +10,13 @@ cost observed higher, and a pass rate whose observed drop is past the margin, ar
 
 from __future__ import annotations
 
+import html
+import re
 from collections import Counter
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
@@ -24,25 +26,45 @@ from threetears.evals.analysis import (
     build_code_only_report,
     get_campaign,
 )
+from threetears.evals.analysis.bundle.schema import JudgedArm, JudgedMeasure
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
+from threetears.evals.analysis import report_html, report_markdown
 from threetears.evals.analysis.report.decision import (
+    PROSE_RULE_LINE,
     RateReading,
     RuleReadings,
     evaluate_rule,
-    parse_decision_rule,
     rule_readings,
+    rule_statement,
 )
 from threetears.evals.analysis.style import lint_prose
-from threetears.evals.kernel.declaration import Question
+from threetears.evals.kernel.declaration import (
+    CostLower,
+    DecisionRule,
+    DesignRefused,
+    Question,
+    RateDrop,
+    decision_readings,
+    reconcile_question_edits,
+    refuse_an_undeclarable_design,
+)
 from threetears.evals.kernel.metrics import goal_check_measure
 import pytest
+from pydantic import ValidationError
 
-from packages.evals.tests.g2_support import G2_QUESTION, g2_ruled_report
+from packages.evals.tests.factories import minimal_declaration
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.g2_support import G2_QUESTION, G2_RULE, declaring, g2_numbers, g2_ruled_report
 from packages.evals.tests.off_loop import off_loop
 
 #: A bundle the engine stored before shape 55: a contrast for each check, none for the overall pass rate, and no
 #: bounded interval on any contrast.
 _STORED_BEFORE_55 = Path(__file__).parent / "fixtures" / "generate_analysis" / "recordings" / "llm_analysis.bundle.json"
+
+
+#: The arms by the names a page gives them, which every reason says.
+_ARMS = {"control": "production", "candidate": "cheaper candidate"}
 
 
 @pytest.fixture
@@ -52,12 +74,11 @@ async def g2_ruled() -> tuple[Result, Report]:
 
 
 def test_the_g2_rule_keeps_production_on_both_clauses() -> None:
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None and [clause.kind for clause in rule.clauses] == ["rate_drop", "cost_lower"]
+    rule = G2_RULE
     readings = RuleReadings(
         rates=(RateReading("the pass rate", 10, 12, 2, 12),), control_cost=0.003092, candidate_cost=0.003301
     )
-    verdict = evaluate_rule(rule, readings)
+    verdict = evaluate_rule(rule, readings, **_ARMS)
     assert [clause.outcome for clause in verdict.clauses] == ["keep", "keep"]
     assert verdict.outcome == "keep"
     # Four cases is under the floor for estimating a magnitude, never for keeping on what the run observed. Nothing
@@ -67,8 +88,7 @@ def test_the_g2_rule_keeps_production_on_both_clauses() -> None:
 
 
 def test_a_rate_clause_the_remaining_trials_could_still_decide_is_unsettled() -> None:
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
+    rule = G2_RULE
     close = RuleReadings(
         rates=(RateReading("the pass rate", 10, 12, 8, 10, 0, 2, interval=(-0.05, 0.02)),),
         control_cost=2.0,
@@ -77,7 +97,7 @@ def test_a_rate_clause_the_remaining_trials_could_still_decide_is_unsettled() ->
         candidate_cases=6,
         cost_interval=(-1.5, -0.5),
     )
-    verdict = evaluate_rule(rule, close)
+    verdict = evaluate_rule(rule, close, **_ARMS)
     assert [clause.outcome for clause in verdict.clauses] == ["unsettled", "switch"]
     assert verdict.outcome == "unsettled"
     assert verdict.clauses[0].reason == "the lost trials could still take the pass rate past the margin"
@@ -91,14 +111,13 @@ def test_a_rate_clause_the_remaining_trials_could_still_decide_is_unsettled() ->
         candidate_cases=6,
         cost_interval=(-1.5, -0.5),
     )
-    assert evaluate_rule(rule, settled).outcome == "switch"
+    assert evaluate_rule(rule, settled, **_ARMS).outcome == "switch"
     bare = RuleReadings(rates=(RateReading("the pass rate", 12, 12, 12, 12),), control_cost=2.0, candidate_cost=1.0)
-    assert evaluate_rule(rule, bare).outcome == "unsettled"
+    assert evaluate_rule(rule, bare, **_ARMS).outcome == "unsettled"
 
 
 def test_equal_rates_on_too_few_cases_are_unsettled_not_switch() -> None:
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
+    rule = G2_RULE
     equal = RuleReadings(
         rates=(RateReading("the pass rate", 10, 12, 10, 12, interval=(-0.02, 0.02)),),
         control_cost=2.0,
@@ -107,7 +126,7 @@ def test_equal_rates_on_too_few_cases_are_unsettled_not_switch() -> None:
         candidate_cases=4,
         cost_interval=(-1.5, -0.5),
     )
-    verdict = evaluate_rule(rule, equal)
+    verdict = evaluate_rule(rule, equal, **_ARMS)
     assert [clause.outcome for clause in verdict.clauses] == ["unsettled", "unsettled"]
     assert verdict.outcome == "unsettled"
     # What is withheld and why, in the reader's terms: never a bare "needs 5".
@@ -121,8 +140,7 @@ def test_equal_rates_on_too_few_cases_are_unsettled_not_switch() -> None:
 
 
 def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
+    rule = G2_RULE
     tight = RuleReadings(
         rates=(RateReading("the pass rate", 50, 60, 49, 60, interval=(-0.08, 0.05)),),
         control_cost=0.0031,
@@ -131,7 +149,7 @@ def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
         candidate_cases=20,
         cost_interval=(-0.0014, -0.0006),
     )
-    verdict = evaluate_rule(rule, tight)
+    verdict = evaluate_rule(rule, tight, **_ARMS)
     assert [clause.outcome for clause in verdict.clauses] == ["switch", "switch"]
     assert verdict.outcome == "switch"
     # The same run with an interval reaching past the margin is unsettled, and says how far it reaches.
@@ -143,14 +161,13 @@ def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
         candidate_cases=20,
         cost_interval=(-0.0014, -0.0006),
     )
-    wide_verdict = evaluate_rule(rule, wide)
+    wide_verdict = evaluate_rule(rule, wide, **_ARMS)
     assert wide_verdict.outcome == "unsettled"
     assert wide_verdict.clauses[0].reason == "the interval a switch reads allows the pass rate to drop up to 23 points"
 
 
 def test_a_cost_lower_by_a_point_estimate_only_is_unsettled() -> None:
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
+    rule = G2_RULE
     readings = RuleReadings(
         rates=(RateReading("the pass rate", 50, 60, 50, 60, interval=(-0.05, 0.05)),),
         control_cost=0.0031,
@@ -159,13 +176,13 @@ def test_a_cost_lower_by_a_point_estimate_only_is_unsettled() -> None:
         candidate_cases=20,
         cost_interval=(-0.0006, 0.0002),
     )
-    verdict = evaluate_rule(rule, readings)
+    verdict = evaluate_rule(rule, readings, **_ARMS)
     assert [clause.outcome for clause in verdict.clauses] == ["switch", "unsettled"]
     assert verdict.clauses[1].reason == "the cost difference did not separate"
     assert verdict.outcome == "unsettled"
     # A cost observed higher still settles keep, on any number of cases.
     dearer = RuleReadings(rates=readings.rates, control_cost=0.0029, candidate_cost=0.0031)
-    assert evaluate_rule(rule, dearer).clauses[1].outcome == "keep"
+    assert evaluate_rule(rule, dearer, **_ARMS).clauses[1].outcome == "keep"
 
 
 async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled: tuple[Result, Report]) -> None:
@@ -212,7 +229,7 @@ def _passing(passes: Sequence[int], cost: float) -> Callable[[Mapping[str, Any]]
 
 
 #: G2's question, as the one live question a ruled campaign asks unless told otherwise.
-_G2_ASKED = Question(id="q-g2", text=G2_QUESTION, asked_at="2000-01-01T00:00:00+00:00")
+_G2_ASKED = Question(id="q-g2", text=G2_QUESTION, decision=G2_RULE, asked_at="2000-01-01T00:00:00+00:00")
 
 
 async def _ruled(
@@ -246,10 +263,10 @@ def _rate_clause(
     bundle: AnalysisContextBundle, control: str, candidate: str, question_id: str | None = "q-g2"
 ) -> tuple[str, str]:
     """The rate clause of G2's rule on the bundle, read in ``question_id``'s family: its outcome and its reason."""
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
-    clause = evaluate_rule(rule, rule_readings(bundle, control, candidate, question_id=question_id)).clauses[0]
-    assert clause.clause.kind == "rate_drop"
+    rule = G2_RULE
+    readings = rule_readings(bundle, control, candidate, question_id=question_id)
+    clause = evaluate_rule(rule, readings, **_ARMS).clauses[0]
+    assert isinstance(clause.clause, RateDrop)
     return clause.outcome, clause.reason
 
 
@@ -328,16 +345,15 @@ async def test_a_check_clause_no_longer_switches_on_a_t_interval_the_bounded_one
     assert check.basis == "t" and check.interval is not None and check.bounded_interval is not None
     assert check.interval[0] > -0.10, "the t interval clears the 10-point margin"
     assert check.bounded_interval[0] < -0.10, "the bounded interval does not"
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
+    rule = G2_RULE
     readings = rule_readings(bundle, control, candidate, question_id="q-g2")
     (label,) = [rate for rate in readings.rates if rate.name == "Label matched"]
     assert label.interval == check.bounded_interval
     alone = replace(readings, rates=(label,))
-    assert evaluate_rule(rule, alone).clauses[0].outcome == "unsettled"
+    assert evaluate_rule(rule, alone, **_ARMS).clauses[0].outcome == "unsettled"
     # Read on the t interval, as .29 read it, the same clause switched.
     on_t = replace(readings, rates=(replace(label, interval=check.interval),))
-    assert evaluate_rule(rule, on_t).clauses[0].outcome == "switch"
+    assert evaluate_rule(rule, on_t, **_ARMS).clauses[0].outcome == "switch"
 
 
 async def test_a_goal_check_carried_as_a_mean_is_read_as_its_count_with_its_bounded_interval() -> None:
@@ -426,3 +442,217 @@ async def test_a_rule_reads_its_own_questions_family_and_never_another_at_anothe
         row["outcome"] for row in table.values() if row["outcome"] is not None and row["reading"] == "the pass rate"
     ]
     assert outcome == "unsettled: the interval a switch reads allows the pass rate to drop up to 49 points"
+
+
+# --- the rule is typed: built, stored and refused as data, never parsed from words ---------------------------------
+
+
+def test_a_rule_needs_a_clause_and_a_margin_inside_the_scale() -> None:
+    with pytest.raises(ValidationError, match="clauses"):
+        DecisionRule(clauses=())
+    for margin in (0.0, -1.0, 100.0, float("nan")):
+        with pytest.raises(ValidationError, match="max_points"):
+            RateDrop(max_points=margin)
+    with pytest.raises(ValidationError, match="reading"):
+        RateDrop(max_points=2, reading="")
+
+
+def test_a_rule_reads_back_from_its_stored_form_clause_by_clause() -> None:
+    rule = DecisionRule(clauses=(RateDrop(max_points=2, reading="tone"), CostLower(), RateDrop(max_points=5)))
+    stored = rule.model_dump(mode="json")
+    assert DecisionRule.model_validate(stored) == rule
+    assert [type(clause) for clause in DecisionRule.model_validate(stored).clauses] == [RateDrop, CostLower, RateDrop]
+
+
+def test_the_rule_is_said_in_one_sentence_naming_the_arms() -> None:
+    rule = DecisionRule(clauses=(RateDrop(max_points=2), CostLower()))
+    assert rule_statement(rule, control="v1", candidates=["v2"]) == (
+        "Switch to v2 only if no pass rate drops by more than 2 points and v2 costs less per reply. Otherwise stay "
+        "on v1."
+    )
+    scoped = DecisionRule(clauses=(RateDrop(max_points=2.5, reading="no_invented_total"),))
+    assert rule_statement(scoped, control="v1", candidates=["v2"]) == (
+        "Switch to v2 only if no no invented total rate drops by more than 2.5 points. Otherwise stay on v1."
+    )
+    three = DecisionRule(clauses=(RateDrop(max_points=2), RateDrop(max_points=1, reading="tone"), CostLower()))
+    assert rule_statement(three, control="v1", candidates=["v2", "v3"]) == (
+        "Switch to v2 or v3 only if no pass rate drops by more than 2 points, no tone rate drops by more than 1 "
+        "points and it costs less per reply. Otherwise stay on v1."
+    )
+
+
+def test_every_reason_names_the_arms_by_their_names() -> None:
+    cheaper = RuleReadings(
+        rates=(RateReading("the pass rate", 50, 60, 50, 60, interval=(-0.05, 0.05)),),
+        control_cost=0.0031,
+        candidate_cost=0.0021,
+        control_cases=20,
+        candidate_cases=20,
+        cost_interval=(-0.0014, -0.0006),
+    )
+    dearer = replace(cheaper, candidate_cost=0.0041)
+    level = replace(cheaper, candidate_cost=0.0031)
+    on = {"control": "v1", "candidate": "v2"}
+    assert evaluate_rule(G2_RULE, cheaper, **on).clauses[1].reason == "v2 costs less per reply than v1"
+    assert evaluate_rule(G2_RULE, dearer, **on).clauses[1].reason == "v2 costs more per reply than v1"
+    assert evaluate_rule(G2_RULE, level, **on).clauses[1].reason == "v2 costs no less per reply than v1"
+    statements = [clause.statement for clause in evaluate_rule(G2_RULE, cheaper, **on).clauses]
+    assert statements == ["no pass rate drops by more than 10 points", "v2 costs less per reply"]
+
+
+async def test_a_clause_naming_one_reading_reads_that_rate_alone() -> None:
+    # The overall pass rate drops 33 points; the label check, which the clause names, does too: keep on it alone.
+    bundle, control, candidate = await _ruled([3] * 7, [2] * 7)
+    scoped = DecisionRule(clauses=(RateDrop(max_points=10, reading="match"),))
+    readings = rule_readings(bundle, control, candidate, question_id="q-g2")
+    (clause,) = evaluate_rule(scoped, readings, **_ARMS).clauses
+    assert clause.outcome == "keep"
+    assert clause.rate is not None and clause.rate.measure == "match"
+    assert clause.statement == "no Label matched rate drops by more than 10 points"
+    # A name the arms do not carry is said, and left unsettled, never read as every rate.
+    (absent,) = evaluate_rule(
+        DecisionRule(clauses=(RateDrop(max_points=10, reading="tone"),)), readings, **_ARMS
+    ).clauses
+    assert (absent.outcome, absent.reason) == ("unsettled", "tone was not measured on both arms")
+
+
+async def test_a_rule_whose_rate_clauses_each_name_a_reading_does_not_compare_the_overall_pass_rate() -> None:
+    scoped = _G2_ASKED.model_copy(
+        update={"decision": DecisionRule(clauses=(RateDrop(max_points=10, reading="match"),))}
+    )
+    bundle, _, _ = await _ruled([0] * 7, [3] * 7, questions=(scoped,))
+    (family,) = bundle.multiple_comparisons.families
+    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+
+
+_PROSE = (
+    "Does v2 hold the pass rate at lower cost? Decision rule: switch only if no dimension drops by more than 10 points "
+    "AND the cost per turn is lower; otherwise keep v1."
+)
+
+
+def test_a_question_declaring_its_rule_as_prose_is_refused_naming_the_field() -> None:
+    prose = Question(id="q-prose", text=_PROSE)
+    design = minimal_declaration().model_copy(update={"questions": [prose]})
+    with pytest.raises(DesignRefused, match=r"Question\.decision") as refused:
+        refuse_an_undeclarable_design(design, behavior="b", template=toyhost_template(), profile=toyhost_profile())
+    assert "q-prose" in refused.value.fault and "Question.decision" in refused.value.remedy
+    # Typed beside the same words, or retired, it is declared.
+    typed = prose.model_copy(update={"decision": G2_RULE})
+    retired = prose.model_copy(update={"retired_at": "2026-10-14T00:00:00+00:00"})
+    for question in (typed, retired):
+        accepted = design.model_copy(update={"questions": [question]})
+        refuse_an_undeclarable_design(accepted, behavior="b", template=toyhost_template(), profile=toyhost_profile())
+    # A stored question loads as it was written: the refusal is the declaration's, never a read's.
+    stored = design.model_dump(mode="json")
+    assert type(design).model_validate(stored).questions[0].decision is None
+
+
+def test_a_changed_rule_mints_a_new_question_as_changed_words_do() -> None:
+    asked = Question(id="q-1", text="Does v2 hold?", decision=G2_RULE)
+    looser = asked.model_copy(update={"decision": DecisionRule(clauses=(RateDrop(max_points=20),))})
+    kept, minted = reconcile_question_edits([asked], [looser])
+    assert kept.decision == G2_RULE and minted.supersedes == "q-1" and minted.decision == looser.decision
+    assert reconcile_question_edits([asked], [asked.model_copy()]) == [asked]
+
+
+async def test_a_stored_prose_rule_is_said_unread_and_the_verdict_is_exploratory() -> None:
+    comparison = await g2_numbers()
+    bundle = declaring(comparison.report.bundle, _PROSE, decision=None)
+    report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00:00+00:00", campaign_name="prose")
+    decision = [block for block in report.blocks if block.section == "decision"]
+    assert [block.text for block in decision if isinstance(block, DisclosureBlock)] == [PROSE_RULE_LINE]
+    assert not [block for block in decision if isinstance(block, TableBlock)]
+    (verdict,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    assert verdict.text.startswith("Exploratory: ")
+    assert f"## Decision\n\n{PROSE_RULE_LINE}\n" in report_markdown(report)
+
+
+# --- the Decision section speaks the reader's words, never the engine's ---------------------------------------------
+
+#: The engine's names for a rule's parts, which the Decision section never prints.
+_SYSTEM_NAMES = re.compile(r"rate_drop|cost_lower|max_points|\bclauses\b|\bkind\b")
+
+#: The roles of a comparison's arms, which the Decision section never names an arm by.
+_ROLE_WORDS = re.compile(r"\b(candidate|control)\b", re.I)
+
+
+def _decision_section(page: str, *, html_page: bool) -> str:
+    """The Decision section's visible text, from its heading to the next section's."""
+    if html_page:
+        body = page[page.index('<section id="decision">') :]
+        return html.unescape(re.sub(r"<[^>]+>", " ", body[: body.index("</section>")]))
+    body = page.split("\n## Decision\n", 1)[1]
+    return body.split("\n## ", 1)[0]
+
+
+async def test_the_decision_section_names_no_system_word_and_no_arm_by_its_role() -> None:
+    _, one = await g2_ruled_report()
+    bundle, _, _ = await _ruled([3] * 7, [2] * 7)
+    two = build_code_only_report(bundle, assembled_at="2026-10-14T12:00:00+00:00", campaign_name="ruled")
+    for report, labels in ((one, ("cheaper candidate", "production")), (two, ("candidate", "production"))):
+        for door, page in (("markdown", report_markdown(report)), ("html", report_html(report))):
+            section = _decision_section(page, html_page=door == "html")
+            assert "Switch to " in section, (door, section[:200])
+            assert not _SYSTEM_NAMES.search(section), (door, _SYSTEM_NAMES.findall(section))
+            # An arm's own name may hold a role word (an arm a host called "cheaper candidate"); nothing else may.
+            for label in labels:
+                section = re.sub(rf"(?<![\w-]){re.escape(label)}(?![\w-])", "ARM", section)
+            assert not _ROLE_WORDS.search(section), (door, _ROLE_WORDS.findall(section), section[:400])
+
+
+# --- a rule's reading is checked where the design is declared, against what the campaign measures -------------------
+
+#: The toy host's template's one goal-state check, verbatim.
+_TOY_CHECK = 'call_count("extractor.emit_field") == 4'
+
+
+def _declare(*readings: str | None) -> None:
+    """Declare one question whose rule has a rate clause per reading, through the declaration gate."""
+    rule = DecisionRule(clauses=tuple(RateDrop(max_points=10, reading=reading) for reading in readings))
+    design = minimal_declaration().model_copy(
+        update={"questions": [Question(id="q-scoped", text="Does v2 hold?", decision=rule)]}
+    )
+    refuse_an_undeclarable_design(design, behavior="b", template=toyhost_template(), profile=toyhost_profile())
+
+
+def test_a_reading_the_campaign_does_not_measure_is_refused_naming_what_it_does() -> None:
+    with pytest.raises(DesignRefused, match="question q-scoped names 'tone'") as refused:
+        _declare("tone")
+    # The remedy lists what the template and the host offer: the check verbatim and the host's pass/fail measures.
+    assert repr(_TOY_CHECK) in refused.value.remedy and "'match'" in refused.value.remedy
+    assert decision_readings(toyhost_template(), toyhost_profile()) == [_TOY_CHECK, "goal_state", "match"]
+
+
+def test_a_reading_the_campaign_measures_or_none_is_declared() -> None:
+    _declare(_TOY_CHECK, "match", None)
+
+
+async def test_a_pass_fail_judged_dimension_is_read_as_its_count() -> None:
+    """A judged dimension on the pass/fail scale is a pass rate a rule names: its mean times its scores, per arm."""
+    bundle, control, candidate = await _ruled([3] * 7, [3] * 7)
+
+    def arm(variant_key: str, passed: int) -> JudgedArm:
+        return JudgedArm(
+            variant_key=variant_key,
+            apparatus_class_id="rig",
+            run_ids=["run"],
+            n=21,
+            n_independent=7,
+            mean=passed / 21,
+            evidence_tier="undetermined",
+        )
+
+    def judged(name: str, axis: Literal["capability", "boundary"]) -> JudgedMeasure:
+        arms = [arm(control, 20), arm(candidate, 12)]
+        return JudgedMeasure(name=name, family="rubric", value_range=(0.0, 1.0), scale="ratio", axis=axis, arms=arms)
+
+    scored = bundle.model_copy(update={"judged_measures": [judged("tone", "capability"), judged("safe", "boundary")]})
+    readings = rule_readings(scored, control, candidate, question_id="q-g2")
+    (tone,) = [rate for rate in readings.rates if rate.measure == "tone"]
+    assert (tone.control_passed, tone.control_n, tone.candidate_passed, tone.candidate_n) == (20, 21, 12, 21)
+    assert not [rate for rate in readings.rates if rate.measure == "safe"], "a guardrail is never a rule's reading"
+    (clause,) = evaluate_rule(
+        DecisionRule(clauses=(RateDrop(max_points=10, reading="tone"),)), readings, **_ARMS
+    ).clauses
+    assert (clause.outcome, clause.statement) == ("keep", "no tone rate drops by more than 10 points")

@@ -26,12 +26,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TrialBlock
-from threetears.evals.analysis.report.decision import (
-    RateReading,
-    RuleReadings,
-    evaluate_rule,
-    parse_decision_rule,
-)
+from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.bundle.schema import TrialCheck
 from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
@@ -39,6 +34,7 @@ from packages.evals.tests.g2_support import (
     CANDIDATE,
     CASES,
     G2_QUESTION,
+    G2_RULE,
     PRODUCTION,
     answering,
     declaring,
@@ -47,6 +43,13 @@ from packages.evals.tests.g2_support import (
     g2_ruled_report,
 )
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+
+
+#: The G2 rule as the page states it: one sentence code writes from the typed clauses, the arms by name.
+G2_STATEMENT = (
+    "Switch to cheaper candidate only if no pass rate drops by more than 10 points and cheaper candidate costs less "
+    "per reply. Otherwise stay on production."
+)
 
 
 @pytest.fixture
@@ -68,11 +71,10 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
-    # The question declared before the run is quoted as the contract the verdict reads, split at the parser's own
-    # boundary: its decision rule is quoted at the head of the Decision section instead. Then the verdict.
-    asked, rule = G2_QUESTION.split(" Decision rule: ")
-    assert lines[3] == f'Asked before the run: "{asked}"'
-    assert f'\n## Decision\n\nDecision rule: "{rule}"\n\n**Clauses**\n' in report_markdown(report)
+    # The question declared before the run is quoted whole as the contract the verdict reads; its typed rule is
+    # stated in code's sentence at the head of the Decision section. Then the verdict.
+    assert lines[3] == f'Asked before the run: "{G2_QUESTION}"'
+    assert f"\n## Decision\n\n{G2_STATEMENT}\n\n**Clauses**\n" in report_markdown(report)
     assert lines[5].startswith("**Keep production: ")
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
     assert lines[7:10] == [
@@ -111,11 +113,10 @@ async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
     _, report = g2_ruled
     markdown = report_markdown(report)
     assert markdown.count("does deepseek-v4-flash hold every pass/fail queue-discipline dimension") == 1
-    assert markdown.count("switch Kairo's model only if") == 1
+    assert markdown.count(G2_STATEMENT) == 1
     asked, rule = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
-    question, stated = G2_QUESTION.split(" Decision rule: ")
-    assert asked.section == "header" and asked.text == f'Asked before the run: "{question}"'
-    assert rule.section == "decision" and rule.text == f'Decision rule: "{stated}"'
+    assert asked.section == "header" and asked.text == f'Asked before the run: "{G2_QUESTION}"'
+    assert rule.section == "decision" and rule.text == G2_STATEMENT
     assert f'<p class="line" data-source="basis">{html.escape(asked.text)}</p>' in report_html(report)
     assert lint_page(markdown, question=G2_QUESTION) == []
 
@@ -123,7 +124,7 @@ async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
 async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
-    # The quoted question and its quoted rule aside too: they are the author's words, whole.
+    # The quoted question aside too, the author's words whole, and the rule's sentence beside it.
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
     asked, rule = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
     quoted = report_markdown(report).replace(verdict, "").replace(asked, "").replace(rule, "")
@@ -401,13 +402,13 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
 
 
 def test_a_memo_sentence_contradicting_the_settled_rule_is_replaced_and_disclosed() -> None:
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
     verdict = evaluate_rule(
-        rule,
+        G2_RULE,
         RuleReadings(
             rates=(RateReading("the pass rate", 10, 12, 2, 12),), control_cost=0.003092, candidate_cost=0.003301
         ),
+        control="production",
+        candidate="cheaper candidate",
     )
     said = "Keep production: the pass rate drops at least 67 points, and cheaper candidate costs more per reply."
     style = MemoStyle(

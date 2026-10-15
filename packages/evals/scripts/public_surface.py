@@ -855,6 +855,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.PriceSource",
         # What a price-catalogue read found, which a host writes its own pricing-outage line from.
         "threetears.evals.providers.PriceRefresh",
+        # A declared question and its decision rule, typed: what a host writes to have the page settle keep or switch.
+        "threetears.evals.kernel.Question",
+        "threetears.evals.kernel.DecisionRule",
+        "threetears.evals.kernel.RateDrop",
+        "threetears.evals.kernel.CostLower",
     }
 )
 
@@ -944,7 +949,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.ControlDeclaration",
         "threetears.evals.kernel.EvalInsight",
         "threetears.evals.kernel.MATCH_MEASURE",
-        "threetears.evals.kernel.Question",
         "threetears.evals.kernel.SweptAxis",
         "threetears.evals.kernel.confusion_cell",
         "threetears.evals.run.get_run",
@@ -1185,7 +1189,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 520  # The host's imports set it on 2026-10-15: nothing a host imports is provisional.
+DECLARED_CEILING = 523  # The host's imports set it on 2026-10-15: nothing a host imports is provisional.
 
 
 def tier_of(qualified: str) -> Tier:

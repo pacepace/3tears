@@ -696,6 +696,8 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "OutOfRunOutcome": values(OutOfRunOutcome),
         "SecondJudgeAskedBy": values(SecondJudgeAskedBy),
         "StopReason": values(StopReason),
+        "rate_drop": frozenset({"rate_drop"}),
+        "cost_lower": frozenset({"cost_lower"}),
     }
 
 
