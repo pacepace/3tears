@@ -61,7 +61,8 @@ def test_a_cells_text_is_the_number_rules_spelling_of_its_value(value: Any, text
 
 def test_a_cells_number_is_joined_to_its_unit() -> None:
     assert TableCell(value=1.42, unit="s").text == "1.42 s"
-    assert TableCell(value=0.42, unit="%").text == "0.42%"
+    # A percent is stated to one decimal: the figure a reader can hold, not the four the number rule keeps.
+    assert TableCell(value=0.42, unit="%").text == "0.4%"
 
 
 def test_a_cell_stores_its_value_never_its_text() -> None:
