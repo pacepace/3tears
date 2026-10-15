@@ -87,7 +87,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   this order: the case floor; an arm's label that its own row contradicts (`'cheaper candidate' is not cheaper: it
   cost more per reply than production.`, latency only where it was read serially); an arm whose every trial failed.
   A "too few" line says what is withheld and why, in the reader's terms, never a bare count: `4 cases per arm: keep
-  follows from the counts above. How much worse the candidate is goes unestimated: a gap is estimated only from 5
+  follows from the counts above. No estimate of how much worse the candidate is: a gap is estimated only from 5
   independent cases.` where a declared rule settled keep, `Usable cases: v4.1-flash 3, v4-flash 1. Under 5
   independent cases a rate is shown as a count, and how far apart the arms are is not estimated.` otherwise.
   Everything else is a step down: what was not charted and where a cost is a floor are in the Methods.
