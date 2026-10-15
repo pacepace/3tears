@@ -12,7 +12,10 @@ writes and spends nothing:
 - ``current``: the stored content is the corpus's;
 - ``stale``: the stored content is what was last seeded, and the corpus now differs;
 - ``customized``: the stored content differs from what was seeded (an operator's edit, an archive, a delete);
-- ``unknown``: there is no record of what was seeded (a row seeded before ``.30``), which behaves as customized;
+- ``unknown``: there is no record of what was seeded anywhere, neither stored nor supplied (a row seeded before
+  ``.30`` by a host that supplies no ``seeded_digests``), which behaves as customized; a supplied map is the whole of
+  what the host seeded then, so under it a judge case nothing stored matches reads ``customized`` when the map names
+  it (seeded, since removed) and ``stale`` when it does not (never seeded);
 - ``absent``: nothing is stored (the seed fills it).
 
 What was seeded is the record the seed writes (``seed_digest``; a judge case's corpus name, ``seed_name``, its
@@ -440,13 +443,34 @@ class _Survey:
             # An empty battery: the boot seed fills it.
             return self._reading(key, "judge_case", digest, None, "", None)
         if judge.seed_digest is None:
-            # Seeded before the record existed: a case it lacks may have a predecessor nothing names.
+            # Seeded before the record existed. The host's map, when it supplies one, is the whole of what it seeded
+            # then: a case it names that nothing stored matches was seeded and since removed, and one it does not
+            # name was never seeded. Only with no map at all is there no record anywhere.
+            if supplied is not None:
+                return DefinitionReading(
+                    key=key,
+                    definition_type="judge_case",
+                    state="customized",
+                    seed_digest=digest,
+                    seeded_digest=supplied,
+                    seeded_source="supplied",
+                    reason="seeded as its corpus content, since removed by an operator",
+                )
+            if not self.supplied:
+                return DefinitionReading(
+                    key=key,
+                    definition_type="judge_case",
+                    state="unknown",
+                    seed_digest=digest,
+                    reason=f"{case.judge_template!r} was seeded before seeds recorded their cases",
+                )
             return DefinitionReading(
                 key=key,
                 definition_type="judge_case",
-                state="unknown",
+                state="stale",
                 seed_digest=digest,
-                reason=f"{case.judge_template!r} was seeded before seeds recorded their cases",
+                reason=f"new to the corpus; never seeded into {case.judge_template!r} (the host's seeded digests do "
+                "not name it), so only a reset writes it",
             )
         # The seed never adds a case to a battery already holding cases (it would change the revision runs were
         # measured against), so only a reset writes it.
