@@ -36,10 +36,12 @@ class DefinitionsResetParams(EvalBaseModel):
         description="The definitions to reset, by the keys definitions_drift names them, such as "
         "'eval_template/<name>' or 'judge_case/<judge template>/<case>'.",
     )
-    discard_customization: bool = Field(
+    overwrite_customized: bool = Field(
         default=False,
-        description="Write over a definition reading customized or unknown (possibly an operator's); refused without "
-        "it. What it supersedes stays stored, archived and readable by id.",
+        description="Write the seed corpus's content as the next revision of a definition whose stored content reads "
+        "customized or unknown (an edit that may be an operator's), and of a judge template holding live cases the "
+        "corpus does not carry; such a definition is refused without it. The revision it supersedes stays stored, "
+        "archived and readable by id.",
     )
 
 
@@ -87,7 +89,7 @@ def definition_drift_actions(
                 require_known_tools_allowed=require_known_tools_allowed,
                 refuse_undeclared_world_seed=refuse_undeclared_world_seed,
                 refuse_undeliverable_template=refuse_undeliverable_template,
-                discard_customization=params.discard_customization,
+                overwrite_customized=params.overwrite_customized,
                 seeded_digests=supplied(scope_id),
             ),
         )
@@ -113,7 +115,7 @@ def definition_drift_actions(
         Action(
             name="definitions_reset",
             summary="Write the seed corpus's content for named definitions as new revisions; customized or unknown "
-            "ones need discard_customization.",
+            "ones need overwrite_customized.",
             workflow=DEFINITIONS_WORKFLOW,
             permission="write",
             params=DefinitionsResetParams,

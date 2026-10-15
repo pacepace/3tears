@@ -35,7 +35,7 @@ results of two revisions never pool (:mod:`threetears.evals.analysis.revisions`)
   reset with its judge template: the new revision holds exactly the corpus's cases for it, frozen afresh, and the
   corpus's case sets over it are minted again over them. A case set whose cases are all current is minted alone.
 - **Refused, all or nothing, before anything is written**, naming every refusal: a definition reading ``customized``
-  or ``unknown`` (unless ``discard_customization``, as a prompt reset takes it); a judge template whose current
+  or ``unknown`` (unless ``overwrite_customized``, as a prompt reset takes it); a judge template whose current
   revision holds live cases the corpus does not carry (they would not be carried, so the same flag); a judge config
   contradicting a live config of another name for its dimension (always: archive one of them); and anything
   authoring would refuse (``admit_template``, ``author_judge_case``).
@@ -87,7 +87,7 @@ log = get_logger(__name__)
 #: How a stored definition reads against the seed corpus (the module docstring).
 DefinitionState = Literal["current", "stale", "customized", "unknown", "absent"]
 
-#: The states a reset writes over only with ``discard_customization``: what is stored may be an operator's.
+#: The states a reset writes over only with ``overwrite_customized``: what is stored may be an operator's.
 KEPT_STATES: frozenset[str] = frozenset({"customized", "unknown"})
 
 #: The order a drift summary counts states in.
@@ -571,7 +571,7 @@ class _Refusal:
 
 
 def _reset_call(keys: Sequence[str]) -> str:
-    return f"run.reset_definitions(..., [{', '.join(repr(k) for k in keys)}], discard_customization=True)"
+    return f"run.reset_definitions(..., [{', '.join(repr(k) for k in keys)}], overwrite_customized=True)"
 
 
 def reset_definitions(
@@ -582,7 +582,7 @@ def reset_definitions(
     require_known_tools_allowed: Callable[[Sequence[str] | None], None],
     refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
     refuse_undeliverable_template: Callable[[EvalTemplate], None],
-    discard_customization: bool = False,
+    overwrite_customized: bool = False,
     seeded_digests: Mapping[str, str] | None = None,
 ) -> DefinitionReset:
     """Write the corpus's content for the named definitions, each as a new revision or record, never in place.
@@ -598,7 +598,7 @@ def reset_definitions(
         require_known_tools_allowed: The host's tool-catalog check, as ``create_template`` takes it.
         refuse_undeclared_world_seed: The host's seed walk, as ``create_template`` takes it.
         refuse_undeliverable_template: The host's kind-capability check, as ``create_template`` takes it.
-        discard_customization: Write over a definition reading ``customized`` or ``unknown``, and a judge template's
+        overwrite_customized: Write over a definition reading ``customized`` or ``unknown``, and a judge template's
             live cases the corpus does not carry. What is superseded stays stored, archived, readable by id.
         seeded_digests: As :func:`definition_drift` takes it.
 
@@ -609,7 +609,7 @@ def reset_definitions(
         ValidationFailedError: A key names no corpus definition, or a template or judge case authoring would refuse;
             nothing was written, every refusal named.
         ConflictError: A definition may be an operator's (customized, unknown, or uncarried live cases) without
-            ``discard_customization``, or a judge config contradicts a live config of another name for its
+            ``overwrite_customized``, or a judge config contradicts a live config of another name for its
             dimension; nothing was written, every refusal named.
         StorageError: A write failed part-way. Every check ran first, so this is the store failing, and the
             definitions written before it stand; the drift read says which.
@@ -654,7 +654,7 @@ def reset_definitions(
                 sets[corpus_set.name] = None
             else:
                 with_template(key, corpus_set.template)
-        if reading.state in KEPT_STATES and not discard_customization:
+        if reading.state in KEPT_STATES and not overwrite_customized:
             refusals.append(
                 _Refusal(
                     key, f"it reads {reading.state}" + (f" ({reading.reason})" if reading.reason else ""), kept=True
@@ -668,7 +668,7 @@ def reset_definitions(
         pulled += [key for key, _built in survey.built_of(name)]
         pulled += [definition_key("case_set", s.name) for s in corpus.case_sets if s.template == name]
         stored = survey.current.get(name)
-        if stored is not None and (uncarried := survey.uncarried_cases(stored)) and not discard_customization:
+        if stored is not None and (uncarried := survey.uncarried_cases(stored)) and not overwrite_customized:
             refusals.append(
                 _Refusal(
                     definition_key("eval_template", name),
@@ -679,7 +679,7 @@ def reset_definitions(
             )
     for key in pulled:
         reading = readings[key]
-        if key in asked or reading.state not in KEPT_STATES or discard_customization:
+        if key in asked or reading.state not in KEPT_STATES or overwrite_customized:
             continue
         # A pulled case's own `unknown` is its template's question, which the uncarried cases answer.
         if reading.definition_type == "case_set" or reading.state == "customized":
