@@ -114,7 +114,9 @@ class TestADeclaredMargin:
 
     async def test_a_second_control_reads_the_same_margin(self) -> None:
         comparison = await _compare([grader(correct, margin=0.1)], cheaper_misses=0)
-        assert _row(await comparison.against("cheaper"), "correct")["verdict"].startswith("current and cheaper equivalent")
+        assert _row(await comparison.against("cheaper"), "correct")["verdict"].startswith(
+            "current and cheaper equivalent"
+        )
 
 
 class TestHowManyCasesEquivalenceTakes:
@@ -138,10 +140,10 @@ class TestHowManyCasesEquivalenceTakes:
         self, margin: float, expected: bool, first: int
     ) -> None:
         """One reading in the family, or two when a field grader adds accuracy and Holm divides α between them."""
-        assert (await self._verdict(first - 1, margin, expected=expected)).startswith("cheaper and current not separated")
-        assert (await self._verdict(first, margin, expected=expected)).startswith(
-            "cheaper and current equivalent"
+        assert (await self._verdict(first - 1, margin, expected=expected)).startswith(
+            "cheaper and current not separated"
         )
+        assert (await self._verdict(first, margin, expected=expected)).startswith("cheaper and current equivalent")
 
 
 class TestAPassFailInterval:
