@@ -50,6 +50,11 @@ from threetears.evals.kernel.result_condition import CandidateFailureCause, Excl
 #: The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or
 #: compared: below it a t interval is too wide and unstable to read (:data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR`),
 #: so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
+#:
+#: The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too
+#: few, and no rate (a pass rate, pass^k) is estimated for an arm; a measure's mean is still shown with its interval,
+#: and a declared rule can still settle keep on what was observed, never switch. So a host's seed gate covers every
+#: template whose results are compared across arms, whatever its declared reading.
 MIN_CASES: Final = SMALL_N_BAND_FLOOR
 
 #: The share of an arm's trials whose loss to the test setup, alone or as the gap between two arms, means the run

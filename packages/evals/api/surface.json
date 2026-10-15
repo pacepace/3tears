@@ -3243,8 +3243,8 @@
     },
     "threetears.evals.kernel.host.WorldConformanceReport": {
       "kind": "dataclass",
-      "signature": "WorldConformanceReport(results: tuple[ConformanceResult, ...])",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.host.WorldDimension": {
       "kind": "dataclass",
@@ -4123,8 +4123,8 @@
     },
     "threetears.evals.run.SeedCaseSet": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "SeedCaseSet(name: str, template: str, judge_cases: tuple[str, ...], tracked: bool = True)",
+      "tier": "host-contract"
     },
     "threetears.evals.run.SeedCorpus": {
       "kind": "dataclass",
