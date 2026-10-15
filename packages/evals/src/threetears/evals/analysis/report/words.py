@@ -157,17 +157,20 @@ def reading_name(name: str) -> str:
 def reading_heading(surface: DecisionSurface, name: str, reading: str = "measure") -> str:
     """A reading as the page heads it, in a column, a row or a chart's title.
 
-    A goal check by its expression, verbatim as code (:func:`~threetears.evals.analysis.style.measure_name`); any
-    other reading by the surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
+    A goal check by its expression, verbatim as code (:func:`~threetears.evals.analysis.style.measure_name`); how
+    each trial ended (a ``trial`` reading) as the decision rule names it, "the pass rate"; any other reading by the
+    surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
 
     Args:
         surface: The decision surface the reading is on.
         name: The measure's key, or a judged dimension's name.
-        reading: ``judged`` for a judged dimension; anything else reads a measure.
+        reading: ``judged`` for a judged dimension, ``trial`` for the overall pass rate; anything else reads a measure.
 
     Returns:
         The heading.
     """
+    if reading == "trial":
+        return "the pass rate"
     if reading != "judged" and goal_check_of(name) is not None:
         return measure_name(name)
     return reading_name(surface.measure_heading(name, reading))

@@ -1231,7 +1231,13 @@ def _no_separation(against: list[FamilyComparison], *, withheld: str | None) -> 
     if not tested:
         reasons = sorted({comparison.untested_reason or "no reason recorded" for comparison in against})
         return f"no test against the control was possible on any reading ({'; '.join(reasons)})"
-    regressed = sorted({comparison.name for comparison in tested if comparison.verdict == "regressed"})
+    regressed = sorted(
+        {
+            "the pass rate" if comparison.reading == "trial" else comparison.name
+            for comparison in tested
+            if comparison.verdict == "regressed"
+        }
+    )
     if regressed:
         return (
             f"it separated from the control only by being worse ({', '.join(regressed)} regressed) "
@@ -1361,6 +1367,8 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
         for comparison in family["comparisons"]:
             del comparison["p_raw"]
             del comparison["equivalence_p_raw"]
+            # The interval a decision rule's switch reads, which the page states; the writer quotes `interval`.
+            del comparison["bounded_interval"]
     for divergence in payload["scope_divergences"]:
         del divergence["p_raw"]
     # The trials without what a reader drills into: enough to name a failure mode (its state, cause, failed checks and

@@ -574,6 +574,8 @@ def _separated(
                 reading = measure_name(comparison.name, heading.reader_name if heading is not None else None)
                 if comparison.reading == "judged":
                     reading = f"{humanize('dimension', comparison.name)} (judged)"
+                elif comparison.reading == "trial":
+                    reading = "the pass rate"
                 line = f"{arm(comparison.contrast.variant_key)} {_SEPARATED_WORDS[comparison.verdict]} {reading}"
                 if line not in said:
                     said.append(line)

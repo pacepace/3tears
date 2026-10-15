@@ -50,7 +50,7 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
-from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, ReadingKind, VariantIndexEntry
+from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.kernel.declaration import CampaignDesign, preregistered_questions
 from threetears.evals.kernel.result_condition import ExclusionCause
@@ -1568,6 +1568,14 @@ class VerdictOrder(EvalDocumentModel):
 ComparisonVerdict = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
 
+#: What a family comparison reads: a measure, a judged dimension, or how each trial ended (``trial``), which is
+#: neither: it conjoins every check and judged dimension a trial was graded on, so no measure or rubric names it.
+ComparisonReading = Literal["measure", "judged", "trial"]
+
+#: The ``trial`` reading's one name: whether a trial passed, read per case as the share of its usable trials that did.
+TRIAL_PASS_NAME = "passed"
+
+
 class ComparedCell(EvalDocumentModel):
     """One side of a family comparison: a cell, and the per-case values its test read."""
 
@@ -1620,7 +1628,14 @@ class PairingCorrelation(EvalDocumentModel):
 class FamilyComparison(EvalDocumentModel):
     """One contrast against the control on one reading, tested and corrected within its family."""
 
-    reading: ReadingKind = Field(description="Whether `name` is a measure or a judged dimension.")
+    reading: ComparisonReading = Field(
+        description=(
+            "Whether `name` is a measure, a judged dimension, or `trial`: how each trial ended, with `name` "
+            f"`{TRIAL_PASS_NAME}`, the share of a case's usable trials that passed (the scoreboard's passed of usable, "
+            "read per case). A `trial` comparison is only in the family of a question whose decision rule reads the "
+            "pass rate."
+        )
+    )
     name: str = Field(min_length=1, description="The measure or judged dimension compared, as the bundle spells it.")
     higher_is_better: bool = Field(description="Which way is better on this reading — how `verdict` reads `delta`.")
     control: ComparedCell = Field(description="The control arm's cell under this rig.")
@@ -1640,6 +1655,16 @@ class FamilyComparison(EvalDocumentModel):
             "A separation needs it to exclude zero. Where the values have no spread (every shared case moved by one "
             "amount, or each side constant) it is the bounded test's on the declared range (`basis` `bounded`). "
             "None when no test ran."
+        ),
+    )
+    bounded_interval: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "The bounded test's interval on `delta` on the reading's declared range, at the family's `interval_level`: "
+            "valid for every distribution on the range at every n, where `interval` (a t interval wherever the values "
+            "have spread) is not. A claim that the contrast is no worse than the control by more than a margin, such "
+            "as a decision rule's `switch` on a rate, reads this one. None when no test ran, when the reading declares "
+            "no range, and in a bundle before shape 55."
         ),
     )
     hedges_g: float | None = Field(
@@ -2178,9 +2203,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     # `question_declared`), which moves the families, the reading scope and the verdict order over unchanged runs; and
     # the trials and their census — `scoreboard` (each arm's ran, lost, usable, passed and failed), `trials` (one row
     # per trial, capped) and `trials_omitted`, `case_sets`, `design_frozen_at` and each run summary's
-    # `judge_shares_candidate_model` — added; `package_version` is carried and left out of the fingerprint.
+    # `judge_shares_candidate_model` — added; `package_version` is carried and left out of the fingerprint. 55: each
+    # family comparison's `bounded_interval` (the interval a non-inferiority claim reads), and the overall pass rate
+    # compared as a `trial` reading in the family of each question whose decision rule reads it, which moves that
+    # family's size and adjusted p's over unchanged runs.
     schema_version: int = Field(
-        default=54, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=55, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -3238,6 +3266,7 @@ __all__ = [
     "CellCoordinate",
     "ComparedCell",
     "ComparisonFamily",
+    "ComparisonReading",
     "ComparisonVerdict",
     "Confound",
     "DeclaredCellCoverage",
@@ -3281,6 +3310,7 @@ __all__ = [
     "ShortCell",
     "TelemetryRollup",
     "TokenRollup",
+    "TRIAL_PASS_NAME",
     "UNDECIDED_CONFOUND_PREFIX",
     "UNVERIFIED_FOLD_PREFIX",
     "VerdictOrder",
