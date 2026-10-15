@@ -67,6 +67,7 @@ __all__ = [
     "COORDINATION_BUCKET_SUFFIX_GRAMMAR",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
+    "GATEWAY_DOOR_PROOF_NONCE_BUCKET",
     "KV_STREAM_PREFIX",
     "MAX_COORDINATION_BUCKETS",
     "MAX_COORDINATION_BUCKET_SUFFIX_CHARS",
@@ -170,6 +171,10 @@ TOOL_POD_POINTERS_BUCKET_SUFFIX: Final[str] = "pointers"
 #: the prefix of the JetStream stream backing a KV bucket: a bucket ``<b>`` is the stream ``KV_<b>``, as
 #: NATS (and nats-py's ``create_key_value``) names it. Compose the name with :func:`kv_stream_name`.
 KV_STREAM_PREFIX: Final[str] = "KV_"
+
+#: the bucket suffix of the gateway's ledger of spent door-proof ids (the wrapper prefixes the
+#: namespace); the gateway declares it, and its grant is the gateway principal's
+GATEWAY_DOOR_PROOF_NONCE_BUCKET: Final[str] = "gateway-door-proof-nonces"
 
 #: the server's own answer to "what is my credential": a connection that publishes here gets its
 #: OWN user, account, permissions and remaining credential lifetime back on its inbox, and nothing
@@ -2362,6 +2367,10 @@ def _gateway(
             # the gateway builds two registries that carry L2 collections (``gateway/acl.py`` and
             # ``gateway/service.py``), so it is a full participant in the shared bucket.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
+            # the completion and embedding doors' single-use ledger of proof ids (``ReplayGuard``,
+            # declared by the gateway at start): one bucket every replica of the queue group shares,
+            # so a proof answered by one replica is refused by the next
+            JsResource.kv(f"{ns}-{GATEWAY_DOOR_PROOF_NONCE_BUCKET}", scope=None, writable=True),
         ),
     )
 

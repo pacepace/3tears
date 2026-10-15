@@ -71,6 +71,10 @@ __all__ = [
     "APPROVAL_RECORD_DOOR",
     "APPROVAL_RECORD_OP",
     "AUDIT_ANONYMIZE_OP",
+    "GATEWAY_COMPLETION_DOOR",
+    "GATEWAY_COMPLETION_OP",
+    "GATEWAY_EMBEDDING_DOOR",
+    "GATEWAY_EMBEDDING_OP",
     "DOOR_PROOF_FIELD",
     "DOOR_PROOF_REPLAY_TTL",
     "DOOR_SENDER_FIELDS",
@@ -114,6 +118,12 @@ DOOR_PROOF_FIELD: Final[str] = "identity_proof"
 #: the approval record door, which no delegated token names: only an agent records its own pause.
 APPROVAL_RECORD_DOOR: Final[str] = "hub.approval.record"
 
+#: the gateway's completion and embedding doors (the plan's G7 and H9's residual). No delegated token
+#: names them: a caller proves its own token, so a tool pod holding an agent's token cannot spend
+#: as that agent. Each is its door window's name too.
+GATEWAY_COMPLETION_DOOR: Final[str] = "gateway.completion"
+GATEWAY_EMBEDDING_DOOR: Final[str] = "gateway.embedding"
+
 # each single-operation door's operation, as the proof binds it; an ``l3.*`` request's is its
 # subject's own part (``query``, ``tx.commit``), a datasource query's :func:`datasource_query_op`
 OBJECT_RESOLVE_OP: Final[str] = "resolve"
@@ -121,6 +131,8 @@ ENGAGEMENT_SCOPE_OP: Final[str] = "scope"
 NAMESPACE_DISCOVER_OP: Final[str] = "discover"
 AUDIT_ANONYMIZE_OP: Final[str] = "anonymize"
 APPROVAL_RECORD_OP: Final[str] = "record"
+GATEWAY_COMPLETION_OP: Final[str] = "complete"
+GATEWAY_EMBEDDING_OP: Final[str] = "embed"
 
 
 def l3_request_op(subject: str) -> str:

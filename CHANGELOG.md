@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: the gateway's completion and embedding doors take a proof of possession
+
+- `door_request.GATEWAY_COMPLETION_DOOR` / `GATEWAY_COMPLETION_OP` (`gateway.completion`, `complete`)
+  and `GATEWAY_EMBEDDING_DOOR` / `GATEWAY_EMBEDDING_OP` (`gateway.embedding`, `embed`): a caller proves
+  its own token there, so a tool pod holding an agent's token cannot spend as that agent. No delegated
+  token names either door.
+- NATS: the gateway principal may write `{ns}-gateway-door-proof-nonces`
+  (`subject_permissions.GATEWAY_DOOR_PROOF_NONCE_BUCKET`), the doors' single-use ledger of proof ids,
+  shared by every replica.
+
 ### Door requests and grants, made consistent with 0.66.0 to 0.68.0 when develop was merged in
 
 - **A request without a proof carries no `identity_proof` key.** `door_request.ProvenDoorRequest`

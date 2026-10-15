@@ -2828,3 +2828,21 @@ class TestTheKvStreamNameIsComposedInOnePlace:
             r.name: r for r in build_permissions(Principal.TOOL_POD, pod_id=_POD_X, object_store=True).js_resources
         }[tool_pod_pointers_bucket_name(_POD_X, ns=_NS)]
         assert pointers.stream_name == kv_stream_name(pointers.name)
+
+
+class TestGatewayDoorProofLedger:
+    """the gateway's completion and embedding doors spend proof ids in one bucket all replicas share."""
+
+    def test_the_gateway_may_write_its_door_proof_ledger(self) -> None:
+        from threetears.nats.subject_permissions import GATEWAY_DOOR_PROOF_NONCE_BUCKET
+
+        bucket = f"{_NS}-{GATEWAY_DOOR_PROOF_NONCE_BUCKET}"
+        held = [r for r in _build(Principal.GATEWAY).js_resources if r.name == bucket]
+        assert held and all(r.writable for r in held)
+
+    @pytest.mark.parametrize("principal", [p for p in Principal if p is not Principal.GATEWAY])
+    def test_no_other_principal_holds_it(self, principal: Principal) -> None:
+        from threetears.nats.subject_permissions import GATEWAY_DOOR_PROOF_NONCE_BUCKET
+
+        bucket = f"{_NS}-{GATEWAY_DOOR_PROOF_NONCE_BUCKET}"
+        assert not [r for r in _build(principal).js_resources if r.name == bucket], principal
