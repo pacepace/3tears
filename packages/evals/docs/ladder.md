@@ -364,7 +364,7 @@ control, and declaring a production world of your own.
 
 An eval's runs are kept in its store, so anyone can read them back without running anything.
 [`serve.py`](../examples/4-booking/serve.py) hands `as_host([booking], store=...)` to the MCP transport
-(`mount_fastmcp`, the `[fastmcp]` extra) so an agent can list, read and gate the runs, and the same host serves the
+(`mount_fastmcp`, the `[fastmcp]` extra) so an agent can list and read the runs, and the same host serves the
 command line:
 
 ```bash
