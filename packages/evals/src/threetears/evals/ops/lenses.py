@@ -59,7 +59,7 @@ from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BAS
 from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.completeness import completeness_disclosure
 
-from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost, PredictedValue
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, CostEstimateCell, PlannedCost, PredictedValue
 from threetears.evals.analysis.lenses.pivot import PivotTable
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.analysis.lenses.history import HistoryResult
@@ -941,6 +941,17 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     past results) bounds nothing, and predicts nothing, as does a scope with no priced history of the
     condition — the launch reads both as unknown.
 
+    **A template's new revision prices from the revision before it** while it has no priced result of its own. A
+    revision a reset writes (:func:`~threetears.evals.run.reset_definitions`) is a new record, so its own history
+    starts empty; the pricer then walks back through the name's earlier revisions (each one revision below the
+    last), drawing on the first whose runs launched as the arm will be hold priced results, and the basis says so:
+    ``priced from revision 1 of '<name>': this revision has no priced result yet; model, judge, simulator and
+    apparatus unchanged (...)``. It crosses a step only where the template leaves what a run spends alone (its
+    candidate kind, judged dimensions with their judge pins, conversation shape, world seed and allowed tools); a
+    step changing any of them stops the walk, and the arm reads unpriced naming what changed. An earlier revision priced only under other launch conditions is named with the conditions that
+    differ. A revision with priced results of its own is priced from them alone. This is pricing only: analysis
+    never pools two revisions' results.
+
     Args:
         host: The host whose store holds the history and whose vocabulary reads it.
 
@@ -948,14 +959,13 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
         The pricer.
     """
 
-    def price(quote: ArmQuote) -> ArmPrice:
-        judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
-        condition = (
-            f"template {quote.template_id!r} on {quote.candidate_model!r} at cassette mode {quote.cassette_mode!r}, "
-            f"judged by {judges!r}, simulator {quote.simulator_model!r} and apparatus settings "
-            f"{dict(quote.apparatus_settings)!r}"
-        )
-        runs = [run for run in list_runs(host, quote.scope_id, include_archived=True) if _launched_as(run, quote)]
+    def priced_history(quote: ArmQuote, template_id: str) -> CostEstimateCell:
+        """What the priced results of the runs of ``template_id`` launched as the arm will be predict for it."""
+        runs = [
+            run
+            for run in list_runs(host, quote.scope_id, include_archived=True)
+            if run.template_id == template_id and not _launch_differences(run, quote)
+        ]
         results = [result for run in runs for result in host.storage.query_eval_results_by_run(run.id, quote.scope_id)]
         estimate = compute_estimate_cost(
             runs,
@@ -965,27 +975,21 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             n_test_cases=quote.case_count,
             n_test_cases_source="generated" if quote.case_source == "generated" else "derived",
             cassette_mode=quote.cassette_mode,
-            template_id=quote.template_id,
+            template_id=template_id,
             profile=host.profile,
         )
         [cell] = estimate.cells
-        predicted = cell.predicted
-        if predicted is None:
-            unpriced = (
-                f"; {cell.n_unpriced_historical} past result(s) ran unpriced and cannot be drawn on"
-                if cell.n_unpriced_historical
-                else ""
-            )
-            return ArmPrice(
-                predicted_usd=None,
-                basis=f"no priced past result of {condition} is in scope {quote.scope_id!r}{unpriced}",
-            )
+        return cell
+
+    def priced(cell: CostEstimateCell, predicted: PredictedValue, condition: str, drawn_on: str = "") -> ArmPrice:
+        """The arm's price from a cell holding priced results (``predicted``, its prediction), or why they bound
+        nothing."""
         if predicted.interval_high is None:
             return ArmPrice(
                 predicted_usd=None,
                 basis=(
-                    f"{cell.n_historical} priced past result(s) of {condition} are too few to bound the arm (a "
-                    f"band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at ${predicted.value:.2f})"
+                    f"{drawn_on}{cell.n_historical} priced past result(s) of {condition} are too few to bound the arm "
+                    f"(a band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at ${predicted.value:.2f})"
                 ),
             )
         return ArmPrice(
@@ -994,35 +998,162 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             low_usd=predicted.interval_low,
             method_id=predicted.method_id,
             basis=(
-                f"the upper end of the band ${predicted.interval_low or 0.0:.2f}-${predicted.interval_high:.2f} "
-                f"around ${predicted.value:.2f}, method {predicted.method_id}, from {cell.n_historical} priced past "
-                f"result(s) of {condition}" + (f" ({cell.band_basis})" if cell.band_basis else "")
+                f"{drawn_on}the upper end of the band ${predicted.interval_low or 0.0:.2f}-"
+                f"${predicted.interval_high:.2f} around ${predicted.value:.2f}, method {predicted.method_id}, from "
+                f"{cell.n_historical} priced past result(s) of {condition}"
+                + (f" ({cell.band_basis})" if cell.band_basis else "")
             ),
+        )
+
+    def price(quote: ArmQuote) -> ArmPrice:
+        judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
+        launched = (
+            f"on {quote.candidate_model!r} at cassette mode {quote.cassette_mode!r}, judged by {judges!r}, simulator "
+            f"{quote.simulator_model!r} and apparatus settings {dict(quote.apparatus_settings)!r}"
+        )
+        condition = f"template {quote.template_id!r} {launched}"
+        cell = priced_history(quote, quote.template_id)
+        if cell.predicted is not None:
+            return priced(cell, cell.predicted, condition)
+        unpriced = (
+            f"; {cell.n_unpriced_historical} past result(s) ran unpriced and cannot be drawn on"
+            if cell.n_unpriced_historical
+            else ""
+        )
+        basis = f"no priced past result of {condition} is in scope {quote.scope_id!r}{unpriced}"
+        template = host.storage.load_template(quote.template_id, quote.scope_id)
+        if template is None or template.revision == 1:
+            return ArmPrice(predicted_usd=None, basis=basis)
+        # A revision a reset wrote prices from the one before it while the step leaves what an arm spends alone
+        # (_PRICING_UNCHANGED). Its results only predict the cost; analysis never pools two revisions.
+        later = template
+        mismatched: list[str] = []
+        while (earlier := _predecessor(host, later)) is not None:
+            if changed := _pricing_changes(earlier, later):
+                return ArmPrice(
+                    predicted_usd=None,
+                    basis=f"{basis}; revision {earlier.revision} of {template.name!r} cannot price it: the step to "
+                    f"revision {later.revision} changed {', '.join(changed)}",
+                )
+            earlier_cell = priced_history(quote, earlier.id)
+            if earlier_cell.predicted is not None:
+                return priced(
+                    earlier_cell,
+                    earlier_cell.predicted,
+                    f"revision {earlier.revision} ({earlier.id!r}) {launched}",
+                    drawn_on=f"priced from revision {earlier.revision} of {template.name!r}: this revision has no "
+                    f"priced result yet; {_PRICING_UNCHANGED}; ",
+                )
+            if differences := _closest_priced_differences(host, quote, earlier):
+                mismatched.append(f"revision {earlier.revision}'s priced runs differ in {differences}")
+            later = earlier
+        if later is template:
+            return ArmPrice(
+                predicted_usd=None,
+                basis=f"{basis}; the store holds no one revision {template.revision - 1} of {template.name!r} to "
+                "draw on",
+            )
+        earlier_revisions = (
+            f"revision {later.revision}"
+            if later.revision == template.revision - 1
+            else f"revisions {later.revision}-{template.revision - 1}"
+        )
+        return ArmPrice(
+            predicted_usd=None,
+            basis=f"{basis}, nor of {earlier_revisions} of {template.name!r}, which would price it with "
+            f"{_PRICING_UNCHANGED}" + (f"; {'; '.join(mismatched)}" if mismatched else ""),
         )
 
     return price
 
 
-def _launched_as(run: EvalRun, quote: ArmQuote) -> bool:
-    """Whether ``run`` was launched as ``quote``'s arm will be: its template, model, cassette mode, judges, simulator and rig.
+#: What a revision step must leave equal for an earlier revision's priced results to price a later revision's arm,
+#: as an estimate's basis states it. The launch conditions are matched run by run as for the revision's own history
+#: (the candidate model, cassette mode, each scored dim's judge model, the simulator model and the apparatus
+#: settings); the template's are compared across the step (:func:`_pricing_shape`). The case count is not: a price
+#: is per-observation cost scaled to the arm's own planned cases. Wording is not either (intent, descriptions, a
+#: dim's guide, the kind's spec, the cases' content), as a judge config's prompt is not matched against history.
+_PRICING_UNCHANGED = (
+    "model, judge, simulator and apparatus unchanged (the candidate model, cassette mode, each scored dimension's "
+    "judge model, simulator model and apparatus settings, and the template's candidate kind, judged dimensions with "
+    "their judge pins, conversation shape, world seed and allowed tools)"
+)
+
+
+def _pricing_shape(template: EvalTemplate) -> dict[str, object]:
+    """What of a template moves what a run of it spends beyond its launch conditions, by the name a basis gives it."""
+    conversation = template.conversation
+    return {
+        "the candidate kind": template.candidate_kind,
+        "the judged dimensions or their judge pins": sorted((dim.name, dim.judge or "") for dim in template.rubric),
+        "the conversation shape": None
+        if conversation is None
+        else (
+            [actor.id for actor in conversation.actors],
+            [(r.turn, r.dimension) for r in conversation.world_rounds],
+            conversation.turn_scheduler,
+            conversation.max_speakers_per_round,
+            conversation.max_turns,
+            conversation.sessions,
+        ),
+        "the world seed": template.world_seed.model_dump(mode="json"),
+        "the allowed tools": template.tools_allowed,
+    }
+
+
+def _pricing_changes(earlier: EvalTemplate, later: EvalTemplate) -> list[str]:
+    """What of :func:`_pricing_shape` a revision step changed; empty when the earlier revision's results price."""
+    before, after = _pricing_shape(earlier), _pricing_shape(later)
+    return [name for name in before if before[name] != after[name]]
+
+
+def _predecessor(host: EvalHost, template: EvalTemplate) -> EvalTemplate | None:
+    """The revision a reset superseded with ``template``: its name's record one revision earlier, when there is one."""
+    if template.revision <= 1:
+        return None
+    earlier = [
+        stored
+        for stored in host.storage.query_templates(template.scope_id)
+        if stored.name == template.name and stored.revision == template.revision - 1
+    ]
+    return earlier[0] if len(earlier) == 1 else None
+
+
+def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalTemplate) -> str:
+    """The launch conditions the closest priced run of ``template`` differs from the arm in; empty for none priced."""
+    closest: list[str] | None = None
+    for run in list_runs(host, quote.scope_id, include_archived=True):
+        if run.template_id != template.id:
+            continue
+        if not any(r.cost_usd is not None for r in host.storage.query_eval_results_by_run(run.id, quote.scope_id)):
+            continue
+        differences = _launch_differences(run, quote)
+        if closest is None or len(differences) < len(closest):
+            closest = differences
+    return ", ".join(closest or [])
+
+
+def _launch_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
+    """The launch conditions ``run`` was launched under otherwise than ``quote``'s arm will be, beside its template.
 
     Args:
         run: A run from the scope's history.
         quote: The arm being priced.
 
     Returns:
-        True when every launch condition that moves what a run spends matches — the judges and the simulator
-        by the models that ran, not by what the launch named.
+        Each condition that moves what a run spends and differs, as ``<condition> (<run's> there, <arm's> here)``
+        — the judges and the simulator by the models that ran, not by what the launch named. Empty when the run was
+        launched as the arm will be.
     """
     judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
-    return (
-        run.template_id == quote.template_id
-        and run.candidate_model == quote.candidate_model
-        and run.cassette_mode == quote.cassette_mode
-        and run.effective_judges == judges
-        and run.simulator_model == quote.simulator_model
-        and run.apparatus_settings == dict(quote.apparatus_settings)
-    )
+    pairs: list[tuple[str, object, object]] = [
+        ("candidate model", run.candidate_model, quote.candidate_model),
+        ("cassette mode", run.cassette_mode, quote.cassette_mode),
+        ("judge", run.effective_judges, judges),
+        ("simulator", run.simulator_model, quote.simulator_model),
+        ("apparatus settings", run.apparatus_settings, dict(quote.apparatus_settings)),
+    ]
+    return [f"{name} ({there!r} there, {here!r} here)" for name, there, here in pairs if there != here]
 
 
 def _completeness(disclosures: Mapping[str, str], n_degraded: int | None = None) -> list[str]:

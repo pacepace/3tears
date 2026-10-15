@@ -140,6 +140,15 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
    With three past results it is wide on the high side (three costs of $0.10, $0.20 and $0.30 put a
    15-observation arm's upper end near $59), so a capped launch on thin history can be refused. It treats
    each observation as independent, which repeats of one case are not, and says so (`band_basis`).
+   A template's new revision (what a definition reset writes) has no history of its own, so while it has no
+   priced result it is priced from the revision before it, walking back one revision at a time, and the basis
+   opens `priced from revision 1 of '<name>': this revision has no priced result yet; model, judge, simulator
+   and apparatus unchanged (...)`. The walk crosses a step only where the template's candidate kind, judged
+   dimensions with their judge pins, conversation shape, world seed and allowed tools are equal, and draws only
+   on runs launched as the arm will be; a step changing one of them leaves the arm unpriced, naming what
+   changed, as does an earlier revision priced only under another judge, simulator, rig or model. The case
+   count is not compared: the price scales per-observation cost to the arm's own cases. This is pricing only;
+   analysis never pools two revisions.
 3. **Refuse.** First, it refuses an arm whose largest call is reserved above its run's cap on its own
    (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
    all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
