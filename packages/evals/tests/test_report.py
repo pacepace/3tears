@@ -185,19 +185,25 @@ class TestTheToyReportsContent:
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.
         texts = [block.text for block in notes if isinstance(block, DisclosureBlock)]
         assert any(text.startswith("Model identity unconfirmed:") for text in texts)
-        assert all(block.fold == "Disclosures" for block in notes)
+        # After the table: the memo's coverage map in its own fold, then the engine's disclosures in theirs.
+        assert {block.fold for block in notes} == {"Coverage", "Disclosures"}
         # The memo is never introduced: the page does not describe itself.
         assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "Written by" in b.text]
 
     async def test_the_coverage_map_is_joined_to_the_findings_and_counted(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
         (coverage,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "coverage"]
-        (headline,) = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
-        # A finding is cited by the headline the page prints for it, never by a number.
-        assert coverage.section == "memo" and coverage.values()[0]["findings"] == headline.rstrip(".")
+        # The map restates no finding: it counts them, in the methods' Coverage fold, after the methods table.
+        assert coverage.section == "methods" and coverage.fold == "Coverage"
+        assert coverage.values()[0]["findings"] == "1 finding"
+        methods = [block for block in report.blocks if block.section == "methods"]
+        assert isinstance(methods[0], TableBlock) and methods[0].name == "methods" and methods[1] is coverage
         unnamed = [row for row in coverage.values() if row["findings"] == "no finding"]
         said = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.text.startswith("Levers no finding")]
-        assert len(said) == (1 if unnamed else 0)
+        assert len(said) == (1 if unnamed else 0) and all(b.fold == "Coverage" for b in said)
+        # In a fold of its own name the table is titled once, by the fold.
+        assert "<details><summary>Coverage</summary>\n\n| Lever | Coverage |" in report_markdown(report)
+        assert "**Coverage**" not in report_markdown(report)
 
     async def test_the_service_refuses_an_analysis_it_does_not_hold(self, toy: tuple[EvalHost, Any, Any]) -> None:
         host, analysis, _ = toy

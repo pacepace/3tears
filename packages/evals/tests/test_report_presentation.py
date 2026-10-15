@@ -68,8 +68,11 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
-    # The question declared before the run is quoted whole, as the contract the verdict reads, then the verdict.
-    assert lines[3] == f'Asked before the run: "{G2_QUESTION}"'
+    # The question declared before the run is quoted as the contract the verdict reads, split at the parser's own
+    # boundary: its decision rule is quoted at the head of the Decision section instead. Then the verdict.
+    asked, rule = G2_QUESTION.split(" Decision rule: ")
+    assert lines[3] == f'Asked before the run: "{asked}"'
+    assert f'\n## Decision\n\nDecision rule: "{rule}"\n\n**Clauses**\n' in report_markdown(report)
     assert lines[5].startswith("**Keep production: ")
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
     assert lines[7:10] == [
@@ -79,14 +82,19 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     ]
     assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
-    # The rule settled keep on the counts, so the floor caveat says what four cases can and cannot do — and it is
-    # the one line under the scoreboard: the design is on line 2, the label's claim is in the contrasts.
-    caveat = "4 cases per arm: enough to apply the rule, too few to size the difference (needs 5)."
+    # The rule settled keep on the counts, so the floor caveat says what is withheld under four cases and why, in
+    # the reader's terms; then the one other fact that changes how the verdict reads, the label its row contradicts.
+    # Nothing else is under the scoreboard: the design is on line 2.
+    caveat = (
+        "4 cases per arm: keep follows from the counts above. How much worse the candidate is goes unestimated: a gap "
+        "is estimated only from 5 independent cases."
+    )
+    label = "'cheaper candidate' is not cheaper: it cost more per reply than production."
     assert caveat in first.splitlines(), "the case floor, in normal weight"
-    assert "Too few cases to estimate a rate" not in first
-    assert first.index("**Keep production") < first.index("**Scoreboard**") < first.index(caveat)
-    assert first.rstrip().endswith(caveat), "nothing under the scoreboard but the caveat"
-    assert "The label 'cheaper candidate' says cheaper" not in first
+    assert "Too few" not in first and "needs 5" not in first
+    assert first.index("**Keep production") < first.index("**Scoreboard**") < first.index(caveat) < first.index(label)
+    assert first.rstrip().endswith(label), "nothing under the scoreboard but the caveat and the label's claim"
+    assert "The label" not in report_markdown(report)
 
 
 async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2_ruled: tuple[Result, Report]) -> None:
@@ -103,8 +111,11 @@ async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
     _, report = g2_ruled
     markdown = report_markdown(report)
     assert markdown.count("does deepseek-v4-flash hold every pass/fail queue-discipline dimension") == 1
-    (asked,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
-    assert asked.section == "header" and asked.text == f'Asked before the run: "{G2_QUESTION}"'
+    assert markdown.count("switch Kairo's model only if") == 1
+    asked, rule = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    question, stated = G2_QUESTION.split(" Decision rule: ")
+    assert asked.section == "header" and asked.text == f'Asked before the run: "{question}"'
+    assert rule.section == "decision" and rule.text == f'Decision rule: "{stated}"'
     assert f'<p class="line" data-source="basis">{html.escape(asked.text)}</p>' in report_html(report)
     assert lint_page(markdown, question=G2_QUESTION) == []
 
@@ -112,12 +123,13 @@ async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
 async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
-    # The quoted question aside too: it is the author's words, whole.
+    # The quoted question and its quoted rule aside too: they are the author's words, whole.
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    (asked,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
-    quoted = report_markdown(report).replace(verdict, "").replace(asked, "")
+    asked, rule = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    quoted = report_markdown(report).replace(verdict, "").replace(asked, "").replace(rule, "")
     sections = re.split(r"\n## ", quoted) + [
-        _visible_text(part).replace(verdict, "").replace(asked, "") for part in report_html(report).split("<h2>")
+        _visible_text(part).replace(verdict, "").replace(asked, "").replace(rule, "")
+        for part in report_html(report).split("<h2>")
     ]
     assert "deepseek-v4-flash passed" in verdict
     for section in sections:

@@ -53,7 +53,7 @@ whole between the arms and the verdict:
 # G2: Kairo queue discipline
 deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · 4 cases × 3 repeats
 
-Asked before the run: "On Kairo's queue-discipline regression set (dj_queue_discipline_v5), does deepseek-v4-flash hold every pass/fail queue-discipline dimension within 10 points of deepseek-v4.1-flash's pass rate, at lower cost per turn? Decision rule: switch Kairo's model only if no dimension drops by more than 10 points AND the cost per turn is lower; otherwise keep deepseek-v4.1-flash."
+Asked before the run: "On Kairo's queue-discipline regression set (dj_queue_discipline_v5), does deepseek-v4-flash hold every pass/fail queue-discipline dimension within 10 points of deepseek-v4.1-flash's pass rate, at lower cost per turn?"
 
 **Keep production: deepseek-v4-flash passed 2 of 12 trials to deepseek-v4.1-flash's 10, and cost more per reply.**
 ```
@@ -66,8 +66,11 @@ The first screen carries the minimum a reader needs to grasp the result; every c
 - **Line 2**: each arm named in full once (`deepseek-v4.1-flash (production, control)`), then the date, then the
   design (`30 cases × 3 repeats`). After that an arm is its given label (`production`), the control marked `▸` in
   a table. Only line 2 and the verdict name a model.
-- **Line 3**, where a question was declared before the run: the question quoted whole, `Asked before the run:
-  "…"`. It is the contract the verdict and the Decision section read, so it is never paraphrased.
+- **Line 3**, where a question was declared before the run: the question quoted, `Asked before the run: "…"`. It
+  is the contract the verdict reads, so it is never paraphrased. Structured text the engine parses is laid out by
+  its structure: where the question states a decision rule, line 3 quotes only the words before it, and the rule is
+  quoted at the head of the Decision section, split where the parser finds `Decision rule:`. A question stating no
+  rule the parser reads is quoted whole.
 - **Verdict**, written by code and never by a memo, result first: one sentence for the decision, a second only for
   a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
   models.`, the arm, the cause, the fix); one arm (`emails: 25/30 cases passed; 5 misses: double-charge,
@@ -80,24 +83,28 @@ The first screen carries the minimum a reader needs to grasp the result; every c
 - **Scoreboard**: a bare table of counts and the cost per reply; a failure cause beside checks and the judge heads
   its own column (`Model failed`) where it is the only one, and the outcome bar names each where there are several.
   Then the outcome bar (in Markdown, its table only where it splits a cause the scoreboard lumps together). Under
-  it, at most one line, in normal weight, never bold, never first, and only where it changes how the verdict is
-  read: the case floor (five usable cases before a rate is estimated: `4 cases per arm: enough to apply the rule,
-  too few to size the difference (needs 5).` where a declared rule settled keep on the counts, `Too few usable
-  cases to estimate a rate: …` otherwise), or an arm whose every trial failed. Everything else is a step down: an
-  arm's label that its own row contradicts (`The label 'cheaper candidate' says cheaper; it cost more per reply
-  than production.`, latency only where it was read serially) opens the Contrasts; what was not charted and where
-  a cost is a floor are in the Methods.
+  it, in normal weight, never bold, never first, the facts that change how the verdict is read and nothing else, in
+  this order: the case floor; an arm's label that its own row contradicts (`'cheaper candidate' is not cheaper: it
+  cost more per reply than production.`, latency only where it was read serially); an arm whose every trial failed.
+  A "too few" line says what is withheld and why, in the reader's terms, never a bare count: `4 cases per arm: keep
+  follows from the counts above. How much worse the candidate is goes unestimated: a gap is estimated only from 5
+  independent cases.` where a declared rule settled keep, `Usable cases: v4.1-flash 3, v4-flash 1. Under 5
+  independent cases a rate is shown as a count, and how far apart the arms are is not estimated.` otherwise.
+  Everything else is a step down: what was not charted and where a cost is a floor are in the Methods.
 
-The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too few,
-and no rate (a pass rate, pass^k) is estimated for an arm: a pass rate reads as a count, and pass^k states only the cases it rests on. A measure's mean is shown with its
-interval. A declared rule can still settle keep on what was observed, never switch. So a host's seed gate covers every
-template whose results are compared across arms, whatever its declared reading.
+The floor counts independent cases, never trials or repeats. Below it no interval is estimated: no contrast is tested,
+the verdict says too few, a pass rate (and pass^k) reads as a count with no estimate of how far off it could be, and no
+gap between the arms is sized. From the floor up an interval is estimated, and its width says how precisely the gap is
+known. A measure's mean is shown with its interval. A declared rule can still settle keep on what was observed, never
+switch. So a host's seed gate covers every template whose results are compared across arms, whatever its declared
+reading.
 
 ### The rest of the page
 
-- **Decision**: a declared decision rule (`Decision rule: switch … only if … AND …; otherwise keep …`), one row per
-  clause and reading, each arm's column headed by its name, `settled: keep`, `settled: switch` or `unsettled` with
-  the reason. Keep settles on what the run observed: a drop past the margin, or a higher cost. Switch needs
+- **Decision**: the declared decision rule quoted on its first line (`Decision rule: "switch … only if … AND …;
+  otherwise keep …"`), then one row per clause and reading, each arm's column headed by its name, `settled: keep`,
+  `settled: switch` or `unsettled` with the reason. Keep settles on what the run observed: a drop past the margin,
+  or a higher cost. Switch needs
   sampling evidence: every arm at the case floor, and for every rate the clause reads (the pass rate and each
   check's) the contrast's bounded interval keeping the drop within the margin; for cost, the interval wholly below
   zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds its error rate on a
@@ -107,13 +114,17 @@ template whose results are compared across arms, whatever its declared reading.
   before 55 reads "this bundle predates the interval a switch needs".
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
   readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
-  sit in a closed `Evidence` fold. Where a declared rule settled every clause, its question has no answer line: the
-  verdict and the Decision table answer it; a clause left open is the one line (`Still open: whether …`). The memo's
-  words are held to the page's style (below).
-- **Contrasts**: an arm's label its own row contradicts, first; the contrasts that can resolve, one line when none
-  can under the case floor, with the effect size and the adjusted p folded; the guardrails; strata and per-label
-  tables, folded. A one-arm page contrasts nothing, so the section is headed **Readings** (its id stays
-  `contrasts`).
+  sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Where a
+  clause of a settled rule reads the finding's one reading, the sentence is code's: the two values plainly, then
+  under the case floor one sentence of what is not estimated (`Cheaper candidate cost $3.301 per 1,000 replies to
+  production's $3.092. The size of the difference is not estimated below 5 independent cases.`). Findings are
+  evidence: one that names no reading is not a finding, so it is not laid out here but noted in one line under Not
+  tested (`The analysis also noted: …`). Where a declared rule settled every clause, its question has no answer
+  line: the verdict and the Decision table answer it; a clause left open is the one line (`Still open: whether …`).
+  The memo's words are held to the page's style (below).
+- **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size
+  and the adjusted p folded; the guardrails; strata and per-label tables, folded. A one-arm page contrasts nothing,
+  so the section is headed **Readings** (its id stays `contrasts`).
 - **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`), its trial ids last and muted, the
   failed and lost ones first. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
   name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
@@ -124,8 +135,10 @@ template whose results are compared across arms, whatever its declared reading.
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
 - **Not tested**, then **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the
-  bundle) and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of art the page links,
-  in one plain sentence.
+  bundle); the coverage map in a closed `Coverage` fold (one row per lever: its status, how many findings name it,
+  the next steps that do), which restates no finding; and the engine's own disclosures in a closed fold. Then the
+  **Glossary**: every term of art the page links, in one plain sentence. Every column header that is a term of art
+  links its entry, and in HTML a hover reads it.
 
 ### Style
 

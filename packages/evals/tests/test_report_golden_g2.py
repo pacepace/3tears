@@ -93,9 +93,13 @@ def test_exactly_one_chart_is_drawn_and_it_is_the_outcome_bar(g2: Report) -> Non
     assert page.count('data-chart="outcome_bar"') == 1
     markdown = report_markdown(g2)
     assert markdown.count("**Outcomes**") == 1
-    # The case floor is a caveat under the scoreboard, in normal weight, after the result.
+    # The case floor is a caveat under the scoreboard, in normal weight, after the result: what is withheld under
+    # the floor and why, never a bare "needs 5".
     first = _first_screen_md(markdown)
-    caveat = "Too few usable cases to estimate a rate: v4.1-flash 3, v4-flash 1 (needs 5)."
+    caveat = (
+        "Usable cases: v4.1-flash 3, v4-flash 1. Under 5 independent cases a rate is shown as a count, and how far "
+        "apart the arms are is not estimated."
+    )
     assert caveat in first.splitlines() and f"**{caveat}" not in first
     assert first.index(SCOREBOARD_HEADER) < first.index(caveat)
 
