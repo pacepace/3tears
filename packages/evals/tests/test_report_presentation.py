@@ -266,8 +266,8 @@ async def test_the_flag_reads_regression_only_where_a_candidate_passed_a_case_le
     (flag,) = [column for column in table.columns if column.key == "flag"]
     assert flag.term == "flag" and "flag" in comparison.report.terms
     assert GLOSSARY["flag"] == (
-        "Regression: a candidate passed a smaller share of its usable trials on the case than the control; a tie or "
-        "a gain never flags. No usable trial: an arm has none on the case."
+        "Regression marks a case a candidate passed on a smaller share of its usable trials than the control; a tie "
+        "or a gain never flags."
     )
 
 
