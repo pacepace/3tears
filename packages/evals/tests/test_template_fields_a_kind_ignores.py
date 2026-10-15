@@ -6,8 +6,9 @@ meet, before ``unhonoured_launch_arguments`` refused it. So a kind's registry en
 ignores (``LaunchableKind.ignored_template_fields``), the dispatch refuses a template stating any of them, and the
 package's own launchables declare theirs.
 
-A host's authoring check refuses the same template before it is stored through the dispatch's own refusal,
-``refuse_ignored_template_fields``, rather than restating the list and the rule beside it.
+Every path that admits a template refuses the same template before it is stored, through the dispatch's own
+refusal (``refuse_ignored_template_fields``) over the kind's entry in the host's registry (``TemplateChecks.kinds``):
+``create_template``, ``update_template`` and the boot seed. A host's own checks no longer call it.
 """
 
 from __future__ import annotations
@@ -18,18 +19,23 @@ from typing import Any
 import pytest
 
 from threetears.evals.kernel import JUDGE_KIND, JUDGE_KIND_CONTRACT, ValidationFailedError, default_job_timeout
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.run import (
     TEMPLATE_FIELDS,
     LaunchableKind,
     LaunchHost,
+    SeedCorpus,
+    create_template,
     launchable_judge_kind,
     quote_launch,
     refuse_ignored_template_fields,
+    seed_eval_definitions,
+    update_template,
 )
 from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host
 from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "judge-template-fields"
@@ -113,3 +119,78 @@ def test_a_hosts_authoring_check_refuses_what_the_dispatch_would_through_the_sam
             entry,
         )
     assert refused.value.remedy
+
+
+# --- authoring: the package refuses it on every path, from the host's registry --------------------------------------
+
+_SEED = WorldSeed(namespaces={"inbox": {"unread": 3}})
+
+
+def _authoring_host() -> EvalHost:
+    """The judge host's own EvalHost, its template checks handed the registry it launches with."""
+    launch_host = _judge_host()
+    return dataclasses.replace(
+        launch_host.eval_host,
+        template_checks=dataclasses.replace(TOYHOST_TEMPLATE_CHECKS, kinds=launch_host.kinds),
+    )
+
+
+def _host_call(template: EvalTemplate) -> ValidationFailedError:
+    """What a host's own check raised over the same template, by calling the dispatch's refusal itself."""
+    with pytest.raises(ValidationFailedError) as refused:
+        refuse_ignored_template_fields(template, launchable_judge_kind(lambda: _judge_host()))
+    return refused.value
+
+
+def test_create_template_refuses_a_field_the_kind_ignores_with_the_host_calls_message() -> None:
+    host = _authoring_host()
+    definition = {"name": "a judge", "intent": "Score as a person would.", "candidate_kind": JUDGE_KIND}
+
+    with pytest.raises(ValidationFailedError) as refused:
+        create_template(host, {**definition, "world_seed": _SEED}, scope_id=_SCOPE)
+
+    template_id = refused.value.message.split("'")[1]
+    expected = _host_call(EvalTemplate(id=template_id, scope_id=_SCOPE, **definition, world_seed=_SEED))
+    assert (refused.value.message, refused.value.remedy) == (expected.message, expected.remedy)
+    assert host.storage.load_template_by_name("a judge", _SCOPE) is None, "nothing is stored"
+    assert create_template(host, definition, scope_id=_SCOPE).candidate_kind == JUDGE_KIND
+
+
+def test_update_template_refuses_a_field_the_kind_ignores_with_the_host_calls_message() -> None:
+    host = _authoring_host()
+    host.storage.save_template(_judge_template())
+
+    with pytest.raises(ValidationFailedError) as refused:
+        update_template(host, "judge-tpl", _SCOPE, {"world_seed": _SEED})
+
+    expected = _host_call(_judge_template(world_seed=_SEED))
+    assert (refused.value.message, refused.value.remedy) == (expected.message, expected.remedy)
+    stored = host.storage.load_template("judge-tpl", _SCOPE)
+    assert stored is not None and stored.world_seed == _judge_template().world_seed, "nothing is written"
+
+
+def test_an_update_reads_the_merged_template_and_archiving_alone_is_never_refused() -> None:
+    host = _authoring_host()
+    # Written past authoring, as a template stored before the rule reached it was.
+    host.storage.save_template(_judge_template(world_seed=_SEED))
+
+    with pytest.raises(ValidationFailedError, match="never acts on its world_seed"):
+        update_template(host, "judge-tpl", _SCOPE, {"intent": "Score as a careful person would."})
+    assert update_template(host, "judge-tpl", _SCOPE, {"archived": True}).archived
+
+
+def test_the_boot_seed_refuses_a_field_the_kind_ignores() -> None:
+    host = _authoring_host()
+    with pytest.raises(ValidationFailedError, match="never acts on its world_seed"):
+        seed_eval_definitions(host, SeedCorpus(scope_id=_SCOPE, templates=(_judge_template(world_seed=_SEED),)))
+
+
+def test_a_kind_the_registry_does_not_carry_is_refused_nothing_at_authoring() -> None:
+    # The toy host's reading checks carry no registry: its launch refuses the kind by name instead.
+    host = dataclasses.replace(_authoring_host(), template_checks=TOYHOST_TEMPLATE_CHECKS)
+    stored = create_template(
+        host,
+        {"name": "a judge", "intent": "Score as a person would.", "candidate_kind": JUDGE_KIND, "world_seed": _SEED},
+        scope_id=_SCOPE,
+    )
+    assert stored.world_seed == _SEED

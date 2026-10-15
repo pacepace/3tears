@@ -142,6 +142,7 @@ from threetears.evals.ops import (
     runs_bisected_text,
     runs_compared_text,
 )
+from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
@@ -501,6 +502,21 @@ class JudgeCasesListParams(EvalBaseModel):
     """``judge_cases_list``."""
 
     template_id: TemplateId
+
+
+class CasesRenameParams(EvalBaseModel):
+    """``cases_rename``."""
+
+    test_case_id: str = Field(
+        min_length=1, description="The case to rename, by its id, as judge_cases_list or results_list names it."
+    )
+    case_name: str = Field(
+        min_length=1,
+        description=(
+            "Its new name, as the report should call it: one token such as double-charge, not a bare number or a "
+            "generated id, and used by no other case of its template or of a case set listing it."
+        ),
+    )
 
 
 class JudgeProfilesRecordParams(JudgeProfilesRecord):
@@ -1023,6 +1039,13 @@ async def _judge_cases_list(host: OpsHost, caller: Caller, params: JudgeCasesLis
     eval_host = host.eval_host
     return await run_blocking(
         eval_host.blocking_executor, judge_cases_list, eval_host, params.template_id, caller.scope_id
+    )
+
+
+async def _cases_rename(host: OpsHost, caller: Caller, params: CasesRenameParams) -> CaseRenamed:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor, case_rename, eval_host, caller.scope_id, params.test_case_id, params.case_name
     )
 
 
@@ -2063,6 +2086,24 @@ def engine_actions() -> tuple[Action, ...]:
                 "a case frozen from a result or a label shows how many labels it carries. A case this build cannot "
                 "read is listed apart, since this is where it is found. A seed corpus's case name is not stored, so "
                 "it is not shown. Calls no model and writes nothing."
+            ),
+        ),
+        Action(
+            name="cases_rename",
+            summary="Rename a stored case: the name the report calls it by, and nothing else about it.",
+            workflow=CURATE,
+            permission="write",
+            params=CasesRenameParams,
+            result=CaseRenamed,
+            handler=_cases_rename,
+            render=render.render_model,
+            example={"test_case_id": "case-1", "case_name": "double-charge"},
+            detail=(
+                "A case's name is in no digest and no identity key, so the case keeps its id, its content and every "
+                "result measured against it, and the next report calls it by the new name. A seeded case keeps its "
+                "seed record, so its drift still reads by its content. Refused: a name the report would not print "
+                "(spaces, a bare number, a generated id, over 40 characters), a name another case of its template or "
+                "of a case set listing it carries, and an unknown case. Calls no model."
             ),
         ),
         Action(

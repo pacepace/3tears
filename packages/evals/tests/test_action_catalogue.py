@@ -125,6 +125,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "judge_template_create": "write",
         "judge_cases_freeze": "write",
         "judge_cases_list": "read",
+        "cases_rename": "write",
         "judge_case_author": "write",
         "judge_profiles_record": "write",
         "judge_profiles_list": "read",

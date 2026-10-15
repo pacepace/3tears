@@ -3036,6 +3036,11 @@
       "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), style: StyleProfile = StyleProfile(), world: WorldRegistry | None = None, caveat_kinds: frozenset[str] = frozenset(), variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), sweepables: SweepableRegistry (derived))",
       "tier": "host-contract"
     },
+    "threetears.evals.kernel.host.IgnoresTemplateFields": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.host.Interval": {
       "kind": "dataclass",
       "signature": "Interval(unit: str | None = None)",
@@ -3213,7 +3218,7 @@
     },
     "threetears.evals.kernel.host.TemplateChecks": {
       "kind": "dataclass",
-      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None])",
+      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, IgnoresTemplateFields])",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ToneRegister": {
@@ -4018,7 +4023,7 @@
     },
     "threetears.evals.run.refuse_ignored_template_fields": {
       "kind": "function",
-      "signature": "refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None",
+      "signature": "refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTemplateFields) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.run.refuse_raised_ceiling": {
@@ -6546,6 +6551,11 @@
       "signature": "campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing",
       "tier": "stable"
     },
+    "threetears.evals.ops.case_rename": {
+      "kind": "function",
+      "signature": "case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseRenamed",
+      "tier": "host-contract"
+    },
     "threetears.evals.ops.case_set_mint": {
       "kind": "function",
       "signature": "case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> CaseSetLine",
@@ -6555,6 +6565,11 @@
       "kind": "function",
       "signature": "case_sets_list(host: EvalHost, scope_id: str, *, name: str | None = None) -> CaseSetListing",
       "tier": "stable"
+    },
+    "threetears.evals.ops.CaseRenamed": {
+      "kind": "model",
+      "signature": "CaseRenamed(test_case_id: str, old_name: str | None, new_name: str)",
+      "tier": "host-contract"
     },
     "threetears.evals.ops.CaseSetLine": {
       "kind": "model",

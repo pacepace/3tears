@@ -44,7 +44,7 @@ and a host that takes the bare answer says so.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -103,15 +103,29 @@ class CompletionClients(Protocol):
         ...  # pragma: no cover — protocol
 
 
+class IgnoresTemplateFields(Protocol):
+    """What admitting a template reads of a kind's launch registry entry: the template fields the kind never acts on.
+
+    Structural, so a host's registry entries (``threetears.evals.run.LaunchableKind``) are handed over as they are.
+    """
+
+    @property
+    def ignored_template_fields(self) -> frozenset[str]:
+        """The template fields the kind never acts on; a template stating one is refused, naming it."""
+        ...  # pragma: no cover — protocol
+
+
 @dataclass(frozen=True, kw_only=True)
 class TemplateChecks:
-    """The three questions about a template that only the host can answer, asked wherever a template is admitted.
+    """The three questions about a template that only the host can answer, and the kinds it launches, read wherever a
+    template is admitted.
 
     ``create_template``, ``update_template``, the boot seed (``seed_eval_definitions``), a definition reset
     (``reset_definitions``) and the ``definitions_reset`` action all read them from the one host they are handed
-    (:attr:`EvalHost.template_checks`), so no path admits a template under checks another path does not ask. Each raises
-    :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse and returns ``None`` to admit. None has a
-    default: a host with nothing to check passes a function that checks nothing, which is a decision its code states.
+    (:attr:`EvalHost.template_checks`), so no path admits a template under checks another path does not ask. Each check
+    raises :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse and returns ``None`` to admit. None
+    has a default: a host with nothing to check passes a function that checks nothing, which is a decision its code
+    states.
 
     Attributes:
         require_known_tools_allowed: Whether each name in a template's ``tools_allowed`` is a tool type the host's
@@ -119,12 +133,18 @@ class TemplateChecks:
         refuse_undeclared_world_seed: Whether a template's ``world_seed`` names only paths the host's world can seed:
             the host's walk over its own namespaces.
         refuse_undeliverable_template: Whether the template declares only apparatus its candidate kind can honour: the
-            host's kind capability table.
+            host's kind capability table. The template fields a kind never acts on are not its to refuse: every path
+            refuses those itself, from ``kinds``.
+        kinds: The host's launch registry, by kind name: the mapping its ``LaunchHost`` is built with. Every path that
+            admits a template refuses one stating a field its kind's entry ignores
+            (``threetears.evals.run.refuse_ignored_template_fields``), as the launch dispatch does; a kind the registry
+            does not carry is refused nothing here, and its launch is refused by name.
     """
 
     require_known_tools_allowed: Callable[[Sequence[str] | None], None]
     refuse_undeclared_world_seed: Callable[[EvalTemplate], None]
     refuse_undeliverable_template: Callable[[EvalTemplate], None]
+    kinds: Mapping[str, IgnoresTemplateFields]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -214,4 +234,4 @@ class EvalHost:
         return self.template_checks
 
 
-__all__ = ["CompletionClients", "CompletionRole", "EvalHost", "TemplateChecks"]
+__all__ = ["CompletionClients", "CompletionRole", "EvalHost", "IgnoresTemplateFields", "TemplateChecks"]

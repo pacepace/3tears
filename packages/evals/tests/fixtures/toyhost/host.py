@@ -30,9 +30,13 @@ def _admit(_checked: object) -> None:
 
 
 #: The toy host's template checks: it has no tool catalog, seed walk or kind capability table of its own, so each
-#: admits, which is a decision stated here rather than a default.
+#: admits, which is a decision stated here rather than a default. A host that only reads launches no kind, so its
+#: registry is empty; ``toyhost_launch_host`` hands these checks the registry it launches with.
 TOYHOST_TEMPLATE_CHECKS = TemplateChecks(
-    require_known_tools_allowed=_admit, refuse_undeclared_world_seed=_admit, refuse_undeliverable_template=_admit
+    require_known_tools_allowed=_admit,
+    refuse_undeclared_world_seed=_admit,
+    refuse_undeliverable_template=_admit,
+    kinds={},
 )
 
 

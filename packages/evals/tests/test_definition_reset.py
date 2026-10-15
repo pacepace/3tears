@@ -941,6 +941,7 @@ def test_a_reset_and_create_template_read_one_host_s_checks_and_a_host_with_none
             require_known_tools_allowed=lambda _tools: None,
             refuse_undeclared_world_seed=lambda _template: None,
             refuse_undeliverable_template=_refuse,
+            kinds={},
         ),
     )
     unchecked = toyhost_host(storage=storage, template_checks=None)
