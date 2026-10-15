@@ -633,6 +633,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # the schema keys and prompt markers its own code matches. `Ceilings` carries the six ceilings as one value;
         # the six names stay beside it in `.32`.
         "threetears.evals.run.Ceilings",
+        # The seam a host checks a proposed case name against, so it is never printed as `case N`.
+        "threetears.evals.analysis.humanize",
         "threetears.evals.kernel.FIND_TEMPLATE",
         "threetears.evals.kernel.SEED_REMEDY",
         "threetears.evals.kernel.KIND_TEMPLATE",
@@ -897,7 +899,6 @@ STABLE: frozenset[str] = frozenset(
         # How a report speaks: the prose lint every rendered sentence and a memo's are held to, the one seam an
         # identifier passes on its way to a reader, and the glossary of every term of art a page links.
         "threetears.evals.analysis.GLOSSARY",
-        "threetears.evals.analysis.humanize",
         "threetears.evals.analysis.lint_prose",
         # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
         # evidence-tier and profile readings over them, as `docs/judges-and-calibration.md` runs them.

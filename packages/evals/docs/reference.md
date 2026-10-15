@@ -605,7 +605,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`generation_ceiling_s`** · *host contract* · function · The wall-clock ceiling of one `generate_analysis`, derived from the ceilings it wraps.
   <br>`generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float`
-- **`humanize`** · function · An identifier as a reader is shown it after its first mention.
+- **`humanize`** · *host contract* · function · An identifier as a reader is shown it after its first mention.
   <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble a campaign's context bundle and return it, without generating.
   <br>`inspect_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> BundleInspection`

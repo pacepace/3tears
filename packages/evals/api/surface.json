@@ -5034,7 +5034,7 @@
     "threetears.evals.analysis.humanize": {
       "kind": "function",
       "signature": "humanize(kind: HumanizeKind, identifier: str) -> str",
-      "tier": "stable"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.HumanizeKind": {
       "kind": "literal",

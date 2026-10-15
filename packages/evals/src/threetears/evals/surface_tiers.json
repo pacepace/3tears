@@ -1007,7 +1007,7 @@
 "threetears.evals.analysis.history": "provisional",
 "threetears.evals.analysis.HISTORY_METRICS": "provisional",
 "threetears.evals.analysis.HistoryResult": "provisional",
-"threetears.evals.analysis.humanize": "stable",
+"threetears.evals.analysis.humanize": "host-contract",
 "threetears.evals.analysis.HumanizeKind": "provisional",
 "threetears.evals.analysis.IdentityRole": "provisional",
 "threetears.evals.analysis.insight_standing": "provisional",

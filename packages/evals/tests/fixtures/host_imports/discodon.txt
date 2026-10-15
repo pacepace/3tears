@@ -30,6 +30,7 @@ threetears.evals.analysis.format_number
 threetears.evals.analysis.freeze_reporter_case
 threetears.evals.analysis.generate_analysis
 threetears.evals.analysis.generation_ceiling_s
+threetears.evals.analysis.humanize
 threetears.evals.analysis.judge_phase_ceiling_s
 threetears.evals.analysis.prompt_content_version
 threetears.evals.analysis.refuse_undeliverable_reporter_template
