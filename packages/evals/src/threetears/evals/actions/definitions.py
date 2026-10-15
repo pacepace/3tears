@@ -119,7 +119,9 @@ def definition_drift_actions(
                 "Never in place: a template's new content is its next revision, the one it supersedes archived and "
                 "readable by id, so results stay with the content they ran against and two revisions never pool. A "
                 "judge case resets with its judge template and a template case with its template, whose new revision "
-                "holds every corpus case of it. "
+                "holds every corpus case of it. A row reads discarded only where a stored copy that read customized "
+                "or unknown was written over under overwrite_customized; one written fresh, with nothing stored, or "
+                "over a stale copy reads discarded false. "
                 "All or nothing: a refusal writes nothing and names every refused definition."
             ),
         ),

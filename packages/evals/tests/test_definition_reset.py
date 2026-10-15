@@ -528,6 +528,7 @@ def test_customized_definitions_are_refused_all_named_and_nothing_written_then_a
     assert store.documents == before, "a refused reset writes nothing"
     reset = _reset(storage, moved, keys, overwrite_customized=True)
     assert [entry.discarded for entry in reset.reset] == [True, True]
+    assert all(entry.replaced_id for entry in reset.reset) and reset.render().count("(discarded)") == 2
     assert all(_states(reset.after)[key] == "current" for key in keys)
 
 
@@ -630,6 +631,33 @@ def test_a_case_new_to_a_pre_30_battery_reads_unknown_with_no_supplied_digests()
     assert reading.reason == f"{JUDGE_NAME!r} was seeded before seeds recorded their cases"
     with pytest.raises(ConflictError, match="unknown"):
         _reset(storage, _grown(), [GROWN_KEY])
+
+
+def test_discarded_means_a_stored_copy_that_may_be_an_operator_s_was_written_over() -> None:
+    """``discarded`` is true only where a stored copy reading customized or unknown was replaced under
+    ``overwrite_customized``. A case written fresh, with no stored copy, reads false whatever its state says of the
+    host's record, and so does one written over a stale copy: the seed's own."""
+    storage = _seeded_before_30()
+    template_key = f"eval_template/{JUDGE_NAME}"
+
+    fresh = _reset(storage, _grown(), [template_key])
+
+    grown = next(e for e in fresh.reset if e.key == GROWN_KEY)
+    assert (grown.before, grown.replaced_id, grown.discarded) == ("unknown", "", False), fresh.render()
+    assert not any(entry.discarded for entry in fresh.reset), fresh.render()
+    assert "(discarded)" not in fresh.render()
+
+    storage, _ = _seeded()
+    stale = _reset(storage, _judge_case_moved(), [f"judge_case/{JUDGE_NAME}/a"])
+    case_a = next(e for e in stale.reset if e.key == f"judge_case/{JUDGE_NAME}/a")
+    assert (case_a.before, bool(case_a.replaced_id), case_a.discarded) == ("stale", True, False), stale.render()
+    assert not any(entry.discarded for entry in stale.reset), stale.render()
+
+    storage = _seeded_before_30()
+    then = corpus_digests(toyhost_host(storage=storage), _grown())
+    removed = _reset(storage, _grown(), [GROWN_KEY], seeded_digests=then, overwrite_customized=True)
+    gone = next(e for e in removed.reset if e.key == GROWN_KEY)
+    assert (gone.before, gone.replaced_id, gone.discarded) == ("customized", "", False), "nothing stored to replace"
 
 
 def test_a_judge_template_whose_revision_holds_cases_the_corpus_does_not_carry_is_refused_without_discard() -> None:

@@ -1477,7 +1477,9 @@ whose new revision holds the corpus's whole battery, and the corpus's case sets 
 case resets with its template, whose new revision holds every corpus case of it. The reset refuses `customized` and
 `unknown`, and a judge template (or a template the corpus gives cases) holding live cases the corpus does not carry,
 unless `overwrite_customized=True`; it writes nothing when it refuses and names
-every refusal. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
+every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote and the stored record it replaced
+(`replaced_id`), and reads `discarded: true` only where that stored copy read `customized` or `unknown` and was
+written over under the flag; a row written fresh (nothing stored) or over a `stale` copy reads `discarded: false`. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
 bundle), since their results are two datasets; two templates that only share a name at one revision number are not
 revisions of each other and are not refused. For rows seeded before `.30`, compute `corpus_digests(host, corpus)`
 over the corpus you seeded then (from your history) and pass it as `seeded_digests`: they read `stale` rather than

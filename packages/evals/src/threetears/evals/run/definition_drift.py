@@ -173,7 +173,10 @@ class ResetDefinition(EvalBaseModel):
         default="", description="The record it superseded, now archived and readable by id; empty for none."
     )
     discarded: bool = Field(
-        default=False, description="Whether what it superseded read customized or unknown: possibly an operator's."
+        default=False,
+        description="Whether a stored copy that read customized or unknown, possibly an operator's, was written over "
+        "under overwrite_customized (kept archived, readable by `replaced_id`). False for a definition written fresh, "
+        "with nothing stored to replace, and for one written over a stale copy, which is the seed's own.",
     )
 
 
@@ -920,7 +923,9 @@ def _entry(reading: DefinitionReading, written_id: str, written: str) -> ResetDe
         written_id=written_id,
         written=written,
         replaced_id=reading.stored_id,
-        discarded=reading.state in KEPT_STATES,
+        # A stored copy was replaced only where one was read: a case the store holds no copy of reads customized or
+        # unknown by what the host's record says of it, yet is written fresh.
+        discarded=bool(reading.stored_id) and reading.state in KEPT_STATES,
     )
 
 
