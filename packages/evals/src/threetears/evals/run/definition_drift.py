@@ -495,7 +495,9 @@ class _Survey:
         if predecessor is not None:
             stored_digest = stored_template_case_digest(predecessor)
             if predecessor.seed_name is None:
-                return self._reading(key, "template_case", digest, stored_digest, predecessor.id, None, f"stored on {where}")
+                return self._reading(
+                    key, "template_case", digest, stored_digest, predecessor.id, None, f"stored on {where}"
+                )
             # A seeded row records its content (`content_hash`), never its stratum, which is no part of a case's
             # identity. Content as seeded under the corpus's stratum is the row as seeded; under another stratum it was
             # relabelled, which no record says by whom, so it reads customized.

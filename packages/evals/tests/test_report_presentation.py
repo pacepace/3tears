@@ -499,7 +499,9 @@ async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_rul
             ],
         }
     )
-    report = build_code_only_report(coded.bundle.model_copy(update={"trials": trials}), assembled_at="2026-10-14T00:00Z")
+    report = build_code_only_report(
+        coded.bundle.model_copy(update={"trials": trials}), assembled_at="2026-10-14T00:00Z"
+    )
     markdown = report_markdown(report)
     assert "- `the *label* check`: `` answer == `queued` ``" in markdown
     assert "- `tone`: 1 (ordinal). Asked: `Is it <b>kind</b>?`. `Closed early.</details>  ## Not a section`" in markdown
