@@ -13,7 +13,8 @@ against one private host; the campaigns they summarise are not published.
 ### Purpose and design
 
 **Every eval declares its purpose before it runs: to decide, to learn, or to watch.**
-A decision names what may change and what settles it. A campaign with no declared question is passive,
+A decision names what may change and what settles it, the latter as typed clauses (`Question.decision`): a rule
+read out of words is settled by whatever a parser made of them. A campaign with no declared question is passive,
 and its report leads with what the evidence taught. A watch re-runs a fixed suite against an earlier
 measurement; its value is the regression it catches, so most of its runs change nothing.
 
