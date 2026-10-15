@@ -1471,7 +1471,7 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     A goal-state check of the template, by its verbatim text; a judged dimension of the template on the pass/fail
     scale and the capability axis, by its name (a boundary dimension is a guardrail, held on its own); and each check
     measure the host's catalogue describes (:func:`~threetears.evals.kernel.metrics.rule_rates`: a boolean with a
-    better end, either end), by its key. Exactly the rates
+    better end, either end, or a pass/fail scorer or grader), by its key. Exactly the rates
     :func:`~threetears.evals.analysis.report.decision.rule_readings` gives a rule, which reads the same function.
 
     Args:

@@ -3045,8 +3045,9 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
 def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
     """Every measure a decision rule may read as a pass rate, oriented: its name -> whether its higher end passes.
 
-    A boolean with a better end. A rate on it counts the observations on its better end as passes, so a
-    lower-is-better boolean's passes are its false count. The one list
+    A check (:attr:`MetricDescriptor.is_check`): a boolean with a better end, or a pass/fail measure graded 0 or 1 (a
+    scorer returning a bool, a field grader). A rate on it counts the observations on its better end as passes, so a
+    lower-is-better boolean's passes are its false count and a pass/fail scorer's the trials it passed. The one list
     a rule's declared readings are checked against and the page's readings are drawn from, so the two never disagree.
 
     Args:
@@ -3058,7 +3059,7 @@ def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
     return {
         descriptor.name: bool(descriptor.higher_is_better)
         for descriptor in descriptors
-        if descriptor.data_type == "boolean" and descriptor.higher_is_better is not None
+        if descriptor.is_check and not descriptor.name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
     }
 
 
