@@ -25,12 +25,16 @@ What a completion carries, member by member:
   (:mod:`threetears.evals.negotiation` chooses them, reads a refusal and resends; nothing else is retried).
 * ``cost_usd``: on OpenRouter its own reported figure, and under bring-your-own-key that figure plus
   ``cost_details.upstream_inference_cost`` (a BYOK reply without it is unpriced, as is a reply carrying no
-  ``is_byok``); on Anthropic and OpenAI, tokens
-  times OpenRouter's catalogue rates for the matching ``vendor/model`` row. ``price_source`` names which, in
+  ``is_byok``); on Anthropic and OpenAI, the reply's tokens priced by OpenRouter's catalogue row for the matching
+  ``vendor/model`` (the tier its prompt fell in, reasoning and cache tokens at their rates, the request fee). ``price_source`` names which, in
   :class:`PriceSource`'s words (``openrouter:reported``, ``openrouter:reported+upstream``,
   ``openrouter-catalogue:<id>``). Unpriced is ``None`` with
   ``pricing_failure`` saying why, never ``0``. The catalogue refreshes every ``refresh_after`` (six hours by
   default); a catalogue-priced cost whose refresh failed carries ``pricing_stale_since``, when its rates expired.
+
+``Model.price_ceiling`` bounds a call before it is made from every price the catalogue lists for the model, or answers
+``None`` saying why (logged), never a lower figure; rows older than ``Catalogue.ceiling_stale_after`` bound nothing.
+A host handing the catalogue its own ``httpx`` client matches :data:`CATALOGUE_FETCH_TIMEOUT_S` on it.
 
 **This module is the package's public root** for the client. A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -38,12 +42,13 @@ and only the names in ``__all__``.
 
 from __future__ import annotations
 
-from threetears.evals.providers.catalogue import Catalogue
+from threetears.evals.providers.catalogue import CATALOGUE_FETCH_TIMEOUT_S, Catalogue
 from threetears.evals.providers.failures import Provider, ProviderError, describe_failure
 from threetears.evals.providers.model import Clients, Completion, Model
 from threetears.evals.providers.wire import PriceSource
 
 __all__ = [
+    "CATALOGUE_FETCH_TIMEOUT_S",
     "Catalogue",
     "Clients",
     "Completion",

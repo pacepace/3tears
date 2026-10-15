@@ -70,6 +70,7 @@ from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.storage import JobRecordStore
 from threetears.evals.schema.models import EvalTestCase, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
 from threetears.evals.schema.logs import get_logger
@@ -496,6 +497,7 @@ async def estimate_analysis_generation(
     """
     assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
     try:
+        await refresh_prices(assembled.client)
         call = assembled.first_call
         ceiling = assembled.client.price_ceiling(
             system=call.system, user=call.user, response_format=call.response_format
@@ -562,6 +564,7 @@ async def prepare_analysis_generation(
     calls = BudgetedGenerator(_generation_budget(host, assembled, out_of_run_cap_usd), assembled.client)
     first = assembled.first_call
     try:
+        await refresh_prices(assembled.client)
         calls.admit(first.system, first.user, first.response_format)
     except ValidationFailedError:
         await _release(assembled.client)

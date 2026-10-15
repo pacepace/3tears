@@ -256,19 +256,42 @@ billed, so the price ceiling is one request's, but each refused send can take up
 **Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
 without the upstream figure is unpriced. A reply that carries no `is_byok` is unpriced too (`cost_usd` and
-`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is its tokens times the catalogue's rates
-for the matching `vendor/model` row, its `price_source` ending `;cache-approximate` when a prompt cache was read or
-written (the catalogue carries no cache rates). The `price_source` words are `PriceSource`'s (host contract, from
+`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is priced by the catalogue row
+for the matching `vendor/model`, from the same reading of the row as the price ceiling: at the tier its prompt fell
+in, its reasoning tokens at the reasoning rate where the row lists one apart from the completion rate, its cache reads
+and writes at their rates, plus the request fee. Where a price applies that the reply's counts cannot price (reasoning
+tokens it does not split out) the call is unpriced, never priced lower; its `price_source` ends `;cache-approximate`
+when a cache share was priced at a rate the row does not list for it. The `price_source` words are `PriceSource`'s (host contract, from
 `threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
 (the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
 `openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
-model's `price_ceiling` answers once its catalogue is loaded: `await clients.load_prices()` at boot, or
-`await catalogue.load()` on one you hand your models, and until then the engine refuses an out-of-run call under an
-enforced `out_of_run_cap_usd` rather than send one it cannot bound. A long-lived process is not priced from its first
+model's `price_ceiling` answers once its catalogue is loaded. The engine awaits the model's `refresh_prices()`
+before it prices a call, which loads it; `await clients.load_prices()` at boot reads it early and says which models
+it cannot price. A long-lived process is not priced from its first
 fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
 OpenRouter call, which its own figure prices), and `Catalogue.stale_since` and `refresh_failure` say the same.
+Several loads at once share one fetch.
+
+**The price ceiling is a true upper bound, or `None`.** `price_ceiling` bounds the prompt at one token per UTF-8 byte
+(after NFKC normalisation, where that is longer) plus a framing allowance, and prices it with every price the row
+lists: a prompt token at the dearest of the plain and cache rates, an output token (reasoning included) at the dearest
+of the completion, reasoning and output-image or -audio rates, the per-request fee, and a long-context tier wherever
+the prompt bound reaches it. A price it cannot bound (one it does not know, a web search on a model that searches
+unasked) answers `None`, logged once with the reason. So do rows older than `Catalogue.ceiling_stale_after`
+(`refresh_after` unless given), though a completion is still priced from them. Rows do not reach that age by sitting
+idle: before it prices a call, in a run or out of one, the engine awaits the client's `refresh_prices()` if it has
+one, which on `Model` refreshes rows past `refresh_after`. Only a refresh that failed leaves them old. Under an
+enforced cap, `None` refuses an out-of-run call, and lets a call in a run through unreserved only while the cap is not
+yet reached ([Cost and budgets](cost-and-budgets.md#caps)). A client of your own whose rates go stale offers the same
+`async refresh_prices()`. Optionally, to ride out a short outage without refusing calls, refresh more often than the
+bound (`Catalogue(refresh_after=timedelta(hours=1), ceiling_stale_after=timedelta(hours=6))`), or await
+`catalogue.load()` on a timer of your own; neither is needed for an idle host.
+
+`Model(timeout=..., headers=...)` sets up the client the model opens itself; beside `http=` they are refused, since a
+client you hand in is used as you built it. A catalogue you hand an `http` client fetches with that client's timeout;
+`CATALOGUE_FETCH_TIMEOUT_S` (30 seconds) is the one it uses on its own.
 
 **An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
 class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`

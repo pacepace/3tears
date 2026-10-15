@@ -50,7 +50,7 @@ from threetears.evals.kernel.candidate_kind import (
     CostCapReached,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import call_ceiling
+from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.judge_cases import (
     JUDGE_CASE_KEY,
@@ -695,6 +695,10 @@ class _CellClient:
         """
         return call_ceiling(self.inner, system=system, user=user, response_format=response_format)
 
+    async def refresh_prices(self) -> None:
+        """Bring the forwarded-to client's prices up to date, as :func:`refresh_prices` asks of it."""
+        await refresh_prices(self.inner)
+
     async def aclose(self) -> None:
         """Release nothing: the client this forwards to is the kind's."""
 
@@ -923,6 +927,7 @@ class JudgeKind:
             except ValueError as exc:
                 return CandidateOutput(infra_errors=[f"apparatus: test case {test_case.id}'s judge case: {exc}"])
             try:
+                await refresh_prices(service.client_for(request))
                 held = sink.reserve("candidate", service.price_ceiling(request))
             except CostCapReached:
                 # The sink recorded the breach: the runner excludes this cell for the cap, with nothing spent.

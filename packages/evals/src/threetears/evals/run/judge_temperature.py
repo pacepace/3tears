@@ -66,6 +66,7 @@ from threetears.evals.kernel.judge_temperature import (
     TemperatureSkip,
 )
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.job_leases import LeasedJobKind
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
@@ -382,6 +383,8 @@ async def estimate_judge_temperature_comparison(
         repeats=repeats,
     )
     try:
+        for client, _ in prepared.calls:
+            await refresh_prices(client.inner)
         ceilings = [
             client.inner.price_ceiling(system=call.system, user=call.user, response_format=call.response_format)
             for client, calls in prepared.calls
@@ -524,6 +527,7 @@ async def judge_temperature_work(
     )
     try:
         for client, calls in prepared.calls:
+            await refresh_prices(client.inner)
             client.admit(calls)
     except BaseException:
         await _close(prepared.services)

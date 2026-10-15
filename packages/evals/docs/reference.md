@@ -125,7 +125,6 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`ProviderFailure`** · dataclass · What eval is allowed to know about a completion call that raised.
 - **`ProviderFailureDescriber`** · *host contract* · protocol · The host's mapping from its own exceptions onto `ProviderFailure`.
 - **`RecordedCall`** · model · One call a candidate made that succeeded — or, in a control end state, one it is stated to have made.
-- **`RefusedCall`** · model · One call a candidate made that its tool refused: nothing changed, and the refusal said why.
 - **`RoleUsage`** · *host contract* · model · Per-role token + cost observation for one `EvalResult`.
 - **`RubricDim`** · *host contract* · model · One judge-scored rubric dimension.
 - **`RubricProposal`** · model · The validated DRAFT the rubric proposer returns for operator review.
@@ -224,6 +223,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`extract_json`** · function · Extract a JSON object from provider output.
   <br>`extract_json(content: str) -> dict[str, Any]`
+- **`extract_json_array`** · function · Extract a JSON array from provider output, handling markdown code blocks.
+  <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
+- **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
+  <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
 - **`seed_digest`** · function · The canonical digest of a seed's content: what a host records when it seeds a slot from it.
@@ -287,8 +290,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 - **`AuthoredVerdict`** · type alias · An expected verdict as its author states it: a score on the criterion's scale (1-5 ordinal; 1 pass, 0 fail), or `"pass"` / `"fail"` on a pass/fail criterion.
   <br>`Annotated[int, Field(strict=True)] | Literal['pass', 'fail']`
-- **`ExclusionCause`** · literal · Why a result is left out of a measure.
-  <br>`'infra'` | `'truncated'` | `'judge_cannot_tell'`
 - **`MeritAxis`** · literal · The merit axes a measure can serve.
   <br>`'quality'` | `'cost'` | `'latency'` | `'reliability'`
 - **`ToolWrap`** · type alias · What the action seam is handed: maps the candidate's tools, by name, to the tools it should use — each declared recorded tool wrapped for the cassette run, every other one unchanged.

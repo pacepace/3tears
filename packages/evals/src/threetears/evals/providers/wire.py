@@ -54,9 +54,9 @@ class PriceSource(StrEnum):
         OPENROUTER_REPORTED: OpenRouter's own figure for the call (``usage.cost``).
         OPENROUTER_REPORTED_UPSTREAM: Under bring-your-own-key, OpenRouter's fee plus the upstream's charge
             (``usage.cost`` plus ``cost_details.upstream_inference_cost``).
-        OPENROUTER_CATALOGUE: A direct call's tokens times OpenRouter's catalogue rates. Written as a prefix: the
-            source is ``openrouter-catalogue:<catalogue id>``, ending ``;cache-approximate`` when a prompt cache was
-            read or written, which the catalogue has no rates for.
+        OPENROUTER_CATALOGUE: A direct call's tokens priced by OpenRouter's catalogue row. Written as a prefix: the
+            source is ``openrouter-catalogue:<catalogue id>``, ending ``;cache-approximate`` when a cache read or
+            write was priced at a rate the row does not list for it.
     """
 
     OPENROUTER_REPORTED = "openrouter:reported"
@@ -297,6 +297,10 @@ class Reply:
         output_tokens: Completion tokens, reasoning included; ``None`` when unreported.
         reasoning_tokens: The reasoning share of ``output_tokens``; ``None`` when unsplit.
         cache_tokens: Prompt tokens read from or written to a cache (0 when none were reported).
+        cache_read_tokens: The share of ``cache_tokens`` read from a cache.
+        cache_write_tokens: The share of ``cache_tokens`` written to one, both lifetimes.
+        cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply wrote to a
+            cache without splitting it by lifetime.
         served_model: The model the reply named; ``None`` when it named none, or named an alias back.
         served_provider: The upstream OpenRouter routed to; ``None`` elsewhere.
         stop_reason: Why it stopped, in the engine's words; an absent or unknown reason is ``truncated``.
@@ -309,6 +313,9 @@ class Reply:
     output_tokens: int | None
     reasoning_tokens: int | None
     cache_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    cache_write_1h_tokens: int | None
     served_model: str | None
     served_provider: str | None
     stop_reason: StopReason
@@ -372,6 +379,9 @@ def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, A
     else:
         stop = _OPENAI_STOPS.get(finish, "truncated") if finish else "truncated"
     usage = _mapping(body.get("usage"))
+    prompt_details = _mapping(usage.get("prompt_tokens_details"))
+    read = _count(prompt_details.get("cached_tokens")) or 0
+    written = _count(prompt_details.get("cache_write_tokens")) or 0
     served = _named(body.get("model"))
     if served is not None and provider == "openrouter" and served == model and _is_alias(model):
         served = None
@@ -381,7 +391,10 @@ def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, A
         input_tokens=_count(usage.get("prompt_tokens")),
         output_tokens=_count(usage.get("completion_tokens")),
         reasoning_tokens=_count(_mapping(usage.get("completion_tokens_details")).get("reasoning_tokens")),
-        cache_tokens=_count(_mapping(usage.get("prompt_tokens_details")).get("cached_tokens")) or 0,
+        cache_tokens=read + written,
+        cache_read_tokens=read,
+        cache_write_tokens=written,
+        cache_write_1h_tokens=0 if not written else None,
         served_model=served,
         served_provider=upstream,
         stop_reason=stop,
@@ -400,15 +413,20 @@ def _read_anthropic(body: Mapping[str, Any]) -> Reply:  # Any: JSON
     raw = _named(body.get("stop_reason"))
     usage = _mapping(body.get("usage"))
     fresh = _count(usage.get("input_tokens"))
-    cache = (_count(usage.get("cache_read_input_tokens")) or 0) + (
-        _count(usage.get("cache_creation_input_tokens")) or 0
-    )
+    read = _count(usage.get("cache_read_input_tokens")) or 0
+    written = _count(usage.get("cache_creation_input_tokens")) or 0
+    cache = read + written
+    lifetimes = usage.get("cache_creation")
+    one_hour = _count(lifetimes.get("ephemeral_1h_input_tokens")) if isinstance(lifetimes, Mapping) else None
     return Reply(
         content=text,
         input_tokens=fresh + cache if fresh is not None else None,
         output_tokens=_count(usage.get("output_tokens")),
         reasoning_tokens=_count(_mapping(usage.get("output_tokens_details")).get("thinking_tokens")),
         cache_tokens=cache,
+        cache_read_tokens=read,
+        cache_write_tokens=written,
+        cache_write_1h_tokens=0 if not written else one_hour,
         served_model=_named(body.get("model")),
         served_provider=None,
         stop_reason=_ANTHROPIC_STOPS.get(raw, "truncated") if raw else "truncated",
