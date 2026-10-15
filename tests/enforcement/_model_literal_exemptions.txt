@@ -56,3 +56,4 @@ packages/evals/tests/fixtures/generate_analysis/llm_analysis.py::generate_analys
 packages/evals/src/threetears/evals/providers/wire.py::provider-quirk regex for Claude ids that refuse temperature; matches caller-supplied ids, picks no default model
 # provider-shape tests: each id is the input whose request shape, routing or dated-suffix handling is under test.
 packages/evals/tests/test_providers_model.py::provider-shape tests naming real and malformed claude ids as the subject under test; not a default
+packages/evals/tests/test_providers_ceiling.py::price-ceiling and completion-pricing tests keyed by catalogue rows for real claude ids; the model id is the row under test, not a default
