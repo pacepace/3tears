@@ -107,7 +107,10 @@ from threetears.evals.schema.models import (
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
 )
-from threetears.evals.kernel.metrics import describe_measure, summary_population
+from threetears.evals.kernel.metrics import MetricDescriptor, describe_measure, summary_population
+from threetears.evals.kernel.host.bars import DEFAULT_PASS_THRESHOLD
+from threetears.evals.analysis.bundle.schema import TrialState
+from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.kernel.remedies import FIND_RUN
@@ -383,6 +386,10 @@ class CaseResult(BaseModel):
             state failed, or a pass/fail dimension the judge failed. An excluded result is never a miss: it says
             nothing about the candidate.
         cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
+        state: How the trial ended as the report's page reads it
+            (:func:`~threetears.evals.analysis.bundle.trials.read_trial`): ``passed`` when every check the template
+            declares passed, ``failed``, or ``lost`` to the test setup. A case passes, on the console's first line as
+            on the page, when it has a repeat not lost and none failed.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -401,6 +408,7 @@ class CaseResult(BaseModel):
     errors: list[str] = []
     missed_because: list[str] = []
     cost_usd: float | None = None
+    state: TrialState
 
     @property
     def missed(self) -> bool:
@@ -418,6 +426,8 @@ class CaseResult(BaseModel):
         answer: JsonValue,
         higher_is_better: Mapping[str, bool | None] | None = None,
         stratum: str | None = None,
+        catalog: Mapping[str, MetricDescriptor] | None = None,
+        rubric_threshold: int = DEFAULT_PASS_THRESHOLD,
     ) -> CaseResult:
         """One stored result, read as a case result.
 
@@ -432,9 +442,13 @@ class CaseResult(BaseModel):
                 misses never, since "worse" needs one; a measure not named reads as higher-is-better, a scorer's
                 default.
             stratum: The stratum the case declares, or ``None``.
+            catalog: Each measure the result carries, described as the host declares it, which says which are checks;
+                the state is read through it exactly as the page reads its trials.
+            rubric_threshold: The 1–5 level a judged dimension must reach, as the page's trials read it.
 
         Returns:
-            The case result, its miss reasons decided by the rule :attr:`missed_because` states.
+            The case result, its miss reasons decided by the rule :attr:`missed_because` states and its state by the
+            page's own reading of a trial.
         """
         outcome = _CASE_OUTCOMES[classify_result(result)]
         errors = (
@@ -488,6 +502,7 @@ class CaseResult(BaseModel):
             errors=errors,
             missed_because=missed,
             cost_usd=result.cost_usd,
+            state=read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog or {}).state,
         )
 
     def render(self) -> str:

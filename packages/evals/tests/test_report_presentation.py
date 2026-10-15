@@ -28,7 +28,7 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.references import cell_aliases
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TrialBlock
+from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock, TrialBlock
 from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.bundle.schema import TrialCheck
@@ -379,6 +379,86 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
     assert len(table.rows) == len(trials)
     assert all("{" not in str(value) for row in table.values() for value in row.values())
+
+
+#: A trial's transcript as a host's world renders it: its own headings, a fenced block and raw HTML of its own.
+_TRANSCRIPT = (
+    'The world as it stood before the persona\'s first turn:\n\n## music\n```json\n{"queue": []}\n```\n\n'
+    "# Persona\n## Ben\n</details>\n<script>alert(1)</script>\n````\nnot a fence of mine\n````"
+)
+
+
+def _outline(markdown: str) -> list[str]:
+    """The headings a CommonMark reader finds: ATX headings outside fenced code, each fence closed only by a run of its
+    own character at least as long as the one that opened it."""
+    headings: list[str] = []
+    fence: str | None = None
+    for line in markdown.splitlines():
+        stripped = line.lstrip(" ")
+        opening = re.match(r"(`{3,}|~{3,})", stripped) if len(line) - len(stripped) <= 3 else None
+        if fence is not None:
+            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence):
+                if not stripped[len(opening.group(1)) :].strip():
+                    fence = None
+            continue
+        if opening:
+            fence = opening.group(1)
+        elif re.match(r" {0,3}#{1,6}(\s|$)", line):
+            headings.append(line.strip())
+    return headings
+
+
+async def test_a_transcript_is_quoted_whole_and_none_of_it_is_the_report_s_structure(
+    g2_ruled: tuple[Result, Report],
+) -> None:
+    _, coded = g2_ruled
+    trials = [
+        trial.model_copy(update={"first_input": _TRANSCRIPT, "excerpt": _TRANSCRIPT, "error_words": _TRANSCRIPT})
+        if trial.state == "failed"
+        else trial
+        for trial in coded.bundle.trials
+    ]
+    report = build_code_only_report(
+        coded.bundle.model_copy(update={"trials": trials}), assembled_at="2026-10-14T00:00Z"
+    )
+    markdown = report_markdown(report)
+    titles = report.section_titles
+    own = [f"# {report.title}", *(f"## {titles[s]}" for s in titles if f"\n## {titles[s]}\n" in markdown)]
+    assert _outline(markdown) == own
+    # Each transcript sits whole inside a fence longer than any run of backticks in it.
+    assert "`````\nThe world as it stood before the persona's first turn:" in markdown
+    assert markdown.count("not a fence of mine") == 3 * sum(trial.state == "failed" for trial in trials)
+    # The page escapes the same text: in a <pre>, its tags and headings text, and no heading but the page's own.
+    page = report_html(report)
+    assert "<script>alert" not in page and "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert "<pre>The world as it stood before the persona&#x27;s first turn:\n\n## music" in page
+    assert not re.search(r"<h[1-6][^>]*>[^<]*(music|Persona|Ben)", page)
+
+
+async def test_an_author_s_words_open_no_block_of_their_own_in_markdown(g2_ruled: tuple[Result, Report]) -> None:
+    _, coded = g2_ruled
+    report = build_code_only_report(coded.bundle, assembled_at="2026-10-14T00:00Z")
+    body = "## music\n\n- # Persona\n- plain\n\n```\n\n> quoted\n\n1. first\n\n<details>"
+    words = report.model_copy(
+        update={"blocks": [*report.blocks, TextBlock(section="not_tested", role="finding_body", body=body, finding=0)]}
+    )
+    markdown = report_markdown(words)
+    assert "\\## music\n\n- \\# Persona\n- plain\n\n\\```\n\n\\> quoted\n\n1\\. first\n\n\\<details>" in markdown
+    assert _outline(markdown) == _outline(report_markdown(report))
+
+
+async def test_sixty_passed_trials_and_one_failed_carry_one_record_and_one_table() -> None:
+    cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(61)]
+    run = await Eval(cases, {"production": answering(60, 0.003)}, ["label"], k=1, name="queue").run(store=":memory:")
+    census, table, records, passed = _trials_section(run.report)
+    assert census.text == "61 trials ran. Of them 60 passed and 1 failed."
+    assert table is not None and len(table.rows) == 1 and len(records) == 1
+    assert passed is not None and len(passed.rows) == 60
+    markdown = report_markdown(run.report)
+    assert markdown.count('<details id="T') == 1
+    passed_rows = markdown.split("<summary>Passed trials</summary>", 1)[1].split("</details>", 1)[0]
+    assert len(re.findall(r"^\| T\d+ \| .* \| `[0-9a-f-]+` \|$", passed_rows, re.M)) == 60
+    assert "What the case asked" not in passed_rows and "Stored result:" not in passed_rows
 
 
 async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_ruled: tuple[Result, Report]) -> None:

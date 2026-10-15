@@ -71,8 +71,8 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   words but typed clauses (`Question.decision`), so the Decision section states it in a sentence code writes.
 - **Verdict**, written by code and never by a memo, result first: one sentence for the decision, a second only for
   a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
-  models.`, the arm, the cause, the fix); one arm (`emails: 25/30 cases passed; 5 misses: double-charge,
-  refund-after-cancel, …`, each case by the name its author gave it, else `case N`); a declared decision rule, in
+  models.`, the arm, the cause, the fix); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
+  gdpr-delete, …`, each case by the name its author gave it, else `case N`); a declared decision rule, in
   plain counts with each arm by its model (`Keep production: deepseek-v4-flash passed 2 of 12 trials to
   deepseek-v4.1-flash's 10, and cost more per reply.`); which arm passed more, when an arm is under the case floor;
   a declared question's contrasts; `Exploratory:` (linked to the glossary) and what separated, or `nothing

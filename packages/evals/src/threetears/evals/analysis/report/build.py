@@ -41,6 +41,7 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
     GoalCheckProofReading,
     TrialRow,
+    UnexercisedFactor,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
@@ -134,7 +135,7 @@ from threetears.evals.analysis.quantities import (
     with_unit,
 )
 from threetears.evals.kernel.analysis_measures import MeasureSummary
-from threetears.evals.kernel.authored import Finding
+from threetears.evals.kernel.authored import Finding, NextStep
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
     EvidenceRow,
@@ -1017,7 +1018,10 @@ def _memo_blocks(
         blocks.append(_facts_table(facts, name="recommendation_facts"))
     coverage_status = {row.name: row.status for row in analysis.coverage.levers}
     steps: list[str] = []
-    for step in document.next:
+    # A lever no comparison exercised is no lever, so no step measures it, whatever the writer proposed.
+    unexercised = {factor.factor for factor in bundle.unexercised_factors}
+    kept = [step for step in document.next if step.lever not in unexercised]
+    for step in kept:
         facts = [Fact(name="Leverage", value=step.leverage)]
         if step.lever:
             status = coverage_status.get(step.lever) or "no coverage row"
@@ -1028,7 +1032,7 @@ def _memo_blocks(
         if (why := style.prose(step.why)).strip():
             blocks.append(TextBlock(section="memo", role="next_step_why", body=why, fold="Why"))
         blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
-    blocks.extend(_coverage_blocks(analysis, steps))
+    blocks.extend(_coverage_blocks(analysis, kept, steps))
     return [*blocks, *noted]
 
 
@@ -1090,13 +1094,14 @@ def _ref_namer(surface: DecisionSurface, names: dict[str, ArmName]) -> Callable[
     return name
 
 
-def _coverage_blocks(analysis: EvalAnalysis, steps: Sequence[str]) -> list[ReportBlock]:
+def _coverage_blocks(analysis: EvalAnalysis, kept: Sequence[NextStep], steps: Sequence[str]) -> list[ReportBlock]:
     """The coverage map joined to the findings and the next steps, on the stored lever names (#630, #631), in the
     methods' closed ``Coverage`` fold: nothing is said twice at one level, so it counts the findings rather than
     restating their headlines.
 
     One row per lever: its status, how many findings name it in their ``axes`` (or "no finding"), and the next
-    steps whose ``lever`` names it, as the page words them (``steps``, in the memo's order); a ``thin`` or
+    steps whose ``lever`` names it, as the page words them (``steps``, beside the ``kept`` steps they word, in the
+    memo's order); a ``thin`` or
     ``unswept`` lever no step names says so. Then one line naming the levers no finding names, when there are any.
     """
     levers = analysis.coverage.levers
@@ -1106,7 +1111,7 @@ def _coverage_blocks(analysis: EvalAnalysis, steps: Sequence[str]) -> list[Repor
     rows: list[dict[str, CellValue]] = []
     for row in levers:
         named = sum(1 for finding in findings if row.name in finding.axes)
-        worded = [said for step, said in zip(analysis.document.next, steps, strict=True) if step.lever == row.name]
+        worded = [said for step, said in zip(kept, steps, strict=True) if step.lever == row.name]
         gap = row.status in ("thin", "unswept")
         rows.append(
             {
@@ -3079,6 +3084,7 @@ def _not_tested_blocks(
         if row.status in ("thin", "unswept"):
             why = "one level ran" if row.status == "unswept" else "too few repeats to read"
             said.append(f"Lever {row.name} is {row.status}: {why}.")
+    said += [_unexercised_sentence(factor, bundle, arm) for factor in bundle.unexercised_factors]
     usable = {(trial.arm, trial.case_id) for trial in bundle.trials if trial.state != "lost"}
     case_name = _case_namer(bundle)
     for board in bundle.scoreboard:
@@ -3112,6 +3118,20 @@ def _not_tested_blocks(
     if not blocks:
         return [DisclosureBlock(section="not_tested", source="not_tested", text="Nothing declared went untested.")]
     return blocks
+
+
+def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
+    """A lever no comparison exercised, in one line: ``research model: no research call was made on either arm.``"""
+    name = humanize("dimension", factor.factor.rsplit(".", 1)[-1])
+    call = f"{factor.role.replace('_', ' ')} call"
+    arms = len(bundle.scoreboard)
+    if factor.results == 0 or not factor.arms:
+        where = "the arm" if arms <= 1 else "either arm" if arms == 2 else "any arm"
+        return f"{name}: no {call} was made on {where}."
+    if arms <= 1:
+        return f"{name}: one {call} was made in all its trials, too few to read a level from."
+    others = "the other arm" if arms == 2 else "the other arms"
+    return f"{name}: one {call} was made, on {arm(factor.arms[0])}, and none on {others}, so it is not a level."
 
 
 def _calibration_sentences(tiers: Sequence[JudgeEvidenceTier]) -> list[str]:

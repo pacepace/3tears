@@ -50,6 +50,7 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.metrics import describe_reported_measure
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateKind,
@@ -299,11 +300,11 @@ def scorer_measure(
 ) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
-    A scorer whose return is annotated ``bool`` is a pass/fail and is declared on the range 0 to 1, margin or
-    not: its intervals stay inside what a pass rate can be, and with a margin its equivalence test is the
-    bounded one that holds its error rate at any n. Any other scorer is on the range its caller declares
-    (``grader(range=...)``), or on none, since nothing else says what its values can be: its intervals are
-    then the unclipped t intervals, and it takes no margin (:func:`refuse_unusable_margins`).
+    A scorer whose return is annotated ``bool`` is a pass/fail — a check, ``pass_fail``, whose 0 fails the trial it is
+    on — and is declared on the range 0 to 1, margin or not: its intervals stay inside what a pass rate can be, and
+    with a margin its equivalence test is the bounded one that holds its error rate at any n. Any other scorer is on
+    the range its caller declares (``grader(range=...)``), or on none, since nothing else says what its values can
+    be: its intervals are then the unclipped t intervals, and it takes no margin (:func:`refuse_unusable_margins`).
 
     Declared a guardrail (``guardrail=``), it is instead a measure no arm may get worse on: on no merit axis, so it
     joins no contrast and no composite, with the guardrail's direction and its margin as the measure's
@@ -343,6 +344,7 @@ def scorer_measure(
             population="scored",
             materiality_threshold=guardrail.margin,
             value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
+            pass_fail=_returns_bool(scorer),
         )
     return MetricDescriptor(
         name=name,
@@ -358,6 +360,7 @@ def scorer_measure(
         population="scored",
         materiality_threshold=margin,
         value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
+        pass_fail=_returns_bool(scorer),
     )
 
 
@@ -1876,7 +1879,13 @@ async def run_arms(
 
     def summarized() -> list[EvalSummary]:
         return [
-            _with_case_results(host, summarize_run(host, run.id, scope_id, case_names=by_id), test_cases, names)
+            _with_case_results(
+                host,
+                summarize_run(host, run.id, scope_id, case_names=by_id),
+                test_cases,
+                names,
+                behavior="classify" if expected is not None else "score",
+            )
             for run in runs
         ]
 
@@ -1897,7 +1906,7 @@ async def run_arms(
 
 
 def _with_case_results(
-    host: EvalHost, summary: EvalSummary, test_cases: list[EvalTestCase], names: list[str]
+    host: EvalHost, summary: EvalSummary, test_cases: list[EvalTestCase], names: list[str], *, behavior: str
 ) -> EvalSummary:
     """The summary carrying every result read for a person, so they outlive the store the run was in.
 
@@ -1919,6 +1928,13 @@ def _with_case_results(
         for name in host.profile.measures.names
         if (descriptor := host.profile.measures.get(name)) is not None
     }
+    # Each result's state is read as the page reads its trials: the measures described as the host declares them, so
+    # the console's count of cases passed is the page's.
+    catalog = {
+        name: describe_reported_measure(name, host.profile.measures)
+        for name in sorted({name for result in stored for name in result.host_measures})
+    }
+    threshold = host.profile.bars.pass_threshold(behavior)
     case_results = []
     for result in stored:
         payload = payloads.get(result.test_case_id, {})
@@ -1933,6 +1949,8 @@ def _with_case_results(
                 answer=_stored_answer(trace.trace if trace is not None else []),
                 higher_is_better=directions,
                 stratum=strata.get(result.test_case_id),
+                catalog=catalog,
+                rubric_threshold=threshold,
             )
         )
     return summary.model_copy(update={"case_results": case_results})

@@ -176,6 +176,19 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 57/13: a lever read off what ran that fewer than two results exercised is no level (`unexercised_factors`). A
+    # shape-only bump: the apparatus set and the cell model hold.
+    (
+        (57, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 

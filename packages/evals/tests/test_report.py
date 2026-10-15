@@ -38,6 +38,7 @@ from threetears.evals.analysis import (
     TextBlock,
     analysis_report,
     build_code_only_report,
+    build_report,
     campaign_report,
     report_html,
     report_markdown,
@@ -47,6 +48,7 @@ from threetears.evals.analysis.report.build import contrast_rows
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report.figures import measure_rulers
 from threetears.evals.analysis.report.model import table_row
+from threetears.evals.kernel.authored import NextStep
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
@@ -452,6 +454,26 @@ async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalH
     assert report.basis == "code_only" and report.source.analysis_id is None
     # The archived analysis is still readable by its id.
     assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).source.analysis_id == analysis.id
+
+
+async def test_a_next_step_on_a_lever_no_comparison_exercised_is_not_on_the_page(
+    toy: tuple[EvalHost, EvalAnalysis, Report],
+) -> None:
+    """The writer proposed holding a never-exercised research model fixed: a step that spends money on a non-lever."""
+    _, analysis, _ = toy
+    lever = "persona.tool_configs.research.research_model"
+    held = NextStep(title="evaluate with the research model held fixed", why="it moved", leverage="high", lever=lever)
+    document = analysis.document.model_copy(update={"next": [held, *analysis.document.next]})
+    unexercised = {"factor": lever, "role": "research", "results": 1, "arms": ["candidate"]}
+    report = build_report(
+        analysis.model_copy(
+            update={"document": document, "bundle": {**analysis.bundle, "unexercised_factors": [unexercised]}}
+        )
+    )
+    steps = [block.body for block in report.blocks if isinstance(block, TextBlock) and block.role == "next_step"]
+    assert steps and not [step for step in steps if "research model" in step]
+    markdown = report_markdown(report)
+    assert lever not in markdown and "research model: one research call was made, on " in markdown
 
 
 def test_the_resolver_refuses_a_campaign_the_scope_does_not_hold() -> None:
