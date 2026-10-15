@@ -290,6 +290,26 @@ unchanged incumbent measured on as many cases a one-sided test at the interval's
 cases most verdicts are undecided, and that is the finding: the bank cannot tell.
 *Evidence:* seeded simulation (`tests/test_sim_bars_and_change.py`), σ = 1, one observation per case, no margin, 2026-10: the mean rule missed an unchanged incumbent 49–50% of the time at n = 3, 6 and 15. The three-way rule missed it 1.3%, 2.0% and 2.2% of the time and cleared it 21%, 19% and 21%; a candidate 1.6σ worse was cleared 1.6%, 0.05% and 0% of the time and missed 15%, 60% and 98%.
 
+### A switch reads the bounded interval
+
+**"No worse by more than the margin" is a claim of safety, so it reads an interval that holds its error rate on
+coarse values.** A decision rule's `switch` on a rate (`no dimension drops by more than 10 points`) reads each rate's
+bounded interval (`bounded_interval` on the contrast, the bounded test's on the 0-1 range at the family's level), as a
+guardrail's `held` does. The t interval the Contrasts table prints overstates its confidence on a pass rate's few
+coarse per-case shares: a candidate that breaks one case in ten leaves most small samples agreeing with the control.
+The price is honest: on seven cases nothing short of a sweep settles a 10-point switch, and only keep can.
+*Evidence:* simulated at a true drop of exactly the 10-point margin, 3 repeats per case, 20,000 replicates per row,
+2026-10; how often the t interval read switch, against the one tail it states (`tests/test_simulated_switch.py`
+checks the 12-case row at 1,000 replicates: about 14% on the t interval, none on the bounded):
+
+| Family size | Shape | Cases | Switch read on the t interval | Its tail |
+|---|---|---|---|---|
+| 1 | control passes 0.95; the candidate breaks 1 case in 10 | 7 | 12.1% | 2.5% |
+| 1 | the same | 12 | 13.9% | 2.5% |
+| 1 | every trial passes; the candidate drops 0.4 on 1 case in 4 | 12 to 30 | 7.8 to 11.9% | 2.5% |
+| 10 | control passes 0.95; the candidate breaks 1 case in 10 | 12 | 4.5% | 0.25% |
+| 10 | the same | 20 to 30 | 2.7 to 3.8% | 0.25% |
+
 ## Order and time
 
 **Launch compared arms together, and never let running order follow the lever.** Throughput and load
