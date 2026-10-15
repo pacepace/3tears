@@ -76,8 +76,6 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`label_key_of`** · function · The label key of one judgement: `evidence` read on `dim`.
   <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
-- **`nested_schemas`** · function · Every schema written directly inside `schema`, in declaration order.
-  <br>`nested_schemas(schema: Mapping[str, Any]) -> Iterator[NestedSchema]`
 - **`sent_settings_of`** · *host contract* · function · What the request that produced `completion` actually carried, as its client reports it, or `None`.
   <br>`sent_settings_of(completion: object) -> ClientRequestSettings | None`
 
@@ -130,6 +128,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`RubricProposal`** · model · The validated DRAFT the rubric proposer returns for operator review.
 - **`RubricScore`** · model · Outcome of one rubric judge dimension.
 - **`SecondJudge`** · model · A judge other than the one a run was scored by: a model, the prompt per dimension, and a temperature.
+- **`StoreCalledOnEventLoop`** · *host contract* · exception · A store call was made on a thread that is running an event loop.
 - **`StoreClock`** · *host contract* · protocol · A store's own clock: the optional capability a `DocumentStore` may offer beside its methods.
 - **`StoreConflict`** · *host contract* · exception · A conditional write lost its race: the stored document no longer carries `if_match`.
 - **`SubjectSnapshot`** · *host contract* · model · The subject a set of observations was taken against, frozen at capture.
@@ -195,17 +194,14 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 15`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
+- **`JUDGE_WORDING_CHANGE_SENTENCE`** · *host contract* · constant (str) · The sentence a release's `MIGRATIONS.toml` notes carry, verbatim, when it changes the wording of a built-in judge prompt (`builtin_judge_config_id`) or of the reply-format suffix a configured judge is sent (`configured_judge_config_id`).
 - **`METERED_CALL_ORIGINS`** · *host contract* · constant (tuple) · The values of `MeteredCallOrigin` this build knows, in the order its readers list them.
 - **`MODEL_ROLE_ORIGINS`** · *host contract* · constant (tuple) · The values of `ModelRoleOrigin` this build knows, in the order its readers list them.
-- **`NON_TERMINAL_RUN_STATUSES`** · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.
 - **`OUT_OF_RUN_PURPOSES`** · *host contract* · constant (tuple) · The values of `OutOfRunPurpose` this build knows, in the order its readers list them.
-- **`PROSE_SCHEMA_KEY`** · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
-  <br>`= 'x-model-prose'`
 - **`REASONING_EFFORTS`** · *host contract* · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
 - **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
   <br>`= 11`
-- **`RESERVED_DIM_IDS`** · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
 - **`ROLE_MODEL_ORIGINS`** · *host contract* · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
 - **`SIMULATOR_PURPOSES`** · *host contract* · constant (tuple) · The values of `SimulatorPurpose` this build knows, in the order its readers list them.
 - **`USAGE_ROLES`** · *host contract* · constant (tuple) · The values of `UsageRole` this build knows, in the order its readers list them.
@@ -231,6 +227,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
 - **`seed_digest`** · function · The canonical digest of a seed's content: what a host records when it seeds a slot from it.
   <br>`seed_digest(seed: SeedTemplate | str) -> str`
+- **`strict_response_format`** · *host contract* · function · The strict `json_schema` directive that asks a provider for exactly `schema`'s shape.
+  <br>`strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, Any]`
 - **`withhold_failure_detail`** · *host contract* · function · Describe a failure by its class and nothing else — the safe default.
   <br>`withhold_failure_detail(exc: BaseException) -> ProviderFailure`
 
@@ -247,11 +245,15 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CandidateOutput`** · *host contract* · model · What one candidate produced, as everything below the dispatch sees it.
 - **`CandidatePreparationFailed`** · *host contract* · exception · A candidate could not be built, and the cell is cleanly excluded rather than scored.
 - **`CandidateTelemetry`** · *host contract* · model · What one candidate's execution cost, and the windows nothing else timed.
+- **`CappedCompletion`** · *host contract* · class · One cell's view of a completion client: every call reserved against the run's cap, and settled to its cost.
+- **`CassetteStore`** · *host contract* · protocol · The recordings a capture run made and a replay run is served.
 - **`CellCassettes`** · *host contract* · protocol · One cell's handle on its run's cassette lane, as the kind driving that cell sees it.
 - **`CellSink`** · *host contract* · protocol · One cell's record of where it stands, as the kind driving that cell reports into it.
 - **`CellSpanWindow`** · *host contract* · protocol · One cell's two tracing windows, as the kind driving that cell sees them.
 - **`ConflictError`** · *host contract* · exception · State conflict (status 409).
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
+- **`CostCapReached`** · *host contract* · exception · The run's cost cap has no room for the cell's next paid call, so the cell stops making them.
+- **`DefinitionStore`** · *host contract* · protocol · What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.
 - **`DeliveryRecorder`** · protocol · Captures one asynchronous tool's background work for one cell.
 - **`DeliveryReplay`** · protocol · Serves one asynchronous tool's recorded work for one cell.
 - **`DeliverySeam`** · protocol · One asynchronous tool of a kind, as the cassette lane records and replays its background work.
@@ -265,6 +267,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvalStorage`** · *host contract* · class · Storage for eval documents over one document store.
 - **`ExternalRateTable`** · dataclass · Operator-declared money per provider unit, resolved once for a whole run.
 - **`JobLeases`** · class · The leases one process holds on its jobs' records, and the task that renews them.
+- **`JobStore`** · *host contract* · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
 - **`MeasureFamily`** · model · One family of measures and who produces its numbers — the engine's six, or one a host declares.
 - **`MetricDescriptor`** · *host contract* · model · What a single measure is, independent of any particular value of it.
 - **`NotFoundError`** · *host contract* · exception · Resource not found (status 404).
@@ -275,12 +278,16 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`Question`** · model · Something this campaign is trying to find out.
 - **`Recordable`** · protocol · The two members the cassette layer uses on whatever it records: an action result or a delivered payload.
 - **`ReplayedDelivery`** · dataclass · One recorded piece of background work, served in place of running it.
+- **`ResultStore`** · *host contract* · protocol · The cells a run recorded: each `EvalResult` and the `EvalTrace` beside it.
 - **`RoleUsageLedger`** · dataclass · Accumulates one role's LLM spend across every call it makes in a cell.
+- **`RunRecordStore`** · *host contract* · protocol · A run together with its cells: for an operation that reads one and rewrites the other.
+- **`RunStore`** · *host contract* · protocol · The eval runs of a scope: their documents, listings, stamps, archive flag and boot scan.
 - **`SeedPrompt`** · dataclass · Where one shipped default lives, so a host can register it by import.
 - **`SeedSection`** · dataclass · One section of a seeded prompt template.
 - **`SeedTemplate`** · dataclass · A seeded prompt template: an ordered set of sections and its identity.
 - **`StorageError`** · *host contract* · exception · Storage operation failed (status 503). Its remedy is the class's own (`STORAGE_REMEDY`).
 - **`SweptAxis`** · model · One axis this campaign set out to vary, and the levels it meant to compare.
+- **`UnportableSchema`** · *host contract* · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent; or an `enum` or `const` holding a value that is not a string, which not every strict mode enforces.
 - **`UnreadableRunError`** · *host contract* · exception · A read that cannot leave a run out met one this build's model refuses (status 500).
 - **`ValidationFailedError`** · *host contract* · exception · Validation failed (status 422).
 - **`VariantConfig`** · *host contract* · model · The A/B'd stack one cell runs, as every kind alike receives it.
@@ -308,7 +315,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`MATCH_MEASURE`** · constant (str) · The core measure one classification's verdict is reported under — the one a classifier kind lands on `host_measures`, a bool.
   <br>`= 'match'`
 - **`SEED_PROMPTS`** · constant (tuple) · Every prompt the engine ships a default for, in the order a registry seeds them.
-- **`SEED_REMEDY`** · constant (str) · What a template's author does when its world seed states world state a goal check's control cannot be built over.
 
 <a id="api-kernel-host"></a>
 ### `threetears.evals.kernel.host`
@@ -339,6 +345,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`Interval`** · dataclass · Mark a numeric field's unit, rendered beside each level (`120words`).
 - **`KindContract`** · *host contract* · dataclass · What one candidate kind's runs carry, declared as Pydantic models — see the module docstring.
 - **`MeasureRegistry`** · *host contract* · class · One host's declared measures, validated at construction.
+- **`MemberActsOn`** · *host contract* · dataclass · Name the measure each listed ENTRY of an overlay map is supposed to move — `ActsOn` per member.
 - **`Ordinal`** · dataclass · Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - **`PassThreshold`** · *host contract* · dataclass · The 1–5 level a capability criterion must reach for an attempt to pass, for one behavior.
 - **`ResolvesInto`** · dataclass · Name the fixed host lever this overlay knob is WRITTEN INTO — its lever's `resolves_into`.
@@ -387,8 +394,6 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`estimate_judge_repeat(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JudgeRepeatEstimate`
 - **`execute_run`** · *host contract* · async function · Execute an entire `EvalRun` end-to-end.
   <br>`execute_run(host: EvalHost, *, run: EvalRun, template: EvalTemplate, test_cases: list[EvalTestCase], judge_service: JudgeService | None, options: RunnerOptions, callbacks: RunCallbacks | None = None, budget_gate: Callable[[float | None], CapBreach | None] | None = None, on_cost: Callable[[float | None], None] | None = None, cell_sink: list[CellSummary] | None = None) -> list[CellSummary]`
-- **`fold_metered_cell`** · function · Fold one cell's action-seam tally into the external role's rows.
-  <br>`fold_metered_cell(external_usage: RoleUsageLedger, cell: MeteredCallTally | None) -> None`
 - **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
   <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = ()) -> JudgeCaseFreezeReport`
 - **`get_result_trace`** · *host contract* · function · Load one result's trace payload, or `None` when it stored none.
@@ -409,18 +414,14 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalResult]`
 - **`list_runs`** · function · List eval runs in a scope, optionally filtered by status.
   <br>`list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> list[EvalRun]`
-- **`metered_cell_tally`** · function · One cell's slice of the run's metered-call tally, or `None` when nothing counted.
-  <br>`metered_cell_tally(ledger: MeteredCallLedger | None, baseline: MeteredCallTally | None = None) -> MeteredCallTally | None`
+- **`load_seed_corpus`** · *host contract* · function · Read a corpus off disk, constructing each document through its model in `scope_id`.
+  <br>`load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus`
 - **`plan_judge`** · function · The judges one arm of `template` will be scored by, resolved as `build_judge_service` resolves them — building nothing.
   <br>`plan_judge(host: EvalHost, template: EvalTemplate, judge_model: str, selection: Mapping[str, str] | None = None, *, judged_artifact: JudgedArtifact) -> PlannedJudge`
-- **`precondition_failure_text`** · function · One line naming what was presumed and what the world held instead.
-  <br>`precondition_failure_text(outcomes: Sequence[PreconditionOutcome]) -> str`
 - **`price_subject_call_floor`** · *host contract* · async function · A floor under a subject arm's largest judge or simulator call, for its `LaunchableKind.price_largest_call`.
   <br>`price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | None`
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str) -> CalibrationRating`
-- **`refuse_ignored_template_fields`** · function · Refuse a template stating a field its kind never acts on (`LaunchableKind.ignored_template_fields`).
-  <br>`refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None`
 - **`regrade`** · async function · Grade one stored result again from what its cell stored, and report every verdict that moved.
   <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade`
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
@@ -466,7 +467,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`LaunchRequest`** · *host contract* · dataclass · One arm's launch as `start_run` resolved it, handed to the kind's own launcher.
 - **`LaunchSettings`** · *host contract* · model · The host's launch settings, as one snapshot of values.
 - **`MeteredCallLedger`** · class · In-memory per-run ceiling on metered third-party calls.
-- **`MeteredCallTally`** · dataclass · What a run (or one cell's slice of it) metered, kept per provider.
 - **`RunnerOptions`** · *host contract* · dataclass · The run's own knobs that don't fit on the run document — per-run values, never host wiring.
 - **`SeedCaseSet`** · *host contract* · model · One named case set a seed corpus mints: a judge template's authored cases, listed by name, in order.
 - **`SeedCorpus`** · dataclass · A host's authored definitions for one scope, already constructed through their production models.
@@ -492,12 +492,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reply schema's answer budget plus the declared reasoning headroom, DERIVED rather than chosen, so it always leaves room to think and then answer.
   <br>`= 10240`
 - **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_asked_settings`.
-- **`SCHEDULER_CALL_ATTEMPTS`** · constant (int) · How many calls one `llm_decided` scheduling decision may make: the first, and one repair that names what was wrong with it.
-  <br>`= 2`
-- **`SIMULATOR_ANSWER_BUDGET_TOKENS`** · constant (int) · Output room kept for the simulated user's visible reply: the strict-schema JSON object holding one utterance or one scheduling pick.
-  <br>`= 4096`
-- **`SIMULATOR_MAX_TOKENS`** · constant (int) · The simulator's output cap: the reasoning allowance plus the answer budget, derived rather than chosen. It is the only bound in tokens a simulator call has.
-  <br>`= 5120`
 - **`SIMULATOR_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_asked_settings`.
 
 <a id="api-analysis"></a>
@@ -527,8 +521,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
 - **`generate_analysis`** · *host contract* · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
   <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
-- **`generation_ceiling_s`** · function · The wall-clock ceiling of one `generate_analysis`, derived from the ceilings it wraps.
-  <br>`generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float`
 - **`humanize`** · function · An identifier as a reader is shown it after its first mention.
   <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble a campaign's context bundle and return it, without generating.
@@ -545,8 +537,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`judge_key(result: EvalResult, dim: str) -> JudgeKey | None`
 - **`judge_kind_readings`** · function · Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
   <br>`judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings`
-- **`judge_phase_ceiling_s`** · function · The wall-clock ceiling of one cell's judge phase, derived from the ceilings of its requests.
-  <br>`judge_phase_ceiling_s(*, judge_dims: int, judge_concurrency: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
   <br>`judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement`
 - **`lint_prose`** · function · Every rule `text` breaks.
@@ -599,8 +589,11 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
 - **`MIN_CASES`** · *host contract* · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
   <br>`= 5`
+- **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · How many projected score records one read-tier call may carry before its observer line is logged at WARNING instead of INFO (#652).
+  <br>`= 50000`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
+- **`REPORTER_KIND_CONTRACT`** · *host contract* · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
 
 <a id="api-gen"></a>
 ### `threetears.evals.gen`
@@ -615,11 +608,6 @@ The engine's generation package: the prompts and expanders that author test mate
   <br>`plan_draft(*, axis: RubricAxis, subject_feed: str, catalog_feed: str, system_prompt: str | None = None, reset: str | None = None) -> PlannedCall`
 - **`propose_draft`** · async function · Make an admitted rubric proposal on `axis` and read its draft.
   <br>`propose_draft(client: BoundCompletionClient, admitted: AdmittedCall, *, budget: OutOfRunBudget, axis: RubricAxis, subject_id: str) -> ProposedDraft`
-
-**Constants**
-
-- **`PROPOSER_MAX_TOKENS`** · constant (int) · Output-token ceiling for the capability/boundary proposer.
-  <br>`= 16384`
 
 <a id="api-storage"></a>
 ### `threetears.evals.storage`
@@ -749,8 +737,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument`
 - **`run_get`** · function · One run, summarised from its stored results.
   <br>`run_get(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary`
-- **`run_label`** · function · Set a run's labels, replacing any it has; an empty list clears them (#648).
-  <br>`run_label(host: EvalHost, run_id: str, scope_id: str, *, labels: list[str]) -> RunLine`
 - **`run_launch`** · async function · Admit a template's launch — one run per model — and start its arms and runs as one job.
   <br>`run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -> JobsStarted`
 - **`runs_list`** · function · The scope's runs, and how many it matched that this build cannot read.
@@ -807,6 +793,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
   <br>`definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]`
 - **`eval_catalogue`** · function · The engine's catalogue, with the host's own actions after the engine's.
   <br>`eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue`
+- **`render_jobs_started`** · *host contract* · function · What a start returned: each job, and how to poll it.
+  <br>`render_jobs_started(started: JobsStarted) -> str`
 - **`standard_tools`** · function · The two tools a host mounts by default: `<prefix>` and `<prefix>_admin`.
   <br>`standard_tools(prefix: str = 'evals') -> tuple[ToolSpec, ToolSpec]`
 
