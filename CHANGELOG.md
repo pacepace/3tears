@@ -11,13 +11,22 @@ packages (bumped in lock-step).
 - `threetears.core.collections.write_marks`: each switched-on table carries a statement-level
   trigger (`threetears_collection_write_mark`) that inserts a mark into `collection_write_marks` in the
   same transaction as the write, whoever wrote it: a broker, a direct pool, a write buffer, a
-  migration, or a release that predates this. `WriteMarkReconciler` advances each marked table's
-  generation once and deletes exactly the marks it read; several at once are safe, and an optional
-  `KVLease` keeps it to one. A table whose advance fails keeps its marks; a pass that leaves marks
-  queued logs it and counts `collection_write_marks_drain_behind_total`
-  (`collection_write_marks_pending`, `collection_write_marks_applied_total`,
-  `collection_write_marks_advance_failed_total`). `install_write_mark_triggers` and
-  `tables_missing_the_trigger` give every switched-on table, in every schema, its trigger.
+  migration, or a release that predates this. `WriteMarkReconciler.run_pass` advances each marked
+  table's generation once and deletes exactly the marks it read, and issues no DDL; several at once
+  are safe, and an optional `KVLease` keeps it to one. A table whose advance fails keeps its marks, is
+  counted, and the pass drains the other tables around it.
+- `install_write_mark_triggers` reads the catalogue first and takes the database-wide DDL lock
+  (`database_ddl_lock`, a bounded wait, `INSTALL_LOCK_POLICY`) only when a trigger is missing; a busy
+  lock defers the install (`collection_write_marks_installs_deferred_total`), never the drain.
+  `drop_write_mark_triggers` is the rollback step.
+- Metrics: `collection_write_marks_passes_total{outcome=drained|behind|skipped|failed}`,
+  `collection_write_marks_applied_total`, `collection_write_marks_advance_failed_total{table}`, and the
+  gauges `collection_write_marks_pending` and `collection_write_marks_oldest_age_seconds`, read by every
+  replica on every pass (`observe_write_marks`), whether or not it holds the lease.
+- Cost, measured on YugabyteDB 2026.1.1.1 (one node, 1000 single-row writes): a marked insert or
+  update takes about 1.1 ms at the median against 0.4 ms unmarked (p99 about 2.0-2.8 ms against
+  0.6-0.8 ms). A colocated database measures the same, so the cost is the trigger's insert, not a
+  distributed transaction.
 - Coordination migration v003 creates the queue and the trigger function in the platform schema.
 - Insert-only marks, not a per-table counter row: a row every write to a table updates is one row
   every concurrent writer locks (they queue behind each other under read committed, and abort with

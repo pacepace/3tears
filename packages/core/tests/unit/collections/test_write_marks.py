@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from threetears.core.data.migrations.ddl_lock import DdlLockPolicy
 from threetears.core.collections.write_marks import (
     WRITE_MARK_TRIGGER,
     WriteMarkReconciler,
@@ -15,11 +16,13 @@ from threetears.core.collections.write_marks import (
 
 
 class _Queue:
-    """the marks table and the catalog, as the reconciler's SQL sees them.
+    """the marks table, the catalogue and the DDL lock, as the reconciler's SQL sees them.
 
     :ivar marks: id to table name, in commit order
     :ivar missing: ``(schema, table)`` with no trigger yet
     :ivar created: the trigger statements run
+    :ivar lock_free: whether the DDL lock is granted
+    :ivar ddl_without_lock: trigger statements run while the lock was not held
     :ivar on_read: called after each page is read, to commit a mark between the read and the delete
     """
 
@@ -27,24 +30,60 @@ class _Queue:
         self.marks: dict[int, str] = dict(enumerate(marks, start=1))
         self.missing = list(missing or [])
         self.created: list[str] = []
+        self.lock_free = True
+        self._locked = False
+        self.ddl_without_lock: list[str] = []
         self.on_read: Any = None
 
     def add(self, table: str) -> None:
         self.marks[max(self.marks, default=0) + 1] = table
 
+    def acquire(self) -> Any:
+        queue = self
+
+        class _Connection:
+            """one connection: the queue's statements, and no ``acquire``."""
+
+            async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+                return await queue.fetch(query, *args)
+
+            async def execute(self, query: str, *args: Any) -> str:
+                return await queue.execute(query, *args)
+
+        class _Acquired:
+            async def __aenter__(self) -> _Connection:
+                return _Connection()
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        return _Acquired()
+
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        if "current_database" in query:
+            return [{"database_name": "platform_db"}]
+        if "pg_try_advisory_lock" in query:
+            self._locked = self.lock_free
+            return [{"acquired": self.lock_free}]
+        if "pg_advisory_unlock" in query:
+            self._locked = False
+            return [{"released": True}]
         if "pg_trigger" in query:
             return [{"table_schema": schema, "table_name": table} for schema, table in self.missing]
         if "count(*)" in query:
-            return [{"n": len(self.marks)}]
-        limit = int(args[0])
-        page = [{"id": key, "table_name": value} for key, value in sorted(self.marks.items())[:limit]]
+            return [{"n": len(self.marks), "age": 3.0 if self.marks else None}]
+        limit, failed = int(args[0]), set(args[1])
+        page = [{"id": key, "table_name": value} for key, value in sorted(self.marks.items()) if value not in failed][
+            :limit
+        ]
         if self.on_read is not None:
             self.on_read()
         return page
 
     async def execute(self, query: str, *args: Any) -> str:
         if query.startswith("CREATE TRIGGER"):
+            if not self._locked:
+                self.ddl_without_lock.append(query)
             self.created.append(query)
             match = re.search(r'ON "([^"]+)"\."([^"]+)"', query)
             assert match is not None
@@ -102,7 +141,6 @@ async def test_a_table_that_cannot_be_advanced_keeps_its_marks_for_the_next_pass
 
     assert list(queue.marks.values()) == ["revocations"]
     assert done.failed == ("revocations",)
-    assert done.behind
 
 
 async def test_a_mark_committed_after_the_page_was_read_is_not_deleted() -> None:
@@ -124,6 +162,7 @@ async def test_more_marks_than_one_pass_drains_is_reported_behind_and_none_is_lo
 
     assert done.behind
     assert (done.applied, len(queue.marks)) == (4, 3)
+    assert done.queue is not None and done.queue.pending == 7
     await _reconciler(queue, source, page_size=2, max_pages=5).run_pass()
     assert queue.marks == {}
 
@@ -199,3 +238,44 @@ async def test_the_replica_holding_the_lease_drains_and_lets_it_go() -> None:
 
     assert (done.skipped, done.applied) == (False, 1)
     assert lease.released
+
+
+async def test_a_table_that_keeps_failing_does_not_stall_the_others() -> None:
+    queue = _Queue(["groups"] * 600 + ["revocations"])
+    source = _Generations(failing=frozenset({"groups"}))
+
+    done = await _reconciler(queue, source, page_size=500, max_pages=3).run_pass()
+
+    assert source.advanced == ["revocations"]
+    assert "revocations" not in queue.marks.values()
+    assert list(queue.marks.values()).count("groups") == 600
+    assert done.failed == ("groups",)
+
+
+async def test_the_install_takes_the_ddl_lock_and_creates_only_under_it() -> None:
+    queue = _Queue([], missing=[("agent_a", "groups")])
+
+    created = await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",))  # type: ignore[arg-type]
+
+    assert created == ["agent_a.groups"]
+    assert queue.ddl_without_lock == []
+
+
+async def test_nothing_missing_means_no_lock_and_no_ddl() -> None:
+    queue = _Queue([])
+    queue.lock_free = False  # a busy lock would defer; nothing should even ask for it
+
+    assert await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",)) == []  # type: ignore[arg-type]
+
+
+async def test_a_busy_ddl_lock_defers_the_install_and_never_the_drain() -> None:
+    queue = _Queue(["groups"], missing=[("agent_a", "groups")])
+    queue.lock_free = False
+    source = _Generations()
+    reconciler = _reconciler(queue, source)
+
+    fast = DdlLockPolicy(poll_interval=0.01, max_wait=0.05)
+    assert await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",), policy=fast) == []  # type: ignore[arg-type]
+    assert queue.created == []
+    done = await reconciler.run_pass()
+    assert (done.applied, source.advanced) == (1, ["groups"])

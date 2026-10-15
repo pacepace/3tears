@@ -18,6 +18,8 @@ from collections.abc import AsyncIterator
 import asyncpg
 import pytest
 
+from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.data.migrations.session import ConnectionSession
 from threetears.core.collections.write_marks import (
     WRITE_MARKS_TABLE,
     WriteMarkReconciler,
@@ -148,3 +150,25 @@ async def test_two_concurrent_writers_to_one_table_both_commit(schemas: tuple[as
     assert sorted(await _marks(pool, platform)) == [_TABLE, _TABLE]
     rows = await pool.fetch(f"SELECT id FROM {agent}.{_TABLE} ORDER BY id")
     assert [row["id"] for row in rows] == ["x", "y"]
+
+
+async def test_a_busy_ddl_lock_defers_the_install_and_the_drain_still_runs(
+    schemas: tuple[asyncpg.Pool, str, str],
+) -> None:
+    pool, platform, agent = schemas
+    # a write before any trigger exists, then one marked by hand as a trigger would
+    await pool.execute(f"INSERT INTO {platform}.{WRITE_MARKS_TABLE} (table_name) VALUES ($1)", _TABLE)
+    source = _Generations()
+    reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=platform, tables=lambda: [_TABLE])
+
+    holder = await pool.acquire()
+    try:
+        async with database_ddl_lock(ConnectionSession(holder)):
+            quick = DdlLockPolicy(poll_interval=0.05, max_wait=0.3)
+            assert await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], policy=quick) == []
+            assert {(platform, _TABLE), (agent, _TABLE)} <= set(await tables_missing_the_trigger(pool, [_TABLE]))
+            done = await reconciler.run_pass()
+    finally:
+        await pool.release(holder)
+
+    assert (done.applied, source.advanced) == (1, [_TABLE])
