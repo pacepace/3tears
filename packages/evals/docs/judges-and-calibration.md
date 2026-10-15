@@ -387,8 +387,8 @@ estimate back by that point. The price is width: the closer the judge tracks peo
 to the judge-only one; the less it does, the closer it is to an interval on the ratings alone.
 
 It never replaces the judge's figure. The judge's mean is what the judge said; this is what people would have
-said, estimated. The code-only report's strata table prints it after the judge's figure, here for a judge biased 0.8 high over
-a true mean of 3 (one draw of the simulation below):
+said, estimated. The report's `By stratum` table, drawn where the cases declare strata, prints it after the
+judge's figure, here for a judge biased 0.8 high over a true mean of 3 (one draw of the simulation below):
 
 ```text
 3.63 ± 0.1271 (n=90 over 30 cases); with people's ratings: 2.846 [2.566, 3.127] (rectifier -0.7839; 24 rated by people)
@@ -699,7 +699,8 @@ written, naming both. Through an agent, the `judge_case_author` action writes on
 template (`criterion_template_id`, `criterion`) and recording the caller as its author. A host that ships its hard
 negatives seeds them at boot instead: its definition seed corpus has a `judge_cases` slot (`SeedJudgeCase`, the
 templates named by name), which `seed_eval_definitions` builds through the same door as `judge_case_author` and
-writes only where the same case is not stored yet (the host guide, "What the judge reads, and conversations"). On the quick path, hand the
+writes only into a judge template holding no cases yet; a case added or changed later waits for a definition reset
+([Adopting the engine](adopting-a-host.md#what-the-judge-reads-and-conversations)). On the quick path, hand the
 `Judge` its examples, and every judged eval stores them as authored cases of the judge template
 `<template id>-judge`, listed by the case set of that name, calling no model:
 

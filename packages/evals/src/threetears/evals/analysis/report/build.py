@@ -41,6 +41,7 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
     GoalCheckProofReading,
     TrialRow,
+    UnexercisedFactor,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
@@ -81,12 +82,16 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.decision import (
+    PROSE_RULE_LINE,
     RateReading,
+    RuleReadings,
     RuleVerdict,
     evaluate_rule,
-    parse_decision_rule,
+    keep_is_the_default,
+    prose_ruled,
     rule_readings,
-    split_decision_rule,
+    rule_statement,
+    ruled_question,
 )
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
@@ -130,7 +135,7 @@ from threetears.evals.analysis.quantities import (
     with_unit,
 )
 from threetears.evals.kernel.analysis_measures import MeasureSummary
-from threetears.evals.kernel.authored import Finding
+from threetears.evals.kernel.authored import Finding, NextStep
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
     EvidenceRow,
@@ -141,6 +146,7 @@ from threetears.evals.kernel.campaign import (
 from threetears.evals.kernel.declaration import (
     JUDGED_MERIT_AXIS,
     CampaignDesign,
+    CostLower,
     Question,
     exploratory_reading,
     preregistered_questions,
@@ -157,6 +163,7 @@ from threetears.evals.kernel.surface import (
     STRATUM_MIN_CASES,
     CellFacts,
     DecisionSurface,
+    GuardrailCheck,
     GuardrailReadings,
     JudgedReading,
     PredictionPoweredReading,
@@ -238,11 +245,16 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
     questions = _preregistered(bundle)
     control = _control_key(bundle)
     candidates = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
-    ruled = next(((question, parsed) for question in questions if (parsed := parse_decision_rule(question.text))), None)
+    ruled = ruled_question(questions)
     verdict = sentence = None
-    if ruled is not None and control is not None and len(candidates) == 1:
-        verdict = evaluate_rule(ruled[1], rule_readings(bundle, control, candidates[0], question_id=ruled[0].id))
+    if ruled is not None and ruled.decision is not None and control is not None and len(candidates) == 1:
         namer = _namer(names)
+        verdict = evaluate_rule(
+            ruled.decision,
+            rule_readings(bundle, control, candidates[0], question_id=ruled.id),
+            control=namer(control),
+            candidate=namer(candidates[0]),
+        )
         sentence = rule_sentence(verdict, control=namer(control), candidate=namer(candidates[0]), bundle=bundle)
     return MemoStyle(
         bundle=bundle,
@@ -250,7 +262,7 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
         question=questions[0].text if questions else None,
         rule=verdict,
         rule_sentence=sentence,
-        rule_question=ruled[0].id if ruled is not None and verdict is not None else None,
+        rule_question=ruled.id if ruled is not None and verdict is not None else None,
     )
 
 
@@ -331,7 +343,7 @@ def _page(
     arm = _namer(names)
     cell_name = _cell_namer(surface, names)
     charts = _ChartLedger(bundle, arm)
-    guardrails_read = guardrail_verdicts(surface, bundle.guardrails, cell_name)
+    guardrails_read = guardrail_verdicts(surface, bundle.guardrails, cell_name, rulers)
     bars_read = bar_verdicts(surface, cell_name)
     contrasts_read = contrast_verdicts(bundle, surface)
     written = memo(charts, names)
@@ -485,19 +497,15 @@ def _capitalized(title: str) -> str:
 
 
 def _question_line(bundle: AnalysisContextBundle) -> str | None:
-    """Under the arms: the question declared before the run, quoted — the contract the verdict reads, never
+    """Under the arms: the question declared before the run, quoted whole — the contract the verdict reads, never
     paraphrased, its first plain word capitalized as a sentence starts; None where none was declared. The first
-    question where several were.
-
-    Structured text the engine parses is laid out by its structure: where the question states a decision rule, only
-    the words before the rule are quoted here, and the rule is quoted at the head of the Decision section
-    (:func:`_decision_blocks`), split at the parser's own boundary. Where no rule parses the question is quoted whole.
+    question where several were. Its decision rule is typed, not words, so the Decision section states it in a
+    sentence code writes (:func:`_decision_blocks`).
     """
     questions = _preregistered(bundle)
     if not questions:
         return None
-    asked, _ = split_decision_rule(" ".join(questions[0].text.split()))
-    return f'Asked before the run: "{_capitalized(asked)}"'
+    return f'Asked before the run: "{_capitalized(" ".join(questions[0].text.split()))}"'
 
 
 def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource) -> str:
@@ -753,31 +761,34 @@ def _design_words(bundle: AnalysisContextBundle) -> str:
 
 
 def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
-    """A declared decision rule: its words quoted on the section's first line, then clause by clause on each arm
-    against the control as a table, never prose.
+    """A declared decision rule: the rule in one sentence code writes, the arms by name, on the section's first line,
+    then clause by clause on each arm against the control as a table, never prose.
 
-    The rule is the part of the declared question the first screen does not quote (:func:`_question_line`), as the
-    operator wrote it, so each part of the question sits where it is read. The control and the candidate head their
-    columns by name; with several candidates the candidate's column is ``Candidate`` and an ``Arm`` column names
-    each row's.
+    The rule is typed (``Question.decision``), so its sentence is code's (:func:`~.decision.rule_statement`), never
+    the operator's words parsed. Each clause's row opens with the clause as a sentence naming its arm. The control
+    heads its column by name, as does a lone other arm; with several, an ``Arm`` column names each row's and its
+    figures are under ``Value``. A question that wrote its rule as prose and declares none typed gets one line saying
+    so, and nothing is settled.
     """
     control = _control_key(bundle)
     questions = _preregistered(bundle)
-    ruled = next(((question, parsed) for question in questions if (parsed := parse_decision_rule(question.text))), None)
-    if ruled is None or control is None:
+    if prose_ruled(questions):
+        return [DisclosureBlock(section="decision", source="basis", text=PROSE_RULE_LINE)]
+    asked = ruled_question(questions)
+    if asked is None or asked.decision is None or control is None:
         return []
-    asked, rule = ruled
-    stated = DisclosureBlock(section="decision", source="basis", text=f'Decision rule: "{" ".join(rule.text.split())}"')
+    rule = asked.decision
     cost = _cost_ruler(bundle)
+    others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
     rows: list[dict[str, CellValue]] = []
-    for board in bundle.scoreboard:
-        if board.variant_key == control:
-            continue
-        readings = rule_readings(bundle, control, board.variant_key, question_id=asked.id)
-        verdict = evaluate_rule(rule, readings)
+    first_readings: RuleReadings | None = None
+    for key in others:
+        readings = rule_readings(bundle, control, key, question_id=asked.id)
+        first_readings = first_readings or readings
+        verdict = evaluate_rule(rule, readings, control=arm(control), candidate=arm(key))
         for clause in verdict.clauses:
             shown: list[tuple[str, str | None, str | None]] = []
-            if clause.clause.kind == "cost_lower":
+            if isinstance(clause.clause, CostLower):
                 shown = [
                     (
                         f"cost {_per_reply(bundle)}",
@@ -785,45 +796,43 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                         _dollars(readings.candidate_cost, cost),
                     )
                 ]
-            elif clause.clause.kind == "rate_drop":
+            else:
                 shown = [
                     (
                         rate.name,
                         f"{rate.control_passed} of {rate.control_n}",
                         f"{rate.candidate_passed} of {rate.candidate_n}",
                     )
-                    for rate in readings.rates
+                    for rate in readings.read_by(clause.clause)
                 ]
             for index, (reading, ours, theirs) in enumerate(shown or [("—", None, None)]):
                 rows.append(
                     {
-                        "clause": clause.clause.text if index == 0 else None,
-                        "arm": arm(board.variant_key),
+                        "clause": clause.statement if index == 0 else None,
+                        "arm": arm(key),
                         "reading": reading,
                         "control": ours,
                         "candidate": theirs,
-                        "outcome": (
-                            "settled: keep"
-                            if clause.outcome == "keep"
-                            else "settled: switch"
-                            if clause.outcome == "switch"
-                            else f"unsettled: {clause.reason}"
-                        )
-                        if index == 0
-                        else None,
+                        "outcome": f"{clause.outcome}: {clause.reason}" if index == 0 else None,
                     }
                 )
     if not rows:
         return []
-    # One candidate heads its own column by name; several share a "Candidate" column, each row naming its arm.
-    candidates = list(dict.fromkeys(str(row["arm"]) for row in rows))
-    single = len(candidates) == 1
+    stated = DisclosureBlock(
+        section="decision",
+        source="basis",
+        text=rule_statement(
+            rule, control=arm(control), candidates=[arm(key) for key in others], readings=first_readings
+        ),
+    )
+    # A lone other arm heads its own column by name; several share a "Value" column, each row naming its arm.
+    single = len(others) == 1
     columns = [
         TableColumn(key="clause", header="Clause", term="clause"),
         *([] if single else [TableColumn(key="arm", header="Arm")]),
         TableColumn(key="reading", header="Reading", term="reading"),
         TableColumn(key="control", header=arm(control)),
-        TableColumn(key="candidate", header=candidates[0] if single else "Candidate"),
+        TableColumn(key="candidate", header=arm(others[0]) if single else "Value"),
         TableColumn(key="outcome", header="Outcome", term="settled"),
     ]
     return [
@@ -837,6 +846,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             order="clause by clause, each arm against the control",
             total_rows=len(rows),
         ),
+        DisclosureBlock(section="decision", source="rule", text=keep_is_the_default(arm(control))),
     ]
 
 
@@ -1008,7 +1018,10 @@ def _memo_blocks(
         blocks.append(_facts_table(facts, name="recommendation_facts"))
     coverage_status = {row.name: row.status for row in analysis.coverage.levers}
     steps: list[str] = []
-    for step in document.next:
+    # A lever no comparison exercised is no lever, so no step measures it, whatever the writer proposed.
+    unexercised = {factor.factor for factor in bundle.unexercised_factors}
+    kept = [step for step in document.next if step.lever not in unexercised]
+    for step in kept:
         facts = [Fact(name="Leverage", value=step.leverage)]
         if step.lever:
             status = coverage_status.get(step.lever) or "no coverage row"
@@ -1019,13 +1032,13 @@ def _memo_blocks(
         if (why := style.prose(step.why)).strip():
             blocks.append(TextBlock(section="memo", role="next_step_why", body=why, fold="Why"))
         blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
-    blocks.extend(_coverage_blocks(analysis, steps))
+    blocks.extend(_coverage_blocks(analysis, kept, steps))
     return [*blocks, *noted]
 
 
 def _still_open(rule: RuleVerdict) -> str | None:
     """Each clause of a settled rule the run left open, in one line; None when the decision table settled them all."""
-    still = [verdict.clause.text for verdict in rule.clauses if verdict.outcome == "unsettled"]
+    still = [verdict.statement for verdict in rule.clauses if verdict.outcome == "unsettled"]
     if not still:
         return None
     return "Still open: " + ", and ".join(f"whether {clause}" for clause in still) + "."
@@ -1081,13 +1094,14 @@ def _ref_namer(surface: DecisionSurface, names: dict[str, ArmName]) -> Callable[
     return name
 
 
-def _coverage_blocks(analysis: EvalAnalysis, steps: Sequence[str]) -> list[ReportBlock]:
+def _coverage_blocks(analysis: EvalAnalysis, kept: Sequence[NextStep], steps: Sequence[str]) -> list[ReportBlock]:
     """The coverage map joined to the findings and the next steps, on the stored lever names (#630, #631), in the
     methods' closed ``Coverage`` fold: nothing is said twice at one level, so it counts the findings rather than
     restating their headlines.
 
     One row per lever: its status, how many findings name it in their ``axes`` (or "no finding"), and the next
-    steps whose ``lever`` names it, as the page words them (``steps``, in the memo's order); a ``thin`` or
+    steps whose ``lever`` names it, as the page words them (``steps``, beside the ``kept`` steps they word, in the
+    memo's order); a ``thin`` or
     ``unswept`` lever no step names says so. Then one line naming the levers no finding names, when there are any.
     """
     levers = analysis.coverage.levers
@@ -1097,7 +1111,7 @@ def _coverage_blocks(analysis: EvalAnalysis, steps: Sequence[str]) -> list[Repor
     rows: list[dict[str, CellValue]] = []
     for row in levers:
         named = sum(1 for finding in findings if row.name in finding.axes)
-        worded = [said for step, said in zip(analysis.document.next, steps, strict=True) if step.lever == row.name]
+        worded = [said for step, said in zip(kept, steps, strict=True) if step.lever == row.name]
         gap = row.status in ("thin", "unswept")
         rows.append(
             {
@@ -2150,12 +2164,33 @@ def _cell_namer(surface: DecisionSurface, names: dict[str, ArmName]) -> Callable
     return name
 
 
+def _straddled(check: GuardrailCheck, ruler: MeasureRuler) -> str:
+    """Why a guardrail whose interval straddles its line is undecided, on the page's ruler for its reading: the line
+    in points for a rate, beside the interval and margin columns that state it so. The interval itself is its own
+    column's, with the level in that column's header, so the reason does not say it twice."""
+    line = -check.margin if check.higher_is_better else check.margin
+    said = (
+        f"{with_unit(line * ruler.factor, delta_unit(ruler.unit))}, the declared margin"
+        if check.margin_declared
+        else "zero, as no margin is declared"
+    )
+    return f"the interval reaches both sides of {said}, so the arm is shown neither within it nor beyond it"
+
+
 def guardrail_verdicts(
-    surface: DecisionSurface, guardrails: GuardrailReadings | None, arm: Callable[[str, str], str]
+    surface: DecisionSurface,
+    guardrails: GuardrailReadings | None,
+    arm: Callable[[str, str], str],
+    rulers: Rulers | None = None,
 ) -> list[Verdict]:
-    """Each guardrail check as a typed verdict, in the guardrails table's row order; the table prints their words."""
+    """Each guardrail check as a typed verdict, in the guardrails table's row order; the table prints their words.
+
+    An undecided check whose interval straddles its line says why on ``rulers`` (the surface's own where None), the
+    ruler the guardrails table states that reading on.
+    """
     if guardrails is None or guardrails.withheld is not None:
         return []
+    rulers = rulers or report_rulers(surface)
     verdicts = []
     for check in guardrails.checks:
         reason: VerdictReason = (
@@ -2189,7 +2224,13 @@ def guardrail_verdicts(
                 ),
                 guardrail=True,
                 words=GUARDRAIL_DECISION_WORDS[check.decision]
-                + (f" ({check.undecided_reason})" if check.undecided_reason else ""),
+                + (
+                    f" ({_straddled(check, rulers.of(check.name, check.reading))})"
+                    if reason == "interval_straddles"
+                    else f" ({check.undecided_reason})"
+                    if check.undecided_reason
+                    else ""
+                ),
             )
         )
     return verdicts
@@ -2795,12 +2836,21 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
         by_case.setdefault(trial.case_id, []).append(trial)
     strata = any(trial.stratum for trial in bundle.trials)
 
+    def counts(case: str, key: str) -> tuple[int, int]:
+        """How many of ``key``'s usable trials on ``case`` passed, of how many."""
+        usable = [t for t in by_case[case] if t.arm == key and t.state != "lost"]
+        return sum(t.state == "passed" for t in usable), len(usable)
+
     def group(case: str) -> int:
-        trials = by_case[case]
-        control_passed = control is not None and any(t.arm == control and t.state == "passed" for t in trials)
-        if control_passed and any(t.arm != control and t.state == "failed" for t in trials):
-            return 0
-        if any(not any(t.arm == key and t.state != "lost" for t in trials) for key in arms):
+        """0 a regression, 1 an arm with no usable trial, 2 the rest."""
+        # A case-level flag: a candidate's share of its usable trials passed below the control's. A tie or a gain
+        # never flags.
+        ours, of = counts(case, control) if control is not None else (0, 0)
+        for key in arms:
+            theirs, n = counts(case, key)
+            if key != control and n and of and theirs * of < ours * n:
+                return 0
+        if any(counts(case, key)[1] == 0 for key in arms):
             return 1
         return 2
 
@@ -3034,6 +3084,7 @@ def _not_tested_blocks(
         if row.status in ("thin", "unswept"):
             why = "one level ran" if row.status == "unswept" else "too few repeats to read"
             said.append(f"Lever {row.name} is {row.status}: {why}.")
+    said += [_unexercised_sentence(factor, bundle, arm) for factor in bundle.unexercised_factors]
     usable = {(trial.arm, trial.case_id) for trial in bundle.trials if trial.state != "lost"}
     case_name = _case_namer(bundle)
     for board in bundle.scoreboard:
@@ -3067,6 +3118,20 @@ def _not_tested_blocks(
     if not blocks:
         return [DisclosureBlock(section="not_tested", source="not_tested", text="Nothing declared went untested.")]
     return blocks
+
+
+def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
+    """A lever no comparison exercised, in one line: ``tool model: no tool call was made on either arm.``"""
+    name = humanize("dimension", factor.factor.rsplit(".", 1)[-1])
+    call = f"{factor.role.replace('_', ' ')} call"
+    arms = len(bundle.scoreboard)
+    if factor.results == 0 or not factor.arms:
+        where = "the arm" if arms <= 1 else "either arm" if arms == 2 else "any arm"
+        return f"{name}: no {call} was made on {where}."
+    if arms <= 1:
+        return f"{name}: one {call} was made in all its trials, too few to read a level from."
+    others = "the other arm" if arms == 2 else "the other arms"
+    return f"{name}: one {call} was made, on {arm(factor.arms[0])}, and none on {others}, so it is not a level."
 
 
 def _calibration_sentences(tiers: Sequence[JudgeEvidenceTier]) -> list[str]:

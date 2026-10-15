@@ -45,14 +45,13 @@ other level. The engine does not test the interaction itself. When those two eff
 matters more than either lever. Each `against` is its own Holm family. The bundle's row for each lever
 (`bundle.coverage`) lists in `confounded_by` every other lever that varied across its runs. While that list
 is non-empty, the row is a comparison averaged over the other levers, not a controlled one.
-[`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) names the arms of a 2×2, prompt by reasoning
-effort, in its closing comment.
+[`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) says in its docstring how to name
+the arms of a grid, prompt by reasoning effort.
 
 **The winner of a grid needs a test against the runner-up.** The contrasts test every combination against the
 control, never against each other. To test the leader against the rest, `await comparison.against(leader)`. You
-chose that control after seeing the results, so treat what it shows as a lead to confirm in a fresh campaign. An
-analysis can draw a `sweep_ranking` chart, which orders the combinations by their mean and tests nothing. The
-decision surface's row order is not a ranking either.
+chose that control after seeing the results, so treat what it shows as a lead to confirm in a fresh campaign. No
+table on the report ranks the combinations.
 
 ## Declare the design and its control
 
@@ -133,7 +132,7 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
 | `held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every question |
 | `control` | The reference variant, set from `control_from_run_id` (on create or update) or `set_campaign_control`. With none, the shape is `undesignated` and nothing is tested against a control. | A/B, single changes, grid |
 | `intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
-| `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). | a confirmatory answer |
+| `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). A question's `decision` is the rule that settles keep or switch, as typed clauses (`RateDrop`, `CostLower`), never words in its text ([declaring one](adopting-a-host.md#declaring-what-a-campaign-decides)). | a confirmatory answer; a decision |
 | `bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
 | `crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
 
@@ -293,9 +292,9 @@ cases most verdicts are undecided, and that is the finding: the bank cannot tell
 ### A switch reads the bounded interval
 
 **"No worse by more than the margin" is a claim of safety, so it reads an interval that holds its error rate on
-coarse values.** A decision rule's `switch` on a rate (`no dimension drops by more than 10 points`) reads each rate's
-bounded interval (`bounded_interval` on the contrast, the bounded test's on the 0-1 range at the family's level), as a
-guardrail's `held` does. The t interval the Contrasts table prints overstates its confidence on a pass rate's few
+coarse values.** A decision rule's `switch` on a rate (`RateDrop(max_points=10)`: no pass rate drops by more than 10
+points) reads each rate's bounded interval (`bounded_interval` on the contrast, the bounded test's on the 0-1 range at
+the family's level), as a guardrail's `held` does. The t interval the Contrasts table prints overstates its confidence on a pass rate's few
 coarse per-case shares: a candidate that breaks one case in ten leaves most small samples agreeing with the control.
 The price is honest: on seven cases nothing short of a sweep settles a 10-point switch, and only keep can.
 *Evidence:* simulated at a true drop of exactly the 10-point margin, 3 repeats per case, 20,000 replicates per row,

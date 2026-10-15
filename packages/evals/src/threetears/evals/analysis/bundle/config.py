@@ -7,6 +7,7 @@ bundle's derivations read levers only through here.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -18,6 +19,7 @@ from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER, HostProf
 from threetears.evals.schema.models import EvalResult
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
+    from threetears.evals.kernel.declaration import CampaignDesign
     from threetears.evals.schema.models import EvalRun
 
 
@@ -103,6 +105,65 @@ class EffectiveLever:
 def _observed_models(results: list[EvalResult], role: str) -> set[str]:
     """Every distinct model the given usage role spent tokens on across ``results``."""
     return {usage.model for result in results for usage in result.usage if usage.role == role and usage.model}
+
+
+#: How many results must have observed a recovered lever's role, across the campaign, for the lever to be a level at
+#: all. One call in a campaign is one arm's single result: the other arms never exercised the lever, so a level it
+#: "took" there is no setting anyone compared — reading it as one aliases it with whatever else tells the arms apart.
+_EXERCISED_FLOOR = 2
+
+
+def _exercised(
+    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+) -> dict[str, dict[str, int]]:
+    """How often each lever read off what ran was exercised: lever → run id → that run's results that observed it.
+
+    A lever the host recovers from a role (``observed_model_levers``) is exercised by a result only when that result
+    made a call in the role — a usage row naming the model it ran on, which is what the lever's level is read from.
+    The candidate model is not here: every result exercises it.
+
+    Args:
+        runs: The campaign's resolved runs.
+        results_by_run: Each run's results, keyed by run id.
+        profile: The host whose levers these are.
+
+    Returns:
+        Every host lever with a recovery rule, each run counted (0 where none of its results observed it).
+    """
+    return {
+        lever: {
+            run.id: sum(1 for result in results_by_run.get(run.id, []) if _observed_models([result], role))
+            for run in runs
+        }
+        for lever, role in sorted(profile.observed_model_levers.items())
+    }
+
+
+def _declared_axes(declared_design: CampaignDesign | None) -> frozenset[str]:
+    """The levers a campaign declared as axes: each a level by declaration, whatever its calls."""
+    return frozenset(axis.axis_id for axis in declared_design.axes) if declared_design is not None else frozenset()
+
+
+def _unexercised_levers(
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    *,
+    profile: HostProfile,
+    declared_axes: Collection[str],
+) -> frozenset[str]:
+    """The levers read off what ran that no comparison exercised: fewer than :data:`_EXERCISED_FLOOR` results observed
+    them across the campaign, so no arm ran at a level of them beside another arm that did too.
+
+    Such a lever is no level and no lever: it is left out of the lever levels (so of the aliasing read, the factor
+    pairs and the divergences) and of the coverage map, and the bundle lists it in ``unexercised_factors``. A lever
+    the campaign declared as an axis (``declared_axes``) is a level by declaration whatever its calls, so it is never
+    one: the rule reads only observed levers nobody declared, and every reader of it reads it here.
+    """
+    return frozenset(
+        lever
+        for lever, by_run in _exercised(runs, results_by_run, profile=profile).items()
+        if sum(by_run.values()) < _EXERCISED_FLOOR and lever not in declared_axes
+    )
 
 
 def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostProfile) -> dict[str, EffectiveLever]:

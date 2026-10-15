@@ -119,9 +119,9 @@ from threetears.evals.analysis.generator import (
     analysis_gen_request_settings_for,
     first_request,
     generate_analysis,
-    generation_ceiling_s,
     prompt_content_version,
 )
+from threetears.evals.kernel.inner_ceilings import generation_ceiling_s
 from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
     READ_TIER_ROW_BUDGET,
@@ -245,6 +245,7 @@ from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_N
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
+    UnexercisedFactor,
     ComparisonReading,
     ArmExclusions,
     ArmMechanismReading,
@@ -480,6 +481,7 @@ __all__ = [
     "SERVED_MODEL_UNRECORDED",
     "WEIGHTING_EQUAL_PER_SCENARIO",
     "AliasedFactors",
+    "UnexercisedFactor",
     "ArmExclusions",
     "ArmScoreboard",
     "FailCause",

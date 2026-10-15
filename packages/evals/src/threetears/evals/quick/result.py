@@ -383,7 +383,7 @@ class Result:
             label = "" if len(self.arms) == 1 else f"{arm}{' (control)' if arm == self.control else ''}: "
             lines.append(f"{label}{summary.results_text}")
             lines += [f"  {line}" for line in (summary.stopped_text,) if line is not None]
-            lines += [f"  {line}" for line in self._measure_texts(summary)]
+            lines += [f"  {line}" for line in self._measure_texts(summary, arm)]
             if summary.confusion:
                 lines.append("  per label:")
                 lines += [f"    {line}" for line in summary.label_lines]
@@ -407,10 +407,27 @@ class Result:
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
         return "\n".join(lines)
 
-    def _measure_texts(self, summary: EvalSummary) -> list[str]:
-        """Each measure's line, the classifier's ``match`` under its field's name and its matrix's count left out."""
+    def _guardrail_said(self, arm: str) -> dict[str, str]:
+        """What this comparison came to on each guardrail for ``arm``, by measure name, as its measure line says it:
+        ``guardrail undecided against v1``; the control's, that the other arms are decided against it."""
+        if arm == self.control:
+            return {
+                check.name: "the guardrail the other arms are decided against"
+                for check in self.guardrail_readings.checks
+            }
+        return {row["measure_id"]: f"guardrail {row['outcome']} against {self.control}" for row in self.guardrails(arm)}
+
+    def _measure_texts(self, summary: EvalSummary, arm: str) -> list[str]:
+        """Each measure's line, the classifier's ``match`` under its field's name and its matrix's count left out.
+
+        In a comparison a guardrail's line says what the comparison decided on it for ``arm``; alone, that a guardrail
+        is decided only in one.
+        """
         texts: list[str] = []
-        for measure in summary.measure_lines:
+        lines = (
+            summary.measure_lines if len(self.arms) == 1 else summary.compared_measure_lines(self._guardrail_said(arm))
+        )
+        for measure in lines:
             if measure.name == CONFUSION_CELL_MEASURE or measure.state == "not_carried":
                 continue
             text = measure.text
@@ -722,8 +739,10 @@ def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
 def _cases_verdict(summary: EvalSummary) -> str:
     """How one arm's cases came out, in plain words: passed of usable, the cases missed, the cases excluded by cause.
 
-    A case is usable when any of its repeats was not excluded, and passed when none of those repeats is a miss; a case
-    every repeat of which was excluded is counted under the cause its first repeat records.
+    Counted as the page counts them, off each repeat's :attr:`~threetears.evals.analysis.summary.CaseResult.state`,
+    which the page's own trial reader decided: a case is usable when any of its repeats was not lost, and passed when
+    none of those failed — every check the template declares passed on each. A case every repeat of which was lost is
+    counted under the cause its first repeat records.
     """
     repeats: dict[str, list[CaseResult]] = {}
     for result in summary.results():
@@ -732,13 +751,13 @@ def _cases_verdict(summary: EvalSummary) -> str:
     missed: list[str] = []
     excluded: dict[str, int] = {}
     for case, results in repeats.items():
-        kept = [result for result in results if result.outcome != "excluded"]
+        kept = [result for result in results if result.state != "lost"]
         if not kept:
             cause = (results[0].errors or ["no reason recorded"])[0]
             excluded[cause] = excluded.get(cause, 0) + 1
             continue
         usable += 1
-        if any(result.missed for result in kept):
+        if any(result.state == "failed" for result in kept):
             missed.append(case)
     text = f"{usable - len(missed)}/{usable} cases passed; {len(missed)} {'miss' if len(missed) == 1 else 'misses'}"
     if missed:

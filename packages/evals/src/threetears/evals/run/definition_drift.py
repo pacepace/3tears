@@ -3,8 +3,8 @@
 The boot seed is fill-only (:mod:`~threetears.evals.run.definition_seed`): once a definition is stored, the store is
 master, so a corpus edit never reaches a store that holds the definition. Prompts solve the same problem with a drift
 read and a reset (:mod:`threetears.evals.kernel.prompts.drift`); this is the same pair for seeded definitions —
-templates, rubric dims, judge configs, judge cases and case sets — and it is never run at boot. A release step, or an
-operator, runs it deliberately.
+templates, rubric dims, judge configs, a template's own cases, judge cases and case sets — and it is never run at
+boot. A release step, or an operator, runs it deliberately.
 
 **A drift read** (:func:`definition_drift`) reads every corpus definition against the scope's stored one, and
 writes and spends nothing:
@@ -13,15 +13,18 @@ writes and spends nothing:
 - ``stale``: the stored content is what was last seeded, and the corpus now differs;
 - ``customized``: the stored content differs from what was seeded (an operator's edit, an archive, a delete);
 - ``unknown``: there is no record of what was seeded anywhere, neither stored nor supplied (a row seeded before
-  ``.30`` by a host that supplies no ``seeded_digests``), which behaves as customized; a supplied map is the whole of
-  what the host seeded then, so under it a judge case nothing stored matches reads ``customized`` when the map names
-  it (seeded, since removed) and ``stale`` when it does not (never seeded);
+  ``.30`` by a host that supplies no ``seeded_digests``, or a template case on a revision whose cases no seed
+  recorded), which behaves as customized; a supplied map is the whole of what the host seeded then, so under it a
+  judge case or template case nothing stored matches reads ``customized`` when the map names it (seeded, since
+  removed) and ``stale`` when it does not (never seeded);
 - ``absent``: nothing is stored (the seed fills it).
 
-What was seeded is the record the seed writes (``seed_digest``; a judge case's corpus name, ``seed_name``, its
-``content_hash`` being what was seeded), or, for a row seeded before the record existed, the digest the host supplies
-(``seeded_digests``, keyed as a reading is: the host computes it from its own history with :func:`corpus_digests`
-over the corpus it seeded then). Every digest is of content only (:mod:`~threetears.evals.run.definition_digests`).
+What was seeded is the record the seed writes (``seed_digest``; a judge case's or template case's corpus name,
+``seed_name``; a judge case's ``content_hash`` is what was seeded, a template case's ``seed_digest`` its content and
+stratum), or, for a row seeded before the record existed, the
+digest the host supplies (``seeded_digests``, keyed as a reading is: the host computes it from its own history with
+:func:`corpus_digests` over the corpus it seeded then). Every digest is of content only
+(:mod:`~threetears.evals.run.definition_digests`).
 
 **A reset** (:func:`reset_definitions`) writes the corpus's content for the definitions it is named, and never in
 place: a template's new content is a new **revision** (a new record under the same name, ``revision`` one past the
@@ -30,15 +33,18 @@ supersedes is archived and stays readable by id. So every run, result and case k
 against, a launch after the reset reads the new revision (a name resolves to its newest non-archived revision), and
 results of two revisions never pool (:mod:`threetears.evals.analysis.revisions`).
 
-- **A judge template's battery is part of its revision.** Its cases are what a launch of it runs, so a battery that
-  changed under one template id would pool the old battery's results with the new one's. A judge case is therefore
-  reset with its judge template: the new revision holds exactly the corpus's cases for it, frozen afresh, and the
-  corpus's case sets over it are minted again over them. A case set whose cases are all current is minted alone.
+- **A template's cases are part of its revision.** They are what a launch of it runs, so cases that changed under one
+  template id would pool the old cases' results with the new ones'. A judge case is therefore reset with its judge
+  template, and a template case with its template: the new revision holds exactly the corpus's cases for it, written
+  afresh, and the corpus's case sets over a judge template are minted again over them. A case set whose cases are all
+  current is minted alone. A template the corpus gives no cases (and not of the judge kind) is reset bare: its cases
+  are generated, not authored.
 - **Refused, all or nothing, before anything is written**, naming every refusal: a definition reading ``customized``
-  or ``unknown`` (unless ``discard_customization``, as a prompt reset takes it); a judge template whose current
-  revision holds live cases the corpus does not carry (they would not be carried, so the same flag); a judge config
+  or ``unknown`` (unless ``overwrite_customized``, as a prompt reset takes it); a judge template, or a template the
+  corpus gives cases, whose current revision holds live cases the corpus does not carry (they would not be carried, so
+  the same flag); a judge config
   contradicting a live config of another name for its dimension (always: archive one of them); and anything
-  authoring would refuse (``admit_template``, ``author_judge_case``).
+  authoring would refuse (``admit_template`` under the host's template checks, ``author_judge_case``).
 """
 
 from __future__ import annotations
@@ -51,7 +57,7 @@ from typing import Literal
 from pydantic import ConfigDict, Field
 
 from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
-from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.host.eval_host import EvalHost, TemplateChecks
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, JudgeCase
 from threetears.evals.run.authoring import admit_template, validated_kind_spec
@@ -67,8 +73,10 @@ from threetears.evals.run.definition_seed import (
     SeedCaseSet,
     SeedCorpus,
     SeedJudgeCase,
+    SeedTemplateCase,
     authored_seed_cases,
     seed_case_set_digest,
+    stored_template_case_digest,
 )
 from threetears.evals.run.judge_kind import freeze_seeded_judge_case
 from threetears.evals.schema.base import EvalBaseModel
@@ -87,7 +95,7 @@ log = get_logger(__name__)
 #: How a stored definition reads against the seed corpus (the module docstring).
 DefinitionState = Literal["current", "stale", "customized", "unknown", "absent"]
 
-#: The states a reset writes over only with ``discard_customization``: what is stored may be an operator's.
+#: The states a reset writes over only with ``overwrite_customized``: what is stored may be an operator's.
 KEPT_STATES: frozenset[str] = frozenset({"customized", "unknown"})
 
 #: The order a drift summary counts states in.
@@ -101,11 +109,12 @@ class DefinitionReading(EvalBaseModel):
 
     key: str = Field(
         description="The definition, as a reset names it: `<doc type>/<natural key>` — `eval_template/<name>`, "
-        "`rubric_dim/<key>`, `judge_config/<dim>/<name>`, `judge_case/<judge template>/<corpus name>` (an unnamed "
-        "case by its content digest) or `case_set/<name>`."
+        "`rubric_dim/<key>`, `judge_config/<dim>/<name>`, `template_case/<template>/<name>`, "
+        "`judge_case/<judge template>/<corpus name>` (an unnamed case by its content digest) or `case_set/<name>`."
     )
     definition_type: str = Field(
-        description="Its type: `eval_template`, `rubric_dim`, `judge_config`, `judge_case` or `case_set`."
+        description="Its type: `eval_template`, `rubric_dim`, `judge_config`, `template_case`, `judge_case` or "
+        "`case_set`."
     )
     state: DefinitionState = Field(description="`current`, `stale`, `customized`, `unknown` or `absent`.")
     seed_digest: str = Field(description="The digest of what the corpus carries now.")
@@ -165,7 +174,10 @@ class ResetDefinition(EvalBaseModel):
         default="", description="The record it superseded, now archived and readable by id; empty for none."
     )
     discarded: bool = Field(
-        default=False, description="Whether what it superseded read customized or unknown: possibly an operator's."
+        default=False,
+        description="Whether a stored copy that read customized or unknown, possibly an operator's, was written over "
+        "under overwrite_customized (kept archived, readable by `replaced_id`). False for a definition written fresh, "
+        "with nothing stored to replace, and for one written over a stale copy, which is the seed's own.",
     )
 
 
@@ -226,6 +238,7 @@ class _Survey:
     current: dict[str, EvalTemplate] = field(default_factory=dict)
     resolved: dict[str, EvalTemplate] = field(default_factory=dict)
     built: dict[str, tuple[SeedJudgeCase, AuthoredJudgeCase, str]] = field(default_factory=dict)
+    own: dict[str, tuple[SeedTemplateCase, str]] = field(default_factory=dict)
     cases_on: dict[str, list[EvalTestCase]] = field(default_factory=dict)
     readings: dict[str, DefinitionReading] = field(default_factory=dict)
 
@@ -292,6 +305,8 @@ class _Survey:
         for case, authored in authored_seed_cases(self.corpus, {**self.current, **self.resolved}):
             digest = JudgeCase.from_authored(authored).content_digest()
             self.built[_case_key(case, digest)] = (case, authored, digest)
+        for own_case in self.corpus.template_cases:
+            self.own[definition_key("template_case", own_case.template, own_case.name)] = (own_case, own_case.digest())
 
         for template in self.corpus.templates:
             self._read_template(template)
@@ -325,6 +340,8 @@ class _Survey:
                 judge_config_digest,
                 deleted=slot in config_tombstones,
             )
+        for key, (own_case, digest) in self.own.items():
+            self.readings[key] = self._read_template_case(key, own_case, digest)
         for key, (case, _authored, digest) in self.built.items():
             self.readings[key] = self._read_case(key, case, digest)
         latest: dict[str, CaseSet] = {}
@@ -359,58 +376,171 @@ class _Survey:
         reading = self._reading(
             key, "eval_template", seed, template_digest(stored), stored.id, stored.seed_digest, reason
         )
-        if reading.state == "current" and template.candidate_kind == JUDGE_KIND:
+        if reading.state == "current" and self.holds_cases(template):
+            judge = template.candidate_kind == JUDGE_KIND
             if superseded := self.superseded_cases(stored):
                 reading = reading.model_copy(
                     update={
                         "state": "stale",
-                        "reason": f"{reason}; its battery holds {len(superseded)} seeded case(s) the corpus has "
-                        "since changed, beside their current words",
+                        "reason": f"{reason}; its {'battery' if judge else 'revision'} holds {len(superseded)} seeded "
+                        f"case(s) the corpus has since changed, beside their current {'words' if judge else 'content'}",
                     }
                 )
             elif missing := self.missing_cases(stored):
                 reading = reading.model_copy(
                     update={
                         "state": "stale",
-                        "reason": f"{reason}; its battery lacks {len(missing)} corpus case(s), which the seed never "
-                        "adds to a battery holding cases",
+                        "reason": f"{reason}; its {'battery' if judge else 'revision'} lacks {len(missing)} corpus "
+                        f"case(s), which the seed never adds to a {'battery' if judge else 'revision'} holding cases",
                     }
                 )
         self.readings[key] = reading
 
-    def missing_cases(self, judge: EvalTemplate) -> list[str]:
-        """The keys of the corpus cases a judge template's revision lacks while it holds cases: only a reset adds them."""
-        stored = self.stored_cases(judge)
-        held = {case.content_hash for case in stored}
+    def holds_cases(self, template: EvalTemplate) -> bool:
+        """Whether the corpus states a corpus template's cases: a judge template's battery, or a template's own cases.
+
+        Such a template's revision is written with exactly the corpus's cases for it; any other template's cases are
+        generated, not authored, and its revision is written bare.
+        """
+        return template.candidate_kind == JUDGE_KIND or any(c.template == template.name for c, _ in self.own.values())
+
+    def cases_of(self, template: str) -> list[tuple[str, str | None, str]]:
+        """Every corpus case of a template, by name — its judge cases or its own — as (key, corpus name, digest)."""
+        judged = [
+            (key, case.name, digest)
+            for key, (case, _a, digest) in self.built.items()
+            if case.judge_template == template
+        ]
+        own = [(key, case.name, digest) for key, (case, digest) in self.own.items() if case.template == template]
+        return judged + own
+
+    @staticmethod
+    def case_digest(template: EvalTemplate, case: EvalTestCase) -> str:
+        """A stored case's content digest, as a corpus case of its template digests: a judge case's ``content_hash``,
+        and a template case's content read off the row (so a stratum relabelled in place moves it)."""
+        if template.candidate_kind == JUDGE_KIND:
+            return case.content_hash or ""
+        return stored_template_case_digest(case)
+
+    def missing_cases(self, template: EvalTemplate) -> list[str]:
+        """The keys of the corpus cases a template's revision lacks while it holds cases: only a reset adds them."""
+        stored = self.stored_cases(template)
         if not stored:
             return []
-        return [key for key, (_case, _authored, digest) in self.built_of(judge.name) if digest not in held]
+        held = {self.case_digest(template, case) for case in stored}
+        return [key for key, _name, digest in self.cases_of(template.name) if digest not in held]
 
-    def superseded_cases(self, judge: EvalTemplate) -> list[EvalTestCase]:
-        """The live cases of a judge template's revision that were seeded as a corpus case the corpus has changed."""
-        wanted = {key: digest for key, (_case, _authored, digest) in self.built_of(judge.name)}
-        by_name = {case.name: wanted[key] for key, (case, _a, _d) in self.built_of(judge.name) if case.name}
-        supplied = {self.supplied[key] for key in wanted if key in self.supplied}
+    def superseded_cases(self, template: EvalTemplate) -> list[EvalTestCase]:
+        """The live cases of a template's revision that were seeded as a corpus case the corpus has changed."""
+        cases = self.cases_of(template.name)
+        wanted = {digest for _key, _name, digest in cases}
+        names = {name for _key, name, _digest in cases if name}
+        supplied = {self.supplied[key] for key, _name, _digest in cases if key in self.supplied}
         return [
             stored
-            for stored in self.stored_cases(judge)
+            for stored in self.stored_cases(template)
             if not stored.archived
-            and stored.content_hash not in wanted.values()
-            and ((stored.seed_name in by_name) or stored.content_hash in supplied)
+            and (digest := self.case_digest(template, stored)) not in wanted
+            and (stored.seed_name in names or digest in supplied)
         ]
 
-    def uncarried_cases(self, judge: EvalTemplate) -> list[EvalTestCase]:
-        """The live cases of a judge template's revision the corpus neither carries nor supersedes."""
-        carried = {digest for _key, (_case, _authored, digest) in self.built_of(judge.name)}
-        superseded = {case.id for case in self.superseded_cases(judge)}
+    def uncarried_cases(self, template: EvalTemplate) -> list[EvalTestCase]:
+        """The live cases of a template's revision the corpus neither carries nor supersedes."""
+        carried = {digest for _key, _name, digest in self.cases_of(template.name)}
+        superseded = {case.id for case in self.superseded_cases(template)}
         return [
             stored
-            for stored in self.stored_cases(judge)
-            if not stored.archived and stored.content_hash not in carried and stored.id not in superseded
+            for stored in self.stored_cases(template)
+            if not stored.archived and self.case_digest(template, stored) not in carried and stored.id not in superseded
         ]
 
     def built_of(self, judge_template: str) -> list[tuple[str, tuple[SeedJudgeCase, AuthoredJudgeCase, str]]]:
         return [(key, built) for key, built in self.built.items() if built[0].judge_template == judge_template]
+
+    def own_of(self, template: str) -> list[tuple[str, SeedTemplateCase]]:
+        return [(key, case) for key, (case, _digest) in self.own.items() if case.template == template]
+
+    def _read_template_case(self, key: str, case: SeedTemplateCase, digest: str) -> DefinitionReading:
+        """How a template case reads on its template's current revision: matched there by content, else by the name it
+        was seeded under, by the digest the host supplies, or by the name a host's own seed stored it under."""
+        template = self.current.get(case.template)
+        if template is None:
+            return self._reading(key, "template_case", digest, None, "", None)
+        where = f"{case.template!r} revision {template.revision}"
+        if template.candidate_kind == JUDGE_KIND:
+            return DefinitionReading(
+                key=key,
+                definition_type="template_case",
+                state="customized",
+                seed_digest=digest,
+                reason=f"{where} is a judge template, whose cases are judge cases",
+            )
+        stored = self.stored_cases(template)
+        live = [c for c in stored if not c.archived]
+        if match := next((c for c in live if stored_template_case_digest(c) == digest), None):
+            return self._reading(key, "template_case", digest, digest, match.id, digest)
+        if match := next((c for c in stored if stored_template_case_digest(c) == digest), None):
+            return self._reading(key, "template_case", digest, digest, match.id, None).model_copy(
+                update={"state": "customized", "reason": "archived by an operator"}
+            )
+        supplied = self.supplied.get(key)
+        predecessor = next((c for c in live if c.seed_name == case.name), None)
+        if predecessor is None and supplied is not None:
+            predecessor = next((c for c in live if stored_template_case_digest(c) == supplied), None)
+        if predecessor is None:
+            # A case stored under its name before seeds recorded one (by the host's own seed): no record of what was
+            # seeded unless the host supplies it.
+            predecessor = next((c for c in live if c.seed_name is None and c.name == case.name), None)
+        if predecessor is not None:
+            # What was seeded is the row's `seed_digest` (content and stratum); a row with none reads by the host's map.
+            return self._reading(
+                key,
+                "template_case",
+                digest,
+                stored_template_case_digest(predecessor),
+                predecessor.id,
+                predecessor.seed_digest,
+                f"{'seeded into' if predecessor.seed_digest else 'stored on'} {where}",
+            )
+        if not stored:
+            # An empty revision: the boot seed fills it.
+            return self._reading(key, "template_case", digest, None, "", None)
+        if not any(c.seed_name for c in stored):
+            # Its cases were written before seeds recorded a template's own cases. As for a judge case seeded before
+            # .30, the host's map, when it supplies one, is the whole of what it seeded then.
+            if supplied is not None:
+                return DefinitionReading(
+                    key=key,
+                    definition_type="template_case",
+                    state="customized",
+                    seed_digest=digest,
+                    seeded_digest=supplied,
+                    seeded_source="supplied",
+                    reason="seeded as its corpus content, since removed by an operator",
+                )
+            if not self.supplied:
+                return DefinitionReading(
+                    key=key,
+                    definition_type="template_case",
+                    state="unknown",
+                    seed_digest=digest,
+                    reason=f"{where} holds cases no seed recorded",
+                )
+            return DefinitionReading(
+                key=key,
+                definition_type="template_case",
+                state="stale",
+                seed_digest=digest,
+                reason=f"new to the corpus; never seeded into {case.template!r} (the host's seeded digests do not name "
+                "it), so only a reset writes it",
+            )
+        return DefinitionReading(
+            key=key,
+            definition_type="template_case",
+            state="stale",
+            seed_digest=digest,
+            reason=f"new to the corpus; {where} already holds cases, so only a reset writes it",
+        )
 
     def _read_case(self, key: str, case: SeedJudgeCase, digest: str) -> DefinitionReading:
         judge = self.current.get(case.judge_template)
@@ -535,7 +665,8 @@ def definition_drift(
             stored record's own digest wins over it. ``None`` for none, when such rows read ``unknown``.
 
     Returns:
-        One reading per corpus definition: templates, rubric dims, judge configs, judge cases, case sets.
+        One reading per corpus definition: templates, rubric dims, judge configs, template cases, judge cases, case
+        sets.
 
     Raises:
         ValidationFailedError: A corpus judge case cannot be built, as the boot seed refuses it.
@@ -571,7 +702,7 @@ class _Refusal:
 
 
 def _reset_call(keys: Sequence[str]) -> str:
-    return f"run.reset_definitions(..., [{', '.join(repr(k) for k in keys)}], discard_customization=True)"
+    return f"run.reset_definitions(..., [{', '.join(repr(k) for k in keys)}], overwrite_customized=True)"
 
 
 def reset_definitions(
@@ -579,26 +710,22 @@ def reset_definitions(
     corpus: SeedCorpus,
     definitions: Sequence[str],
     *,
-    require_known_tools_allowed: Callable[[Sequence[str] | None], None],
-    refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
-    refuse_undeliverable_template: Callable[[EvalTemplate], None],
-    discard_customization: bool = False,
+    overwrite_customized: bool = False,
     seeded_digests: Mapping[str, str] | None = None,
 ) -> DefinitionReset:
     """Write the corpus's content for the named definitions, each as a new revision or record, never in place.
 
     A definition already ``current`` is left as it is. A judge case resets with its judge template, whose new
     revision holds the corpus's whole battery for it, and that template's corpus case sets are minted again over the
-    new revision's cases; a case set whose cases are all current is minted alone (the module docstring).
+    new revision's cases; a case set whose cases are all current is minted alone. A template case resets with its
+    template, whose new revision holds every corpus case of it (the module docstring).
 
     Args:
-        host: The host: the store written, and the profile a template is admitted under.
+        host: The host: the store written, and the profile and template checks (``template_checks``) a template is
+            admitted under, as ``create_template`` admits one.
         corpus: The corpus, loaded for the scope it writes.
         definitions: The keys to reset, as a drift read names them (:meth:`DefinitionDrift.keys`).
-        require_known_tools_allowed: The host's tool-catalog check, as ``create_template`` takes it.
-        refuse_undeclared_world_seed: The host's seed walk, as ``create_template`` takes it.
-        refuse_undeliverable_template: The host's kind-capability check, as ``create_template`` takes it.
-        discard_customization: Write over a definition reading ``customized`` or ``unknown``, and a judge template's
+        overwrite_customized: Write over a definition reading ``customized`` or ``unknown``, and a judge template's
             live cases the corpus does not carry. What is superseded stays stored, archived, readable by id.
         seeded_digests: As :func:`definition_drift` takes it.
 
@@ -609,11 +736,13 @@ def reset_definitions(
         ValidationFailedError: A key names no corpus definition, or a template or judge case authoring would refuse;
             nothing was written, every refusal named.
         ConflictError: A definition may be an operator's (customized, unknown, or uncarried live cases) without
-            ``discard_customization``, or a judge config contradicts a live config of another name for its
+            ``overwrite_customized``, or a judge config contradicts a live config of another name for its
             dimension; nothing was written, every refusal named.
         StorageError: A write failed part-way. Every check ran first, so this is the store failing, and the
             definitions written before it stand; the drift read says which.
+        RefusedInput: The host supplies no template checks.
     """
+    checks = host.checks_for("a definition reset")
     scope = corpus.scope_id
     survey = _Survey.read(host, corpus, seeded_digests)
     readings = survey.readings
@@ -647,6 +776,8 @@ def reset_definitions(
             templates[key.removeprefix("eval_template/")] = None
         elif reading.definition_type == "judge_case":
             with_template(key, survey.built[key][0].judge_template)
+        elif reading.definition_type == "template_case":
+            with_template(key, survey.own[key][0].template)
         elif reading.definition_type == "case_set":
             corpus_set = corpus_sets[key.removeprefix("case_set/")]
             listed = [_listed_key(survey, corpus_set.template, name) for name in corpus_set.judge_cases]
@@ -654,21 +785,21 @@ def reset_definitions(
                 sets[corpus_set.name] = None
             else:
                 with_template(key, corpus_set.template)
-        if reading.state in KEPT_STATES and not discard_customization:
+        if reading.state in KEPT_STATES and not overwrite_customized:
             refusals.append(
                 _Refusal(
                     key, f"it reads {reading.state}" + (f" ({reading.reason})" if reading.reason else ""), kept=True
                 )
             )
-    # A judge template's battery and its case sets are written with it.
+    # A template's corpus cases, and a judge template's case sets, are written with it.
     pulled: list[str] = []
     for name in templates:
-        if corpus_templates[name].candidate_kind != JUDGE_KIND:
+        if not survey.holds_cases(corpus_templates[name]):
             continue
-        pulled += [key for key, _built in survey.built_of(name)]
+        pulled += [key for key, _name, _digest in survey.cases_of(name)]
         pulled += [definition_key("case_set", s.name) for s in corpus.case_sets if s.template == name]
         stored = survey.current.get(name)
-        if stored is not None and (uncarried := survey.uncarried_cases(stored)) and not discard_customization:
+        if stored is not None and (uncarried := survey.uncarried_cases(stored)) and not overwrite_customized:
             refusals.append(
                 _Refusal(
                     definition_key("eval_template", name),
@@ -679,7 +810,7 @@ def reset_definitions(
             )
     for key in pulled:
         reading = readings[key]
-        if key in asked or reading.state not in KEPT_STATES or discard_customization:
+        if key in asked or reading.state not in KEPT_STATES or overwrite_customized:
             continue
         # A pulled case's own `unknown` is its template's question, which the uncarried cases answer.
         if reading.definition_type == "case_set" or reading.state == "customized":
@@ -703,14 +834,7 @@ def reset_definitions(
                     kept=True,
                 )
             )
-    admitted, invalid = _admitted(
-        host,
-        corpus,
-        [corpus_templates[name] for name in templates],
-        require_known_tools_allowed=require_known_tools_allowed,
-        refuse_undeclared_world_seed=refuse_undeclared_world_seed,
-        refuse_undeliverable_template=refuse_undeliverable_template,
-    )
+    admitted, invalid = _admitted(host, corpus, [corpus_templates[name] for name in templates], checks)
     refusals += invalid
     for name in sets:
         corpus_set = corpus_sets[name]
@@ -801,7 +925,9 @@ def _entry(reading: DefinitionReading, written_id: str, written: str) -> ResetDe
         written_id=written_id,
         written=written,
         replaced_id=reading.stored_id,
-        discarded=reading.state in KEPT_STATES,
+        # A stored copy was replaced only where one was read: a case the store holds no copy of reads customized or
+        # unknown by what the host's record says of it, yet is written fresh.
+        discarded=bool(reading.stored_id) and reading.state in KEPT_STATES,
     )
 
 
@@ -817,13 +943,7 @@ def _current_case_ids(survey: _Survey, corpus_set: SeedCaseSet) -> list[str]:
 
 
 def _admitted(
-    host: EvalHost,
-    corpus: SeedCorpus,
-    templates: Sequence[EvalTemplate],
-    *,
-    require_known_tools_allowed: Callable[[Sequence[str] | None], None],
-    refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
-    refuse_undeliverable_template: Callable[[EvalTemplate], None],
+    host: EvalHost, corpus: SeedCorpus, templates: Sequence[EvalTemplate], checks: TemplateChecks
 ) -> tuple[dict[str, EvalTemplate], list[_Refusal]]:
     """Each template admitted through ``create_template``'s gates, as the seed admits one, or why not."""
     seeded_configs = {config.rubric_dim_id: config.id for config in corpus.judge_configs if not config.archived}
@@ -837,9 +957,7 @@ def _admitted(
             admitted[template.name] = admit_template(
                 template,
                 profile=host.profile,
-                require_known_tools_allowed=require_known_tools_allowed,
-                refuse_undeclared_world_seed=refuse_undeclared_world_seed,
-                refuse_undeliverable_template=refuse_undeliverable_template,
+                checks=checks,
                 active_judge_config=lambda dim: seeded_configs.get(dim) or stored.get(dim),
             )
         except ValidationFailedError as e:
@@ -848,8 +966,8 @@ def _admitted(
 
 
 def _reset_template(survey: _Survey, admitted: EvalTemplate, now: str) -> list[ResetDefinition]:
-    """Write a template's next revision, archive the one it supersedes, and, for a judge template, freeze its corpus
-    battery into it and mint its corpus case sets over that battery."""
+    """Write a template's next revision, archive the one it supersedes, and write its corpus cases into it: a judge
+    template's battery, frozen, with its corpus case sets minted over it, or any other template's own cases."""
     storage, scope = survey.host.storage, survey.corpus.scope_id
     key = definition_key("eval_template", admitted.name)
     prior = survey.templates.get(admitted.name, [])
@@ -870,6 +988,10 @@ def _reset_template(survey: _Survey, admitted: EvalTemplate, now: str) -> list[R
     reading = survey.readings[key]
     entries = [_entry(reading, written.id, f"revision {revision}")]
     if written.candidate_kind != JUDGE_KIND:
+        for case_key, own_case in survey.own_of(admitted.name):
+            written_case = own_case.test_case(written)
+            storage.save_test_case(written_case)
+            entries.append(_entry(survey.readings[case_key], written_case.id, f"a case of revision {revision}"))
         return entries
     frozen: dict[str, str] = {}
     for case_key, (case, authored, _digest) in survey.built_of(admitted.name):

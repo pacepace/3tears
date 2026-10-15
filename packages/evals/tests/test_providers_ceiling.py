@@ -21,7 +21,7 @@ import pytest
 
 from threetears.evals.kernel import AdmittedCall, OutOfRunBudget, PlannedCall, ValidationFailedError
 from threetears.evals.ops import await_job, start_paid_call
-from threetears.evals.providers import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, Clients, Model
+from threetears.evals.providers import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, Clients, Model, PriceRefresh
 from threetears.evals.schema import BoundCompletionClient
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.testing import CompletionGuard
@@ -429,6 +429,174 @@ async def test_a_cancelled_caller_does_not_cancel_the_load_the_others_await() ->
     assert server.fetches == 1 and shared.loaded
 
 
+# --- one request, one catalogue fetch ----------------------------------------------------------------------------
+
+
+def _replying_haiku(shared: Catalogue) -> Model:
+    """Haiku, called directly over a scripted reply, priced from ``shared``."""
+    reply = httpx.MockTransport(lambda _: httpx.Response(200, json=ANTHROPIC_REPLY))
+    return Model(
+        "claude-haiku-5-5",
+        provider="anthropic",
+        api_key="test-key",
+        catalogue=shared,
+        http=httpx.AsyncClient(transport=reply),
+    )
+
+
+async def _request(client: Any) -> Any:  # Any: a Model, or a lease Clients hands the engine
+    """One request as the engine makes it: the client's prices brought up to date, then its call."""
+    await client.refresh_prices()
+    return await client.generate(system="", user="x")
+
+
+async def test_a_request_whose_first_read_fails_makes_one_fetch_and_the_next_request_tries_again() -> None:
+    server = CatalogueServer((503, {"error": "down"}))
+    haiku = _replying_haiku(server.catalogue())
+
+    completion = await _request(haiku)
+    assert server.fetches == 1, "the call took its refresh's failed read as its own"
+    assert completion.cost_usd is None and "could not be read" in completion.pricing_failure
+
+    await _request(haiku)
+    assert server.fetches == 2, "a request later reads again"
+
+
+async def test_a_request_whose_refresh_fails_makes_one_fetch_and_is_priced_from_the_stale_rows() -> None:
+    server = CatalogueServer((200, {"data": ROWS}), (503, {"error": "down"}))
+    # Every load is due a refresh, so a second would fetch; a read is reused only while younger than the bound.
+    shared = server.catalogue(refresh_after=timedelta(0), ceiling_stale_after=timedelta(minutes=1))
+    await shared.load()
+    haiku = _replying_haiku(shared)
+
+    completion = await _request(haiku)
+    assert server.fetches == 2, "boot's read, then the request's one refresh"
+    assert completion.cost_usd is not None and completion.pricing_stale_since is not None
+
+
+async def test_a_call_made_without_a_refresh_still_reads_for_itself() -> None:
+    server = CatalogueServer((503, {"error": "down"}))
+    haiku = _replying_haiku(server.catalogue())
+    await _request(haiku)
+    await haiku.generate(system="", user="x")
+    assert server.fetches == 2, "the refresh's read went to the call made for it, not to every call after"
+
+
+def _counted_reads(shared: Catalogue, monkeypatch: pytest.MonkeyPatch) -> list[PriceRefresh]:
+    """Every read of ``shared`` made from here on, as it is made."""
+    reads: list[PriceRefresh] = []
+    read = shared.read
+
+    async def counted() -> PriceRefresh:
+        found = await read()
+        reads.append(found)
+        return found
+
+    monkeypatch.setattr(shared, "read", counted)
+    return reads
+
+
+async def test_a_refresh_a_ceiling_and_a_call_in_one_task_read_the_catalogue_once() -> None:
+    server = CatalogueServer((503, {"error": "down"}))  # a failed first fetch: every read would fetch again
+    haiku = _replying_haiku(server.catalogue())
+
+    await haiku.refresh_prices()
+    haiku.price_ceiling(system="", user="x")
+    completion = await haiku.generate(system="", user="x")
+
+    assert server.fetches == 1, "the ceiling and the call priced from the refresh's read"
+    assert completion.cost_usd is None and "could not be read" in (completion.pricing_failure or "")
+
+
+async def test_calls_made_together_after_one_refresh_each_read_for_themselves(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared = CatalogueServer((200, {"data": ROWS})).catalogue()
+    haiku = _replying_haiku(shared)
+    await haiku.refresh_prices()
+    reads = _counted_reads(shared, monkeypatch)
+
+    await asyncio.gather(haiku.generate(system="", user="x"), haiku.generate(system="", user="y"))
+    assert len(reads) == 2, "each call is a task of its own, not the refresh's"
+
+
+async def test_an_estimate_s_refresh_is_not_reused_once_older_than_the_ceiling_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = CatalogueServer((200, {"data": ROWS})).catalogue(refresh_after=_BRIEFLY)
+    haiku = _replying_haiku(shared)
+    await haiku.refresh_prices()
+    haiku.price_ceiling(system="", user="x")  # the estimate, which leaves the read to this task's next call
+    reads = _counted_reads(shared, monkeypatch)
+
+    await asyncio.sleep(2 * _BRIEFLY.total_seconds())
+    await haiku.generate(system="", user="x")
+    assert len(reads) == 1, "a read past ceiling_stale_after is never reused"
+
+
+async def test_a_failed_refresh_is_not_reused_by_a_task_started_after_it() -> None:
+    server = CatalogueServer((503, {"error": "down"}))
+    haiku = _replying_haiku(server.catalogue())
+    await haiku.refresh_prices()
+
+    first = await asyncio.create_task(haiku.generate(system="", user="x"))
+    assert server.fetches == 2, "the child task inherited the read and read for itself"
+    second = await haiku.generate(system="", user="x")
+    assert server.fetches == 2, "the refresh's own task's call took its read"
+    await haiku.generate(system="", user="x")
+    assert server.fetches == 3, "and consumed it"
+    assert first.cost_usd is None and second.cost_usd is None
+
+
+async def test_concurrent_requests_still_share_one_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    server = CatalogueServer((503, {"error": "down"}))
+    reply = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=ANTHROPIC_REPLY)))
+    template = Model("claude-haiku-5-5", provider="anthropic", http=reply)
+    clients = Clients(default=template, catalogue=server.catalogue())
+    judge, analysis = clients("judge", None), clients("analysis", None)
+
+    completions = await asyncio.gather(_request(judge), _request(judge), _request(analysis))
+    assert server.fetches == 1, "three requests over one catalogue, one fetch"
+    assert all(completion.cost_usd is None for completion in completions)
+
+
+# --- what a refresh found -----------------------------------------------------------------------------------------
+
+
+async def test_a_refresh_whose_first_read_fails_says_so_and_the_model_keeps_it() -> None:
+    haiku = _replying_haiku(CatalogueServer((503, {"error": "down"})).catalogue())
+    assert haiku.last_price_refresh is None, "nothing refreshed yet"
+
+    found = await haiku.refresh_prices()
+    assert found == PriceRefresh(refreshed=False, fetched_at=None, failure=found.failure)
+    assert found.failure is not None and "HTTPStatusError" in found.failure and "503" in found.failure
+    assert haiku.last_price_refresh == found
+
+
+async def test_a_refresh_that_succeeds_says_when_and_a_failed_one_after_it_keeps_that_time() -> None:
+    server = CatalogueServer((200, {"data": ROWS}), (503, {"error": "down"}))
+    haiku = _replying_haiku(server.catalogue(refresh_after=timedelta(0)))
+
+    fresh = await haiku.refresh_prices()
+    assert fresh.refreshed and fresh.fetched_at is not None and fresh.failure is None
+
+    stale = await haiku.refresh_prices()
+    assert not stale.refreshed and stale.fetched_at == fresh.fetched_at, "the rows read before are kept"
+    assert stale.failure is not None and "could not be refreshed" in stale.failure
+    assert haiku.last_price_refresh == stale
+
+
+async def test_clients_refreshes_its_one_catalogue_once_for_every_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    server = CatalogueServer((200, {"data": ROWS}))
+    clients = Clients(default="vendor/judge", catalogue=server.catalogue())
+
+    found = await clients.refresh_prices()
+    assert server.fetches == 1 and found.refreshed and found.failure is None
+    assert await clients("judge", None).refresh_prices() == PriceRefresh(  # type: ignore[attr-defined]
+        refreshed=False, fetched_at=found.fetched_at, failure=None
+    ), "a role's lease reads the same rows, young enough to keep"
+
+
 # --- the client a model opens for itself -------------------------------------------------------------------------
 
 
@@ -443,8 +611,9 @@ class Opened:
         self.requests: list[httpx.Request] = []
 
     def __call__(self, **options: Any) -> httpx.AsyncClient:
-        if "transport" in options:  # a test's own scripted client, not one the code under test opens
+        if options.get("transport") is not None:  # a test's own scripted client, or one opened on a transport given
             return self._real(**options)
+        options.pop("transport", None)
         self.asked.append(options)
         return self._real(transport=httpx.MockTransport(self._answered), **options)
 
@@ -485,9 +654,9 @@ async def test_a_model_given_no_timeout_opens_its_client_with_the_default(opened
     assert opened.requests[-1].extensions["timeout"] == {"connect": 20.0, "read": 600.0, "write": 600.0, "pool": 600.0}
 
 
-def test_timeout_or_headers_beside_a_client_handed_in_is_refused() -> None:
+def test_transport_timeout_or_headers_beside_a_client_handed_in_is_refused() -> None:
     http = httpx.AsyncClient(timeout=7.0, headers={"x-title": "mine"})
-    for options in ({"timeout": 5.0}, {"headers": {"x-title": "theirs"}}):
+    for options in ({"timeout": 5.0}, {"headers": {"x-title": "theirs"}}, {"transport": CountingTransport({})}):
         with pytest.raises(ValueError, match="set them on that client instead"):
             Model("vendor/x", api_key="test-key", http=http, **options)
     Model("vendor/x", api_key="test-key", http=http)
@@ -500,6 +669,102 @@ async def test_derive_keeps_the_timeout_and_headers(opened: Opened) -> None:
     await derived.generate(system="", user="x")
     await derived.aclose()
     assert opened.requests[-1].extensions["timeout"]["read"] == 9.0 and opened.requests[-1].headers["x-a"] == "b"
+
+
+class CountingTransport(httpx.MockTransport):
+    """A transport answering every request with ``answer``, counting the requests and its closes."""
+
+    def __init__(self, answer: Mapping[str, Any]) -> None:
+        super().__init__(self._answered)
+        self._answer = answer
+        self.requests = 0
+        self.closes = 0
+
+    def _answered(self, _: httpx.Request) -> httpx.Response:
+        self.requests += 1
+        return httpx.Response(200, json=self._answer)
+
+    async def aclose(self) -> None:
+        self.closes += 1
+
+
+def _haiku(**options: Any) -> Model:
+    """Haiku, called directly, priced from :data:`ROWS`."""
+    return Model("claude-haiku-5-5", provider="anthropic", api_key="test-key", catalogue=catalogue(), **options)
+
+
+async def test_a_model_opens_its_client_on_the_transport_it_was_given_and_closing_it_closes_that() -> None:
+    transport = CountingTransport(ANTHROPIC_REPLY)
+    claude = _haiku(transport=transport, timeout=45.0, headers={"x-title": "my-evals"})
+    await claude.generate(system="", user="x")
+    assert transport.requests == 1 and transport.closes == 0
+    await claude.aclose()
+    await claude.aclose()
+    assert transport.closes == 1, "closed with the client the model opened on it, once"
+
+
+@pytest.mark.parametrize("own_http", [False, True])
+async def test_a_client_handed_in_is_closed_by_the_model_only_when_it_owns_it(own_http: bool) -> None:
+    http = httpx.AsyncClient(transport=CountingTransport(ANTHROPIC_REPLY))
+    claude = _haiku(http=http, own_http=own_http)
+    await claude.generate(system="", user="x")
+    await claude.aclose()
+    assert http.is_closed is own_http
+
+
+def test_own_http_without_a_client_is_refused() -> None:
+    with pytest.raises(ValueError, match="own_http=True says the model closes"):
+        Model("vendor/x", api_key="test-key", own_http=True)
+    with pytest.raises(ValueError, match="own_http=True says the factory closes"):
+        Clients(default="vendor/x", own_http=True)
+
+
+async def test_a_derived_model_sends_through_the_templates_client_and_never_closes_it() -> None:
+    http = httpx.AsyncClient(transport=CountingTransport(ANTHROPIC_REPLY))
+    template = _haiku(http=http, own_http=True)
+    derived = template.derive(temperature=0.5, catalogue=catalogue())
+    await derived.generate(system="", user="x")
+    await derived.aclose()
+    assert not http.is_closed, "the template owns it"
+    await template.aclose()
+    assert http.is_closed
+
+
+async def test_a_derived_model_sends_through_the_client_the_template_opened_and_never_closes_it() -> None:
+    transport = CountingTransport(ANTHROPIC_REPLY)
+    template = _haiku(transport=transport)
+    derived = template.derive(temperature=None, catalogue=catalogue())
+    await derived.generate(system="", user="x")
+    await derived.aclose()
+    assert transport.requests == 1 and transport.closes == 0, "the template owns its transport"
+    await template.aclose()
+    assert transport.closes == 1
+
+
+async def test_clients_closing_leaves_a_role_template_given_a_transport_working() -> None:
+    transport = CountingTransport(ANTHROPIC_REPLY)
+    template = _haiku(transport=transport)
+    clients = Clients(default=template, judge=template, catalogue=catalogue())
+    for role in ("judge", "analysis"):
+        await clients(role, None, temperature=0.5).generate(system="", user="x")
+    await clients.aclose()
+    assert transport.closes == 0, "two derived models closed, the caller's transport left open"
+    await template.generate(system="", user="x")
+    assert transport.requests == 3
+
+
+@pytest.mark.parametrize("own_http", [False, True])
+async def test_clients_closes_the_client_handed_in_after_its_models_only_when_it_owns_it(
+    own_http: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    http = httpx.AsyncClient(transport=CountingTransport(ANTHROPIC_REPLY))
+    clients = Clients(default="vendor/judge", catalogue=catalogue(), http=http, own_http=own_http)
+    lease = clients("judge", None)
+    await lease.aclose()
+    assert not http.is_closed, "closing a lease releases nothing"
+    await clients.aclose()
+    assert http.is_closed is own_http
 
 
 async def test_a_catalogue_opens_its_fetch_with_the_exported_timeout(opened: Opened) -> None:

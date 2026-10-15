@@ -78,7 +78,7 @@ from threetears.evals.analysis.lenses.program_budget import compute_program_budg
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
-from threetears.evals.kernel.declaration import CampaignDesign, resolve_declared_control
+from threetears.evals.kernel.declaration import CampaignDesign, RateDrop, resolve_declared_control
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,
@@ -125,9 +125,15 @@ from threetears.evals.analysis.bundle.mechanisms import (
     _mechanism_observations,
     _served_models,
 )
+from threetears.evals.analysis.bundle.config import _declared_axes
 from threetears.evals.analysis.bundle.divergence import _scope_divergences
 from threetears.evals.analysis.bundle.telemetry import _model_versions, _run_summary, _telemetry_rollup
-from threetears.evals.analysis.bundle.coverage import _coverage_map, _declared_crossing, _factor_aliasing
+from threetears.evals.analysis.bundle.coverage import (
+    _coverage_map,
+    _declared_crossing,
+    _factor_aliasing,
+    _unexercised_factors,
+)
 from threetears.evals.analysis.bundle.cell_reads import (
     _cell_measures,
     _cell_strata,
@@ -150,7 +156,6 @@ from threetears.evals.analysis.bundle.comparisons import (
 )
 from threetears.evals.analysis.bundle.judges import _judge_change
 from threetears.evals.analysis.bundle.trials import trials_and_census
-from threetears.evals.analysis.report.decision import parse_decision_rule
 from threetears.evals.analysis.bundle.time_axis import _time_axis
 from threetears.evals.analysis.bundle.surface import _measure_catalog
 
@@ -447,7 +452,10 @@ def assemble_context_bundle(
         profile=profile,
     )
     reportable = {entry.name for entry in coverage}
-    aliasing = _factor_aliasing(run_ids, _lever_levels(runs, results_by_run, profile=profile), apparatus_levels)
+    axes = _declared_axes(campaign.declared_design)
+    aliasing = _factor_aliasing(
+        run_ids, _lever_levels(runs, results_by_run, profile=profile, declared_axes=axes), apparatus_levels
+    )
 
     # The cell algebra, over observations rather than runs. Independent of `design`, which is
     # the point: a cell is what pools, and pooling must not depend on whether anyone designated
@@ -591,6 +599,7 @@ def assemble_context_bundle(
         # underneath it reports that fact nowhere at all.
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         aliased_factors=aliasing[0],
+        unexercised_factors=_unexercised_factors(runs, results_by_run, arms, profile=profile, declared_axes=axes),
         factor_pairs=aliasing[1],
         declared_crossing=_declared_crossing(campaign.declared_design, runs, results_by_run, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
@@ -780,6 +789,7 @@ def assemble_context_bundle(
         observations=mechanisms,
         served=served,
         profile=profile,
+        declared_axes=axes,
     )
     bundle.divergences_tested, bundle.divergences_untested = divergence_count
     # Last, because it reads what both confound-bearing lenses actually emitted rather than
@@ -806,18 +816,15 @@ def _criteria(runs: Sequence[EvalRun], storage: CampaignReadStore, scope_id: str
 
 
 def _pass_rate_questions(declared: CampaignDesign | None) -> frozenset[str]:
-    """The live questions whose declared decision rule reads the overall pass rate: each one with a rate clause.
-
-    Read by the one parser the page settles the rule with (:func:`~threetears.evals.analysis.report.decision.parse_decision_rule`),
-    so the contrast is in a family exactly when the rule it serves can read it.
-    """
+    """The live questions whose declared decision rule reads the overall pass rate: each with a rate clause that names
+    no one reading, so the contrast is in a family exactly when the rule it serves can read it."""
     if declared is None:
         return frozenset()
     return frozenset(
         question.id
         for question in declared.live_questions()
-        if (rule := parse_decision_rule(question.text)) is not None
-        and any(clause.kind == "rate_drop" for clause in rule.clauses)
+        if question.decision is not None
+        and any(isinstance(clause, RateDrop) and clause.reading is None for clause in question.decision.clauses)
     )
 
 

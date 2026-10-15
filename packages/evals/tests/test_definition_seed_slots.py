@@ -32,6 +32,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
+from threetears.evals.kernel.host import TemplateChecks
 from threetears.evals.schema import EvalTemplate
 from threetears.evals.run import (
     SeedCorpus,
@@ -61,12 +62,14 @@ def _seed(
     corpus: SeedCorpus | None = None,
     refuse_undeliverable: Callable[[EvalTemplate], None] = _admit,
 ) -> SeedOutcome:
-    return seed_eval_definitions(
-        toyhost_host(storage=storage),
-        corpus if corpus is not None else SeedCorpus(scope_id=SCOPE, templates=tuple(templates)),
+    checks = TemplateChecks(
         require_known_tools_allowed=_admit,
         refuse_undeclared_world_seed=_admit,
         refuse_undeliverable_template=refuse_undeliverable,
+    )
+    return seed_eval_definitions(
+        toyhost_host(storage=storage, template_checks=checks),
+        corpus if corpus is not None else SeedCorpus(scope_id=SCOPE, templates=tuple(templates)),
     )
 
 

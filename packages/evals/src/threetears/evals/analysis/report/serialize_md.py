@@ -7,10 +7,21 @@ number a picture would have shown, and a chart the page leaves out is left out h
 outcome bar whose every column is one of the scoreboard's prints nothing here: its table would repeat the scoreboard. What
 the page folds (a trial's record, a finding's evidence, the engine's disclosures) is a ``<details>`` here as well,
 open where the page shows it open. Deterministic: one report renders to one string.
+
+**Nothing quoted is structure.** What a trial carried (what the case asked, what the judge saw, a recorded error) is a
+fenced block whose fence is longer than any run of backticks inside it, so a transcript's own ``## heading`` or
+code fence is text, never a section of this document's outline. Every other string a trial's record quotes (why it
+failed, a failed check's name and expression, the judge's criterion and reason) takes the same escape chosen by its
+content: a fence for text over several lines, else a code span whose backticks no run inside it can close, so a
+``</details>`` the judge wrote never closes the fold it sits in. The author's words are laid out as the page lays
+them out — paragraphs and bullet lists, bold and code — with any other block a line would open (a heading, a quote,
+a fence, raw HTML) escaped. A trial's summary line is escaped as the HTML it sits in. The trials are the page's:
+a record for each failed or lost trial, the passed ones one table of their stored results.
 """
 
 from __future__ import annotations
 
+import html
 import re
 from collections.abc import Iterable, Sequence
 
@@ -125,10 +136,10 @@ def _text(block: TextBlock) -> list[str]:
         return [f"**{body}**"]
     if block.role == "answer":
         lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
-        return [f"**{lead}.** {body}" if lead else body]
+        return [f"**{lead}.** {body}" if lead else _inert(body)]
     if block.role == "recommendation":
         disposition = facts.get("Disposition", "")
-        return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}" if disposition else body]
+        return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}" if disposition else _inert(body)]
     if block.role == "next_step":
         return [f"**Next:** {body}"]
     if block.role == "revisit_when":
@@ -137,14 +148,14 @@ def _text(block: TextBlock) -> list[str]:
         return [f"Caveat ({facts.get('Kind', 'unkinded')}): {body}"]
     if block.role == "carried_forward":
         return [f"Carried forward: {body}"]
-    return [block.body.strip()]
+    return _paragraphs(block.body)
 
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
     """Something code had to say: the verdict in bold, every other line plain."""
     if block.source == "verdict":
         return [f"**{_one_line(block.text)}**"]
-    return [_one_line(block.text)]
+    return [_inert(_one_line(block.text))]
 
 
 def trial_summary(block: TrialBlock) -> str:
@@ -156,9 +167,10 @@ def _trial(block: TrialBlock) -> list[str]:
     """One trial's record, open when the block says so: what it asked, what the judge saw and said, what failed,
     and where it is stored."""
     opened = " open" if block.open else ""
-    lines = [f'<details id="{block.trial_id}"{opened}><summary>{trial_summary(block)}</summary>', ""]
+    summary = html.escape(_one_line(trial_summary(block)), quote=False)
+    lines = [f'<details id="{html.escape(block.trial_id)}"{opened}><summary>{summary}</summary>', ""]
     if block.cause_words:
-        lines += [f"Why: {_one_line(block.cause_words)}", ""]
+        lines += [*_quoted("Why:", block.cause_words), ""]
     if block.first_input:
         lines += ["What the case asked:", "", *_fenced(block.first_input), ""]
     if block.excerpt:
@@ -168,7 +180,9 @@ def _trial(block: TrialBlock) -> list[str]:
         lines += [
             "Failed checks:",
             *(
-                f"- `{check.expression}`" if check.expression in check.name else f"- {check.name}: `{check.expression}`"
+                f"- {_code(check.expression)}"
+                if check.expression in check.name
+                else f"- {_code(check.name)}: {_code(check.expression)}"
                 for check in block.failed_checks
             ),
             "",
@@ -177,9 +191,9 @@ def _trial(block: TrialBlock) -> list[str]:
         lines += ["What the judge said:"]
         for entry in block.judge:
             score = "could not tell" if entry.score is None else f"{entry.score} ({entry.scale})"
-            # A criterion is written as a sentence of its own, so one that already ends is not ended twice.
-            asked = f" Asked: {_one_line(entry.criterion).rstrip('.')}." if entry.criterion else ""
-            lines.append(f"- **{entry.dim}**: {score}.{asked} {_one_line(entry.reason)}".rstrip())
+            asked = f" Asked: {_code(entry.criterion)}." if entry.criterion else ""
+            said = f" {_code(entry.reason)}" if entry.reason.strip() else ""
+            lines.append(f"- {_code(entry.dim)}: {score}.{asked}{said}")
         lines.append("")
     if block.error_words:
         lines += ["Recorded error:", "", *_fenced(block.error_words), ""]
@@ -187,11 +201,68 @@ def _trial(block: TrialBlock) -> list[str]:
     return lines
 
 
+def _quoted(label: str, text: str) -> list[str]:
+    """``label`` and a string the trial carried, escaped by its content: fenced under it when it runs over several
+    lines (:func:`_fenced`), else a code span beside it (:func:`_code`)."""
+    if "\n" in text.strip():
+        return [label, "", *_fenced(text)]
+    return [f"{label} {_code(text)}"]
+
+
+def _code(text: str) -> str:
+    """One line of quoted text as a code span no run of backticks inside it can close: nothing in it is structure, a
+    tag or an emphasis. Padded with a space where it begins or ends with a backtick, which the span then strips."""
+    text = _one_line(text)
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    ticks = "`" * (longest + 1)
+    pad = " " if text[:1] == "`" or text[-1:] == "`" or (text[:1] == " " and text[-1:] == " ") else ""
+    return f"{ticks}{pad}{text}{pad}{ticks}"
+
+
 def _fenced(text: str) -> list[str]:
-    """Text as a fenced block whose fence no run of backticks inside it can close."""
+    """Text as a fenced block whose fence no run of backticks inside it can close, so nothing in it is structure."""
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
     fence = "`" * max(3, longest + 1)
     return [fence, *text.splitlines(), fence]
+
+
+#: A line's opening that would make it a block of its own rather than a paragraph's text: a heading, a quote, a
+#: list item, a code fence or an HTML block — or a whole line that is a thematic break. Its first character is
+#: escaped. A table and a setext heading each need a second line, which a paragraph laid out on one never has.
+_BLOCK_OPENING = re.compile(r"#|>|[-+*](?:\s|$)|`{3}|~{3}|<|([-*_])(?:\s*\1){2,}\s*$")
+
+#: An ordered list item's opening (``1.`` or ``1)``), whose delimiter is escaped instead.
+_ORDERED_OPENING = re.compile(r"(\d{1,9})([.)])(?=\s|$)")
+
+
+def _inert(line: str) -> str:
+    """One line of someone else's words that opens no block of its own: its leading marker escaped."""
+    line = line.lstrip()
+    if _BLOCK_OPENING.match(line):
+        return "\\" + line
+    if match := _ORDERED_OPENING.match(line):
+        return f"{match.group(1)}\\{match.group(2)}{line[match.end() :]}"
+    return line
+
+
+def _paragraphs(text: str) -> list[str]:
+    """An author's words as the page lays them out: paragraphs on one line each and bullet lists, nothing else.
+
+    The page (``serialize_html._markdown``) renders only those, with bold and code inside them; a heading, a quote or a
+    fence an author's words carry reads there as the text it is, and here as the same text, escaped.
+    """
+    out: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", text.strip()):
+        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+        if not lines:
+            continue
+        if out:
+            out.append("")
+        if all(line[:2] in ("- ", "* ") for line in lines):
+            out += [f"- {_inert(line[2:])}" for line in lines]
+        else:
+            out.append(_inert(" ".join(lines)))
+    return out
 
 
 def _table(block: TableBlock) -> list[str]:

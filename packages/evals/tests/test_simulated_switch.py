@@ -1,6 +1,6 @@
 """A decision rule's switch on a rate, checked against data whose true drop is exactly the margin.
 
-A rate clause ("no dimension drops by more than 9.5 points") settles ``switch`` when the interval on the candidate
+A rate clause (``RateDrop(max_points=9.5)``: no pass rate drops by more than 9.5 points) settles ``switch`` when the interval on the candidate
 minus the control keeps the drop within the margin (:mod:`~threetears.evals.analysis.report.decision`). That is a
 claim of no worse by more than the margin, so at a true drop of exactly the margin it must be made no more often
 than the interval's one tail. A pass rate's per-case values are coarse shares of a few repeats, and a candidate that
@@ -19,7 +19,8 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 
-from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule, parse_decision_rule
+from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule
+from threetears.evals.kernel.declaration import DecisionRule, RateDrop
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     bounded_difference_interval,
@@ -34,7 +35,7 @@ REPEATS = 3
 #: The interval's one tail, at a family of one: what a switch at the margin may be read at most.
 ONE_TAIL = (1 - INTERVAL_LEVEL) / 2
 #: G2's rule, its margin set to the true drop.
-RULE = parse_decision_rule("Decision rule: switch only if no dimension drops by more than 9.5 points; otherwise keep.")
+RULE = DecisionRule(clauses=(RateDrop(max_points=9.5),))
 
 Interval = Callable[[list[float], list[float]], tuple[float, float] | None]
 
@@ -52,7 +53,6 @@ def _family_t(control: list[float], candidate: list[float]) -> tuple[float, floa
 
 def _switch_rate(interval: Interval, seed: int) -> float:
     """How often the rule settles switch on the rate clause, at a true drop of 9.5 points against a 9.5-point margin."""
-    assert RULE is not None
     rng = random.Random(seed)
     switched = 0
     for _ in range(REPLICATES):
@@ -71,7 +71,7 @@ def _switch_rate(interval: Interval, seed: int) -> float:
             interval=interval(control, candidate),
         )
         readings = RuleReadings(rates=(reading,), control_cases=CASES, candidate_cases=CASES)
-        switched += evaluate_rule(RULE, readings).clauses[0].outcome == "switch"
+        switched += evaluate_rule(RULE, readings, control="v1", candidate="v2").clauses[0].outcome == "switch"
     return switched / REPLICATES
 
 

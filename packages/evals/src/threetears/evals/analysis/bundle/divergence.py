@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from fractions import Fraction
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from threetears.evals.analysis.stats import (
@@ -413,6 +413,7 @@ def _scope_divergences(
     observations: _MechanismObservations,
     served: _ServedModels,
     profile: HostProfile,
+    declared_axes: Collection[str],
 ) -> _Divergences:
     """Find the lever changes where the whole run moved by a different amount than the part under test.
 
@@ -456,6 +457,7 @@ def _scope_divergences(
             for the observed-mechanism confounds it names.
         served: Which model answered each result's candidate calls, for the served-model confound.
         profile: The host whose vocabulary this reads.
+        declared_axes: The levers the campaign declared as axes, each a lever whatever its calls.
 
     Returns:
         The divergences to report (strongest first, capped); a :class:`WholeSwing` for each lever, level pair
@@ -465,7 +467,7 @@ def _scope_divergences(
     swings: dict[_SwingKey, WholeSwing] = {}
     n_tested = n_untested = 0
     all_run_ids = [run.id for run in runs]
-    lever_levels = _lever_levels(runs, results_by_run, profile=profile)
+    lever_levels = _lever_levels(runs, results_by_run, profile=profile, declared_axes=declared_axes)
     for lever, campaign_wide in lever_levels.items():
         cohort = set(_lever_cohort(lever, design, all_run_ids))
         by_level = {

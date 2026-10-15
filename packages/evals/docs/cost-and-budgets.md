@@ -68,7 +68,8 @@ another part's, and a sibling cell sees all of it.
   shipped client answers `None` before its catalogue is read, for a model the catalogue does not price or lists a
   price for that it cannot bound, and once the rows are `Catalogue.ceiling_stale_after` old (six hours by default):
   an enforced cap never holds a call against old prices. The engine awaits the client's `refresh_prices()` before
-  pricing, so rows reach that age only when a refresh failed, never by the host sitting idle ([Adopting the engine](adopting-a-host.md#bringing-a-provider)).
+  pricing, and the call takes that read as its own (one catalogue read per request), so rows reach that age only
+  when a refresh failed, never by the host sitting idle ([Adopting the engine](adopting-a-host.md#bringing-a-provider)).
 - **Spend nothing reported** is counted only once the cell's result lands, so a kind that neither reserves its
   calls nor reports them (`CellSink.add_spend`) can pass the cap by up to one whole cell per running cell.
 
@@ -140,6 +141,15 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
    With three past results it is wide on the high side (three costs of $0.10, $0.20 and $0.30 put a
    15-observation arm's upper end near $59), so a capped launch on thin history can be refused. It treats
    each observation as independent, which repeats of one case are not, and says so (`band_basis`).
+   A template's new revision (what a definition reset writes) has no history of its own, so while it has no
+   priced result it is priced from the revision before it, walking back one revision at a time, and the basis
+   opens `priced from revision 1 of '<name>': this revision has no priced result yet; model, judge, simulator
+   and apparatus unchanged (...)`. The walk crosses a step only where the template's candidate kind, judged
+   dimensions with their judge pins, conversation shape, world seed and allowed tools are equal, and draws only
+   on runs launched as the arm will be; a step changing one of them leaves the arm unpriced, naming what
+   changed, as does an earlier revision priced only under another judge, simulator, rig or model. The case
+   count is not compared: the price scales per-observation cost to the arm's own cases. This is pricing only;
+   analysis never pools two revisions.
 3. **Refuse.** First, it refuses an arm whose largest call is reserved above its run's cap on its own
    (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
    all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
@@ -174,7 +184,7 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
 
      The floor is sound on a client whose `price_ceiling` does not fall as a prompt grows, which holds for
      any ceiling priced from a bound on the prompt's length and a fixed output cap. It catches the ceilings the
-     output cap and the retry multiplier dominate, as in the incident above, whatever the transcript. A ceiling
+     output cap and the retry multiplier dominate, whatever the transcript. A ceiling
      a long transcript dominates it cannot see: a floor under the cap admits the arm, and that call is held to
      the cap as the run reserves it. A candidate's own calls are the kind's and are not priced. Wire it as
      `price_largest_call=lambda request: price_subject_call_floor(eval_host, request, judged_artifact=...)`,
@@ -309,8 +319,10 @@ asked for, and its summary says which model answered is unconfirmed
 
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which
-refuses `cost_usd`). `cost_usd` and `program_cost` also sum what a judge spent, which is measuring cost: never
-tested between arms, and labelled measuring spend wherever drawn.
+refuses `cost_usd`); the report heads it `Production cost`. `cost_usd` and `program_cost` also sum what a judge
+spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown. Where a
+reply costs under a cent on every arm, the report states both per 1,000 replies, and the heading says so
+(`Cost per 1,000 replies`, `Production cost ($/1,000 replies)`).
 
 **What an arm costs and what the program spent count different results.** A comparison cost — the
 candidate's own spend, `production_replicating_cost`, and every mean of it (`mean_prod_cost_usd` in a run

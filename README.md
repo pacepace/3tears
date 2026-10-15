@@ -182,7 +182,7 @@ Finding out whether a change to an LLM-backed feature made it better.
 
 | Package | Import | Description |
 |---|---|---|
-| [`3tears-evals`](packages/evals/) | `threetears.evals` | Experiment-style evals for LLM-backed products. Variants run over a corpus of cases, graded by code checks and model judges, with cost caps and analysis reports that say which variant is better, by how much, and when the evidence cannot tell. `run_eval` grades a function in one call |
+| [`3tears-evals`](packages/evals/) | `threetears.evals` | Experiment-style evals for LLM-backed features, from a classifier to a tool-using agent. Each version runs over the same cases, graded by code checks, model judges checked against people, or goal checks on the world an agent leaves, with cost caps; the report says what moved, by how much, and when the evidence cannot tell, and names no winner. `Eval(cases, runner, grader)` grades your own function; one TOML file grades a prompt with no Python |
 
 ### Development
 

@@ -13,10 +13,12 @@
    the decision table directly below carries every figure and every clause's reason.
 4. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
    difference is called; the case floor itself is a caveat line under the scoreboard (:func:`caveat_lines`).
-5. **A declared question.** What its contrasts and guardrails came to, in their own verdict words.
-6. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or that no difference was found on any
-   reading. A guardrail an arm is not shown safe on is a second sentence: ``Not yet shown safe: v2 on no invented
-   total.``
+5. **A declared question.** What its contrasts and guardrails came to, in their own verdict words. A question that
+   wrote its decision rule as prose and declares none typed answers nothing here: no rule was applied, so the line is
+   exploratory.
+6. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or ``nothing separated v2 from v1 on any
+   reading``, never "no difference". A guardrail an arm is not shown safe on is a second sentence: ``Not yet shown
+   safe: v2 on no invented total.``
 
 **A cause cannot exist without its words.** Every way a trial is lost (:data:`LOSS_CAUSE_WORDS`) and every way one
 fails (:data:`FAIL_CAUSE_WORDS`) is worded here, with the remedy a reader acts on, and each table is checked against
@@ -41,8 +43,9 @@ from threetears.evals.analysis.report.decision import (
     RateReading,
     RuleVerdict,
     evaluate_rule,
-    parse_decision_rule,
+    prose_ruled,
     rule_readings,
+    ruled_question,
 )
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import humanize, lint_prose, measure_name
@@ -264,16 +267,18 @@ def verdict_line(
         return VerdictLine(rule="one_arm", text=_one_arm(bundle, name, case_name or (lambda case: case)))
     if (ruled := _rule_line(bundle, arm, model or arm)) is not None:
         return VerdictLine(rule="rule", text=ruled)
+    # A rule written as prose was applied by nothing, so the question it states is answered by nothing either.
+    declared_question = bundle.question_declared and not prose_ruled(_declared_questions(bundle))
     if any(board.usable_cases < MIN_CASES for board in boards):
-        lead = "" if bundle.question_declared else "Exploratory: "
+        lead = "" if declared_question else "Exploratory: "
         return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm))
-    if bundle.question_declared and (declared := _declared(bundle, arm)):
+    if declared_question and (declared := _declared(bundle, arm)):
         return VerdictLine(rule="declared", text=declared)
     leads = _separated(bundle, arm, question_id=None, every_family=True)
     return VerdictLine(
         rule="exploratory",
         text="Exploratory: "
-        + ("; ".join(leads) if leads else f"no difference found between {_every_arm(bundle, arm)} on any reading")
+        + ("; ".join(leads) if leads else f"{_nothing_separated(bundle, arm)} on any reading")
         + "."
         + _guardrail_words(bundle, arm),
     )
@@ -295,7 +300,7 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     small = [board for board in bundle.scoreboard if board.usable_cases < MIN_CASES]
     if not small:
         return []
-    verdicts = _rule_verdicts(bundle)
+    verdicts = _rule_verdicts(bundle, arm)
     if verdicts and all(verdict.outcome == "keep" for verdict in verdicts):
         counts = {board.usable_cases for board in bundle.scoreboard}
         if len(counts) == 1 and len(small) == len(bundle.scoreboard):
@@ -314,19 +319,22 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     ]
 
 
-def _rule_verdicts(bundle: AnalysisContextBundle) -> list[RuleVerdict]:
-    """The declared rule read on each candidate against the control; empty when no live question states one."""
+def _rule_verdicts(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[RuleVerdict]:
+    """The declared rule read on each other arm against the control, each arm by ``arm``'s name; empty when no live
+    question declares one."""
     control = _control_key(bundle)
     if not bundle.question_declared or control is None:
         return []
-    rules = [
-        (question.id, rule) for question in _declared_questions(bundle) if (rule := parse_decision_rule(question.text))
-    ]
-    if not rules:
+    asked = ruled_question(_declared_questions(bundle))
+    if asked is None or asked.decision is None:
         return []
-    asked, rule = rules[0]
     return [
-        evaluate_rule(rule, rule_readings(bundle, control, board.variant_key, question_id=asked))
+        evaluate_rule(
+            asked.decision,
+            rule_readings(bundle, control, board.variant_key, question_id=asked.id),
+            control=arm(control),
+            candidate=arm(board.variant_key),
+        )
         for board in bundle.scoreboard
         if board.variant_key != control
     ]
@@ -338,11 +346,13 @@ def _control_key(bundle: AnalysisContextBundle) -> str | None:
     return control if any(board.variant_key == control for board in bundle.scoreboard) else None
 
 
-def _every_arm(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """Every arm by name, the control last: ``v2 and v1``, ``v2, v3 and v1``."""
+def _nothing_separated(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
+    """That no contrast separated, the arms by name, the control last: ``nothing separated v2 from v1``,
+    ``nothing separated v2 or v3 from v1``. Never "no difference": a contrast not separated claims none."""
     key = _control_key(bundle) or bundle.scoreboard[0].variant_key
-    names = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != key] + [arm(key)]
-    return " and ".join(names) if len(names) <= 2 else f"{', '.join(names[:-1])} and {names[-1]}"
+    others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != key]
+    named = " or ".join(others) if len(others) <= 2 else f"{', '.join(others[:-1])} or {others[-1]}"
+    return f"nothing separated {named} from {arm(key)}"
 
 
 def _one_arm(bundle: AnalysisContextBundle, name: str, case_name: Callable[[str], str]) -> str:
@@ -386,7 +396,7 @@ def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
 def _rule_line(bundle: AnalysisContextBundle, arm: Callable[[str], str], model: Callable[[str], str]) -> str | None:
     """The declared decision rule's outcome in plain words, or None when no live question states one."""
     control = _control_key(bundle)
-    verdicts = _rule_verdicts(bundle)
+    verdicts = _rule_verdicts(bundle, arm)
     if control is None or not verdicts:
         return None
     candidates = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
@@ -435,9 +445,7 @@ def rule_sentence(
         return _within_limits(f"Keep {control}: ", said)
     if verdict.outcome == "switch":
         return f"Switch to {candidate}: every clause of the decision rule holds."
-    reasons = [
-        clause.reason.replace("the candidate", candidate) for clause in verdict.clauses if clause.outcome == "unsettled"
-    ]
+    reasons = [clause.reason for clause in verdict.clauses if clause.outcome == "unsettled"]
     cost = _cost_per_case(bundle)
     fix = f" Each more case costs about {cost} over every arm." if cost else ""
     return _within_limits(f"Unsettled between {control} and {candidate}: ", reasons) + fix
@@ -467,12 +475,11 @@ def _kept(verdict: RuleVerdict, control: str, candidate: str) -> list[str]:
         subject = "" if said else f"{candidate} "
         if clause.rate is not None:
             said.append(subject + _counts(clause.rate, control))
-        elif clause.clause.kind == "cost_lower" and readings is not None:
-            ours, theirs = readings.control_cost, readings.candidate_cost
+        else:
+            # A clause settles keep on a rate it names, or on a cost observed no lower: this is the cost.
+            ours, theirs = (readings.control_cost, readings.candidate_cost) if readings is not None else (None, None)
             more = "more" if ours is not None and theirs is not None and theirs > ours else "no less"
             said.append(f"{subject}cost {more} per reply")
-        else:
-            said.append(subject + clause.reason.replace("the candidate ", ""))
     return said
 
 
@@ -561,7 +568,7 @@ def _declared(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str |
         if separated:
             clauses.append(f"{lead}: " + "; ".join(separated))
         elif tested:
-            clauses.append(f"{lead}: no difference found between {_every_arm(bundle, arm)}")
+            clauses.append(f"{lead}: {_nothing_separated(bundle, arm)}")
         else:
             clauses.append(f"{lead}: not tested")
     if not clauses:

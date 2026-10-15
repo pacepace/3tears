@@ -131,7 +131,6 @@ from threetears.evals.kernel.host.style import prompt_fragment
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
 from threetears.evals.schema.models import ClientRequestSettings, KnownReasoningEffort, utc_now_iso
-from threetears.evals.schema.completion import RequestCeiling
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.schema.logs import get_logger
@@ -209,35 +208,8 @@ def analysis_gen_request_settings_for(
 #: what a cap is (:func:`generate_analysis`'s ``admit``).
 CallAdmission = Callable[[str, str, "dict[str, Any] | None"], None]
 
-
-#: Provider requests one generation can send: the generation, and the one repair round-trip a
-#: refused output buys. :func:`generate_analysis` bounds it structurally; a test pins the two.
-MAX_GENERATION_CALLS = 2
-
 #: How much of a judge's reasoning on one trial the writer reads: enough to name a failure mode, not the transcript.
 WRITER_REASON_CHARS = 300
-
-
-def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float:
-    """The wall-clock ceiling of one :func:`generate_analysis`, derived from the ceilings it wraps.
-
-    Up to :data:`MAX_GENERATION_CALLS` requests run back to back, each capped at ``generator_max_tokens``
-    and each bounded by the host's own answer for one such request (``request_s``), which counts every
-    provider call and retry wait the host's client spends on it. A budget over a generation must sit
-    ABOVE this: one below it cancels a repair round-trip that is still writing inside its cap, after
-    both calls were billed and with nothing stored.
-
-    Not covered: whatever the caller does around the generation (assembling the bundle, storing the
-    result).
-
-    Args:
-        request_s: The host's ceiling for one request on its client, by output cap.
-        generator_max_tokens: The generator's output cap, as its clients are built with.
-
-    Returns:
-        The ceiling in seconds: ``MAX_GENERATION_CALLS * request_s(generator_max_tokens)``.
-    """
-    return MAX_GENERATION_CALLS * request_s(generator_max_tokens)
 
 
 # How many measure columns the run-index table may carry. The measure name space is open

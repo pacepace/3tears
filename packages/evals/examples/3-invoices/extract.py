@@ -4,6 +4,9 @@ Two prompts read 30 invoices (clean, multi-currency, noisy OCR); the first is th
 ``python -m threetears.evals examples/3-invoices/extract.py`` replays ``recordings/invoices.jsonl`` offline, and
 ``RECORD=1`` with ``OPENROUTER_API_KEY`` set records it again; the block at the end is that run as your own script.
 As recorded on deepseek/deepseek-v4-flash: 180 calls, $0.0105 (the recording's own cost_usd fields, summed).
+
+Two levers at once? Name the arms as k=v pairs ("prompt=v2, effort=high") and each pair is a factor of the design;
+``await result.against("prompt=v1, effort=high")`` reads the same runs against another control, with no run repeated.
 """
 
 import asyncio
@@ -47,10 +50,6 @@ invoices = Eval(
 
 if __name__ == "__main__":
     result = asyncio.run(invoices.run())
-    print(result)  # v2 against v1 on every reading: the delta, its interval and a verdict
+    print(result)  # the verdict line, then each arm's readings; every delta and its interval is in the report
     result.write("report")  # report.html for the reviewer, beside report.md and bundle.json
     raise SystemExit(4 if result.gate().failed else 0)  # in CI: a regression or a guardrail not shown held fails
-
-# Two levers at once? Name the arms as k=v pairs ({"prompt=v1, effort=low": ..., "prompt=v2, effort=high": ...}) and
-# each pair is a factor of the design; `await result.against("prompt=v1, effort=high")` then reads the same runs
-# against another control, with no run repeated.

@@ -6,6 +6,113 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a typed decision rule, and the host's checks on the host (evaladopt.32)
+
+Breaking for a host, with no alias: three keywords, one flag and the prose decision rule are gone, and each bullet
+says what replaces it. `packages/evals/MIGRATIONS.toml` has the detail.
+
+**The host contract**
+
+- **The template checks are one value on the host.** `TemplateChecks(require_known_tools_allowed=,
+  refuse_undeclared_world_seed=, refuse_undeliverable_template=)` (`threetears.evals.kernel.host`) is set as
+  `EvalHost(template_checks=...)`. Breaking: `create_template`, `update_template`, `seed_eval_definitions`,
+  `reset_definitions` and `definition_drift_actions` no longer take the three keywords; each reads them off the host
+  it is handed and refuses a host with none (`RefusedInput`). To port, build the host with the three callables you
+  passed and drop them from every call.
+- **A reset's flag is `overwrite_customized`.** Breaking: `discard_customization` is gone, on `reset_definitions` and
+  the `definitions_reset` action alike. A reset row reads `discarded: true` only where a stored copy reading
+  `customized` or `unknown` was written over under the flag; a case written fresh or over a stale copy reads false.
+- **A template's own cases seed with it.** `SeedCorpus.template_cases` holds `SeedTemplateCase`s (`template`,
+  `variation_params`, `host_payload`, `stratum`), read from `template_cases/*.json`. The seed writes them into a
+  revision holding no cases (a new or changed case for one that holds cases waits under `needs_reset`), drift reads
+  them, and a reset writes them with the template's next revision, so a host's own seed of them can go.
+  `templates_list` shows each template's `revision`.
+- **The inner ceilings are one value.** `Ceilings()` (`threetears.evals.run`) holds `scheduler_call_attempts`,
+  `simulator_max_tokens`, `simulator_answer_budget_tokens`, `proposer_max_tokens`, `generation_ceiling_s` and
+  `judge_phase_ceiling_s`, so an outer budget is derived from a field rather than a copied number. The six separate
+  names stay exported in `.32` and leave in `.33`.
+
+**The typed decision rule**
+
+- **A question's rule is typed clauses, never prose.** `Question.decision` is a `DecisionRule` of
+  `RateDrop(max_points, reading=None)` and `CostLower()` clauses (`threetears.evals.kernel`); the settling logic is
+  unchanged. A `RateDrop` with no reading reads every pass/fail reading the arms share, a pass/fail scorer or grader
+  included; with one, that goal check, measure, scorer, grader or pass/fail judged dimension alone. Each is read on
+  its better end, so a lower-is-better measure's passes are its false count. Breaking: the prose parser is gone
+  (`parse_decision_rule`, `split_decision_rule`, `RuleClause`, the `unread` clause kind and the text-carrying
+  `DecisionRule`), and `evaluate_rule` takes the arms' names (`control=`, `candidate=`). To port, replace a
+  question's `Decision rule:` sentence with `decision=DecisionRule(...)`.
+- **A rule that cannot be read is refused where the design is declared** (`DesignRefused`): a live question whose
+  text says `Decision rule:` and declares no `decision`, or a `RateDrop` naming a reading the campaign does not
+  measure, which the refusal lists. A stored question of that shape still loads; its Decision section says the prose
+  rule is no longer read, and its verdict is exploratory.
+
+**The page**
+
+- **The rule is a sentence code writes, the arms by name**: `Switch to v2 only if no pass rate drops by more than 2
+  points and v2 costs less per reply. Otherwise stay on v1.` Each clause's row carries its own outcome and its reason
+  in counts and the margin, naming the arms, under one line: `Keep is the default: a switch needs every clause
+  shown, so an unsettled rule keeps v1 for now.`
+- **Nothing separated is never "no difference".** An exploratory verdict reads `Exploratory: nothing separated v2
+  from v1 on any reading.`; the cases table flags `regression` only where a candidate passed a case less often than
+  the control; a guardrail's decision is stated on its row's ruler, and an undecided one by the verdict line, not
+  under Not tested. Rung 3's console ends on why it exits 4 (`exit 4: the gate failed on guardrail ...`).
+- **A case passes when every check its template declares passes, on the console as on the page.** On the quick path
+  a `bool` grader or a field grader is a pass/fail check, so rung 0 reads 16/30 on both surfaces, and the console
+  counts cases with the page's trial reader.
+- **A lever no comparison exercised is no lever.** A model lever read off what ran that fewer than two results
+  exercised leaves the aliasing read, the factor pairs, the divergences, the coverage map and the next steps, and Not
+  tested says so in one line (`research model: no research call was made on either arm.`). A lever the campaign
+  declared as an axis is a level by declaration, whatever its calls.
+- **The Markdown report is safe to paste.** Every string a trial's record carries (its text, why it failed, a failed
+  check's name and expression, the judge's dimension, criterion and reason) is quoted in a fence or code span longer
+  than any backtick run inside it, so a `</details>` a judge wrote closes no fold. An author's headings, quotes,
+  fences and HTML are escaped, a trial's summary is one escaped line, only failed and lost trials get a record, and
+  the passed trials are one table.
+
+**Pricing and the client**
+
+- **One request reads the price catalogue once.** The read a `refresh_prices()` makes belongs to the task that made
+  it: that task's `price_ceiling` and its next call price from it and the call consumes it, so a failed read, a first
+  read included, is no longer fetched again by the call it was made for. Any other task, a child task included, and
+  any read older than `ceiling_stale_after`, read for themselves.
+- **`refresh_prices()` says what it found.** Breaking: `Model.refresh_prices()` returns a `PriceRefresh`
+  (`refreshed`, `fetched_at`, `failure`; it returned `None`), kept as `Model.last_price_refresh`.
+  `Clients.refresh_prices()` reads the shared catalogue once for every role, from `Catalogue.read()` and
+  `Catalogue.fetched_at`. A failed first read logs `eval.providers catalogue unread url=<url>: <why>`, from the
+  catalogue, not naming the model. A host that wrapped `refresh_prices()` to see a failed first read reads `failure`
+  with no `fetched_at` instead.
+- **The HTTP client is the model's, or yours.** `Model(transport=)` sets up the client a model opens itself, which
+  `aclose()` closes with its transport; `own_http=True` makes a client handed in with `http=` the model's to close,
+  and `Clients(own_http=True)` the factory's. `transport=` beside `http=`, or `own_http=True` without it, is a
+  `ValueError`. A derived model sends through its template's client and never closes it. A host that wrapped a model
+  only to close its client drops the wrapper.
+- **A template's new revision is priced from the one before it** while it has no priced result of its own, walking
+  back only while the candidate kind, judged dimensions and their judge pins, conversation shape, world seed and
+  allowed tools are unchanged; the basis names the revision it drew on, and a step that changed one of them leaves the
+  arm unpriced, naming what changed.
+
+**The surface**
+
+- **523 names are declared** (450 before), and nothing a host imports is provisional. Every name the host guide
+  teaches is held off `provisional` (`tests/test_guide_names_are_declared.py`), and each host's import list
+  (`tests/fixtures/host_imports/`) is held to the declared surface (`tests/test_host_imports_are_declared.py`). The
+  names the production host binds move up a tier; `Provider`, `StyleViolation`, `GateOutcome`, `GateToken` and
+  `EvalCaseStratum`, which no host imports, are `provisional`.
+
+**Machine-readable**
+
+- Core schema v15.3 (`CORE_SCHEMA_MINOR` 3, additive: `Question.decision`); stored core fixtures are regenerated.
+- Durable schema v15.5 (`DURABLE_SCHEMA_MINOR` 5, additive: `EvalTestCase.seed_digest`). A seeded template case's
+  `content_hash` and id are its content alone, its stratum left out as a generated case's is; `seed_digest` holds the
+  digest of what was seeded, stratum included, so a stratum the corpus relabels reads `stale` and one an operator
+  relabels reads `customized`.
+- Bundle shape 57: `unexercised_factors` (each an `UnexercisedFactor`, exported from `threetears.evals.analysis`). A
+  bundle stored before it still loads, its fingerprint moving on reload.
+- New fields: `EvalHost.template_checks`, `SeedCorpus.template_cases`, `TemplateLine.revision` (required),
+  `MetricDescriptor.pass_fail` (default `False`), `Model.last_price_refresh`, `EvalTestCase.seed_digest` (default
+  `None`).
+
 ### 3tears-evals: the report reads as a result (evaladopt.31)
 
 Presentation only: `bundle.json` and every typed verdict are unchanged. The one machine-readable change is noted

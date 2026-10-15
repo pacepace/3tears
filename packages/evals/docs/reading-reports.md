@@ -21,8 +21,8 @@ files = report.write("eval-report")    # report.html (one page, no script), repo
 ```
 
 `report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
-page; its two charts are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each
-chart printed as the table of its values. `bundle.json` is the evidence bundle the page was computed from, with its
+page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
+printed as the text it draws. `bundle.json` is the evidence bundle the page was computed from, with its
 `schema_version`; the page names its fingerprint, and `AnalysisContextBundle.from_json(...).fingerprint()` over the
 file returns the same one. **The bundle is the machine form**: there is no published JSON of the report, and a host
 that wants its own pictures reads the bundle. `report_read(format="json")` and the command line's `--format json`
@@ -36,17 +36,17 @@ The invoices example (rung 3) renders this, verbatim:
 # invoices: does v2 do better than v1?
 v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 
-**Exploratory: no difference found between v2 and v1 on any reading. Not yet shown safe: v2 on no invented total.**
+**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
 
 **Scoreboard**
 
 | Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |
 |---|---|---|---|---|---|---|---|
-| ▸ v1 | 90 | 90 | 90 | 0 | 0 | 0 | $0.0459 |
-| v2 | 90 | 90 | 89 | 0 | 0 | 1 | $0.07036 |
+| ▸ v1 | 90 | 90 | 73 | 17 | 0 | 0 | $0.0459 |
+| v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.07036 |
 ```
 
-A campaign with a question declared before the run (rung 5's G2) opens the same way, with the question quoted
+A campaign with a question declared before the run (a host's two-model campaign, G2) opens the same way, with the question quoted
 whole between the arms and the verdict:
 
 ```markdown
@@ -67,31 +67,32 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   design (`30 cases × 3 repeats`). After that an arm is its given label (`production`), the control marked `▸` in
   a table. Only line 2 and the verdict name a model.
 - **Line 3**, where a question was declared before the run: the question quoted, `Asked before the run: "…"`. It
-  is the contract the verdict reads, so it is never paraphrased. Structured text the engine parses is laid out by
-  its structure: where the question states a decision rule, line 3 quotes only the words before it, and the rule is
-  quoted at the head of the Decision section, split where the parser finds `Decision rule:`. A question stating no
-  rule the parser reads is quoted whole.
+  is the contract the verdict reads, so it is never paraphrased, and it is quoted whole. Its decision rule is not
+  words but typed clauses (`Question.decision`), so the Decision section states it in a sentence code writes.
 - **Verdict**, written by code and never by a memo, result first: one sentence for the decision, a second only for
   a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
-  models.`, the arm, the cause, the fix); one arm (`emails: 25/30 cases passed; 5 misses: double-charge,
-  refund-after-cancel, …`, each case by the name its author gave it, else `case N`); a declared decision rule, in
+  models.`, the arm, the cause, the fix); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
+  gdpr-delete, …`, each case by the name its author gave it, else `case N`); a declared decision rule, in
   plain counts with each arm by its model (`Keep production: deepseek-v4-flash passed 2 of 12 trials to
   deepseek-v4.1-flash's 10, and cost more per reply.`); which arm passed more, when an arm is under the case floor;
-  a declared question's contrasts; `Exploratory:` (linked to the glossary) and what separated, or `no difference
-  found between v2 and v1 on any reading`. A guardrail an arm is not shown safe on is the second sentence:
+  a declared question's contrasts; `Exploratory:` (linked to the glossary) and what separated, or `nothing
+  separated v2 from v1 on any reading`, never "no difference". A guardrail an arm is not shown safe on is the second sentence:
   `Not yet shown safe: v2 on no invented total.`
-- **Scoreboard**: a bare table of counts and the cost per reply; a failure cause beside checks and the judge heads
-  its own column (`Model failed`) where it is the only one, and the outcome bar names each where there are several.
-  Then the outcome bar (in Markdown, its table only where it splits a cause the scoreboard lumps together). Under
-  it, in normal weight, never bold, never first, the facts that change how the verdict is read and nothing else, in
-  this order: the case floor; an arm's label that its own row contradicts (`'cheaper candidate' is not cheaper: it
-  cost more per reply than production.`, latency only where it was read serially); an arm whose every trial failed.
-  A "too few" line says what is withheld and why, in the reader's terms, never a bare count — and what is withheld
-  is only the interval, never the gap, which is measured and stated: `4 cases per arm: keep follows from the counts
-  above. Whether the gap holds on more cases is not estimated: an interval takes 5 independent cases.` where a
-  declared rule settled keep, `Usable cases: v4.1-flash 3, v4-flash 1. Under 5 independent cases a rate is shown as
-  a count, and whether the arms' gap holds on more cases is not estimated.` otherwise.
-  Everything else is a step down: what was not charted and where a cost is a floor are in the Methods.
+- **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a cent).
+  A trial passed when every check passed (a goal check, and on the quick path a `bool` grader or a field grader) and
+  every judged dimension cleared its bar, and a case passed when every trial of it did, on the console as on the
+  page. A failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one;
+  the outcome bar under the table names each where there are several (in Markdown, its table only where it splits a
+  cause the scoreboard lumps together). Under it, in normal weight, never bold, never first, the facts that change
+  how the verdict is read and nothing else, in this order: the case floor; an arm's label that its own row
+  contradicts (`'cheaper candidate' is not cheaper: it cost more per reply than production.`, latency only where it
+  was read serially); an arm whose every trial failed. A "too few" line says what is withheld and why, in the
+  reader's terms, never a bare count — and what is withheld is only the interval, never the gap, which is measured
+  and stated: `4 cases per arm: keep follows from the counts above. Whether the gap holds on more cases is not
+  estimated: an interval takes 5 independent cases.` where a declared rule settled keep, `Usable cases: v4.1-flash 3,
+  v4-flash 1. Under 5 independent cases a rate is shown as a count, and whether the arms' gap holds on more cases is
+  not estimated.` otherwise. Everything else is a step down: what was not charted and where a cost is a floor are in
+  the Methods.
 
 The floor counts independent cases, never trials or repeats. Below it no interval is estimated: no contrast is tested,
 the verdict says too few, a pass rate (and pass^k) reads as a count with no estimate of how far off it could be, and no
@@ -102,17 +103,29 @@ reading.
 
 ### The rest of the page
 
-- **Decision**: the declared decision rule quoted on its first line (`Decision rule: "switch … only if … AND …;
-  otherwise keep …"`), then one row per clause and reading, each arm's column headed by its name, `settled: keep`,
-  `settled: switch` or `unsettled` with the reason. Keep settles on what the run observed: a drop past the margin,
-  or a higher cost. Switch needs
+The sections follow in this order, each reached from a sticky nav; Cases, Trials, Not tested, Methods and the
+Glossary start folded, and a nav link opens the one it lands on.
+
+- **Decision**: the declared decision rule in one sentence code writes from its clauses, the arms by name (`Switch to
+  v2 only if no pass rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on v1.`; a clause
+  naming one reading says `no tone rate drops by more than 2 points`), then one row per clause and reading, the
+  clause's own sentence first, each arm's column headed by its name, then the clause's own outcome, `keep`,
+  `switch` or `unsettled`, with the reason in words, the counts and the margin naming the arms (`keep: v2 passed 14
+  of 60 to v1's 29, a drop of 25 points against a margin of 10`; `unsettled: v2's drop is not shown to stay within
+  10 points (it could be as much as 53.6)`). One line under the table says what unsettled means: `Keep is the
+  default: a switch needs every clause shown, so an unsettled rule keeps v1 for now. A clause reads the interval a
+  switch reads, which can be wider than the contrasts table's.` So a clause can read keep or unsettled beside a
+  contrast that is not separated. Keep settles on what the run observed: a drop past the margin, or a higher cost.
+  Switch needs
   sampling evidence: every arm at the case floor, and for every rate the clause reads (the pass rate and each
   check's) the contrast's bounded interval keeping the drop within the margin; for cost, the interval wholly below
   zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds its error rate on a
   few coarse cases, where the t interval does not
   ([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases only a sweep settles a
   10-point clause. A run that shows neither is unsettled ("the cost difference did not separate"); a bundle shaped
-  before 55 reads "this bundle predates the interval a switch needs".
+  before 55 reads "(this bundle predates the interval a switch needs)". A question stored with its rule written as
+  prose in its words, and none typed, opens the section with `This question's rule was written as prose, which is
+  no longer read; declare it as a rule.`, and its verdict is exploratory: no rule was applied.
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
   readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Where a
@@ -123,23 +136,34 @@ reading.
   tested (`The analysis also noted: …`). Where a declared rule settled every clause, its question has no answer
   line: the verdict and the Decision table answer it; a clause left open is the one line (`Still open: whether …`).
   The memo's words are held to the page's style (below).
-- **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size
-  and the adjusted p folded; the guardrails; strata and per-label tables, folded. A one-arm page contrasts nothing,
-  so the section is headed **Readings** (its id stays `contrasts`).
+- **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
+  Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
+  ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
+  size, pairing and adjusted p in a closed `Statistics` fold, the `Guardrails` table, and the `By stratum` and
+  `Per label` tables, folded. A one-arm page contrasts nothing, so the section is headed **Readings** and lists
+  each reading over all cases (its id stays `contrasts`).
 - **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`), its trial ids last and muted, the
-  failed and lost ones first. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
+  failed and lost ones first. The Flag column reads `regression` only where a candidate passed a smaller share of
+  its usable trials on the case than the control (`✓ ✓ ✗` against `✓ ✓ ✓`); a tie or a gain never flags, and
+  `no usable trial` marks a case an arm has none on. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
   name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
-  line (`180 trials ran. Of them 179 passed and 1 failed.`) and only what went wrong: one row per failed or lost
+  line (`180 trials ran. Of them 161 passed and 19 failed.`) and only what went wrong: one row per failed or lost
   trial, the failed first, and each one's record under `T4 · double-charge · cheaper candidate · failed` (never the
   start of what the case asked), the first twelve open. A failed check is named by its expression, as code
   (``check: `call_count("music.queue_track") >= 2` ``). The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
-- **Not tested**, then **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the
-  bundle); the coverage map in a closed `Coverage` fold (one row per lever: its status, how many findings name it,
-  the next steps that do), which restates no finding; and the engine's own disclosures in a closed fold. Then the
-  **Glossary**: every term of art the page links, in one plain sentence. Every column header that is a term of art
-  links its entry, and in HTML a hover reads it.
+- **Not tested**: what the campaign could not speak to, one line each. A lever that ran at one level
+  (`Lever model is unswept: one level ran.`) or that fewer than two results exercised
+  (`research model: no research call was made on either arm.`), a case an arm has no usable trial of, a goal check
+  not shown to beat doing nothing, the measures with no margin and how to declare one, each judge not yet calibrated,
+  a finding that names no reading, the readings no declared question asked about, and, folded, a cost not measured.
+  With none of these, `Nothing declared went untested.`
+- **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the bundle); the coverage map
+  in a closed `Coverage` fold (one row per lever: its status, how many findings name it, the next steps that do),
+  which restates no finding; and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of
+  art the page links, in one plain sentence. Every column header that is a term of art links its entry, and in HTML a
+  hover reads it.
 
 ### Style
 
@@ -153,14 +177,20 @@ verdict line's sentence, and one saying the evidence cannot confirm a difference
 code's counts on that reading, the size of the difference left to more cases; both are disclosed in Methods. What
 is left is counted there (`style: N violations`) and listed.
 
-### The two charts
+### The marks
 
-Two shapes, drawn by the package as inline SVG with no dependency: the **outcome bar** on the scoreboard (a census,
-always drawn) and **interval rows** (a dot and its interval per row, value, interval and cases written at the right,
-a zero line for a difference and a band for a declared margin). A row is drawn only for an arm with `MIN_CASES`
-usable cases and an interval; a chart with no such row is not built at all — no figure, no stub. Colours come from
-the page's CSS variables, each defined for light and dark alike; no colour is the only encoding, every count is text, each chart has a `<title>` and a `<desc>` stating its
-values, and a visually hidden table beside it holds them for a screen reader.
+The page draws two marks, as inline SVG with no dependency. The **outcome bar**, under the scoreboard, is the page's
+one chart: a census, so it is always drawn, one bar per arm with its label above it, passed, failed and lost to the
+test setup cause by cause, each count written beside the bar, and a key naming only the states that occur. An
+**interval glyph** is drawn in the table row that states the figure (Tufte's table-graphic): the interval as a
+whisker, the point as a dot, a zero line for a change, and a declared margin as a quiet band. Every cell of a column
+in one unit shares one scale, written once under the table (`Change drawn from -7 to 36.7 pts`), so the rows compare
+at a glance. There are no standalone interval charts: the tables carry the intervals.
+
+No colour is the only encoding: a glyph is drawn in the page's ink and its verdict is the word in the next cell,
+every figure is text in the row, the bar has a `<title>` and a `<desc>` stating its values, and a visually hidden
+table beside it holds them for a screen reader. Colours come from the page's CSS variables, defined for light and
+dark alike.
 
 ### Embedding the page in a host
 
@@ -174,18 +204,19 @@ holds every verdict typed — each guardrail, each bar on each arm, each contras
 
 ## Reading a comparison
 
-The "Contrasts against the control" table (`multiple_comparisons` in the bundle) tests each arm against
-the control on each reading, under one rig.
+The Contrasts table (`multiple_comparisons` in the bundle) tests each arm against the control on each reading,
+under one rig. How its columns, and the `Statistics` fold under it, are computed:
 
 - **The test.** Per-case means (each case's repeats averaged first, because a case is the independent
   draw). When the arms share at least two cases, it is a paired t-test over the shared cases. Otherwise it is
   Welch's t statistic read on Hsu's `min(n_a, n_b) − 1` degrees of freedom. That is conservative at every
   size: on Welch–Satterthwaite's degrees of freedom, a 2-case side against 10 called false differences 10%
   of the time.
-- **Delta, the means, and "Cases tested"** are all over the cases the test read. A case only one arm ran is
-  left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
-- **The interval on delta** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
-  (Bonferroni). All of a family's intervals cover together at least 95% of the time. A separation needs both
+- **The change, the means, and `Cases`** (`30 paired`) are all over the cases the test read. A case only one arm
+  ran is left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
+- **The interval on the change** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
+  (Bonferroni), and the column's header states that level (`Interval (99%)` over five rows). All of a family's
+  intervals cover together at least 95% of the time. A separation needs both
   an adjusted p below 0.05 and an interval that excludes zero, so the two never disagree: a row Holm's later
   steps would separate while its interval still touches zero reads not separated, its p below 0.05 notwithstanding.
 - **Hedges' g** is the standardized difference, corrected for small samples. Cohen's d reads 0.88 for a
@@ -194,7 +225,7 @@ the control on each reading, under one rig.
   bought. Near 1, the cases' own differences cancelled and the paired test is far more sensitive than an
   unpaired one; near 0 pairing bought nothing; below 0 the paired test is less sensitive than an unpaired one
   would have been. Blank for an unpaired test, below three paired cases, and where an arm's values do not vary.
-- **p (Holm-adjusted)** is corrected within the family: one per declared question (the readings on its
+- **Adjusted p** is Holm-corrected within the family: one per declared question (the readings on its
   merit axes), or, with no question, one campaign-wide family over every reading on a merit axis. A measure
   on no axis is never tested. That keeps the rig's own readings out: the judge's time (`judge_ms`), the
   drain wait, and `cost_usd` and `program_cost`, which include what the judge spent. The candidate's spend
@@ -264,7 +295,7 @@ is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, 
 A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
 measure the host declared `guardrail`. On the quick path, `grader(fn, guard=margin)` declares one on a grader and
 `Judge(guard={dimension: margin})` one on a judged dimension, every grade higher-is-better
-([rung 3](ladder.md#rung-3-two-prompts-compared)). The "Guardrails against the control" table
+([rung 3](ladder.md#rung-3-two-prompts-compared)). The Guardrails table
 (`guardrails` in the bundle, under the contrasts on every report, `Result.guardrails()` in code) decides each one
 for each arm, on its own 95% interval on `arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
 cannot hide a loss here.
@@ -273,7 +304,7 @@ cannot hide a loss here.
 |---|---|---|
 | held | the whole interval is on the good side of the margin, and the reading declares its range | nothing; the arm did not get worse by more than you tolerate |
 | breached | the whole interval is beyond the margin | do not adopt the arm, whatever it gained; the analysis writer is refused if it tries |
-| undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe; the contrasts open with a line naming the arm, and Not tested lists it. To decide it, add cases, declare a margin, or declare the reading's range |
+| undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe; the contrasts open with a line naming the arm, and the verdict line says it. To decide it, add cases, declare a margin, or declare the reading's range |
 
 The margin is the measure's `materiality_threshold`, and a judged dimension's is the one its campaign declares
 (`CampaignDesign.guardrail_margins`). A guardrail with no margin declared is held at zero change: `held` then
@@ -438,7 +469,7 @@ one table (Arm, Measure, Value, n, Spread), laid out like the report's evidence 
 ## How an arm is named
 
 Every block that names an arm — the title, the scoreboard, recommendations, evidence rows, the results by
-stratum, the contrasts, the guardrails and labels tables, the cases and every chart row — prints one name for it,
+stratum, the contrasts, the guardrails and labels tables, the cases and the outcome bar — prints one name for it,
 built once (`threetears.evals.analysis.arms.arm_names`).
 
 - An arm is named by the levers whose levels differ across the report's arms, each lever compared only
@@ -584,7 +615,7 @@ figure (`CellFacts.strata`, a list of `StratumFacts` on the decision surface). C
 such a cell are their own entry, so the strata add up to the cell. A cell none of whose cases declares a
 stratum is not broken down, and its report reads as if strata did not exist.
 
-**How it is shown.** Every report carries it as a `strata` table, folded under the contrasts: a row per arm and reading, the pooled
+**How it is shown.** Every report carries it as a `By stratum` table, folded under the contrasts: a row per arm and reading, the pooled
 figure under `All cases`, then a column per stratum. Each arm opens with a `cases` row giving the cases
 and observations behind each column. A stratum holding fewer than `STRATUM_MIN_CASES` (10) cases is still
 shown, marked too few to read alone, and named in a `strata` disclosure below the table. A rate is shown

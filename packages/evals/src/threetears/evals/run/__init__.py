@@ -211,7 +211,8 @@ from threetears.evals.run.ceilings import (
     resolve_effective_ceiling,
 )
 from threetears.evals.run.curation import CurationStore, UnreadableRunDeleteStore
-from threetears.evals.run.definition_seed import SeedCaseSet, SeedCorpus, SeedJudgeCase, SeedOutcome
+from threetears.evals.run.package_ceilings import Ceilings
+from threetears.evals.run.definition_seed import SeedCaseSet, SeedCorpus, SeedJudgeCase, SeedOutcome, SeedTemplateCase
 from threetears.evals.run.definition_drift import (
     DefinitionDrift,
     DefinitionReading,
@@ -254,6 +255,7 @@ __all__ = [
     "BudgetStoppedError",
     "CallCeiling",
     "CandidateTurn",
+    "Ceilings",
     "CapBreach",
     "CeilingRaisedError",
     "EvalRunCostCap",
@@ -311,6 +313,7 @@ __all__ = [
     "SeedCorpus",
     "SeedJudgeCase",
     "SeedOutcome",
+    "SeedTemplateCase",
     "DefinitionDrift",
     "DefinitionReading",
     "DefinitionReset",

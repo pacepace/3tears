@@ -43,6 +43,7 @@ from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     EvalTemplate,
+    RubricDim,
     VariationAxis,
     VariationCounts,
 )
@@ -944,3 +945,90 @@ def _priced_host() -> tuple[Any, EvalStorage]:
     storage = EvalStorage(InMemoryDocumentStore())
     host, _client = toyhost_launch_host(storage=storage)
     return host.eval_host, storage
+
+
+# =============================================================================
+# A template's new revision prices from the revision before it while what a run spends is unchanged
+# =============================================================================
+
+
+def _revisions(storage: EvalStorage, *later: dict[str, Any]) -> list[EvalTemplate]:
+    """Revision 1 of the toy template, then one revision per ``later`` (each its changes), as a reset writes them."""
+    first = toyhost_template().model_copy(update={"id": "tpl-rev-1", "archived": bool(later)})
+    written = [first]
+    for number, changes in enumerate(later, start=2):
+        written.append(
+            first.model_copy(
+                update={"id": f"tpl-rev-{number}", "revision": number, "archived": number <= len(later), **changes}
+            )
+        )
+    for template in written:
+        storage.save_template(template)
+    return written
+
+
+def test_a_new_revision_with_nothing_changed_is_priced_from_the_revision_before_it():
+    host, storage = _priced_host()
+    first, second = _revisions(storage, {"description": "a reset's new wording and cases"})
+    _history(storage, template_id=first.id, model="m-priced", costs=[0.18, 0.20, 0.22])
+
+    price = history_launch_pricer(host)(_quote(template_id=second.id))
+
+    assert price.predicted_usd is not None and price.central_usd == pytest.approx(0.20 * 5 * 2)
+    assert price.basis.startswith(
+        f"priced from revision 1 of {first.name!r}: this revision has no priced result yet; model, judge, simulator "
+        "and apparatus unchanged ("
+    ), price.basis
+    assert f"of revision 1 ({first.id!r})" in price.basis and "upper end of the band" in price.basis
+
+
+def test_a_new_revision_judged_by_another_model_than_the_revision_before_it_reads_unpriced_naming_the_judge():
+    host, storage = _priced_host()
+    first, second = _revisions(storage, {"description": "a reset's new wording"})
+    _history(storage, template_id=first.id, model="m-priced", costs=[0.10, 0.20, 0.30], **_JUDGED_CHEAPLY)
+
+    price = history_launch_pricer(host)(_quote(template_id=second.id, judge=_judged_by("judge-dear")))
+
+    assert price.predicted_usd is None
+    assert f"no priced past result of template {second.id!r}" in price.basis
+    assert f"nor of revision 1 of {first.name!r}" in price.basis
+    assert "revision 1's priced runs differ in judge (" in price.basis and "'judge-dear'" in price.basis, price.basis
+    assert "candidate model (" not in price.basis, "only what differs is named"
+
+
+def test_a_step_changing_a_dimension_s_judge_pin_stops_the_walk_naming_it():
+    host, storage = _priced_host()
+    dim = RubricDim(name="toy.faithful", description="Stays with the facts.", scale="pass_fail", judge="builtin")
+    first, second = _revisions(storage, {"rubric": [dim.model_copy(update={"judge": "configured"})]})
+    storage.save_template(first.model_copy(update={"rubric": [dim]}))
+    _history(storage, template_id=first.id, model="m-priced", costs=[0.18, 0.20, 0.22])
+
+    price = history_launch_pricer(host)(_quote(template_id=second.id))
+
+    assert price.predicted_usd is None
+    assert price.basis.endswith(
+        f"; revision 1 of {first.name!r} cannot price it: the step to revision 2 changed the judged dimensions or "
+        "their judge pins"
+    ), price.basis
+
+
+def test_a_revision_with_priced_results_of_its_own_is_priced_from_them_alone():
+    host, storage = _priced_host()
+    first, second = _revisions(storage, {"description": "a reset's new wording"})
+    _history(storage, template_id=first.id, model="m-priced", costs=[9.0, 9.0, 9.0])
+    _history(storage, template_id=second.id, model="m-priced", costs=[0.18, 0.20, 0.22])
+
+    price = history_launch_pricer(host)(_quote(template_id=second.id))
+
+    assert price.central_usd == pytest.approx(0.20 * 5 * 2), "revision 1's dearer results are not drawn on"
+    assert "revision" not in price.basis and f"template {second.id!r}" in price.basis, price.basis
+
+
+def test_a_walk_crosses_several_unchanged_steps_and_names_the_revision_it_drew_on():
+    host, storage = _priced_host()
+    first, _second, third = _revisions(storage, {"description": "two"}, {"description": "three"})
+    _history(storage, template_id=first.id, model="m-priced", costs=[0.18, 0.20, 0.22])
+
+    price = history_launch_pricer(host)(_quote(template_id=third.id))
+
+    assert price.predicted_usd is not None and price.basis.startswith(f"priced from revision 1 of {first.name!r}")

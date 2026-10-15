@@ -43,7 +43,7 @@ from threetears.evals.analysis.reporter_kind import (
     ReporterKind,
     reporter_case_of,
 )
-from threetears.evals.analysis.generator import MAX_GENERATION_CALLS
+from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
 from threetears.evals.analysis.service import freeze_reporter_case
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError

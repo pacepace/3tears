@@ -182,6 +182,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "containment_defects",
     "describe_rubric_dim",
     "list_metrics",
+    "rule_rates",
     "strictest_class",
 ]
 
@@ -504,6 +505,40 @@ class MetricDescriptor(EvalBaseModel):
         ),
     )
 
+    # Left out of a dump while False, so a descriptor no check declares serializes as it did before the field
+    # existed: every stored catalog, fingerprint and recorded prompt over measures that are no check holds.
+    pass_fail: bool = Field(
+        default=False,
+        exclude_if=lambda value: value is False,
+        description=(
+            "True for a numeric measure graded 0 or 1 that is a check — a scorer returning a bool, a field the "
+            "answer must match — so an observation at its worse end fails the trial it is on, as a boolean measure "
+            "on its wrong side does. Requires a better end and a value range of 0 to 1."
+        ),
+    )
+
+    @property
+    def is_check(self) -> bool:
+        """Whether an observation of this measure passes or fails its trial: a boolean or a pass/fail measure with a
+        better end. The one definition the page's trials and the console's case counts both read."""
+        return self.higher_is_better is not None and (self.data_type == "boolean" or self.pass_fail)
+
+    def check_failed(self, value: bool | float | str) -> bool:
+        """Whether one observation of this check is on its wrong side: False (or 0) where higher is better, True
+        (or above 0) where lower is. Never for a measure that is no check, nor for a text value.
+
+        Args:
+            value: The observation.
+
+        Returns:
+            Whether it fails its trial.
+        """
+        if not self.is_check or isinstance(value, str):
+            return False
+        if self.data_type == "boolean" and not isinstance(value, bool):
+            return False
+        return value <= 0 if self.higher_is_better else value > 0
+
     @property
     def interval_floor(self) -> float | None:
         """The lowest an interval on this measure's mean may reach: its range's floor, zero when nonnegative, else None."""
@@ -518,6 +553,16 @@ class MetricDescriptor(EvalBaseModel):
             raise ValueError(
                 f"{self.name} is declared nonnegative on a value range from {self.value_range[0]}: a nonnegative "
                 "measure is never below zero, so drop one of the two"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_pass_fail_measure_is_graded_zero_or_one(self) -> MetricDescriptor:
+        """Refuse a pass/fail measure with no better end, or on any range but 0 to 1: nothing says which side fails."""
+        if self.pass_fail and (self.higher_is_better is None or self.value_range != (0.0, 1.0)):
+            raise ValueError(
+                f"{self.name} is declared pass_fail without a better end on the range 0 to 1: a check passes or "
+                "fails, which needs higher_is_better and value_range (0, 1)"
             )
         return self
 
@@ -2995,6 +3040,27 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
             "described, so it is never pooled on an assumption nobody made."
         ),
     )
+
+
+def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
+    """Every measure a decision rule may read as a pass rate, oriented: its name -> whether its higher end passes.
+
+    A check (:attr:`MetricDescriptor.is_check`): a boolean with a better end, or a pass/fail measure graded 0 or 1 (a
+    scorer returning a bool, a field grader). A rate on it counts the observations on its better end as passes, so a
+    lower-is-better boolean's passes are its false count and a pass/fail scorer's the trials it passed. The one list
+    a rule's declared readings are checked against and the page's readings are drawn from, so the two never disagree.
+
+    Args:
+        descriptors: The measures, as their catalogue describes them.
+
+    Returns:
+        Measure name -> ``True`` where a pass is its higher end, ``False`` where it is its lower.
+    """
+    return {
+        descriptor.name: bool(descriptor.higher_is_better)
+        for descriptor in descriptors
+        if descriptor.is_check and not descriptor.name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
+    }
 
 
 def list_metrics(

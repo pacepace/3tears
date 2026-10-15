@@ -17,6 +17,7 @@ import pytest
 from threetears.evals import Result
 from threetears.evals.analysis import AnalysisContextBundle, report_markdown
 from threetears.evals.kernel import strict_response_format
+from threetears.evals.quick.files import main
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
 from packages.evals.tests.ladder_support import (
@@ -78,9 +79,9 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     lines = report_markdown(result.report).splitlines()
     assert lines[0] == "# invoices: does v2 do better than v1?"
     assert lines[1].startswith("v1 (control) vs v2 · ")
+    # Never "no difference": a contrast not separated claims none.
     assert lines[3] == (
-        "**Exploratory: no difference found between v2 and v1 on any reading. "
-        "Not yet shown safe: v2 on no invented total.**"
+        "**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**"
     )
     # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
     # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies.
@@ -98,6 +99,19 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     assert result.contrasts("no_invented_total") == []
     assert {row["arm"] for row in result.guardrails()} == {"v2"}
     assert {row["outcome"] for row in result.guardrails()} <= {"held", "breached", "undecided"}
+    # The guardrail's Decision cell is on its row's ruler, points for a rate, beside the interval and margin columns
+    # that state it so; the interval is its own column's, the level in that column's header.
+    (guarded,) = result.guardrails()
+    assert (guarded["interval"], guarded["margin"]) == ("[-13.4, 13.4] pts", "2 pts")
+    assert guarded["decision"] == (
+        "undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared "
+        "margin, so the arm is shown neither within it nor beyond it)"
+    )
+    # In a comparison each arm's guardrail line says what the comparison decided, never that it takes one.
+    printed = str(result)
+    assert "decided only against a control" not in printed
+    assert "the guardrail the other arms are decided against" in printed
+    assert "no_invented_total: mean 0.9888 (n=89, min 0, max 1); guardrail undecided against v1" in printed
     assert {row["arm"] for row in result.contrasts("total")} == {"v2"}
     # Every reading is read again per kind of invoice.
     assert {stratum for row in result.strata("v2") for stratum in row["strata"]} == {
@@ -126,6 +140,20 @@ def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(
     assert bundle.fingerprint() in html
     assert (copy / "report" / "report.md").is_file()
     assert exited.value.code in (0, 4), "0 when the gate passed, 4 when it failed; never a crash"
+
+
+def test_run_from_the_command_line_it_says_why_it_exits_4_in_one_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    offline_copy("3-invoices", tmp_path, monkeypatch)
+    assert main(["extract.py"]) == 4
+    out = capsys.readouterr().out.splitlines()
+    # The last line names what failed the gate in the page's words: the guardrail, the arm and its Decision cell.
+    assert out[-1] == (
+        "exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: not shown held, so not "
+        "known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither "
+        "within it nor beyond it)"
+    )
 
 
 def test_the_docstring_states_what_the_recording_cost() -> None:

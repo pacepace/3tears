@@ -16,8 +16,8 @@ modifiers.
 
 One input and what a good answer looks like: one email and the triage a person gave it. A case is a dict, or a line
 of a `.jsonl` file, frozen once stored, which is what lets two runs over the same cases be compared. Three keys are
-reserved and never handed to the runner: `id` names the case, `stratum` names its kind (a `lookalike`, say) so every
-reading is also split by kind, and `world` is an agent's starting state.
+reserved and never handed to the runner: `id` names the case (the report calls it by that name), `stratum` names its
+kind (a `lookalike`, say) so every reading is also split by kind, and `world` is an agent's starting state.
 
 ### Runner
 
@@ -99,7 +99,8 @@ An `Eval` builds all of this for you (`as_host`); a host of your own declares it
      |
      |  optionally, a model reads the bundle and writes findings: an analysis
      v
-  report    Markdown, HTML or JSON; "code-only" when no analysis was generated
+  report    one page, HTML and Markdown, beside the bundle.json it was computed from;
+            "code-only" when no analysis was generated
 ```
 
 Underneath all of it sits your **host**: the one value through which your app tells the engine what it can
@@ -191,7 +192,7 @@ itself, the candidate model (`model`) and the candidate kind (`candidate_kind`);
 more. *Example:* `model` and `ticket_router.prompt_version`.
 With no host of your own, an arm named as `k=v` pairs (`{"prompt=v2": runner}`) states one beside the model, as
 `callable.prompt` (`callable-judged.prompt` on a judged run), and arms named `"model=m1, prompt=v2"` are keyed by
-their level of both (`examples/3-invoices/extract.py`'s closing comment crosses the prompt with a reasoning
+their level of both (`examples/3-invoices/extract.py`'s docstring crosses the prompt with a reasoning
 effort).
 
 #### Label (sweepable role)
@@ -222,7 +223,7 @@ judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool t
 #### Apparatus class
 One configuration of the rig as recorded on the runs (`ApparatusClass`). Two observations pool only when
 their variant matches and their apparatus falls in the same class; an arm measured under two classes is
-named with `@ rig <digest>` in a report.
+named with `(test setup <digest>)` in a report.
 
 #### Apparatus settings
 Rig values your host declares and a launch may set (`apparatus_settings`), so one template can be run at two
@@ -380,12 +381,13 @@ agreement, never its point estimate, and an undecided one says how many more res
 A curated set of runs under one subject and behaviour, the hub an analysis attaches to (`EvalCampaign`).
 Membership is chosen, not queried; a run may sit in several campaigns. Its declared design names a
 **control**, which is a variant key, not a run, kept beside the lever map and identity version it was computed
-from (`control_levers`, `control_identity_version`), and what it **held fixed** (`held_fixed`: the stimulus,
-controlled or not, and the apparatus, commissioned or witnessed). A campaign with no declared design is
-**exploratory**, and its creator says so (`exploratory=True`); that is read off the missing design, never stored,
-so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:* "triage v1 vs v2",
-control = the v1 variant, held fixed = one case battery on a commissioned rig. Which design to declare for a question:
-[Measuring soundly](measuring-soundly.md#declare-the-design-and-its-control).
+from (`control_levers`, `control_identity_version`); what it **held fixed** (`held_fixed`: the stimulus,
+controlled or not, and the apparatus, commissioned or witnessed); and its **questions**, each with the rule that
+settles it, if any (`Question.decision`: typed clauses the engine settles, never words it parses). A campaign with
+no declared design is **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing
+design, never stored, so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:*
+"triage v1 vs v2", control = the v1 variant, held fixed = one case battery on a commissioned rig. Which design to
+declare for a question: [Measuring soundly](measuring-soundly.md#declare-the-design-and-its-control).
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
@@ -405,19 +407,19 @@ identity version it is **stale**: the bundle says it cannot be resolved (`contro
 address it again from a run. *Example:* the v1 arm.
 
 #### Delta, interval and adjusted p
-What a comparison reports for each arm against the control, per reading. The **delta** is the arm's mean minus
-the control's, over the cases the test read. Its **interval** is where the true difference plausibly lies, widened so
-that every interval tested together holds at once, 95% of the time. The **p (Holm-adjusted)** is the p-value
-corrected for every comparison in its family. A separation needs that p below 0.05 and an interval that excludes
-zero. See
-[reading a comparison](reading-reports.md#reading-a-comparison).
+What a comparison reports for each arm against the control, per reading. The **delta** (the report's **Change**
+column) is the arm's mean minus the control's, over the cases the test read: in points for a rate, in the reading's
+own unit otherwise. Its **interval** is where the true difference plausibly lies, widened so that every interval
+tested together holds at once, 95% of the time. The **adjusted p** (Holm's, in the folded Statistics table) is the
+p-value corrected for every comparison in its family. A separation needs that p below 0.05 and an interval that
+excludes zero. See [reading a comparison](reading-reports.md#reading-a-comparison).
 
 #### Verdict
 What a comparison's evidence supports, per arm and reading: **separated** (printed `improved` or `regressed`
 on the control), **not separated** (the cases could not tell the arms apart, which never means "no
 difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
-enough"), or **untested** (no test could decide). A comparison's report names, in a line above its contrasts
-table, each measure that declares no margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
+enough"), or **untested** (no test could decide). A report names, under Not tested, each measure that declares no
+margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
 `undecided`. Each is also a typed value a program reads (`Result.verdicts()`), which the printed words are
 rendered from. See [reading a comparison](reading-reports.md#reading-a-comparison).
 

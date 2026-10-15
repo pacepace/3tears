@@ -13,7 +13,8 @@ against one private host; the campaigns they summarise are not published.
 ### Purpose and design
 
 **Every eval declares its purpose before it runs: to decide, to learn, or to watch.**
-A decision names what may change and what settles it. A campaign with no declared question is passive,
+A decision names what may change and what settles it, the latter as typed clauses (`Question.decision`): a rule
+read out of words is settled by whatever a parser made of them. A campaign with no declared question is passive,
 and its report leads with what the evidence taught. A watch re-runs a fixed suite against an earlier
 measurement; its value is the regression it catches, so most of its runs change nothing.
 
@@ -115,6 +116,13 @@ into a sentence still passes: this rule is kept for references, not for every nu
 checks structure and nothing else ([what the schema checks](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
 Whether the prose is accurate and useful is measured by evaluating the analysis writer as a subject. "We
 could not answer this, because X, and fixing X costs Y" is a legitimate bottom line.
+
+**The first screen carries the result and every fact that changes how it reads; the rest is one step down.**
+The title, the declared question quoted whole, the design, the verdict and the scoreboard come first; contrasts
+follow as one table, and cases, trials, what was not tested, the methods and the glossary start folded. A figure
+is stated in the reader's terms (a rate as a percent, its change in points) with its interval beside it, and the
+only picture besides the outcome bar is each interval drawn in the row that states it
+([the page](reading-reports.md#the-report-one-page-result-first)).
 
 ### The engine itself
 
@@ -461,11 +469,11 @@ Most of what follows is established practice; what the engine adds is narrower
 | [HELM, Liang et al.](https://arxiv.org/abs/2211.09110) (2022) | Never report a single number: measure many metrics, expose trade-offs, and name what is not covered. | Adopted | Reports give a frontier and bars, never an unqualified winner, and disclosures name what was not measured. |
 | [van der Bles et al.](https://doi.org/10.1098/rsos.181870) (2019) | Keep direct uncertainty (the range) apart from indirect uncertainty (the quality of the evidence). | Adopted | Intervals and [evidence tiers](concepts.md#evidence-tier) render as separate axes. |
 | [Padilla et al.](https://doi.org/10.3389/fpsyg.2020.579267) (2021) | Show verbal confidence alongside quantified uncertainty, never instead of it. | Adapted | Tier words sit beside n and intervals. Confidence is a closed tier, so no field can carry a probability a model made up; nothing calibrates one. |
-| [Frans et al.](https://pmc.ncbi.nlm.nih.gov/articles/PMC10623599/) (2023) | Quantile dot plots were read more accurately than error bars, with no clear effect on decision quality. | Adapted | Distribution charts draw individual values under the interval. Quantile dot plots are not built. |
-| [NeurIPS paper checklist](https://neurips.cc/Conferences/2022/PaperInformation/PaperChecklist), statistical significance item | Put error bars on main claims, say what variability they capture, and draw no impossible bounds. | Adopted | Each interval carries a `variability` phrase, and intervals are clipped to the measure's scale. |
+| [Frans et al.](https://pmc.ncbi.nlm.nih.gov/articles/PMC10623599/) (2023) | Quantile dot plots were read more accurately than error bars, with no clear effect on decision quality. | Not adopted | An interval is drawn as a small glyph in the table row that states its figure, so rows compare at a glance, with every value also written as text. Quantile dot plots are not built. |
+| [NeurIPS paper checklist](https://neurips.cc/Conferences/2022/PaperInformation/PaperChecklist), statistical significance item | Put error bars on main claims, say what variability they capture, and draw no impossible bounds. | Adopted | Intervals are computed over cases, never repeats; each column's header states its level (`Interval (99%)`), and intervals are clipped to the measure's scale. |
 | [GRADE](https://book.gradepro.org/guideline/overview-of-the-grade-approach) | Rate certainty high, moderate, low or very low, downgrading for bias, imprecision and inconsistency. | Adapted | Evidence tiers are GRADE-like, but they grade the judge (`calibrated`, `separation`, `incidental`, `undetermined`), and code assigns them. |
 | [Uncertainty Toolkit for Analysts in Government](https://analystsuncertaintytoolkit.github.io/UncertaintyWeb/) (UK) | Give ranges over point estimates, anchor verbal probability to numbers, give each caveat its reason, and quantify nothing rather than imply false precision. | Adopted | Every reading carries its interval or says why it has none, tier words sit beside numbers, and a caveat attaches to the finding it qualifies. |
-| [Vega-Lite](https://vega.github.io/vega-lite/) | A declarative grammar in which a chart is data. | Rejected | A report draws two chart shapes, an outcome bar and interval rows, as inline SVG of its own with every value written as text. A scriptless page cannot run vega-embed, and a pinned rasteriser wheel for two shapes cost more than the shapes; a host that wants its own pictures reads the report's `bundle.json`. |
+| [Vega-Lite](https://vega.github.io/vega-lite/) | A declarative grammar in which a chart is data. | Rejected | A report draws two marks, the outcome bar and the interval glyph a table row draws beside its figure, as inline SVG of its own with every value written as text. A scriptless page cannot run vega-embed, and a pinned rasteriser wheel for two marks cost more than the marks; a host that wants its own pictures reads the report's `bundle.json`. |
 
 ### Where this engine departs from common practice
 

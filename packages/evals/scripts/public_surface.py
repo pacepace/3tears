@@ -550,6 +550,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.EvalHost",
         "threetears.evals.kernel.host.HostProfile",
         "threetears.evals.kernel.host.CompletionClients",
+        # The host's checks on a template, which create_template, update_template, the seed and a reset read off it.
+        "threetears.evals.kernel.host.TemplateChecks",
         "threetears.evals.kernel.host.default_cell_timeout",
         "threetears.evals.kernel.EvalStorage",
         "threetears.evals.kernel.withhold_failure_detail",
@@ -611,6 +613,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # An authored judge case in a host's boot seed, which a production seed builds in memory
         # (`SeedCorpus(judge_cases=...)`) as well as reads from `judge_cases/*.json`.
         "threetears.evals.run.SeedJudgeCase",
+        # A template's own case in a host's boot seed (a persona, a bank input), built in memory
+        # (`SeedCorpus(template_cases=...)`) as well as read from `template_cases/*.json`.
+        "threetears.evals.run.SeedTemplateCase",
         # A named case set in a host's boot seed, which a production seed builds in memory
         # (`SeedCorpus(case_sets=...)`) as well as reads from `case_sets/*.json`.
         "threetears.evals.run.SeedCaseSet",
@@ -618,7 +623,61 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # catalogue actions a host mounts over them (Discodon runs the read and the reset as a release step).
         "threetears.evals.run.definition_drift",
         "threetears.evals.run.reset_definitions",
+        # What the reset returns, and the digests a host computes over the corpus it seeded before `.30` (the guide
+        # tells a host to write both).
+        "threetears.evals.run.DefinitionReset",
+        "threetears.evals.run.corpus_digests",
         "threetears.evals.actions.definition_drift_actions",
+        # The production host imports these (`tests/fixtures/host_imports/discodon.txt`), so they are its contract:
+        # the inner ceilings it derives its outer budgets from, the metering it folds, the template checks it runs and
+        # the schema keys and prompt markers its own code matches. `Ceilings` carries the six ceilings as one value;
+        # the six names stay beside it in `.32`.
+        "threetears.evals.run.Ceilings",
+        # The seam a host checks a proposed case name against, so it is never printed as `case N`.
+        "threetears.evals.analysis.humanize",
+        "threetears.evals.kernel.FIND_TEMPLATE",
+        "threetears.evals.kernel.SEED_REMEDY",
+        "threetears.evals.kernel.KIND_TEMPLATE",
+        "threetears.evals.kernel.KIND_TEXT",
+        "threetears.evals.schema.PROSE_SCHEMA_KEY",
+        "threetears.evals.schema.nested_schemas",
+        "threetears.evals.schema.RESERVED_DIM_IDS",
+        "threetears.evals.schema.NON_TERMINAL_RUN_STATUSES",
+        "threetears.evals.run.SCHEDULER_CALL_ATTEMPTS",
+        "threetears.evals.run.SIMULATOR_MAX_TOKENS",
+        "threetears.evals.run.SIMULATOR_ANSWER_BUDGET_TOKENS",
+        "threetears.evals.run.MeteredCallTally",
+        "threetears.evals.run.metered_cell_tally",
+        "threetears.evals.run.fold_metered_cell",
+        "threetears.evals.run.precondition_failure_text",
+        "threetears.evals.run.refuse_ignored_template_fields",
+        "threetears.evals.gen.PROPOSER_MAX_TOKENS",
+        "threetears.evals.analysis.generation_ceiling_s",
+        "threetears.evals.analysis.judge_phase_ceiling_s",
+        "threetears.evals.ops.run_label",
+        # What the host guide tells a host to call, build, catch, type against or read in its prose: the cost-cap
+        # wrapper and the error a refused reservation raises, the strict reply projection and the schema it refuses,
+        # the reader of a boot seed directory, a measure's per-entry marker, the narrow store ports a function types
+        # itself against, the read tier's row budget, the reporter kind's contract, the judge-wording sentence a
+        # release note carries, the error a store raises on an event loop, and the renderer of started jobs.
+        # `tests/test_guide_names_are_declared.py` holds the rule: a name the guide teaches is never provisional.
+        "threetears.evals.kernel.CappedCompletion",
+        "threetears.evals.kernel.CostCapReached",
+        "threetears.evals.kernel.strict_response_format",
+        "threetears.evals.kernel.UnportableSchema",
+        "threetears.evals.kernel.host.MemberActsOn",
+        "threetears.evals.run.load_seed_corpus",
+        "threetears.evals.kernel.RunStore",
+        "threetears.evals.kernel.ResultStore",
+        "threetears.evals.kernel.RunRecordStore",
+        "threetears.evals.kernel.DefinitionStore",
+        "threetears.evals.kernel.CassetteStore",
+        "threetears.evals.kernel.JobStore",
+        "threetears.evals.analysis.READ_TIER_ROW_BUDGET",
+        "threetears.evals.analysis.REPORTER_KIND_CONTRACT",
+        "threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE",
+        "threetears.evals.schema.StoreCalledOnEventLoop",
+        "threetears.evals.actions.render_jobs_started",
         "threetears.evals.kernel.default_job_timeout",
         "threetears.evals.kernel.EvalCampaign",
         # The stored documents a host's kind and launcher build and its own code reads back.
@@ -790,10 +849,19 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.Model",
         "threetears.evals.providers.Clients",
         "threetears.evals.providers.Catalogue",
+        # The timeout the catalogue fetches with on its own, which a host handing it an `http` client matches.
+        "threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S",
         "threetears.evals.providers.describe_failure",
         "threetears.evals.providers.ProviderError",
         # The words the client writes as a completion's `price_source`, which a host reading spend back compares with.
         "threetears.evals.providers.PriceSource",
+        # What a price-catalogue read found, which a host writes its own pricing-outage line from.
+        "threetears.evals.providers.PriceRefresh",
+        # A declared question and its decision rule, typed: what a host writes to have the page settle keep or switch.
+        "threetears.evals.kernel.Question",
+        "threetears.evals.kernel.DecisionRule",
+        "threetears.evals.kernel.RateDrop",
+        "threetears.evals.kernel.CostLower",
     }
 )
 
@@ -831,8 +899,6 @@ STABLE: frozenset[str] = frozenset(
         # How a report speaks: the prose lint every rendered sentence and a memo's are held to, the one seam an
         # identifier passes on its way to a reader, and the glossary of every term of art a page links.
         "threetears.evals.analysis.GLOSSARY",
-        "threetears.evals.analysis.StyleViolation",
-        "threetears.evals.analysis.humanize",
         "threetears.evals.analysis.lint_prose",
         # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
         # evidence-tier and profile readings over them, as `docs/judges-and-calibration.md` runs them.
@@ -872,9 +938,7 @@ STABLE: frozenset[str] = frozenset(
         # Rung 3: comparing arms and reading the outcome. A campaign's design, its report bundle and frontier, the gate
         # a CI step reads, and the classifier measures `docs/building-an-inventory.md` builds on.
         "threetears.evals.analysis.GATE_TOKENS",
-        "threetears.evals.analysis.GateOutcome",
         "threetears.evals.analysis.GateResult",
-        "threetears.evals.analysis.GateToken",
         "threetears.evals.analysis.assemble_context_bundle",
         "threetears.evals.analysis.campaign_report",
         "threetears.evals.analysis.create_campaign",
@@ -886,12 +950,10 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.ControlDeclaration",
         "threetears.evals.kernel.EvalInsight",
         "threetears.evals.kernel.MATCH_MEASURE",
-        "threetears.evals.kernel.Question",
         "threetears.evals.kernel.SweptAxis",
         "threetears.evals.kernel.confusion_cell",
         "threetears.evals.run.get_run",
         "threetears.evals.run.list_runs",
-        "threetears.evals.schema.EvalCaseStratum",
         "threetears.evals.schema.LatencyMetrics",
         # Rung 4: a world, a log and a host of one's own. What a kind, a launcher and a world are built from beyond
         # the host contract, as the agent guide and the example hosts under `tests/fixtures/` build them.
@@ -941,22 +1003,19 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.transports.fastmcp.CallerResolver",
         "threetears.evals.transports.fastmcp.HostResolution",
         "threetears.evals.transports.fastmcp.ToolCall",
-        # The shipped client's reply and its provider names, beside the host-contract client names.
+        # The shipped client's reply, beside the host-contract client names. Its provider names (`Provider`, a
+        # Literal `Model`'s signature reaches) are provisional: no host imports them.
         "threetears.evals.providers.Completion",
-        "threetears.evals.providers.Provider",
         # A production host's further bindings in `threetears.evals.analysis`: what Discodon's production code imports.
         "threetears.evals.analysis.AsRecordedReporterKind",
         "threetears.evals.analysis.REPORTER_KIND",
         "threetears.evals.analysis.ReporterKind",
         "threetears.evals.analysis.ReporterOverlays",
         "threetears.evals.analysis.dollars_text",
-        "threetears.evals.analysis.generation_ceiling_s",
-        "threetears.evals.analysis.judge_phase_ceiling_s",
         "threetears.evals.analysis.refuse_undeliverable_reporter_template",
         "threetears.evals.analysis.reporter_cell_timeout_s",
         "threetears.evals.analysis.reporter_kind_contract",
         # A production host's further bindings in `threetears.evals.gen`: what Discodon's production code imports.
-        "threetears.evals.gen.PROPOSER_MAX_TOKENS",
         "threetears.evals.gen.generate_variations",
         "threetears.evals.gen.plan_draft",
         "threetears.evals.gen.propose_draft",
@@ -969,11 +1028,8 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.DeliveryTicket",
         "threetears.evals.kernel.EvalJobTimeout",
         "threetears.evals.kernel.ExternalRateTable",
-        "threetears.evals.kernel.FIND_TEMPLATE",
         "threetears.evals.kernel.JUDGE_KIND_CONTRACT",
         "threetears.evals.kernel.JUDGE_KIND_MEASURES",
-        "threetears.evals.kernel.KIND_TEMPLATE",
-        "threetears.evals.kernel.KIND_TEXT",
         "threetears.evals.kernel.MeritAxis",
         "threetears.evals.kernel.OutOfRunBudget",
         "threetears.evals.kernel.PlannedCall",
@@ -982,7 +1038,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.ReplayedDelivery",
         "threetears.evals.kernel.RoleUsageLedger",
         "threetears.evals.kernel.SEED_PROMPTS",
-        "threetears.evals.kernel.SEED_REMEDY",
         "threetears.evals.kernel.SeedPrompt",
         "threetears.evals.kernel.SeedSection",
         "threetears.evals.kernel.SeedTemplate",
@@ -1024,7 +1079,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.ops.price_largest_reporter_call",
         "threetears.evals.ops.report_read",
         "threetears.evals.ops.run_get",
-        "threetears.evals.ops.run_label",
         "threetears.evals.ops.run_launch",
         "threetears.evals.ops.runs_list",
         "threetears.evals.ops.start_action_job",
@@ -1038,10 +1092,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.run.JUDGE_CALL_ATTEMPTS",
         "threetears.evals.run.JUDGE_MAX_TOKENS",
         "threetears.evals.run.MeteredCallLedger",
-        "threetears.evals.run.MeteredCallTally",
-        "threetears.evals.run.SCHEDULER_CALL_ATTEMPTS",
-        "threetears.evals.run.SIMULATOR_ANSWER_BUDGET_TOKENS",
-        "threetears.evals.run.SIMULATOR_MAX_TOKENS",
         "threetears.evals.run.SeedCorpus",
         "threetears.evals.run.SeedOutcome",
         "threetears.evals.run.SimulatorTurn",
@@ -1051,12 +1101,8 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.run.build_judge_service",
         "threetears.evals.run.delete_run",
         "threetears.evals.run.drive_conversation",
-        "threetears.evals.run.fold_metered_cell",
         "threetears.evals.run.launchable_judge_kind",
-        "threetears.evals.run.metered_cell_tally",
         "threetears.evals.run.plan_judge",
-        "threetears.evals.run.precondition_failure_text",
-        "threetears.evals.run.refuse_ignored_template_fields",
         "threetears.evals.run.resolve_judge_pin",
         "threetears.evals.run.run_judge_llm",
         "threetears.evals.run.seed_eval_definitions",
@@ -1075,27 +1121,76 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.schema.EvalBaseModel",
         "threetears.evals.schema.ExternalSpend",
         "threetears.evals.schema.JudgeConfig",
-        "threetears.evals.schema.NON_TERMINAL_RUN_STATUSES",
         "threetears.evals.schema.OutOfRunSpend",
-        "threetears.evals.schema.PROSE_SCHEMA_KEY",
         "threetears.evals.schema.ProviderFailure",
-        "threetears.evals.schema.RESERVED_DIM_IDS",
         "threetears.evals.schema.RubricAxis",
         "threetears.evals.schema.RubricProposal",
         "threetears.evals.schema.VariationAxis",
         "threetears.evals.schema.VariationCounts",
-        "threetears.evals.schema.nested_schemas",
         # A production host's further bindings in `threetears.evals.storage`: what Discodon's production code imports.
         "threetears.evals.storage.CoreReset",
         "threetears.evals.storage.MisplacedDocument",
         "threetears.evals.storage.ROUTING_RECORD_DOC_TYPE",
         "threetears.evals.storage.RouteChanged",
+        # The rest of what Discodon's production code imports (`tests/fixtures/host_imports/discodon.txt`, held by
+        # `tests/test_host_imports_are_declared.py`): nothing a host imports is provisional.
+        "threetears.evals.actions.ConformanceSample",
+        "threetears.evals.actions.Refusal",
+        "threetears.evals.analysis.ABSENT",
+        "threetears.evals.analysis.AS_RECORDED_MODEL",
+        "threetears.evals.analysis.ReporterLabel",
+        "threetears.evals.analysis.first_request",
+        "threetears.evals.analysis.freeze_reporter_case",
+        "threetears.evals.analysis.prompt_content_version",
+        "threetears.evals.analysis.serialize_report",
+        "threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",
+        "threetears.evals.gen.EVAL_PROPOSER_TEMPLATE_DEFAULT",
+        "threetears.evals.kernel.ACCURACY_MEASURE",
+        "threetears.evals.kernel.ENGINE_FAMILIES",
+        "threetears.evals.kernel.FIND_CAMPAIGN",
+        "threetears.evals.kernel.FIND_RUN",
+        "threetears.evals.kernel.INCOMPLETE_STOP_REASONS",
+        "threetears.evals.kernel.METRIC_DESCRIPTORS",
+        "threetears.evals.kernel.MeasureSummary",
+        "threetears.evals.kernel.TURN_BUDGET_ENDED_KEY",
+        "threetears.evals.kernel.WorldSessionError",
+        "threetears.evals.kernel.classifier_label_measure",
+        "threetears.evals.kernel.count_substituted",
+        "threetears.evals.kernel.count_substituted_deliveries",
+        "threetears.evals.kernel.host.BarRegistrationError",
+        "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER",
+        "threetears.evals.kernel.host.MeasureRegistrationError",
+        "threetears.evals.kernel.host.WorldConformanceReport",
+        "threetears.evals.kernel.judge_case_of",
+        "threetears.evals.kernel.production_replicating_cost",
+        "threetears.evals.kernel.resolve_variant_identity",
+        "threetears.evals.ops.CaseSetLine",
+        "threetears.evals.ops.CaseSetMint",
+        "threetears.evals.ops.JobHandle",
+        "threetears.evals.ops.JudgeCaseAuthor",
+        "threetears.evals.ops.await_job",
+        "threetears.evals.ops.case_set_mint",
+        "threetears.evals.ops.case_sets_list",
+        "threetears.evals.ops.judge_case_author",
+        "threetears.evals.ops.reporter_case_archive",
+        "threetears.evals.ops.run_job_id",
+        "threetears.evals.run.LaunchGroup",
+        "threetears.evals.run.callers_missing_the_constructor",
+        "threetears.evals.run.launch_as_group",
+        "threetears.evals.run.mint_case_set",
+        "threetears.evals.run.rejudge_result",
+        "threetears.evals.run.resolve_constructor",
+        "threetears.evals.schema.CORE_RESET_DOC_TYPES",
+        "threetears.evals.schema.CaseSetRef",
+        "threetears.evals.schema.utc_now_iso",
+        "threetears.evals.testing.JobsConformanceCase",
+        "threetears.evals.transports.fastmcp.CatalogueTool",
     }
 )
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 450
+DECLARED_CEILING = 523  # The host's imports set it on 2026-10-15: nothing a host imports is provisional.
 
 
 def tier_of(qualified: str) -> Tier:

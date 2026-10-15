@@ -4,7 +4,7 @@ Evals for LLM features, from a classifier to a tool-using agent: it runs each ve
 what moved, with the uncertainty that says whether the move is real. Python 3.14+.
 
 ```bash
-pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@v0.68.0-evaladopt.27#subdirectory=packages/evals"
+pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.32#subdirectory=packages/evals"
 ```
 
 **Rung 0 is one TOML file and no Python.** [`examples/1-triage/triage.toml`](examples/1-triage/triage.toml) triages
@@ -34,8 +34,8 @@ first line says how it went:
 triage: 16/30 cases passed; 14 misses: refund-after-cancel, export-typo, slow-sync, gdpr-delete, nonprofit, and 9 more
 ```
 
-Below it come each field's pass rate, a confusion matrix for `category`, the top misses with why each missed, and
-where its report is. Then climb [the ladder](docs/ladder.md), one idea per rung:
+Below it come each field's pass rate, each `category` label's precision and recall, the top misses with why each
+missed, and where its report page is. Then climb [the ladder](docs/ladder.md), one idea per rung:
 
 | Rung | Example | Climb it when |
 |---|---|---|
@@ -58,7 +58,7 @@ install it from the repository at a tag. The line above is the one place the doc
 page's install line points here. The FastMCP transport, for serving evals to an agent, is the `[fastmcp]` extra:
 
 ```bash
-pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@v0.68.0-evaladopt.27#subdirectory=packages/evals"
+pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.32#subdirectory=packages/evals"
 ```
 
 Once 0.69.0 is on PyPI these are `pip install 3tears-evals` and `pip install "3tears-evals[fastmcp]"`. In a checkout
@@ -70,7 +70,7 @@ cheap models through OpenRouter (`OPENROUTER_API_KEY`); `Model(id, provider="ant
 ([how](examples/README.md#running-them)).
 
 > **The public API is still changing.** From 0.69.0 only its host contract is promised: a name on it moves with a
-> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. About 450
+> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. About 520
 > names are declared, [mapped by rung](docs/surface.md); the rest a root exports are provisional
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 

@@ -11,10 +11,13 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections import Counter
+from collections.abc import Mapping
+from typing import Any
 
 import pytest
 
-from threetears.evals import Eval, Result
+from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     Report,
@@ -25,20 +28,16 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.references import cell_aliases
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TrialBlock
-from threetears.evals.analysis.report.decision import (
-    RateReading,
-    RuleReadings,
-    evaluate_rule,
-    parse_decision_rule,
-)
+from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock, TrialBlock
+from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
-from threetears.evals.analysis.bundle.schema import TrialCheck
+from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
 from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
 from packages.evals.tests.g2_support import (
     CANDIDATE,
     CASES,
     G2_QUESTION,
+    G2_RULE,
     PRODUCTION,
     answering,
     declaring,
@@ -47,6 +46,13 @@ from packages.evals.tests.g2_support import (
     g2_ruled_report,
 )
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+
+
+#: The G2 rule as the page states it: one sentence code writes from the typed clauses, the arms by name.
+G2_STATEMENT = (
+    "Switch to cheaper candidate only if no pass rate drops by more than 10 points and cheaper candidate costs less "
+    "per reply. Otherwise stay on production."
+)
 
 
 @pytest.fixture
@@ -68,11 +74,10 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
-    # The question declared before the run is quoted as the contract the verdict reads, split at the parser's own
-    # boundary: its decision rule is quoted at the head of the Decision section instead. Then the verdict.
-    asked, rule = G2_QUESTION.split(" Decision rule: ")
-    assert lines[3] == f'Asked before the run: "{asked}"'
-    assert f'\n## Decision\n\nDecision rule: "{rule}"\n\n**Clauses**\n' in report_markdown(report)
+    # The question declared before the run is quoted whole as the contract the verdict reads; its typed rule is
+    # stated in code's sentence at the head of the Decision section. Then the verdict.
+    assert lines[3] == f'Asked before the run: "{G2_QUESTION}"'
+    assert f"\n## Decision\n\n{G2_STATEMENT}\n\n**Clauses**\n" in report_markdown(report)
     assert lines[5].startswith("**Keep production: ")
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
     assert lines[7:10] == [
@@ -111,11 +116,10 @@ async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
     _, report = g2_ruled
     markdown = report_markdown(report)
     assert markdown.count("does deepseek-v4-flash hold every pass/fail queue-discipline dimension") == 1
-    assert markdown.count("switch Kairo's model only if") == 1
+    assert markdown.count(G2_STATEMENT) == 1
     asked, rule = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
-    question, stated = G2_QUESTION.split(" Decision rule: ")
-    assert asked.section == "header" and asked.text == f'Asked before the run: "{question}"'
-    assert rule.section == "decision" and rule.text == f'Decision rule: "{stated}"'
+    assert asked.section == "header" and asked.text == f'Asked before the run: "{G2_QUESTION}"'
+    assert rule.section == "decision" and rule.text == G2_STATEMENT
     assert f'<p class="line" data-source="basis">{html.escape(asked.text)}</p>' in report_html(report)
     assert lint_page(markdown, question=G2_QUESTION) == []
 
@@ -123,7 +127,7 @@ async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
 async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
-    # The quoted question and its quoted rule aside too: they are the author's words, whole.
+    # The quoted question aside too, the author's words whole, and the rule's sentence beside it.
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
     asked, rule = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
     quoted = report_markdown(report).replace(verdict, "").replace(asked, "").replace(rule, "")
@@ -237,6 +241,36 @@ async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_other
     assert '<tr id="case-1">' in report_html(comparison.report)
 
 
+def _passing(passes: list[int]) -> Any:
+    """A runner that answers case ``i`` right on ``passes[i]`` of its repeats, the first ones."""
+    calls: Counter[str] = Counter()
+
+    async def run(case: Mapping[str, Any]) -> Answer:
+        calls[case["text"]] += 1
+        right = calls[case["text"]] <= passes[int(case["text"].rsplit(" ", 1)[1])]
+        return Answer(case["label"] if right else "skipped", model="m", input_tokens=1, output_tokens=1, cost_usd=0.001)
+
+    return run
+
+
+async def test_the_flag_reads_regression_only_where_a_candidate_passed_a_case_less_often_than_the_control() -> None:
+    # Prod, .30: production ✓✗✗ against the candidate's ✓✓✗ (the candidate did better), and 2 of 3 each (a tie),
+    # both read "regression". Neither is one; a candidate passing 1 of 3 to the control's 3 of 3 is.
+    cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(3)]
+    arms = {"production": _passing([1, 2, 3]), "candidate": _passing([2, 2, 1])}
+    comparison = await Eval(cases, arms, ["label"], k=3, name="flags").run(store=":memory:")
+    (table,) = [b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
+    flags = {str(row["case"]): row["flag"] for row in table.values()}
+    assert flags == {"case 3": "regression", "case 1": None, "case 2": None}
+    assert next(iter(flags)) == "case 3", "regressions first"
+    (flag,) = [column for column in table.columns if column.key == "flag"]
+    assert flag.term == "flag" and "flag" in comparison.report.terms
+    assert GLOSSARY["flag"] == (
+        "Regression marks a case a candidate passed on a smaller share of its usable trials than the control; a tie "
+        "or a gain never flags."
+    )
+
+
 # =============================================================================
 # Trials: the census, then only what went wrong, each record under a summary that is never the world dump
 # =============================================================================
@@ -347,6 +381,86 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
     assert all("{" not in str(value) for row in table.values() for value in row.values())
 
 
+#: A trial's transcript as a host's world renders it: its own headings, a fenced block and raw HTML of its own.
+_TRANSCRIPT = (
+    'The world as it stood before the persona\'s first turn:\n\n## music\n```json\n{"queue": []}\n```\n\n'
+    "# Persona\n## Ben\n</details>\n<script>alert(1)</script>\n````\nnot a fence of mine\n````"
+)
+
+
+def _outline(markdown: str) -> list[str]:
+    """The headings a CommonMark reader finds: ATX headings outside fenced code, each fence closed only by a run of its
+    own character at least as long as the one that opened it."""
+    headings: list[str] = []
+    fence: str | None = None
+    for line in markdown.splitlines():
+        stripped = line.lstrip(" ")
+        opening = re.match(r"(`{3,}|~{3,})", stripped) if len(line) - len(stripped) <= 3 else None
+        if fence is not None:
+            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence):
+                if not stripped[len(opening.group(1)) :].strip():
+                    fence = None
+            continue
+        if opening:
+            fence = opening.group(1)
+        elif re.match(r" {0,3}#{1,6}(\s|$)", line):
+            headings.append(line.strip())
+    return headings
+
+
+async def test_a_transcript_is_quoted_whole_and_none_of_it_is_the_report_s_structure(
+    g2_ruled: tuple[Result, Report],
+) -> None:
+    _, coded = g2_ruled
+    trials = [
+        trial.model_copy(update={"first_input": _TRANSCRIPT, "excerpt": _TRANSCRIPT, "error_words": _TRANSCRIPT})
+        if trial.state == "failed"
+        else trial
+        for trial in coded.bundle.trials
+    ]
+    report = build_code_only_report(
+        coded.bundle.model_copy(update={"trials": trials}), assembled_at="2026-10-14T00:00Z"
+    )
+    markdown = report_markdown(report)
+    titles = report.section_titles
+    own = [f"# {report.title}", *(f"## {titles[s]}" for s in titles if f"\n## {titles[s]}\n" in markdown)]
+    assert _outline(markdown) == own
+    # Each transcript sits whole inside a fence longer than any run of backticks in it.
+    assert "`````\nThe world as it stood before the persona's first turn:" in markdown
+    assert markdown.count("not a fence of mine") == 3 * sum(trial.state == "failed" for trial in trials)
+    # The page escapes the same text: in a <pre>, its tags and headings text, and no heading but the page's own.
+    page = report_html(report)
+    assert "<script>alert" not in page and "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert "<pre>The world as it stood before the persona&#x27;s first turn:\n\n## music" in page
+    assert not re.search(r"<h[1-6][^>]*>[^<]*(music|Persona|Ben)", page)
+
+
+async def test_an_author_s_words_open_no_block_of_their_own_in_markdown(g2_ruled: tuple[Result, Report]) -> None:
+    _, coded = g2_ruled
+    report = build_code_only_report(coded.bundle, assembled_at="2026-10-14T00:00Z")
+    body = "## music\n\n- # Persona\n- plain\n\n```\n\n> quoted\n\n1. first\n\n<details>"
+    words = report.model_copy(
+        update={"blocks": [*report.blocks, TextBlock(section="not_tested", role="finding_body", body=body, finding=0)]}
+    )
+    markdown = report_markdown(words)
+    assert "\\## music\n\n- \\# Persona\n- plain\n\n\\```\n\n\\> quoted\n\n1\\. first\n\n\\<details>" in markdown
+    assert _outline(markdown) == _outline(report_markdown(report))
+
+
+async def test_sixty_passed_trials_and_one_failed_carry_one_record_and_one_table() -> None:
+    cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(61)]
+    run = await Eval(cases, {"production": answering(60, 0.003)}, ["label"], k=1, name="queue").run(store=":memory:")
+    census, table, records, passed = _trials_section(run.report)
+    assert census.text == "61 trials ran. Of them 60 passed and 1 failed."
+    assert table is not None and len(table.rows) == 1 and len(records) == 1
+    assert passed is not None and len(passed.rows) == 60
+    markdown = report_markdown(run.report)
+    assert markdown.count('<details id="T') == 1
+    passed_rows = markdown.split("<summary>Passed trials</summary>", 1)[1].split("</details>", 1)[0]
+    assert len(re.findall(r"^\| T\d+ \| .* \| `[0-9a-f-]+` \|$", passed_rows, re.M)) == 60
+    assert "What the case asked" not in passed_rows and "Stored result:" not in passed_rows
+
+
 async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_ruled: tuple[Result, Report]) -> None:
     _, coded = g2_ruled
     expression = 'call_count("music.queue_track") >= 2'
@@ -367,6 +481,37 @@ async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_rul
     markdown = report_markdown(report)
     assert "Pass rate of" not in markdown and "call count(" not in markdown
     assert f"- `{expression}`" in markdown
+
+
+async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_ruled: tuple[Result, Report]) -> None:
+    """The judge's words, a check's expression and why a trial failed are quoted: a ``</details>`` the judge wrote
+    closes no fold, and a backtick in an expression ends no code span."""
+    _, coded = g2_ruled
+    expression = "answer == `queued`"
+    reason = "Closed early.</details>\n\n## Not a section"
+    trials = list(coded.bundle.trials)
+    first = next(index for index, trial in enumerate(trials) if trial.state == "failed")
+    trials[first] = trials[first].model_copy(
+        update={
+            "failed_checks": [TrialCheck(name="the *label* check", expression=expression)],
+            "judge": [
+                TrialJudgement(dim="tone", criterion="Is it <b>kind</b>?", score=1, scale="ordinal", reason=reason)
+            ],
+        }
+    )
+    report = build_code_only_report(
+        coded.bundle.model_copy(update={"trials": trials}), assembled_at="2026-10-14T00:00Z"
+    )
+    markdown = report_markdown(report)
+    assert "- `the *label* check`: `` answer == `queued` ``" in markdown
+    assert "- `tone`: 1 (ordinal). Asked: `Is it <b>kind</b>?`. `Closed early.</details>  ## Not a section`" in markdown
+    # Outside every code span and fence, the folds still open and close in pairs, and each record still ends after
+    # its stored result.
+    unquoted = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)", "", markdown)
+    assert unquoted.count("<details") == unquoted.count("</details>")
+    record = unquoted.split(f'<details id="{trials[first].trial_id}"', 1)[1].split("</details>", 1)[0]
+    assert "Stored result:" in record
+    assert _outline(markdown) == _outline(report_markdown(build_code_only_report(coded.bundle, assembled_at="x")))
 
 
 # =============================================================================
@@ -401,13 +546,13 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
 
 
 def test_a_memo_sentence_contradicting_the_settled_rule_is_replaced_and_disclosed() -> None:
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
     verdict = evaluate_rule(
-        rule,
+        G2_RULE,
         RuleReadings(
             rates=(RateReading("the pass rate", 10, 12, 2, 12),), control_cost=0.003092, candidate_cost=0.003301
         ),
+        control="production",
+        candidate="cheaper candidate",
     )
     said = "Keep production: the pass rate drops at least 67 points, and cheaper candidate costs more per reply."
     style = MemoStyle(

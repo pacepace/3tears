@@ -2522,6 +2522,17 @@ class EvalTestCase(DurableDocumentModel):
             "no seed wrote, an unnamed corpus case, and one seeded before `.30`."
         ),
     )
+    seed_digest: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "For a template's own case, the drift digest of what the boot seed or a definition reset wrote it with "
+            "(`threetears.evals.run.template_case_digest`: its content and its stratum). Compared with the row's own "
+            "it tells a case nobody edited, whose corpus moved (a relabelled stratum included), from one an operator "
+            "changed. In no digest pre-image and no identity key. None for a case no seed wrote, a judge case (whose "
+            "`content_hash` is what was seeded), and one seeded before `.32`."
+        ),
+    )
     created_at: str = Field(default_factory=utc_now_iso)
 
     @field_validator("doc_type")

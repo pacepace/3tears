@@ -79,22 +79,22 @@ from threetears.evals.schema.versioning import (
 PINNED_CORE_SCHEMA_VERSION = 15
 
 #: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_CORE_SCHEMA_MINOR = 2
+PINNED_CORE_SCHEMA_MINOR = 3
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "eval_action_job": "9c11c196f42bb6ef9947d4fdb00fd179e5cbc5eb3f7e5a0949e413fc35e39d0d",
-    "eval_analysis_attempt": "74fce5fef0e2876f62df51a7c87f364f358ec652646e4fa1efdf696a6361a2c3",
-    "eval_campaign": "aed376e4d6b5f00f083f74a6ebadc545aa466de236124830c37cc228276acdca",
-    "eval_generation_slot": "554e5225bf0bfa617991750089c4953fc4a1903ce095a1e046e53829819b7fc3",
-    "eval_judge_temperature_check": "204d780376bb7db499179d6b63141efa45e3a7ebf45905aa6780d226b872d40e",
-    "eval_launch": "e6d6bfb32c805e284b36b66871f454e8597f87bc0a3b0d3866c417851828fcd6",
-    "eval_out_of_run_spend": "ca2d959bf9d9657e913b5f442730fef7a9505ec693beae87923e199831b2870f",
-    "eval_result": "8bec36e2ce1efed3cf1e099df6e9e3b807b20aa8725a182cc2634990ae49bd65",
-    "eval_run": "526251b8c83afd9889e97d9a86604ba4c2867a3b21ce2ce70e27db41ee14f116",
-    "eval_second_judge_pass": "dfd1d452b98b6c5c7b8fbfd4ee1f4256c8496b29e6e2e770ea2e688b1a34c052",
-    "eval_sweep": "2ffabe3f76ecbf64abf1e4fe196b409fb9bf7bae417aad6660f6eae7fab5910a",
-    "eval_trace": "394735ef53922a7547c5e3cc883030c030be9cd22a98a8f4d527eb0776c645a2",
+    "eval_action_job": "0535e1d7f0cc45eb08b43379c7d41458aae55b53c9ddf8d63500e68d12a044a9",
+    "eval_analysis_attempt": "96e56fd2d681b0f6b49f3472c603fe58d6b5f70500af335ea987b4b35c70d7a8",
+    "eval_campaign": "5b04dea7fb0bc1a6ed2119b5410cc9d4adc53745dea22f887d9df90d048e15a6",
+    "eval_generation_slot": "be301fc08ef87c13a879308d381f1297208cb5b64e2890aabb1b195c5aaa5e25",
+    "eval_judge_temperature_check": "8e897e5ecc6698797d7c055f3361b7c81a31e029832d4d28d4e99c9117b600fb",
+    "eval_launch": "263bbc00851abd88d40ee708e3af118d37f3503dc9785b900d1203c2f237bdb0",
+    "eval_out_of_run_spend": "87309b0dc86c50b4edf0c333234c7c7f9bf6e533826ee212f6b2a640b8ebab45",
+    "eval_result": "1d01c192774ae56aa622490347fe5f1479374c5774f8e49e310809646d2db31d",
+    "eval_run": "0d1adb264d0b943d1686b62d4ef45106f0d3f4f2717013c0bd566f5df7f05e86",
+    "eval_second_judge_pass": "dcbec4b9a2369bd09b7137f686a092e4162da2143129bd8d4b115814fe07c852",
+    "eval_sweep": "a8d7bfc3a89b518966bc122bcc6c9eb653667b5632e65d5d2ce538b64719a891",
+    "eval_trace": "b3e44e84b9fe5684a8f73c0ecb9b17919473b9c3663c5dca512c56b08f730554",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
@@ -155,18 +155,18 @@ FIRST_STORED_AT: dict[str, int] = {}
 
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
-    "v15/eval_action_job.json": "e1f2e92c5bf8962345488c5791f93e4698c221af53831f06aba5934a73b73e95",
-    "v15/eval_analysis_attempt.json": "bd1015905b2a71c3d1d3efebbb15ce313d1c64a5281a20558fe2e685bcfc85e0",
-    "v15/eval_campaign.json": "b000affa5e9c0bbea26f272ba0024270cceb1fe1720a06ed64c7916f4f9bf0a3",
-    "v15/eval_generation_slot.json": "18efd267b51051a943a4edc53aeb0f57f11efd6f54fa9996791e15b5a25e9991",
-    "v15/eval_judge_temperature_check.json": "178f1a5afc01c064ae7013a35bcf6528a907906e2764689a0784924aa4b70cb3",
-    "v15/eval_launch.json": "3d92be4c4c5d701841ff9ab4b4192879888902d6626ab9e35cad016a9abf53e9",
-    "v15/eval_out_of_run_spend.json": "b8ae34c1bb023f0c5694ad81b31345fd0be19b4d41655e4f3c1d5173d126109d",
-    "v15/eval_result.json": "185ebd15dd452e4ba84527d9750caaa4ccc971055b7280b8124a6f9afb9f690e",
-    "v15/eval_run.json": "05d4b8d8ab2c79d288fc952eb768d820f471fd0038476a5092ca36d0599c7474",
-    "v15/eval_second_judge_pass.json": "6a3e6a6e0bdb25e904e4ee48c941b3c6366deaa1dd0373c62d43d1c8f799ed12",
-    "v15/eval_sweep.json": "4b51f9b19f3cc56c2928413fe2f8314af40d00d615bf17d37b99e49f50e60cc7",
-    "v15/eval_trace.json": "8fe80d888a150823a845e20750d259df302a9559a0b94fc43fa9967156a26445",
+    "v15/eval_action_job.json": "e60d422e3e3abb8566b70a4aba8045d9edd6db7c59fd2e59195decefa085600a",
+    "v15/eval_analysis_attempt.json": "7224e64e5ac9834fe48a1d01b06b14d8385697e166e09e080eabc0a86e6b218c",
+    "v15/eval_campaign.json": "b2f12dfb925d69d599de0d9040a2f1a5bfed57d268aa60ca87cc57eb4c9b46bb",
+    "v15/eval_generation_slot.json": "8247c1c6d36cc4e0194b10c9fec78e3136915d498f0c3954b94716c6f514eb6e",
+    "v15/eval_judge_temperature_check.json": "8a10da2dd4533731e201eb4f72a651e0b82b849e97edb4f709e809abe5975563",
+    "v15/eval_launch.json": "e747653cad60721d6990e48625b511f4ec35ae532828364fa1ff635e3e148c70",
+    "v15/eval_out_of_run_spend.json": "824e42313cdc4e5cc75cf3b5cf03215b42dd69be441c6471023d90b4ac5f94ef",
+    "v15/eval_result.json": "667b8ceb1b0971c5a1550bedc2b16c0be976ba96e66ed63bcd3f3dd81ddbff15",
+    "v15/eval_run.json": "3d9e6cebeb61e9915790c39553b2f84b5c0377445a61d54e1da43f31b4c7064d",
+    "v15/eval_second_judge_pass.json": "9109dc2d7ba6af78d70e159d4905fc9cb6b1272309bdaa7e7969d74e1f769ca6",
+    "v15/eval_sweep.json": "bdc1dbb6e5149fe179b54e87de9707f1d84017aef01610c3d2619290b35dea92",
+    "v15/eval_trace.json": "3ae2ac356dbf61a3c651713e95cf04a795c8479a028fc52f3a82ed7d74cb5927",
 }
 
 #: Keys whose dict values are maps of names to schemas, not schema nodes: their own keys are field or

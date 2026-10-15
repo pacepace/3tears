@@ -1,15 +1,17 @@
 """The two catalogue actions that keep a host's seeded definitions current: read the drift, and reset.
 
-The engine does not know where a host's seed corpus lives or what its host checks are, so it ships these actions
-as a factory the host calls with both and hands to :func:`~threetears.evals.actions.eval_catalogue`:
+The engine does not know where a host's seed corpus lives, so it ships these actions as a factory the host calls with
+its corpus and hands to :func:`~threetears.evals.actions.eval_catalogue`:
 ``definitions_drift`` (read) and ``definitions_reset`` (write), over
 :func:`~threetears.evals.run.definition_drift` and :func:`~threetears.evals.run.reset_definitions`. Neither runs at
-boot: a reset is an operator's, or a release step's, deliberate act.
+boot: a reset is an operator's, or a release step's, deliberate act. A reset admits each template it writes under the
+template checks of the host it is called with (``EvalHost.template_checks``), read at the call, where
+``create_template`` reads them.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 
 from pydantic import Field
 
@@ -18,7 +20,6 @@ from threetears.evals.ops.host import OpsHost
 from threetears.evals.run import DefinitionDrift, DefinitionReset, SeedCorpus, definition_drift, reset_definitions
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import EvalTemplate
 
 #: The help index's group for the two actions.
 DEFINITIONS_WORKFLOW = "Keep the seeded definitions current"
@@ -36,28 +37,24 @@ class DefinitionsResetParams(EvalBaseModel):
         description="The definitions to reset, by the keys definitions_drift names them, such as "
         "'eval_template/<name>' or 'judge_case/<judge template>/<case>'.",
     )
-    discard_customization: bool = Field(
+    overwrite_customized: bool = Field(
         default=False,
-        description="Write over a definition reading customized or unknown (possibly an operator's); refused without "
-        "it. What it supersedes stays stored, archived and readable by id.",
+        description="Write the seed corpus's content as the next revision of a definition whose stored content reads "
+        "customized or unknown (an edit that may be an operator's), and of a judge template holding live cases the "
+        "corpus does not carry; such a definition is refused without it. The revision it supersedes stays stored, "
+        "archived and readable by id.",
     )
 
 
 def definition_drift_actions(
     corpus: Callable[[str], SeedCorpus],
     *,
-    require_known_tools_allowed: Callable[[Sequence[str] | None], None],
-    refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
-    refuse_undeliverable_template: Callable[[EvalTemplate], None],
     seeded_digests: Callable[[str], Mapping[str, str]] | None = None,
 ) -> tuple[Action, Action]:
     """``definitions_drift`` and ``definitions_reset``, for the host's catalogue.
 
     Args:
         corpus: The host's seed corpus for a scope (``load_seed_corpus(its directory, scope_id)``).
-        require_known_tools_allowed: The host's tool-catalog check, as ``create_template`` takes it.
-        refuse_undeclared_world_seed: The host's seed walk, as ``create_template`` takes it.
-        refuse_undeliverable_template: The host's kind-capability check, as ``create_template`` takes it.
         seeded_digests: What the host seeded in a scope before ``.30``, by key (``corpus_digests`` over that
             corpus); ``None`` when it supplies none.
 
@@ -84,10 +81,7 @@ def definition_drift_actions(
                 host.eval_host,
                 corpus(scope_id),
                 params.definitions,
-                require_known_tools_allowed=require_known_tools_allowed,
-                refuse_undeclared_world_seed=refuse_undeclared_world_seed,
-                refuse_undeliverable_template=refuse_undeliverable_template,
-                discard_customization=params.discard_customization,
+                overwrite_customized=params.overwrite_customized,
                 seeded_digests=supplied(scope_id),
             ),
         )
@@ -113,7 +107,7 @@ def definition_drift_actions(
         Action(
             name="definitions_reset",
             summary="Write the seed corpus's content for named definitions as new revisions; customized or unknown "
-            "ones need discard_customization.",
+            "ones need overwrite_customized.",
             workflow=DEFINITIONS_WORKFLOW,
             permission="write",
             params=DefinitionsResetParams,
@@ -124,7 +118,10 @@ def definition_drift_actions(
             detail=(
                 "Never in place: a template's new content is its next revision, the one it supersedes archived and "
                 "readable by id, so results stay with the content they ran against and two revisions never pool. A "
-                "judge case resets with its judge template, whose new revision holds the corpus's whole battery. "
+                "judge case resets with its judge template and a template case with its template, whose new revision "
+                "holds every corpus case of it. A row reads discarded only where a stored copy that read customized "
+                "or unknown was written over under overwrite_customized; one written fresh, with nothing stored, or "
+                "over a stale copy reads discarded false. "
                 "All or nothing: a refusal writes nothing and names every refused definition."
             ),
         ),

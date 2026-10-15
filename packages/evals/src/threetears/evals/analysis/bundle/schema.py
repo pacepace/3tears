@@ -1266,6 +1266,18 @@ class AliasedFactors(EvalDocumentModel):
     sentence: str = Field(description="The one sentence that names the group; quote it rather than a factor apiece.")
 
 
+class UnexercisedFactor(EvalDocumentModel):
+    """A lever read off what ran that the campaign never exercised, so no level and no lever: a factor whose role made
+    fewer than two calls across every result, at most one, on one arm."""
+
+    factor: str = Field(min_length=1, description="The lever, as the host names it.")
+    role: str = Field(min_length=1, description="The role whose calls its level is read from.")
+    results: int = Field(ge=0, le=1, description="The results that made a call in the role: 0 or 1.")
+    arms: list[str] = Field(
+        default_factory=list, description="The variant key of the arm whose result made that call; empty for none."
+    )
+
+
 class FactorPairCell(EvalDocumentModel):
     """One combination of two factors' levels, and how many runs sat at it."""
 
@@ -2206,9 +2218,13 @@ class AnalysisContextBundle(EvalDocumentModel):
     # `judge_shares_candidate_model` — added; `package_version` is carried and left out of the fingerprint. 55: each
     # family comparison's `bounded_interval` (the interval a non-inferiority claim reads), and the overall pass rate
     # compared as a `trial` reading in the family of each question whose decision rule reads it, which moves that
-    # family's size and adjusted p's over unchanged runs.
+    # family's size and adjusted p's over unchanged runs. 56: a declared question's decision rule is typed
+    # (`declared_design.questions[].decision`, `RateDrop` and `CostLower` clauses) where a rule was parsed from its
+    # words; a question whose words state a rule and that declares none typed reads no rule, so the pass rate leaves
+    # its family. 57: `unexercised_factors`; a lever read off what ran that fewer than two results exercised leaves the
+    # lever levels, the aliasing read, the factor pairs, the divergences and the coverage map over unchanged runs.
     schema_version: int = Field(
-        default=55, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=57, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2726,6 +2742,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Factors that moved in lockstep across the campaign: each group's factors split the runs identically, "
             "so no comparison separates them. Name a group once, by its sentence, never one factor at a time. "
             "Pairs only: see factor_pairs.interaction_aliasing."
+        ),
+    )
+    # Left out of a dump while empty, so a campaign with no such lever serializes, and is shown to its writer, as one
+    # did before the field existed.
+    unexercised_factors: list[UnexercisedFactor] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Levers read off what ran (a role's model) that no arm exercised beside another: no call in the role, or "
+            "one call on one arm. Each is no level and no lever: it is in no aliasing group, factor pair, coverage "
+            "row or divergence, and is not a next step; the page lists it under Not tested."
         ),
     )
     factor_pairs: FactorPairScan | None = Field(
@@ -3312,6 +3339,7 @@ __all__ = [
     "TokenRollup",
     "TRIAL_PASS_NAME",
     "UNDECIDED_CONFOUND_PREFIX",
+    "UnexercisedFactor",
     "UNVERIFIED_FOLD_PREFIX",
     "VerdictOrder",
     "WholeSwing",

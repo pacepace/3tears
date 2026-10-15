@@ -342,6 +342,12 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # existed rather than by promotion — and it is scanned because the host noun that would
     # most plausibly arrive here is a third ceiling named after whatever the host meters.
     "run/ceilings.py",
+    # The inner ceilings a host derives its outer budgets from: the proposer's output cap, a generation's
+    # request count and the wall-clock ceilings of a generation and a judge phase, defined once in `kernel`,
+    # and `Ceilings`, which carries them as one value beside the simulator's caps. Engine bounds a host
+    # reads, never a host's own configuration, so both are scanned as shared contract.
+    "kernel/inner_ceilings.py",
+    "run/package_ceilings.py",
     "kernel/result_condition.py",
     # Which of a result's judged dims failed, and how a re-judge's outcomes land on it: pure
     # functions over eval models and the judge's outcome type, with the I/O left to the service.

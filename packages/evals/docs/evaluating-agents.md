@@ -129,6 +129,9 @@ verdict on both, so you can try your controls on the quick host from step 2 befo
 the template is a host's job:
 
 ```python
+from dataclasses import replace
+
+from threetears.evals.kernel.host import TemplateChecks
 from threetears.evals.schema import (
     ControlEndState,
     GoalCheckControl,
@@ -141,13 +144,16 @@ from threetears.evals.run import create_template, run_blocking
 
 LIGHT_ON = 'state.light == "on"'
 AT_MOST_ONE_SWITCH = 'call_count("room.switch_light") <= 1'
-accept = lambda *_: None  # stand-ins for a host's own tool-catalog and seed checks
+accept = lambda *_: None  # stand-ins for a host's own tool-catalog, seed-walk and kind checks
+authoring = replace(host, template_checks=TemplateChecks(  # a host of your own builds its EvalHost with them
+    require_known_tools_allowed=accept, refuse_undeclared_world_seed=accept, refuse_undeliverable_template=accept
+))
 switch = lambda to: RecordedCall(tool="room", action="switch_light", params={"to": to})
 
 template = await run_blocking(  # a store write, so it runs off the event loop
-    host.blocking_executor,
+    authoring.blocking_executor,
     create_template,
-    host,
+    authoring,
     {
         "candidate_kind": "callable",  # the kind an eval's runs are of
         "name": "dark room", "intent": "Light a dark room for reading.",
@@ -168,7 +174,6 @@ template = await run_blocking(  # a store write, so it runs off the event loop
         ),
     },
     scope_id="lights",
-    require_known_tools_allowed=accept, refuse_undeclared_world_seed=accept, refuse_undeliverable_template=accept,
 )
 ```
 
@@ -279,8 +284,9 @@ for result in results:
 
 **A change, better or worse.** `Eval(CASES, {"old": ROOM(old_agent), "new": ROOM(new_agent)}, [checks...])`, the
 first key the control, runs both agents on the same seeded cases. Each goal check becomes a
-reading named `goal_state:<check>` in the contrasts table, with its interval and verdict, and an unproven check is
-disclosed under Methods. [Reading a comparison](reading-reports.md#reading-a-comparison) explains the verdicts.
+reading in the contrasts table, headed by its expression (its key is `goal_state:<check>`), with its interval and
+verdict, and an unproven check is named under Not tested.
+[Reading a comparison](reading-reports.md#reading-a-comparison) explains the verdicts.
 
 **Placements.** Every run records what it did with each dimension:
 
@@ -472,11 +478,6 @@ with every call refused, single campaign.
 observations under different worlds never pool. A name registered as both a sweepable and a world dimension is
 refused. *Rejected:* detecting that through a shared binding table, since a sweepable's after-the-fact reader and a
 live world handle are different callables that never collide.
-
-### Review
-
-An independent review found two outside citations in the first draft fabricated or misquoted, now corrected.
-Walking the design against three other applications produced both contract-level changes.
 
 ### What the contract still cannot see
 

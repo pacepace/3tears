@@ -44,6 +44,7 @@ and a host that takes the bare answer says so.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
     from threetears.evals.kernel.host.timeouts import CellTimeoutFactory
     from threetears.evals.schema.traces import TraceSink
     from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
+    from threetears.evals.schema.models import EvalTemplate
     from threetears.evals.kernel.storage import EvalStorage
 
 #: The apparatus roles the engine asks a host for a completion client in. ``judge`` scores a cell,
@@ -102,6 +104,30 @@ class CompletionClients(Protocol):
 
 
 @dataclass(frozen=True, kw_only=True)
+class TemplateChecks:
+    """The three questions about a template that only the host can answer, asked wherever a template is admitted.
+
+    ``create_template``, ``update_template``, the boot seed (``seed_eval_definitions``), a definition reset
+    (``reset_definitions``) and the ``definitions_reset`` action all read them from the one host they are handed
+    (:attr:`EvalHost.template_checks`), so no path admits a template under checks another path does not ask. Each raises
+    :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse and returns ``None`` to admit. None has a
+    default: a host with nothing to check passes a function that checks nothing, which is a decision its code states.
+
+    Attributes:
+        require_known_tools_allowed: Whether each name in a template's ``tools_allowed`` is a tool type the host's
+            catalog has; handed the list (``None`` when the template states none).
+        refuse_undeclared_world_seed: Whether a template's ``world_seed`` names only paths the host's world can seed:
+            the host's walk over its own namespaces.
+        refuse_undeliverable_template: Whether the template declares only apparatus its candidate kind can honour: the
+            host's kind capability table.
+    """
+
+    require_known_tools_allowed: Callable[[Sequence[str] | None], None]
+    refuse_undeclared_world_seed: Callable[[EvalTemplate], None]
+    refuse_undeliverable_template: Callable[[EvalTemplate], None]
+
+
+@dataclass(frozen=True, kw_only=True)
 class EvalHost:
     """Everything the engine reads of one consuming product, as one frozen value.
 
@@ -133,6 +159,9 @@ class EvalHost:
             re-judge, the analysis generator — and the client a kind's launcher asks for in the
             ``variation`` role to write generated cases. ``None`` for a product whose engine work calls no
             model, and an entrypoint that needs one refuses rather than guessing.
+        template_checks: The host's checks on a template (:class:`TemplateChecks`), which every path that admits a
+            template reads from here. ``None`` for a product that authors no template through the engine (a quick
+            ``Eval`` stores its own), and an entrypoint that admits one refuses rather than admitting it unchecked.
     """
 
     profile: HostProfile
@@ -142,6 +171,7 @@ class EvalHost:
     blocking_executor: Executor | None
     cell_timeout: CellTimeoutFactory
     clients: CompletionClients | None = None
+    template_checks: TemplateChecks | None = None
 
     def completion_clients(self, purpose: str) -> CompletionClients:
         """The host's client factory, or a refusal naming what needed one.
@@ -163,5 +193,25 @@ class EvalHost:
             )
         return self.clients
 
+    def checks_for(self, purpose: str) -> TemplateChecks:
+        """The host's template checks, or a refusal naming what needed them.
 
-__all__ = ["CompletionClients", "CompletionRole", "EvalHost"]
+        Args:
+            purpose: What is admitting a template, for the refusal — e.g. ``"create_template"``.
+
+        Returns:
+            The checks.
+
+        Raises:
+            RefusedInput: This host supplies no template checks — a :class:`ValueError`, as every caller documents,
+                that a surface reports as a refusal rather than as an unanticipated error.
+        """
+        if self.template_checks is None:
+            raise RefusedInput(
+                f"host {self.profile.host_id!r} supplies no template checks, and {purpose} admits a template",
+                remedy="build the host with template_checks=<its template checks>",
+            )
+        return self.template_checks
+
+
+__all__ = ["CompletionClients", "CompletionRole", "EvalHost", "TemplateChecks"]

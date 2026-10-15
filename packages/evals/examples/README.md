@@ -98,21 +98,24 @@ strata (clean, multi-currency, noisy OCR) with two prompts, as `runner={"v1": mo
 the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict. A field
 grader per field, `grader("total", margin=0.05)` declaring a margin for equivalence (a case whose `total` is `null`
 expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail decided apart from the rest. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
-fails the run in CI on a regression or a guardrail not shown held. Its closing comment names arms as `k=v` pairs for a
-grid of factors, read against another control with `result.against()`.
+fails the run in CI on a regression or a guardrail not shown held. Its docstring points on to a grid of factors: arms named
+as `k=v` pairs, read against another control with `result.against()`.
 
-What the recorded run said: no arm separated, and it exits 4. The report reads
+What the recorded run said: no arm separated, and it exits 4, its last line saying why in the report's words
+(`exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
+screen reads
 
 ```text
-**Leads only: no arm separated from the control.**
-> Guardrails left undecided, so not known to be safe: No invented total score for candidate=v2.
+# invoices: does v2 do better than v1?
+v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
+**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
 ```
 
-with the guardrail's row saying why: `undecided: not shown held, so not known to be safe (the interval on the
-difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within
-it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
+with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: not
+shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is
+shown neither within it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
 answer, and what would answer it is more hard-negative cases, invoices that print no amount due (7 of the 30). One
-v2 trial is `failed: a model the candidate runs failed or refused`, its recorded error `the candidate raised
+v2 trial failed (`a model the candidate runs failed or refused`), its recorded error `the candidate raised
 ValidationError: 1 validation error for Invoice` on `Invalid JSON`: malformed JSON from the model, counted against v2.
 [The ladder](../docs/ladder.md#rung-3-two-prompts-compared) quotes the rest.
 
@@ -184,9 +187,8 @@ replays, and names each one that changed.
 
 These are documented in the guides:
 
-- Judge reliability and evidence tiers: [Reading reports](../docs/reading-reports.md). Results by kind of case
-  (strata) are read in [`3-invoices/`](3-invoices/extract.py), and explained in
-  [Reading reports](../docs/reading-reports.md#results-by-kind-of-case-strata).
+- Judge reliability and evidence tiers:
+  [Reading reports](../docs/reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
 - Declaring a campaign's design (axes, question, bar), and when exploring without one is the right call:
   [Measuring soundly](../docs/measuring-soundly.md#start-from-the-question).
 - Budgets and spend caps: [Cost and budgets](../docs/cost-and-budgets.md).

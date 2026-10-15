@@ -125,7 +125,15 @@ pass it to every entrypoint. It holds:
   was refused for the calling account, which stops a run rather than excluding its cells;
   `withhold_failure_detail` is the honest one for an app with no error types of its own;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
-  where the host is built.
+  where the host is built;
+- your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the three
+  questions about a template only you can answer. `require_known_tools_allowed` asks whether each tool it allows is in
+  your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your world can seed, and
+  `refuse_undeliverable_template` whether its kind can honour what it declares. Each raises `ValidationFailedError` to
+  refuse and returns `None` to admit. `create_template`, `update_template`, the boot seed, a definition reset and the
+  `definitions_reset` action read them off the host they are handed, so every path admits a template under the same
+  checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it admitted
+  would go unchecked; a check with nothing to refuse is a function that returns `None`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -227,7 +235,8 @@ async def build_host() -> EvalHost:
 
 `Clients` builds one `Model` per role, model and temperature, all sharing one `Catalogue` (OpenRouter's public model
 list, fetched once: the rates and the parameters each model takes) and what any of them learned from a refusal, and
-`await clients.aclose()` closes them at shutdown. A role is a model id or a `Model` whose settings that role's models
+`await clients.aclose()` closes them at shutdown (and the `http=` client handed to `Clients`, when it was handed with
+`own_http=True`). A role is a model id or a `Model` whose settings that role's models
 are built with: an id with a `/` goes to OpenRouter on `OPENROUTER_API_KEY`; a bare id needs
 `Model(id, provider="anthropic")` (`ANTHROPIC_API_KEY`) or `provider="openai"` (`OPENAI_API_KEY`), never guessed;
 `base_url=` takes any OpenAI-compatible endpoint. A missing key is refused when the model is built, naming the
@@ -272,7 +281,13 @@ fetch forever: the catalogue refreshes on the first live call after `refresh_aft
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
 OpenRouter call, which its own figure prices), and `Catalogue.stale_since` and `refresh_failure` say the same.
-Several loads at once share one fetch.
+Several loads at once share one fetch, and one request makes at most one: a model's call takes the read its
+`refresh_prices()` made for it in the same task as its own, so a read that failed (a first read included) is tried
+again by the next request, never by the call it was made for. `refresh_prices()` returns what its read found, a
+`PriceRefresh` (`refreshed`, `fetched_at`, `failure`), which the model keeps as `last_price_refresh` and
+`clients.refresh_prices()` answers once for every role: a `failure` with no `fetched_at` is a first read that failed,
+so no model can be priced, and one with a `fetched_at` is a refresh that failed, the rows read then kept. A host
+writes its own pricing-outage line from it.
 
 **The price ceiling is a true upper bound, or `None`.** `price_ceiling` bounds the prompt at one token per UTF-8 byte
 (after NFKC normalisation, where that is longer) plus a framing allowance, and prices it with every price the row
@@ -289,9 +304,23 @@ yet reached ([Cost and budgets](cost-and-budgets.md#caps)). A client of your own
 bound (`Catalogue(refresh_after=timedelta(hours=1), ceiling_stale_after=timedelta(hours=6))`), or await
 `catalogue.load()` on a timer of your own; neither is needed for an idle host.
 
-`Model(timeout=..., headers=...)` sets up the client the model opens itself; beside `http=` they are refused, since a
-client you hand in is used as you built it. A catalogue you hand an `http` client fetches with that client's timeout;
-`CATALOGUE_FETCH_TIMEOUT_S` (30 seconds) is the one it uses on its own.
+**The HTTP client is the model's, or yours.** A `Model` opens its own client on its first live call, set up by
+`transport=` (any `httpx` transport: HTTP/2, a proxy, a test's mock), `timeout=` and `headers=`, and `aclose()` closes
+it, and with it, as `httpx` does, the transport it was opened on: a transport shared between models is closed by the
+first one closed. Or hand it a client with `http=`, used as you built it (beside it the other three are refused), and
+say who closes it: `own_http=True` makes it the model's, so `aclose()` closes it; the default leaves it yours. A model
+built from another (`derive()`, and so a `Clients` role given as a `Model`) sends through that one's `http` client
+without ever closing it, or opens its own on that one's `transport`. So a host building a model per unit of work needs
+no wrapper to release its client:
+
+```python
+model = Model(model_id, transport=httpx.AsyncHTTPTransport(http2=True), timeout=120.0, headers=attribution)
+...
+await model.aclose()  # closes the client it opened, and its transport
+```
+
+A catalogue you hand an `http` client fetches with that client's timeout; `CATALOGUE_FETCH_TIMEOUT_S` (30 seconds) is
+the one it uses on its own.
 
 **An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
 class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`
@@ -895,12 +924,14 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 450 names, mapped by rung in [the surface](surface.md).
+The first two tiers are the declared surface, about 520 names, mapped by rung in [the surface](surface.md).
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
-and marks each host-contract one *host contract*. If your host binds to a provisional name, ask for it to be
-promoted: promoting a name costs nothing, and demoting one is a break.
+and marks each host-contract one *host contract*. Nothing a host imports is provisional: each adopting host's import
+list sits in `packages/evals/tests/fixtures/host_imports/`, and a test fails while a name on one is provisional. If
+your host binds to a provisional name, send your list to be added: promoting a name costs nothing, and demoting one
+is a break.
 
 **The installed build ships its tiers**, so your suite can gate its own imports against the version it runs
 (`surface_tier` raises `KeyError` for a name no root exports, so a reach below a root fails too):
@@ -946,7 +977,8 @@ snapshot:
 - **A name added, or a kind, signature or tier changed.** The test fails until you regenerate the snapshot, so the
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
   callers, add it to the newest section's `notes`. A tier changes only by editing `HOST_CONTRACT`, and every name
-  the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`).
+  the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`); no name this
+  guide's prose teaches may be provisional (`tests/test_guide_names_are_declared.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
   prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
@@ -1160,6 +1192,19 @@ async def test_no_call_waits_on_a_model(case: JobsConformanceCase) -> None:
     await case.check(build)
 ```
 
+### Deriving your budgets from the engine's ceilings
+
+The engine holds some of its own work to inner ceilings, and every outer budget you set around that work (an action
+job's `budget_s`, the output cap of the client you build for the simulator or the proposer, a retry budget around a
+scheduling call, a deadline over a generation or a cell's judge phase) must sit at or above the ceiling inside it, or
+you cancel work the engine would still finish inside its own bound, after it was billed. `Ceilings` (host contract,
+in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `scheduler_call_attempts`,
+`simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the two functions
+`generation_ceiling_s` and `judge_phase_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
+generation or a judge phase. Derive each outer budget from a field, never from a number you copied: a release that
+raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The six names the
+fields stand for are still exported where they were in `.32` and leave in `.33`.
+
 ### Hearing about a regression when a run completes
 
 `scope_history` flags a regression only when someone reads it. To hear about one as soon as a run
@@ -1216,6 +1261,39 @@ declaration of the host). The dispatch resolves a launch's settings against thos
 launcher reads every one off `request.apparatus_settings` with no default of its own, and the run records
 the rig as set up (`EvalRun.apparatus_settings`), a component of its measurement context — a launch naming
 a default and one leaving it out are one condition.
+
+## Declaring what a campaign decides
+
+A campaign that compares arms to make a decision declares the question it asks and the rule that answers it, before
+its first run. The rule is typed clauses, never words: the engine settles a `DecisionRule`, and reads no rule out of
+a question's text.
+
+```python
+from threetears.evals.kernel import CostLower, DecisionRule, Question, RateDrop
+
+asked = Question(
+    text="Does v2 hold every pass rate within 2 points of v1, at a lower cost per reply?",
+    decision=DecisionRule(clauses=(RateDrop(max_points=2), CostLower())),
+)
+```
+
+It goes on the declared design's `questions`. The page quotes the question whole and opens its Decision section with
+the rule in a sentence it writes, the arms by name: `Switch to v2 only if no pass rate drops by more than 2 points
+and v2 costs less per reply. Otherwise stay on v1.`
+
+- **`RateDrop(max_points=2)`** reads every pass/fail reading the arms share, the overall pass rate included.
+  `RateDrop(max_points=2, reading="tone")` reads one: a goal-state check of the template by its verbatim text, a
+  pass/fail judged dimension by its name, or a check measure by its key: a true/false measure, its passes counted
+  at its better end, or a scorer returning a bool (`no tone rate drops by more than 2 points`). A reading the campaign does not measure is refused when the design is declared, listing the ones it does.
+- **`CostLower()`** reads each arm's cost per reply.
+- **The logic is fixed**: switch only if every clause settles switch, keep the moment one settles keep, otherwise
+  unsettled. Keep settles on what the run observed; switch needs every arm at the case floor and an interval
+  ([Reading reports](reading-reports.md)).
+- **A rule written as prose is refused** when the design is declared: a question whose text says `Decision rule:`
+  and declares no `decision` names `Question.decision` in the refusal. A question stored that way before rules were
+  typed still loads; its page says the rule went unread, and its verdict is exploratory.
+- **The rule is part of what was asked**: changing it mints a new question that supersedes the old, as changing the
+  text does.
 
 ## The engine's prompts: shipped defaults, optional overrides
 
@@ -1385,6 +1463,19 @@ whose words or verdict changed, for a template that already holds cases would ch
 against under the same id. It is no longer written beside the old ones. It is withheld and reported under
 `needs_reset` on every boot, with any case set listing it, until you reset the template (below).
 
+**A template's own cases seed with it.** A template whose stimuli you author as cases rather than variation axes (a
+scenario to play out, a set of inputs to classify) carries them in the corpus too: `load_seed_corpus` reads
+`template_cases/*.json`, each a `SeedTemplateCase` (host contract, from `threetears.evals.run`; in memory,
+`SeedCorpus(template_cases=...)`) naming its `template` and carrying the case's `variation_params`, its `host_payload`
+(your stimulus, stored as written and never read by the engine) and its `stratum`. Its name is its file's name without
+`.json` (or its own `name`), unique within its template, and is stored as the case's `name`, which the report calls it
+by. The template must be one the corpus carries, and not a judge template, whose cases are its judge cases. The seed
+writes the cases into the template's current revision after the templates and reports them under `template_case`. As
+for a judge case, it writes them only into a revision holding no cases yet, so a case you add, or one whose content
+changed, for a template already holding cases is withheld under `needs_reset` until you reset the template (below).
+A case whose content the revision already holds is `already present`, so cases your own seed wrote before `.32` with
+the same content are kept as they are.
+
 **A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
 case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
 implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (host contract, from `threetears.evals.run`; in
@@ -1408,26 +1499,34 @@ corpus = boot_seed_corpus(scope_id)  # the SeedCorpus your boot seed loads for t
 drift = definition_drift(host, corpus, seeded_digests=PRE_30_DIGESTS)  # writes nothing
 print(drift.render())  # "drift: 1 stale, 0 customized, 1 unknown, 0 absent, 40 current", then each line not current
 if stale := drift.keys("stale"):
-    reset = reset_definitions(host, corpus, stale, require_known_tools_allowed=..., refuse_undeclared_world_seed=...,
-                              refuse_undeliverable_template=...)  # the same three checks the seed takes
+    reset = reset_definitions(host, corpus, stale)  # admits each template under the host's template_checks
     print(reset.render())
 ```
 
-A definition reads `current` (the corpus's), `stale` (what was seeded, and the corpus has moved), `customized`
-(changed since: edited, archived or deleted), `unknown` (no record: a row seeded before `.30`) or `absent` (the next
-boot seeds it). A reset never edits in place. A template's new content is its next **revision**: a new record under the
-same name (`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep
-the content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest
-revision. A judge case resets with its judge template, whose new revision holds the corpus's whole battery, and the
-corpus's case sets over it are minted again. The reset refuses `customized` and `unknown`, and a judge template holding
-live cases the corpus does not carry, unless `discard_customization=True`; it writes nothing when it refuses and names
-every refusal. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
-bundle), since their results are two datasets; two templates that only share a name at one revision number are not
-revisions of each other and are not refused. For rows seeded before `.30`, compute `corpus_digests(host, corpus)`
-over the corpus you seeded then (from your history) and pass it as `seeded_digests`: they read `stale` rather than
-`unknown`. A judge template whose boot reported `needs_reset` reads `stale`, and its reset writes the next revision
-with every corpus case. `definition_drift_actions(boot_seed_corpus, ...)` (from
-`threetears.evals.actions`) adds `definitions_drift` and `definitions_reset` to your catalogue.
+A definition reads `current` (the corpus's), `stale` (what was seeded, and the corpus has moved; also a template
+whose boot reported `needs_reset`), `customized` (changed since: edited, archived or deleted), `unknown` (no record:
+a row seeded before `.30`) or `absent` (the next boot seeds it).
+
+A reset never edits in place. A template's new content is its next **revision**: a new record under the same name
+(`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep the
+content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest revision,
+which `templates_list` shows beside each template (`revision`). A judge template's new revision holds the corpus's
+whole battery, and the corpus's case sets over it are minted again; a template the corpus gives cases gets every one
+of them in its new revision. The reset refuses `customized` and `unknown`, and a judge template (or a template the
+corpus gives cases) holding live cases the corpus does not carry, unless `overwrite_customized=True`; it writes
+nothing when it refuses and names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote
+and the stored record it replaced (`replaced_id`), and reads `discarded: true` only where that stored copy read
+`customized` or `unknown` and was written over under the flag. A campaign holding runs of two revisions of one
+template is refused (at creation, adding a run, and its bundle), since their results are two datasets; two templates
+that only share a name at one revision number are not revisions of each other and are not refused.
+
+Rows seeded before the seed kept a record read `unknown`: judge cases and templates seeded before `.30`, and template
+cases your own seed wrote before `.32`, unless the corpus still has their content (`current`), and any new one.
+Compute `corpus_digests(host, corpus)` over the corpus as you seeded it (from your history) and pass it as
+`seeded_digests`: a row the map names then reads `stale`, or `customized` when gone from the store, and a case it
+does not name reads `stale`. `definition_drift_actions(boot_seed_corpus)` (from `threetears.evals.actions`) adds
+`definitions_drift` and `definitions_reset` to your catalogue; the reset reads the template checks of the host each
+call is made in, so the factory needs only your corpus.
 
 **A stored verdict is graded again through one door: `regrade`** (`threetears.evals.run`, and the `result_regrade`
 action). `await regrade(host, result_id, scope_id)` re-grades the result's check dims (its goal checks) from what its
