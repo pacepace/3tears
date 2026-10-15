@@ -482,6 +482,52 @@ async def test_a_call_made_without_a_refresh_still_reads_for_itself() -> None:
     assert server.fetches == 2, "the refresh's read went to the call made for it, not to every call after"
 
 
+def _counted_reads(shared: Catalogue, monkeypatch: pytest.MonkeyPatch) -> list[PriceRefresh]:
+    """Every read of ``shared`` made from here on, as it is made."""
+    reads: list[PriceRefresh] = []
+    read = shared.read
+
+    async def counted() -> PriceRefresh:
+        found = await read()
+        reads.append(found)
+        return found
+
+    monkeypatch.setattr(shared, "read", counted)
+    return reads
+
+
+async def test_calls_made_together_after_one_refresh_take_its_read_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared = CatalogueServer((200, {"data": ROWS})).catalogue()
+    haiku = _replying_haiku(shared)
+    await haiku.refresh_prices()
+    reads = _counted_reads(shared, monkeypatch)
+
+    await asyncio.gather(haiku.generate(system="", user="x"), haiku.generate(system="", user="y"))
+    assert len(reads) == 1, "one call took the refresh's read, the other read for itself"
+
+
+async def test_an_estimate_spends_the_refresh_so_a_later_call_reads_for_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared = CatalogueServer((200, {"data": ROWS})).catalogue()
+    haiku = _replying_haiku(shared)
+    await haiku.refresh_prices()
+    reads = _counted_reads(shared, monkeypatch)
+
+    haiku.price_ceiling(system="", user="x")  # the estimate, which spends the read
+    await haiku.generate(system="", user="x")
+    assert len(reads) == 1
+
+
+async def test_a_failed_refresh_is_not_reused_by_a_second_call_in_a_task_started_after_it() -> None:
+    server = CatalogueServer((503, {"error": "down"}))
+    haiku = _replying_haiku(server.catalogue())
+    await haiku.refresh_prices()
+
+    first = await asyncio.create_task(haiku.generate(system="", user="x"))
+    second = await haiku.generate(system="", user="x")
+    assert server.fetches == 2, "the task took the refresh's failed read; the call after it tried again"
+    assert first.cost_usd is None and second.cost_usd is None
+
+
 async def test_concurrent_requests_still_share_one_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     server = CatalogueServer((503, {"error": "down"}))

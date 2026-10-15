@@ -138,6 +138,25 @@ class Completion:
 _NOTHING_READ: Final = PriceRefresh(refreshed=False, fetched_at=None, failure=None)
 
 
+@dataclass(slots=True, eq=False)
+class _MadeRead:
+    """A catalogue read ``refresh_prices`` made, which the model's next pricing use takes once.
+
+    Mutable on purpose: a task started after the refresh inherits the same cell through the context, so whichever
+    task prices first takes it, and every other use, in any task, reads for itself.
+    """
+
+    read: PriceRefresh
+    taken: bool = False
+
+    def take(self) -> PriceRefresh | None:
+        """The read, the first time it is asked for; ``None`` every time after."""
+        if self.taken:
+            return None
+        self.taken = True
+        return self.read
+
+
 def _provider_of(model_id: str, provider: Provider | None, base_url: str | None) -> Provider:
     """The provider a model id goes to: as named; else OpenRouter for a ``vendor/model`` id, an OpenAI-compatible
     endpoint for a ``base_url``; a bare id with neither is refused, never guessed."""
@@ -232,10 +251,10 @@ class _Live:
         self._unbounded: set[str] = set()
         #: What the last :meth:`refresh_prices` found, or ``None`` before the first.
         self.last_refresh: PriceRefresh | None = None
-        #: The catalogue read this model's last ``refresh_prices`` in this task made, which its next call in the task
-        #: takes as its own rather than reading again: one request, one catalogue fetch, even when that fetch failed.
-        #: The model's own, so no other model, and no other host, ever takes it.
-        self._made_read: ContextVar[PriceRefresh | None] = ContextVar(
+        #: The catalogue read this model's last ``refresh_prices`` in this context made, which its next pricing use (a
+        #: call, or a price ceiling asked without one) takes once, in whichever task comes first; every other use
+        #: reads for itself. The model's own, so no other model, and no other host, ever takes it.
+        self._made_read: ContextVar[_MadeRead | None] = ContextVar(
             f"threetears_evals_read_for_call_{id(self):x}", default=None
         )
 
@@ -246,12 +265,16 @@ class _Live:
             self._opened = httpx.AsyncClient(timeout=self._timeout, headers=self._headers, transport=self._transport)
         return self._opened
 
-    async def _read_for_call(self) -> PriceRefresh:
-        """The catalogue read this call makes: the one ``refresh_prices`` made for it in this task, taken once, or a
-        read of its own (:meth:`Catalogue.read`)."""
+    def _take_made_read(self) -> PriceRefresh | None:
+        """The read ``refresh_prices`` made, if no pricing use has taken it yet; taking it spends it for every task."""
         made = self._made_read.get()
+        return None if made is None else made.take()
+
+    async def _read_for_call(self) -> PriceRefresh:
+        """The catalogue read this call makes: the one ``refresh_prices`` made, when nothing took it first, or a read
+        of its own (:meth:`Catalogue.read`)."""
+        made = self._take_made_read()
         if made is not None:
-            self._made_read.set(None)
             return made
         return await self._catalogue.read()
 
@@ -399,10 +422,11 @@ class _Live:
     async def refresh_prices(self) -> PriceRefresh:
         read = await self._catalogue.read()
         self.last_refresh = read
-        self._made_read.set(read)
+        self._made_read.set(_MadeRead(read))
         return read
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        self._take_made_read()  # an estimate is a pricing use: the refresh it followed is spent on it
         matched = self._catalogue_id()
         if self._asked.max_tokens is None:
             self._unbounded_because("the request has no output cap")
@@ -762,9 +786,11 @@ class Model:
 
         What the engine awaits before it prices a call (:func:`~threetears.evals.kernel.capped_completion.refresh_prices`),
         so a model idle past ``Catalogue.ceiling_stale_after`` is priced from fresh rows rather than refused. Loads
-        made together share one fetch. The model's next :meth:`generate` in the same task takes this read as its own
-        rather than reading again, so one request makes at most one catalogue fetch: a read that failed is not tried
-        again by the call it was made for. Never raises: a first read that fails leaves :meth:`price_ceiling` ``None``
+        made together share one fetch. The model's next pricing use takes this read as its own, once, whichever task
+        makes it: a :meth:`generate` rather than reading again (so a read that failed is not tried again by the call
+        it was made for), or a :meth:`price_ceiling`, which spends it. Every other use reads for itself, so calls
+        made together after one refresh do not all lean on it, and an estimate's refresh is not left for later
+        work. Never raises: a first read that fails leaves :meth:`price_ceiling` ``None``
         and the call unpriced, and a refresh that fails keeps the rows, stale, as a live call does; either is logged.
         Free while replaying.
 

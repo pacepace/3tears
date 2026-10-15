@@ -15,9 +15,10 @@ refresh that fails keeps the last rows, logs the failure, and marks the catalogu
 (:attr:`Catalogue.stale_since`, :attr:`Catalogue.refresh_failure`), which every completion it then prices carries
 (``Completion.pricing_stale_since``): never silent, and never failing the call. The failed refresh is tried again on
 the first load :data:`RETRY_AFTER_FAILURE` later (sooner when ``refresh_after`` is shorter), not on every call.
-Callers loading at once share one fetch, and its result or its error. One request reads the catalogue once: a
-model's call takes the read its ``refresh_prices()`` made for it in the same task as its own, so a read that failed,
-a first read included, is not tried again by the call it was made for.
+Callers loading at once share one fetch, and its result or its error. A model's ``refresh_prices()`` read is taken
+once, by the model's next pricing use in any task (a call, or a price ceiling asked without one): a call that takes
+it does not read again, so a read that failed, a first read included, is not tried again by the call it was made
+for, and every other use reads for itself.
 
 **A price ceiling is a true upper bound, or none.** :meth:`Catalogue.ceiling` bounds one call from every price the
 row lists, not only its base rates: a prompt token at the highest of the plain, cache-read and cache-write rates, an
