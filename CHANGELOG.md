@@ -31,8 +31,13 @@ packages (bumped in lock-step).
     bring-up on 2026.1.1.1 at the end of the chain.
   - The asyncpg datasource driver's three introspection queries filtered `table_schema` that way.
 
-  All now compare as text. `tests/enforcement/test_catalog_names_are_compared_as_text.py` fails any
-  SQL string that reads the catalogue and compares one of its name columns with `ANY(...)` uncast.
+  All now compare as text. The walker is shared, `threetears.enforcement.catalog_name_comparison`, so
+  the hub's gate runs it too. `tests/enforcement/test_catalog_names_are_compared_as_text.py` runs it
+  here. It flags `=`, `<>` or `!=` against `ANY`, `ALL` or `SOME`. A column only the catalogue has
+  (`relname`, `nspname`, `attname`, `tablename` and the rest) is flagged wherever it is compared, so a
+  placeholder naming the table does not hide it. `table_name`, `table_schema` and `column_name` are
+  flagged in any text reading `information_schema` or a `pg_` relation. A query built with `+` or
+  `str.join` is read whole, and docstrings are not read.
   2026.1.0.0-b118, the version cobalt runs, does not show the defect.
 
 ### acl: many evaluations share their reads
