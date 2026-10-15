@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import secrets
 from typing import Any
 
 import httpx
 
 from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
+from threetears.models.providers.image.options import dimensions_for, result_metadata
 
 __all__ = [
     "ComfyUIImageProvider",
@@ -77,12 +80,29 @@ _DEFAULT_WORKFLOW: dict[str, Any] = {
 }
 
 
+#: The default workflow's sampler (its seed), empty latent (its size) and positive prompt.
+_SAMPLER_NODE_ID = "3"
+_LATENT_NODE_ID = "5"
+_PROMPT_NODE_ID = "6"
+
+#: The largest seed a KSampler takes.
+_MAX_SEED = 2**64 - 1
+
+#: The range a seed is drawn from when none is asked for.
+_DRAWN_SEEDS = 2**32
+
+
 class ComfyUIImageProvider:
     """image generation provider for ComfyUI API via httpx.
 
     submits workflow to ComfyUI prompt endpoint and polls history
     for completion. extracts output image filename and fetches
     generated image data. typically self-hosted without authentication.
+
+    every image gets its own seed (the one asked for, else a new one), so the
+    same prompt does not make the same picture each time; the seed used comes
+    back in the result's metadata. size and aspect set the empty latent's width
+    and height (512 by 512 unless asked, at most 2048 on a side).
 
     :param base_url: ComfyUI API base URL
     :ptype base_url: str
@@ -107,6 +127,9 @@ class ComfyUIImageProvider:
         self._poll_interval = poll_interval
         self._max_polls = max_polls
 
+    #: a source image never shapes the result, so an edit is refused before it is paid for
+    takes_source_image = False
+
     async def generate(
         self,
         prompt: str,
@@ -114,6 +137,9 @@ class ComfyUIImageProvider:
         style: str | None = None,
         source_image: bytes | None = None,
         source_mime_type: str | None = None,
+        size: str | None = None,
+        aspect: str | None = None,
+        seed: int | None = None,
     ) -> GeneratedImage:
         """generates image via ComfyUI workflow submission and polling.
 
@@ -129,8 +155,16 @@ class ComfyUIImageProvider:
         :ptype source_image: bytes | None
         :param source_mime_type: unused (not supported by default workflow)
         :ptype source_mime_type: str | None
+        :param size: ``WIDTHxHEIGHT``, at most 2048 on a side
+        :ptype size: str | None
+        :param aspect: a shape when no size is given, on a 512 longest side
+        :ptype aspect: str | None
+        :param seed: a number from 0 that repeats an image for the same prompt; a new
+            one is drawn when none is asked for
+        :ptype seed: int | None
         :return: generated image result with PNG data
         :rtype: GeneratedImage
+        :raises ValueError: when the size or aspect cannot be read, or the size is too large
         :raises TimeoutError: if max poll attempts exceeded
         :raises httpx.HTTPStatusError: if API returns error status code
         """
@@ -138,7 +172,20 @@ class ComfyUIImageProvider:
         if style is not None:
             effective_prompt = f"{style} style, {prompt}"
 
-        workflow = _build_workflow(effective_prompt)
+        latent = _DEFAULT_WORKFLOW[_LATENT_NODE_ID]["inputs"]
+        width, height = dimensions_for(
+            size,
+            aspect,
+            default=(int(latent["width"]), int(latent["height"])),
+            longest=2048,
+        )
+        ignored: dict[str, str] = {}
+        if seed is not None and not 0 <= seed <= _MAX_SEED:
+            ignored["seed"] = f"this server takes a seed from 0 to {_MAX_SEED}; a new one was used"
+            seed = None
+        used_seed = seed if seed is not None else secrets.randbelow(_DRAWN_SEEDS)
+
+        workflow = _build_workflow(effective_prompt, width=width, height=height, seed=used_seed)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             submit_response = await client.post(
@@ -159,6 +206,16 @@ class ComfyUIImageProvider:
         result = GeneratedImage(
             data=image_response.content,
             mime_type="image/png",
+            width=width,
+            height=height,
+            metadata=result_metadata(
+                {"prompt_id": prompt_id},
+                size=f"{width}x{height}",
+                seed=used_seed,
+                source_given=source_image is not None,
+                source_used=False,
+                ignored=ignored,
+            ),
         )
         return result
 
@@ -196,21 +253,29 @@ class ComfyUIImageProvider:
         raise TimeoutError(f"ComfyUI generation did not complete after {self._max_polls} polls")
 
 
-def _build_workflow(prompt_text: str) -> dict[str, Any]:
-    """builds ComfyUI workflow dict with prompt in positive conditioning node.
+def _build_workflow(prompt_text: str, *, width: int, height: int, seed: int) -> dict[str, Any]:
+    """builds ComfyUI workflow dict with the prompt, size and seed set.
 
-    creates deep copy of default workflow and sets prompt text
-    in positive conditioning CLIPTextEncode node.
+    creates deep copy of default workflow and sets prompt text in the positive
+    conditioning CLIPTextEncode node, the size in the empty latent and the seed
+    in the sampler.
 
     :param prompt_text: text prompt for positive conditioning
     :ptype prompt_text: str
+    :param width: width of the image to make
+    :ptype width: int
+    :param height: height of the image to make
+    :ptype height: int
+    :param seed: the sampler's seed
+    :ptype seed: int
     :return: workflow dict ready for ComfyUI prompt endpoint
     :rtype: dict[str, Any]
     """
-    import copy
-
     workflow = copy.deepcopy(_DEFAULT_WORKFLOW)
-    workflow["6"]["inputs"]["text"] = prompt_text
+    workflow[_PROMPT_NODE_ID]["inputs"]["text"] = prompt_text
+    workflow[_LATENT_NODE_ID]["inputs"]["width"] = width
+    workflow[_LATENT_NODE_ID]["inputs"]["height"] = height
+    workflow[_SAMPLER_NODE_ID]["inputs"]["seed"] = seed
     return workflow
 
 

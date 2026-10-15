@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.skills.collections import OutcomeRecorded
 from threetears.agent.skills.entities import (
     AgentSkillEntity,
     AgentSkillInvocationEntity,
@@ -24,7 +25,7 @@ __all__ = ["FakeInvocationsCollection", "FakeRegistry", "FakeSkillsCollection"]
 
 
 # parity-with: threetears.agent.skills.collections.AgentSkillCollection
-# parity-exempt: AgentSkillCollection subset for the eight tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user/increment_outcome_counts and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
+# parity-exempt: AgentSkillCollection subset for the tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user/increment_outcome_counts/invalidate_cache and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
 class FakeSkillsCollection:
     """In-memory stand-in for the public surface of :class:`AgentSkillCollection`.
 
@@ -58,6 +59,10 @@ class FakeSkillsCollection:
         agent_id, skill_id = entity_id
         self.rows.pop((agent_id, skill_id), None)
         return True
+
+    async def invalidate_cache(self, entity_id: Any) -> None:
+        """Nothing is cached here; the rows are the store."""
+        del entity_id
 
     async def find_by_name_for_user(
         self,
@@ -145,12 +150,14 @@ class FakeSkillsCollection:
 
 
 # parity-with: threetears.agent.skills.collections.AgentSkillInvocationCollection
-# parity-exempt: AgentSkillInvocationCollection subset for skill_invoke + skill_report_outcome unit coverage; the tools call only create/save_entity/record/list_for_conversation/set_outcome so the cache/persistence methods on the production class are out of scope
+# parity-exempt: AgentSkillInvocationCollection subset for skill_invoke + skill_report_outcome + skill_history unit coverage; the tools call only create/save_entity/record/list_for_conversation/list_for_skill/count_for_skill/set_outcome/record_outcome so the cache/persistence methods on the production class are out of scope; record_outcome's one-statement SQL is covered on real Postgres in tests/integration/test_tools_e2e.py
 class FakeInvocationsCollection:
     """In-memory stand-in for :class:`AgentSkillInvocationCollection`."""
 
-    def __init__(self) -> None:
+    def __init__(self, skills: FakeSkillsCollection | None = None) -> None:
         self.rows: dict[tuple[UUID, UUID], dict[str, Any]] = {}
+        #: the skills whose counts a recorded outcome moves, as the production statement does
+        self.skills = skills
 
     def create(self, data: dict[str, Any]) -> AgentSkillInvocationEntity:
         return AgentSkillInvocationEntity(dict(data), is_new=True, collection=None)
@@ -195,6 +202,55 @@ class FakeInvocationsCollection:
             return
         row["outcome"] = outcome
         row["outcome_source"] = source
+
+    async def record_outcome(
+        self,
+        agent_id: UUID,
+        invocation_id: UUID,
+        *,
+        skill_id: UUID,
+        outcome: str,
+        source: str,
+        notes: str | None = None,
+    ) -> OutcomeRecorded:
+        """The production rule in memory: a use counts once; a flip moves one count to the other side."""
+        row = self.rows.get((agent_id, invocation_id))
+        if row is None or row["skill_id"] != skill_id:
+            return OutcomeRecorded(found=False)
+        was, was_notes = row.get("outcome"), row.get("outcome_notes")
+        row["outcome"], row["outcome_source"] = outcome, source
+        row["outcome_notes"] = notes if notes is not None else was_notes
+        counted = was != outcome
+        target = self.skills.rows.get((agent_id, skill_id)) if self.skills is not None else None
+        if counted and target is not None:
+            if was is not None:
+                target[f"{was}_count"] = target.get(f"{was}_count", 0) - 1
+            target[f"{outcome}_count"] = target.get(f"{outcome}_count", 0) + 1
+            if outcome == "failure":
+                target["last_failure_at"] = datetime.now(UTC)
+        return OutcomeRecorded(found=True, previous=was, previous_notes=was_notes, counted=counted)
+
+    async def list_for_skill(
+        self,
+        agent_id: UUID,
+        skill_id: UUID,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        outcome_filter: str | None = None,
+    ) -> list[AgentSkillInvocationEntity]:
+        matches = [
+            AgentSkillInvocationEntity(dict(row), is_new=False, collection=None)
+            for row in self.rows.values()
+            if row["agent_id"] == agent_id
+            and row["skill_id"] == skill_id
+            and (outcome_filter is None or row.get("outcome") == outcome_filter)
+        ]
+        matches.sort(key=lambda e: e.invoked_at, reverse=True)
+        return matches[offset : offset + limit]
+
+    async def count_for_skill(self, agent_id: UUID, skill_id: UUID, *, outcome_filter: str | None = None) -> int:
+        return len(await self.list_for_skill(agent_id, skill_id, limit=10**6, outcome_filter=outcome_filter))
 
     def latest(self) -> dict[str, Any] | None:
         if not self.rows:

@@ -513,6 +513,24 @@ class WakeFireEntity(BaseEntity):
         return _as_uuid(value)
 
     @property
+    def fire_source(self) -> str:
+        """What started the fire: ``scheduled_tick``, ``webhook`` or ``manual``.
+
+        A row read without the column (written before v009 and held in a
+        cache since) is what its source column says it is.
+        """
+        value: str | None = self._get_raw("fire_source")
+        if value:
+            return value
+        return "webhook" if self._get_raw("webhook_subscription_id") is not None else "scheduled_tick"
+
+    @property
+    def requested_by(self) -> str | None:
+        """Who asked for a fire run by hand, as the consumer names them; ``None`` on every other fire."""
+        value: str | None = self._get_raw("requested_by")
+        return value
+
+    @property
     def display_suppressed(self) -> bool:
         """Return whether visible message display was suppressed.
 

@@ -146,6 +146,27 @@ class ToolLlmResolver(Protocol):
         ...
 
 
+async def _specialists(resolver: ToolLlmResolver) -> str:
+    """The specialists a miss can name instead: the resolver's ``available_names``, when it has one.
+
+    ``available_names`` is optional on a resolver, so one written before it
+    existed still satisfies :class:`ToolLlmResolver`. A resolver without it, or
+    one that fails to list, leaves the miss as it was: a failure to say more
+    must not replace the failure being reported.
+    """
+    lister = getattr(resolver, "available_names", None)
+    if lister is None:
+        return "It is not on your list."
+    try:
+        names = sorted({str(name) for name in await lister()})
+    except Exception as exc:
+        _log.warning("invoke_tool_llm: could not list specialists", extra={"extra_data": {"error": str(exc)}})
+        return "It is not on your list."
+    if not names:
+        return "You have no specialists to ask."
+    return f"Your specialists: {', '.join(names)}."
+
+
 def load_tool_llm_dispatch(
     resolver: ToolLlmResolver,
     *,
@@ -199,7 +220,7 @@ def load_tool_llm_dispatch(
             return f"[TOOL ERROR] invoke_tool_llm: {exc}"
 
         if result is None:
-            return f"[TOOL ERROR] invoke_tool_llm: specialist {tool_name!r} not found on your list."
+            return f"[TOOL ERROR] invoke_tool_llm: specialist {tool_name!r} not found. {await _specialists(resolver)}"
 
         _log.info(
             "invoke_tool_llm completed",

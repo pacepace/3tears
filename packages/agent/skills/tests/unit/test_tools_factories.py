@@ -600,7 +600,7 @@ class TestSkillInvoke:
         user_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [tool] = load_skill_invoke_tool(
@@ -627,7 +627,7 @@ class TestSkillInvoke:
         user_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         already = _new_uuid()
         state = _ActiveState()
@@ -651,7 +651,7 @@ class TestSkillInvoke:
         user_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(
             coll,
             agent_id=agent_id,
@@ -701,7 +701,7 @@ class TestSkillInvoke:
         user_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(
             coll,
             agent_id=agent_id,
@@ -727,7 +727,7 @@ class TestSkillInvoke:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [tool] = load_skill_invoke_tool(
@@ -758,7 +758,7 @@ class TestSkillInvoke:
         user_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
 
         def boom(_: UUID) -> None:
@@ -788,7 +788,7 @@ class TestSkillReportOutcome:
         user_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [invoke_tool] = load_skill_invoke_tool(
@@ -824,7 +824,7 @@ class TestSkillReportOutcome:
         user_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [invoke_tool] = load_skill_invoke_tool(
@@ -849,7 +849,8 @@ class TestSkillReportOutcome:
         assert "failure" in out
         assert coll.rows[(agent_id, skill_id)]["failure_count"] == 1
         assert coll.rows[(agent_id, skill_id)]["success_count"] == 0
-        # notes are observability-only in v1 -- never written to the row
+        # the outcome's note is kept in its own column; ``notes`` keeps the (absent) invoke reason
+        assert inv.latest()["outcome_notes"] == "target host unreachable"
         assert inv.latest()["notes"] is None
 
     async def test_no_marker_leak_in_output(self) -> None:
@@ -858,7 +859,7 @@ class TestSkillReportOutcome:
         user_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [invoke_tool] = load_skill_invoke_tool(
@@ -886,7 +887,7 @@ class TestSkillReportOutcome:
         agent_id = _new_uuid()
         conv_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         [tool] = load_skill_report_outcome_tool(
             agent_id=agent_id,
             conversation_id_resolver=lambda: conv_id,
@@ -902,7 +903,7 @@ class TestSkillReportOutcome:
         agent_id = _new_uuid()
         active_skill_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         [tool] = load_skill_report_outcome_tool(
             agent_id=agent_id,
             conversation_id_resolver=lambda: None,
@@ -923,7 +924,7 @@ class TestSkillReportOutcome:
         conv_id = _new_uuid()
         active_skill_id = _new_uuid()
         coll = FakeSkillsCollection()
-        inv = FakeInvocationsCollection()
+        inv = FakeInvocationsCollection(coll)
         [tool] = load_skill_report_outcome_tool(
             agent_id=agent_id,
             conversation_id_resolver=lambda: conv_id,

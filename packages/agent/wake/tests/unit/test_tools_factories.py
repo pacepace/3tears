@@ -1871,3 +1871,117 @@ async def test_webhook_tools_reach_the_agents_subscription_in_another_conversati
     stranger_delete = load_webhook_subscription_delete_tool(agent_id=_new_uuid(), subscriptions_collection=coll)  # type: ignore[arg-type]
     assert "not found" in await stranger_delete[0].ainvoke({"subscription_id": str(sid)})
     assert (elsewhere, sid) in coll.rows
+
+
+# ---------------------------------------------------------------------------
+# Times are shown in the zone the caller names; ids stay as stored
+# ---------------------------------------------------------------------------
+
+_LATE_UTC = datetime(2026, 10, 10, 4, 11, 20, 123456, tzinfo=UTC)
+_LA = "America/Los_Angeles"
+
+
+@pytest.mark.asyncio
+async def test_schedule_list_shows_the_next_fire_in_the_callers_zone_and_the_id_as_stored(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    row = _active_schedule_row(conv_id=conv_id, user_id=user_id, agent_id=agent_id)
+    row["next_fire_at"] = _LATE_UTC
+    coll.rows[(conv_id, row["schedule_id"])] = row
+    tools = load_wake_schedule_list_tool(
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+        tz=_LA,
+    )
+    result = await tools[0].ainvoke({})
+    assert " · next: Oct 9, 2026 at 9:11 PM PDT · " in result
+    assert f"[schedule:{row['schedule_id']}]" in result and f"[conversation:{conv_id}]" in result
+    assert "2026-10-10T04:11" not in result, "the UTC instant is not left beside the zoned time"
+
+
+@pytest.mark.asyncio
+async def test_schedule_list_with_no_zone_named_shows_the_time_as_stored(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    row = _active_schedule_row(conv_id=conv_id, user_id=user_id, agent_id=agent_id)
+    row["next_fire_at"] = _LATE_UTC
+    coll.rows[(conv_id, row["schedule_id"])] = row
+    tools = load_wake_schedule_list_tool(
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    assert " · next: 2026-10-10T04:11:20.123456+00:00 · " in await tools[0].ainvoke({})
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_and_resume_answer_in_the_callers_zone(actor: tuple[UUID, UUID, UUID]) -> None:
+    import re
+
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    row = _active_schedule_row(conv_id=conv_id, user_id=user_id, agent_id=agent_id, status="paused")
+    schedule_id = row["schedule_id"]
+    coll.rows[(conv_id, schedule_id)] = row
+    said_in_zone = r"[A-Z][a-z]{2} \d{1,2}, \d{4} at \d{1,2}:\d\d [AP]M P[DS]T"
+
+    resume = load_wake_schedule_resume_tool(agent_id=agent_id, schedules_collection=coll, tz=_LA)  # type: ignore[arg-type]
+    resumed = await resume[0].ainvoke({"schedule_id": str(schedule_id)})
+    assert re.fullmatch(
+        rf"Resumed \[schedule:{schedule_id}\] \(untitled\)\. It was paused\. It is every 10 minutes\. "
+        rf"Next fires at {said_in_zone}; last fire never\.",
+        resumed,
+    ), resumed
+
+    update = load_wake_schedule_update_tool(
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+        tz=_LA,
+    )
+    updated = await update[0].ainvoke({"schedule_id": str(schedule_id), "name": "renamed"})
+    assert re.search(rf" · next: {said_in_zone} · ", updated), updated
+
+
+@pytest.mark.asyncio
+async def test_webhook_list_shows_the_last_fire_in_the_callers_zone(actor: tuple[UUID, UUID, UUID]) -> None:
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    fired, quiet = _new_uuid(), _new_uuid()
+    coll.rows[(conv_id, fired)] = _seeded_subscription_row(
+        conv_id=conv_id, sid=fired, user_id=user_id, agent_id=agent_id, name="fired"
+    ) | {"last_fired_at": _LATE_UTC}
+    coll.rows[(conv_id, quiet)] = _seeded_subscription_row(
+        conv_id=conv_id, sid=quiet, user_id=user_id, agent_id=agent_id, name="quiet"
+    )
+    tools = load_webhook_subscription_list_tool(
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+        tz=_LA,
+    )
+    result = await tools[0].ainvoke({})
+    assert f"[webhook:{fired}] · fired · " in result and "last_fired: Oct 9, 2026 at 9:11 PM PDT" in result
+    assert f"[webhook:{quiet}] · quiet · " in result and "last_fired: never" in result
+    assert "2026-10-10T04:11" not in result
+
+
+def test_a_zone_that_does_not_exist_is_refused_when_a_wake_tool_is_built(actor: tuple[UUID, UUID, UUID]) -> None:
+    _, user_id, agent_id = actor
+    with pytest.raises(ValueError, match="is not a time zone"):
+        load_wake_schedule_list_tool(
+            user_id=user_id,
+            agent_id=agent_id,
+            schedules_collection=_FakeScheduleCollection(),  # type: ignore[arg-type]
+            registry=_FakeRegistry(),
+            tz="Mars/Olympus",
+        )

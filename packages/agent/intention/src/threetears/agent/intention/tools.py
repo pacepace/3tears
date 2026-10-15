@@ -20,8 +20,8 @@ and never exposes it in the Pydantic schema: user isolation is the
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from uuid import UUID
 
@@ -31,6 +31,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
+from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.langgraph.events import FrameworkEvent, dispatch_event
 from threetears.observe import get_logger
 
@@ -50,13 +51,20 @@ from threetears.agent.intention.events import (
 from threetears.agent.intention.types import INTENTION_STATUS_VALUES, IntentionStatus
 
 __all__ = [
+    "IntentionGetInput",
     "IntentionListInput",
     "IntentionLogInput",
     "IntentionMarkSurfacedInput",
+    "WantNotes",
+    "load_intention_get_tool",
     "load_intention_list_tool",
     "load_intention_log_tool",
     "load_intention_mark_surfaced_tool",
 ]
+
+#: A consumer's own words about some wants, by id: what a want carries in that
+#: product (a project, say). Asked once per listing or read, with the wants shown.
+WantNotes = Callable[[Sequence[IntentionEntity]], Awaitable[Mapping[UUID, str]]]
 
 log = get_logger(__name__)
 
@@ -67,6 +75,11 @@ _DEFAULT_DEDUP_THRESHOLD = 0.90
 _DEFAULT_SALIENCE_SEED = 0.5
 _DEFAULT_NEAR_DUP_BUMP = 0.05
 _DEFAULT_MAX_RESULTS = 20
+#: The most wants one listing shows, whatever it is asked for.
+_MAX_LIMIT = 100
+
+#: What ``intention_list`` may be asked to show: one status, or every want.
+_LIST_STATUSES = (*INTENTION_STATUS_VALUES, "all")
 
 # max chars carried in an event payload's content preview (the producer
 # truncates here; consumers needing the full want text re-fetch by id).
@@ -159,9 +172,19 @@ class IntentionListInput(BaseModel):
     limit: int = Field(
         default=_DEFAULT_MAX_RESULTS,
         ge=1,
-        le=100,
+        le=_MAX_LIMIT,
         description="Most wants to list, 1-100.",
     )
+    status: str = Field(
+        default=IntentionStatus.OPEN.value,
+        description="Which wants: open (the default), asked, granted, dropped, or all.",
+    )
+
+
+class IntentionGetInput(BaseModel):
+    """Input schema for the ``intention_get`` tool."""
+
+    intention_id: str = Field(description="The id from an [intention:<id>] mark.")
 
 
 class IntentionMarkSurfacedInput(BaseModel):
@@ -281,14 +304,15 @@ async def load_intention_log_tool(
                 existing = await intentions_collection.get((agent_id, existing_id))
                 if existing is None:
                     continue
-                # reinforcement: clear the cooldown anchor + refresh the
-                # embedding via the entity save, then bump salience via the
-                # raw pass. salience is immutable to the entity-UPDATE
-                # generator (like memory), so the save can't carry a stale
-                # salience back and revert a concurrent decay; the raw
+                # reinforcement: clear the cooldown anchor via the entity save,
+                # then bump salience via the raw pass. The stored text and its
+                # embedding stay: the want kept is the one written down first,
+                # and an embedding of words that were not saved would no longer
+                # be the embedding of the text. salience is immutable to the
+                # entity-UPDATE generator (like memory), so the save can't carry
+                # a stale salience back and revert a concurrent decay; the raw
                 # bump_salience is the only salience writer.
                 existing.last_surfaced_at = None
-                existing.embedding = embedding
                 try:
                     await intentions_collection.save_entity(existing)
                     await intentions_collection.bump_salience(
@@ -318,7 +342,8 @@ async def load_intention_log_tool(
                 )
                 return (
                     f"Refreshed existing want [intention:{existing_id}] "
-                    f"(it was {float(row['similarity']):.0%} the same): {text}"
+                    f"(it was {float(row['similarity']):.0%} the same), so nothing new was written down. "
+                    f"It is now stronger, and it stays as first written: {existing.content}"
                 )
 
         source_conversation_id: UUID | None = None
@@ -391,13 +416,18 @@ async def load_intention_list_tool(
     *,
     cooldown_days: float = _DEFAULT_COOLDOWN_DAYS,
     max_results: int = _DEFAULT_MAX_RESULTS,
+    tz: tzinfo | str | None = None,
+    notes: WantNotes | None = None,
 ) -> list[BaseTool]:
-    """create an ``intention_list`` tool: the deliberation candidate set.
+    """create an ``intention_list`` tool: the deliberation candidate set, or the wants of one status.
 
-    Returns the user's ``open`` wants that are outside the surfacing
+    By default returns the user's ``open`` wants that are outside the surfacing
     cooldown (restraint brake #1), salience-ranked (restraint brake #2 --
-    decayed wants sink). ``user_id`` is bound here and is the isolation
-    boundary; the cooldown filter runs in the query, not by convention.
+    decayed wants sink); a ``status`` argument lists the wants of that status, or
+    all of them. ``user_id`` is bound here and is the isolation boundary; the
+    cooldown filter runs in the query, not by convention. The first line says
+    how many are shown of how many there are ("3 of 7"), and how many open wants
+    the cooldown held back.
 
     :param user_id: owning user whose wants to rank (isolation boundary)
     :ptype user_id: UUID
@@ -411,15 +441,23 @@ async def load_intention_list_tool(
     :ptype intentions_collection: IntentionsCollection
     :param cooldown_days: exclude wants surfaced within this many days
     :ptype cooldown_days: float
-    :param max_results: cap on returned wants
+    :param max_results: how many wants a listing shows when the call names no limit
     :ptype max_results: int
+    :param tz: the zone of the person the listing is read to; when each want was
+        written down is said in it. ``None`` says it in UTC.
+    :ptype tz: tzinfo | str | None
+    :param notes: a consumer's own words about the wants shown, by id, each put at
+        the end of its want's line
+    :ptype notes: WantNotes | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
+    :raises ValueError: when ``tz`` is a name that is not a known zone
     """
+    zone = resolve_zone(tz)
 
     @tool("intention_list", args_schema=IntentionListInput)
-    async def intention_list(limit: int = max_results) -> str:
-        """list your open wants worth acting on now, most salient first."""
+    async def intention_list(limit: int = max_results, status: str = IntentionStatus.OPEN.value) -> str:
+        """list your wants, strongest first: the open ones by default."""
         try:
             await authorize_intention_access(
                 action=ACTION_INTENTION_READ,
@@ -431,30 +469,152 @@ async def load_intention_list_tool(
         except IntentionAccessDenied as exc:
             return _tool_error("intention_list", "authorize", str(exc))
 
-        cooldown_cutoff = datetime.now(UTC) - timedelta(days=cooldown_days)
-        try:
-            wants = await intentions_collection.find_open_for_deliberation(
-                user_id,
-                agent_id=agent_id,
-                cooldown_cutoff=cooldown_cutoff,
+        wanted = status.strip().lower()
+        if wanted not in _LIST_STATUSES:
+            return _tool_error(
+                "intention_list", "input", f"invalid status '{status}'. Use one of: {', '.join(_LIST_STATUSES)}"
             )
+        shown_at_most = max(1, min(limit, _MAX_LIMIT))
+        held_back = 0
+        try:
+            if wanted == IntentionStatus.OPEN.value:
+                cooldown_cutoff = datetime.now(UTC) - timedelta(days=cooldown_days)
+                wants = await intentions_collection.find_open_for_deliberation(
+                    user_id,
+                    agent_id=agent_id,
+                    cooldown_cutoff=cooldown_cutoff,
+                )
+                every = await intentions_collection.find_by_user(user_id, agent_id=agent_id)
+                held_back = sum(1 for w in every if w.status == IntentionStatus.OPEN.value) - len(wants)
+            else:
+                every = await intentions_collection.find_by_user(user_id, agent_id=agent_id)
+                wants = every if wanted == "all" else [w for w in every if w.status == wanted]
         except Exception as exc:
             return _tool_error("intention_list", "query", str(exc))
 
+        held = (
+            f" {held_back} more open want{'' if held_back == 1 else 's'} {'is' if held_back == 1 else 'are'} "
+            f"held back because {'it was' if held_back == 1 else 'they were'} raised in the last "
+            f"{cooldown_days:g} days."
+            if held_back
+            else ""
+        )
+        kind = "" if wanted == "all" else f"{wanted} "
         if not wants:
-            return "No open wants to raise now. Any you asked about recently are held back for a while."
+            return f"You have no {kind}wants.{held}"
 
-        wants = wants[: max(1, min(limit, max_results))]
-        lines = [f"{len(wants)} open want(s), strongest first:"]
-        for w in wants:
-            lines.append(f"- [intention:{w.intention_id}] {w.content}")
+        shown = wants[:shown_at_most]
+        said = await _notes_for(notes, shown)
+        more = f" Call again with a higher limit (up to {_MAX_LIMIT}) to see more." if len(shown) < len(wants) else ""
+        lines = [f"{len(shown)} of {len(wants)} {kind}wants, strongest first.{held}{more}"]
+        lines.extend(_want_line(w, zone, said.get(w.intention_id)) for w in shown)
         return "\n".join(lines)
 
     intention_list.description = (
-        "List your open wants, strongest first, leaving out any you asked about recently. "
-        "Use it when you decide whether to raise one. Returns [intention:<id>] lines."
+        "List your wants, strongest first: the open ones unless you name a status (asked, granted, dropped, all). "
+        "Each line has the want's [intention:<id>], its status and when you wrote it down."
     )
     return [intention_list]
+
+
+def _want_line(want: IntentionEntity, zone: tzinfo | None, note: str | None) -> str:
+    """One want as a listing shows it: handle, status, when written, the text, and the consumer's note."""
+    written = render_local_time(want.date_created, zone)
+    tail = f" ({note})" if note else ""
+    return f"- [intention:{want.intention_id}] {want.status}, written {written}: {want.content}{tail}"
+
+
+async def _notes_for(notes: WantNotes | None, wants: Sequence[IntentionEntity]) -> Mapping[UUID, str]:
+    """The consumer's notes on these wants; none when it has none or cannot say."""
+    if notes is None or not wants:
+        return {}
+    try:
+        return await notes(wants)
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- a note is extra; the listing stands without it
+        log.warning(
+            "intention notes failed; listing without them",
+            extra={"extra_data": {"error": str(exc)}},
+        )
+        return {}
+
+
+async def load_intention_get_tool(
+    user_id: UUID,
+    agent_id: UUID,
+    customer_id: UUID,
+    authorizer: IntentionAuthorizerDependencies,
+    intentions_collection: IntentionsCollection,
+    *,
+    tz: tzinfo | str | None = None,
+    notes: WantNotes | None = None,
+) -> list[BaseTool]:
+    """create an ``intention_get`` tool: one want in full, by its id.
+
+    Ownership is enforced as ``intention_mark_surfaced`` enforces it: a want of
+    another user reads back not-found.
+
+    :param user_id: owning user (isolation boundary; ownership check)
+    :ptype user_id: UUID
+    :param agent_id: owning agent UUID (namespace owner + partition)
+    :ptype agent_id: UUID
+    :param customer_id: owning customer UUID (namespace scope grain)
+    :ptype customer_id: UUID
+    :param authorizer: intention authorizer dependency bundle
+    :ptype authorizer: IntentionAuthorizerDependencies
+    :param intentions_collection: three-tier intentions collection
+    :ptype intentions_collection: IntentionsCollection
+    :param tz: the zone the want's times are said in; ``None`` says them in UTC
+    :ptype tz: tzinfo | str | None
+    :param notes: a consumer's own words about the want, put on its last line
+    :ptype notes: WantNotes | None
+    :return: list with one LangChain tool
+    :rtype: list[BaseTool]
+    :raises ValueError: when ``tz`` is a name that is not a known zone
+    """
+    zone = resolve_zone(tz)
+
+    @tool("intention_get", args_schema=IntentionGetInput)
+    async def intention_get(intention_id: str) -> str:
+        """read one of your wants in full."""
+        try:
+            await authorize_intention_access(
+                action=ACTION_INTENTION_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_agent_id=agent_id,
+                deps=authorizer,
+            )
+        except IntentionAccessDenied as exc:
+            return _tool_error("intention_get", "authorize", str(exc))
+        try:
+            want_uuid = UUID(intention_id.strip().removeprefix("[").removesuffix("]").removeprefix("intention:"))
+        except ValueError:
+            return _tool_error("intention_get", "input", f"invalid intention_id '{intention_id}'")
+        entity = await intentions_collection.get((agent_id, want_uuid))
+        if entity is None or entity.user_id != user_id:
+            return f"[TOOL ERROR] No want found for [intention:{intention_id}]."
+        lines = [
+            f"[intention:{entity.intention_id}] {entity.status}",
+            f"Written down: {render_local_time(entity.date_created, zone)}",
+        ]
+        if entity.last_surfaced_at is not None:
+            lines.append(f"Status last set: {render_local_time(entity.last_surfaced_at, zone)}")
+        lines.append(f"Strength: {entity.salience:.2f}")
+        if entity.source_memory_id is not None:
+            lines.append(f"From: [memory:{entity.source_memory_id}]")
+        if entity.source_conversation_id is not None:
+            lines.append(f"Written in: [conversation:{entity.source_conversation_id}]")
+        carried = (await _notes_for(notes, [entity])).get(entity.intention_id)
+        if carried:
+            lines.append(carried)
+        lines.append(f"Want: {entity.content}")
+        return "\n".join(lines)
+
+    intention_get.description = (
+        "Read one of your wants by its [intention:<id>]: what it says, its status, when you wrote it down "
+        "and what it came from."
+    )
+    return [intention_get]
 
 
 async def load_intention_mark_surfaced_tool(
@@ -521,6 +681,9 @@ async def load_intention_mark_surfaced_tool(
         if entity is None or entity.user_id != user_id:
             return f"[TOOL ERROR] No want found for [intention:{intention_id}]."
 
+        was = entity.status
+        if was == status:
+            return f"[NO CHANGE] intention_mark_surfaced: [intention:{want_uuid}] is already {status}: {entity.content}"
         now = datetime.now(UTC)
         entity.status = status
         entity.last_surfaced_at = now
@@ -558,10 +721,11 @@ async def load_intention_mark_surfaced_tool(
             "intention_mark_surfaced: want moved forward",
             extra={"extra_data": {"intention_id": str(want_uuid), "new_status": status}},
         )
-        return f"Marked [intention:{want_uuid}] as {status}."
+        return f"Marked [intention:{want_uuid}] {status}; it was {was}. The want: {entity.content}"
 
     intention_mark_surfaced.description = (
-        "Mark a want 'asked' once you have asked the person, and 'granted' or 'dropped' once "
-        "it is settled. An asked want is held back from intention_list for a while."
+        "Mark a want 'asked' once you have asked the person, 'granted' once it is done or given, "
+        "or 'dropped' once you no longer want it. Only open wants are in intention_list's default list; "
+        "list the others by status."
     )
     return [intention_mark_surfaced]

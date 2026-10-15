@@ -75,8 +75,8 @@ import secrets
 import signal
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -107,6 +107,8 @@ __all__ = [
     "launch_fingerprint",
     "bind_tool_server_to_context",
     "launch_key",
+    "on_own_cli",
+    "own_cli_asked",
     "poolable",
     "repeats_on_every_call",
     "sweep_orphaned_claude_clis",
@@ -125,6 +127,37 @@ TOOL_SERVER_NAME = "langchain-tools"
 #: ``/proc`` is how a session's owner is proved alive and how descendants are found. A platform
 #: without it makes the sweep a logged no-op, never a guess.
 _PROC = Path("/proc")
+
+
+#: Whether the calls made in this context ask for a CLI of their own (:func:`on_own_cli`).
+_OWN_CLI: contextvars.ContextVar[bool] = contextvars.ContextVar("threetears_claude_own_cli", default=False)
+
+
+@contextmanager
+def on_own_cli() -> Iterator[None]:
+    """Inside this block a subscription call runs on a CLI started for it, never a pooled one.
+
+    For a caller that wants nothing of an earlier call near its own: a retry after the provider's
+    safeguards refused a request, which can follow a session around. The CLI is started for the
+    call and stopped after it, as every call's was before pooling.
+
+    :return: a context in which :func:`own_cli_asked` is true
+    :rtype: Iterator[None]
+    """
+    token = _OWN_CLI.set(True)
+    try:
+        yield
+    finally:
+        _OWN_CLI.reset(token)
+
+
+def own_cli_asked() -> bool:
+    """Whether the caller is inside :func:`on_own_cli`.
+
+    :return: ``True`` when the call must not share a CLI
+    :rtype: bool
+    """
+    return _OWN_CLI.get()
 
 
 class ClaudeCliSessionError(RuntimeError):
@@ -721,12 +754,33 @@ class LentClient:
 
     :param client: the connected ``ClaudeSDKClient``
     :ptype client: Any
+    :param pid: the CLI's process id, when known
+    :ptype pid: int | None
+    :param calls_served: how many calls this CLI had served before this one
+    :ptype calls_served: int
+    :param started_at: when the CLI started, on the monotonic clock
+    :ptype started_at: float | None
+    :param agents: the names of the system prompts the CLI was launched with (:func:`agent_name`)
+    :ptype agents: frozenset[str]
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        pid: int | None = None,
+        calls_served: int = 0,
+        started_at: float | None = None,
+        agents: frozenset[str] = frozenset(),
+    ) -> None:
         self.client = client
         #: The uuid the call's first message was sent with; ``None`` until the call sends one.
         self.first_message_uuid: str | None = None
+        #: What a failed call says ran it (``ModelProviderError.ran_on``).
+        self.pid = pid
+        self.calls_served = calls_served
+        self.started_at = started_at
+        self.agents = agents
 
     async def query(self, prompt: Any, session_id: str = "default") -> None:
         """Send the call's message, recording the uuid of the first one sent.
@@ -802,6 +856,9 @@ class PooledCliSession:
         self.agent: str | None = None
         #: The CLI's start time, so disposal never signals a recycled pid that is not this CLI.
         self.start_ticks = _process_start_ticks(pid) if pid is not None else None
+        #: When this session was connected, on the monotonic clock, and how many calls it has been lent to.
+        self.started_at = time.monotonic()
+        self.calls_served = 0
 
     @classmethod
     async def start(cls, options: Any, *, key: str) -> PooledCliSession:
@@ -1189,7 +1246,14 @@ class ClaudeCliPool:
             # call to it learns its own before it acquires.
             await asyncio.shield(self._forget_prompts_if_unheld(key))
             raise
-        lent = LentClient(session.client)
+        lent = LentClient(
+            session.client,
+            pid=session.pid,
+            calls_served=session.calls_served,
+            started_at=session.started_at,
+            agents=session.agents,
+        )
+        session.calls_served += 1
         clean = False
         try:
             try:

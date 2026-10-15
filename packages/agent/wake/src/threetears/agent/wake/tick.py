@@ -432,8 +432,14 @@ class _WakeFireStore:
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
-        """Delegate the failed-fire finalize to the wake collection."""
+        """Delegate the failed-fire finalize to the wake collection.
+
+        ``output`` is not kept: a failed wake fire records its error, and
+        ``wake_fires`` has no column for a failed fire's output.
+        """
+        _ = output
         await self._collection.finalize_failed(
             partition_key,
             fire_id,

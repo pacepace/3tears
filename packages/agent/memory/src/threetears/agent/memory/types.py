@@ -91,6 +91,38 @@ class MemoryConfig:
     salience_ambient_floor: float = 0.2
     salience_seed: float = 0.5
 
+    # What ambient recall (``MemoryRetriever``) is handed, beyond the ranking.
+    # Each default is "as before", so a consumer that sets none sees no change.
+    #
+    # ``ambient_recent_cap``: at most this many of the memories ambient recall
+    # returns were written in the last ``ambient_recent_days``. The ranking's
+    # recency term lifts everything written in the last day or two above
+    # everything older, so a burst of new memories fills the list and the long
+    # history never shows; the cap leaves the rest of the list to it. Which
+    # recent memories take the capped places is decided on how well each
+    # answers the message (semantic and keyword), never on how new it is.
+    # ``None`` is no cap.
+    ambient_recent_cap: int | None = None
+    ambient_recent_days: float = 7.0
+    # Memories carrying any of these tags are searchable and never surface in
+    # ambient recall: e.g. ``origin.UNATTENDED_TAG``, a memory written on a
+    # turn nobody was present for.
+    ambient_excluded_tags: tuple[str, ...] = ()
+    # Whether surfacing a memory in ambient recall raises its salience. On, a
+    # memory that surfaced keeps surfacing while one that did not sinks below
+    # ``salience_ambient_floor`` and never does again. Off, only a recall the
+    # agent asked for counts (the ``salience_bump`` of ``memory_recall`` and
+    # ``memory_search``).
+    ambient_bumps_salience: bool = True
+
+    # One event written twice. A new memory whose source message is one of the
+    # turn's ``near_message_ids`` (this turn and the one before) replaces a
+    # stored memory from those same messages when their cosine similarity is
+    # at least this. ``None`` leaves the rule off. Lower than the dedup
+    # thresholds on purpose: two memories from one turn that say nearly the
+    # same thing are one event, where two from different months may be two.
+    same_event_threshold: float | None = None
+
     # Dream consolidation (A5; luminara defaults). Injectable per-user like
     # the salience knobs. ``cluster_threshold`` is the cosine floor that
     # groups near-duplicate memories (luminara clustering.py:57);

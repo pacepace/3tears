@@ -355,15 +355,17 @@ def create_context_save_node(
 
             raw = msg.content or ""
             content: str = raw if isinstance(raw, str) else str(raw)
-            # The copy kept here is a window, and it says so: the whole result
-            # is chunked below, so the rest is found by searching those rather
-            # than by asking the tool again.
-            content = window_text(content, max_chars=max_content).rendered(
-                how="the whole result is kept as chunks; search them for the rest"
+            # The copy kept here is a window, and it says so first: the whole
+            # result is chunked below, so the rest is found by searching those
+            # rather than by asking the tool again. The descriptions are of the
+            # result, not of the note.
+            window = window_text(content, max_chars=max_content)
+            content = window.rendered(
+                how="the whole result is kept as chunks; search them for the rest", note_first=True
             )
 
-            short_desc = content[:200]
-            long_desc = content[:1000]
+            short_desc = window.text[:200]
+            long_desc = window.text[:1000]
 
             metadata: dict[str, Any] | None = None
             fingerprint: str | None = None

@@ -21,6 +21,7 @@ Cases:
 
 from __future__ import annotations
 
+import inspect
 import itertools
 
 from collections.abc import Sequence
@@ -430,6 +431,45 @@ class TestPerRowFailureIsolation:
         assert len(fires.failed) == 1
         assert fires.failed[0]["error"] == "downstream rejected"
         assert fires.succeeded == []
+
+    async def test_a_returned_failure_keeps_the_output_it_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``status='failed'`` with an ``output`` hands the output to the store beside the error."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        kept: list[dict[str, Any]] = []
+
+        class _KeepsOutput(_FakeFireStore):
+            async def finalize_failed(  # type: ignore[override]
+                self,
+                partition_key: UUID,
+                fire_id: UUID,
+                *,
+                error: str,
+                latency_ms: int | None = None,
+                output: dict[str, Any] | None = None,
+            ) -> None:
+                kept.append({"error": error, "output": output})
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            return JobFireResult(status="failed", error="the helper said no", output={"delivered": True})
+
+        await tick_mod.scheduled_tick_job(store, _KeepsOutput(), _routes(_cb), nats_client=object())
+        assert kept == [{"error": "the helper said no", "output": {"delivered": True}}]
+
+    async def test_a_failure_with_no_output_calls_an_older_store_as_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A store whose ``finalize_failed`` takes no ``output`` is not passed one."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        assert "output" not in inspect.signature(fires.finalize_failed).parameters
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            return JobFireResult(status="failed", error="no output here")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert [f["error"] for f in fires.failed] == ["no output here"]
 
 
 class TestReapStaleDispatching:
