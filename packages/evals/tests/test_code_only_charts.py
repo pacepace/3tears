@@ -1,7 +1,7 @@
-"""The code-only report charts only readings a chart can say something about.
+"""The code-only report draws an interval only for readings a drawing can say something about.
 
-A reading is charted only as a contrast against the control (its interval chart is titled by the reading), and three
-kinds of chart carried nothing and are not emitted:
+A reading's interval is drawn only as a contrast against the control (in its row of the contrasts table, beside the
+change), and three kinds of drawing carried nothing and are not made:
 
 - **A classifier's per-label statistics.** Precision and recall were a chart per label and statistic, and
   F1, which has no interval in any cell by construction, only ever a disclosure that every cell was left
@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from threetears.evals.analysis import ChartBlock, DisclosureBlock, TableBlock, inspect_campaign_bundle
+from threetears.evals.analysis import DisclosureBlock, TableBlock, inspect_campaign_bundle
 from threetears.evals.schema.models import RoleUsage
 from threetears.evals.kernel.usage_capture import spend_observed
 from threetears.evals import Answer, Eval, Result
@@ -69,11 +69,13 @@ async def _compare(candidate: Any, control: Any) -> Result:
 
 
 def _chart_titles(comparison: Result) -> list[str]:
-    """The reading each interval chart is drawn for: a contrast's title after ``Change in``, a finding's after its colon."""
+    """The reading each drawn interval is of: a contrasts row whose change cell carries the interval drawn in it."""
     return [
-        block.title.removeprefix("Change in ").partition(": ")[-1 if ": " in block.title else 0]
+        str(row["reading"].value)
         for block in comparison.report.blocks
-        if isinstance(block, ChartBlock) and block.chart == "interval_rows"
+        if isinstance(block, TableBlock) and block.name == "comparisons"
+        for row in block.rows
+        if row["change"].low is not None
     ]
 
 

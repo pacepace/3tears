@@ -2,9 +2,10 @@
 
 **No script, ever, and nothing that runs.** The page is a document: every text node escaped, no ``<script>``, no
 event-handler attribute, no external resource and no URL but a ``#`` link to a place on the page itself. Drill-down
-is ``<details>``; moving between the screens is ``#`` anchors. The two charts are inline SVG
-(:mod:`~threetears.evals.analysis.report.svg`), each beside a visually hidden table of the values it draws, so a
-screen reader and a page with styles off lose nothing.
+is ``<details>``; moving between the screens is ``#`` anchors. The outcome bar is inline SVG
+(:mod:`~threetears.evals.analysis.report.svg`) beside a visually hidden table of the values it draws, and a table
+cell carrying an interval draws it as a small glyph beside its number, on one scale for the column, so a screen
+reader and a page with styles off lose nothing: every figure a glyph draws is in the row's text.
 
 **The first screen is the page's ``<header>``**: the title (the campaign's name), the arms line (always line 2), the
 declared question quoted whole where there is one, the verdict line, the scoreboard with its outcome bar, and the one
@@ -35,11 +36,13 @@ from threetears.evals.analysis.report.model import (
     Report,
     ReportBlock,
     TableBlock,
+    TableCell,
     TextBlock,
     TrialBlock,
 )
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, trial_summary
-from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg
+from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
+from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 
 #: The page's stylesheet: the system's own fonts (named once, as variables — the page loads no font), a readable
@@ -97,6 +100,10 @@ thead th { font-weight: 600; border-bottom: 1px solid var(--rule-strong); positi
 th.num, td.num { text-align: right; }
 td.key { font-weight: 600; }
 td.prose { max-width: 36ch; }
+td.glyph { white-space: nowrap; }
+td.glyph .figure { display: inline-block; min-width: 6ch; text-align: right; }
+td.glyph .no-glyph { display: inline-block; width: 7.5em; margin-right: 6px; }
+.axis { color: var(--muted); font-size: 0.8125rem; margin: 0 0 8px; }
 [data-table="scoreboard"] table { font-size: 1rem; }
 figure { margin: 16px 0; overflow-x: auto; }
 figcaption { margin: 0 0 4px; }
@@ -347,9 +354,18 @@ def _grid(block: TableBlock) -> str:
     """A table of served cells' text, scrolling inside its own box rather than widening the page.
 
     A column of numbers is classed ``num`` on every cell, header included, so the stylesheet right-aligns it; a cell
-    of prose is classed ``prose`` so it wraps at a measure instead of widening its column.
+    of prose is classed ``prose`` so it wraps at a measure instead of widening its column. A column whose cells carry
+    an interval is classed ``glyph``: each such cell draws its interval beside its number
+    (:func:`~threetears.evals.analysis.report.svg.interval_glyph_svg`), every cell of the column in one unit on one
+    scale, and the scale's ends are written once under the table (:func:`_scale_line`).
     """
-    classes = {column.key: _column_class(block, column.key) for column in block.columns}
+    scales = _glyph_scales(block)
+    classes = {
+        column.key: ' class="glyph"'
+        if any(key == column.key for key, _ in scales)
+        else _column_class(block, column.key)
+        for column in block.columns
+    }
     head = "".join(
         f'<th scope="col"{classes[column.key]}>{_header(column.header, column.term)}</th>' for column in block.columns
     )
@@ -364,6 +380,9 @@ def _grid(block: TableBlock) -> str:
             if block.name == "cases" and column.key == "trials":
                 # Navigation beside the marks, not information: the stylesheet mutes it.
                 css = ' class="trial-links"'
+            elif classes[column.key] == ' class="glyph"':
+                css = classes[column.key]
+                text = _glyph(cell, column.key, scales) + f'<span class="figure">{text}</span>'
             else:
                 css = classes[column.key] or (' class="prose"' if len(cell.text) >= _PROSE_CELL else "")
             cells.append(f"<td{css}>{text}</td>")
@@ -377,7 +396,67 @@ def _grid(block: TableBlock) -> str:
         elif block.name == "passed_trials" and "trial" in row and _TRIAL_ID.fullmatch(row["trial"].text):
             anchor = f' id="{row["trial"].text}"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
-    return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    grid = f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    return grid + _scale_line(block, scales)
+
+
+def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float]]:
+    """The scale each column's glyphs are drawn on, per unit: one for every cell of the column in that unit.
+
+    The scale holds every interval end, every point and every margin band of the group, and zero where any cell is a
+    difference, padded a little at either end so no mark sits on the edge.
+
+    Returns:
+        ``{(column key, unit): (low, high)}``, for the columns with a cell carrying an interval.
+    """
+    ends: dict[tuple[str, str], list[float]] = {}
+    for row in block.rows:
+        for key, cell in row.items():
+            if cell.low is None or cell.high is None or not cell.is_number:
+                continue
+            group = ends.setdefault((key, cell.unit), [])
+            group += [cell.low, cell.high, float(cell.value)]  # type: ignore[arg-type]
+            if cell.margin is not None:
+                group += [-cell.margin, cell.margin]
+            if cell.zero_line:
+                group.append(0.0)
+    scales = {}
+    for group_key, figures in ends.items():
+        low, high = min(figures), max(figures)
+        pad = (high - low) * 0.05 or abs(high) * 0.05 or 1.0
+        scales[group_key] = (low - pad, high + pad)
+    return scales
+
+
+def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], tuple[float, float]]) -> str:
+    """A cell's interval glyph on its column's scale, or a blank of the same width where the cell has none, so the
+    column's figures stay aligned."""
+    if cell.low is None or cell.high is None or not cell.is_number:
+        return '<span class="no-glyph"></span>'
+    return interval_glyph_svg(
+        float(cell.value),  # type: ignore[arg-type]
+        cell.low,
+        cell.high,
+        unit=cell.unit,
+        scale=scales[(key, cell.unit)],
+        margin=cell.margin,
+    )
+
+
+def _scale_line(block: TableBlock, scales: dict[tuple[str, str], tuple[float, float]]) -> str:
+    """One quiet line under a table with glyphs: each glyph column's scale, its ends written once per unit."""
+    if not scales:
+        return ""
+    headers = {column.key: column.header for column in block.columns}
+    spans: dict[str, list[str]] = {}
+    for (key, unit), (low, high) in scales.items():
+        if unit == PERCENT or is_money(unit):
+            ends = f"{with_unit(low, unit)} to {with_unit(high, unit)}"
+        else:
+            ends = f"{number_in(low, unit)} to {number_in(high, unit)}" + (f" {unit}" if unit else "")
+        spans.setdefault(key, []).append(ends)
+    said = [f"{_code(headers[key])} drawn from {' and from '.join(ends)}" for key, ends in spans.items()]
+    return f'<p class="axis">{" · ".join(said)}</p>'
 
 
 def _column_class(block: TableBlock, key: str) -> str:

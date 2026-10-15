@@ -61,12 +61,21 @@ def test_a_cells_text_is_the_number_rules_spelling_of_its_value(value: Any, text
 
 def test_a_cells_number_is_joined_to_its_unit() -> None:
     assert TableCell(value=1.42, unit="s").text == "1.42 s"
-    assert TableCell(value=0.42, unit="%").text == "0.42%"
+    # A percent is read to one decimal, as every rate on the page is.
+    assert TableCell(value=0.42, unit="%").text == "0.4%"
 
 
 def test_a_cell_stores_its_value_never_its_text() -> None:
     """The text is derived on every read, so a stored word can never drift from the value it states."""
-    assert TableCell(value=0.5).model_dump(mode="json") == {"value": 0.5, "unit": ""}
+    # The value, its unit, and the interval and margin a glyph draws beside it where the cell has them.
+    assert TableCell(value=0.5).model_dump(mode="json") == {
+        "value": 0.5,
+        "unit": "",
+        "low": None,
+        "high": None,
+        "margin": None,
+        "zero_line": False,
+    }
     with pytest.raises(ValueError, match="extra"):
         TableCell.model_validate({"value": 0.5, "text": "a lie"})
 

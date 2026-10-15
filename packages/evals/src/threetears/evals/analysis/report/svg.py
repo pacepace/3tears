@@ -1,20 +1,24 @@
-"""The report's two charts as inline SVG, drawn with no dependency: the outcome bar and the interval rows.
+"""The report's marks as inline SVG, drawn with no dependency: the outcome bar, the interval glyph a table cell
+draws beside its number, and the interval rows.
 
-**What earns a chart.** Two shapes and no more. The *outcome bar* is a census, so it is always drawn: one horizontal
-stacked bar per arm — passed, failed, and lost to the test setup cause by cause — every segment's count written as
-text beside the bar. *Interval rows* are estimates: a dot and its interval per row, a zero line where the rows are
-differences, a margin band where one was declared, the value written at the right, and the value, the interval and
-the cases written as words under the marks. Which rows are drawn at all is the report builder's rule (an arm needs
-:data:`~threetears.evals.analysis.report.verdict.MIN_CASES` usable cases and an interval); this module draws what it
-is handed.
+**What earns a picture.** The *outcome bar* is a census, so it is always drawn: one horizontal stacked bar per arm,
+its label on the line above it, never cut — passed, failed, and lost to the test setup cause by cause — every
+segment's count written as text beside the bar, and a key naming only the states that occur. An *interval glyph* is
+the uncertainty of one figure drawn in the row that states it (Tufte's table-graphic): a track, a zero line where
+zero is on it, the declared margin as a quiet band, the interval as a whisker and the point as a dot, every row of a
+column in one unit on the same scale, so the rows compare as small multiples and the scale's ends are written once
+under the table. *Interval rows* are the same marks as a standalone chart (a dot and its interval per row, the
+value, the interval and the cases written as words under the marks), which the builder no longer draws, since the
+tables carry the intervals; this module draws what it is handed.
 
 **Legible without colour, a script or a stylesheet of its own.** Every mark's value is written as text, and each
 segment says what it is in words, so colour never carries identity alone. Colours are classes the page's stylesheet
-sets from CSS variables (:data:`SVG_STYLE`), stepped for light and dark, and text is drawn in ``currentColor``-based
-ink, never in a series colour. Each chart has a ``<title>`` and a ``<desc>`` stating its values, each mark a
-``<title>`` of its own, and the page keeps a visually hidden table of the same values beside it. There is no
-``<script>``, no event attribute, no external reference and no URL of any kind — not even a ``url(#...)`` fill — so
-the page's ``default-src 'none'`` policy holds unchanged.
+sets from CSS variables (:data:`SVG_STYLE`), stepped for light and dark; a glyph is drawn in the page's ink alone,
+the margin band in its one quiet tint, and its verdict is the word in the next cell, never a hue. Each chart has a
+``<title>`` and a ``<desc>`` stating its values, each mark and each glyph a ``<title>`` of its own, and the page keeps
+a visually hidden table of a chart's values beside it. There is no ``<script>``, no event attribute, no external
+reference and no URL of any kind — not even a ``url(#...)`` fill — so the page's ``default-src 'none'`` policy holds
+unchanged.
 """
 
 from __future__ import annotations
@@ -23,17 +27,23 @@ import html
 from collections.abc import Sequence
 
 from threetears.evals.analysis.report.model import ChartBlock, IntervalRow, OutcomeBar, interval_text
-from threetears.evals.analysis.quantities import number_in, with_unit
+from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
+from threetears.evals.analysis.style import GLOSSARY
 
 #: The chart's own coordinate width; the SVG scales to the page's width from it. A line of words that would run past
 #: it is wrapped onto more lines (:func:`_wrapped`), its row drawn taller, never cut.
 _WIDTH = 720
 
-#: Where the plot ends and the value text begins. The label column before the plot is as wide as the longest label
-#: needs (:func:`_label_column`), between these two bounds.
+#: Where an interval chart's plot ends and the value text begins. The label column before the plot is as wide as the
+#: longest label needs (:func:`_label_column`), between these two bounds.
 _PLOT_END = 470
 _LABEL_MIN = 120
 _LABEL_MAX = 300
+
+#: Where an outcome bar starts and ends: its label is on the line above it, so the bar has the chart's width less
+#: the room its total takes at the right.
+_BAR_START = 8
+_BAR_END = 600
 
 #: The width a character of a label is laid out at: a generous mean for 13px system sans, so a label fits its column.
 _CHAR_WIDTH = 7.2
@@ -41,9 +51,15 @@ _CHAR_WIDTH = 7.2
 #: The narrowest segment its count is written inside; a narrower one's count is in the line under the bar.
 _COUNT_INSIDE = 22
 
-#: One outcome bar's row: the bar, then a line of counts under it.
-_BAR_ROW = 46
+#: One outcome bar's row: its label, the bar, then a line of counts under it.
+_BAR_ROW = 63
 _BAR_HEIGHT = 16
+
+#: The interval glyph's own coordinates: its width, its height, the track's inset from either edge, and the dot.
+_GLYPH_WIDTH = 120
+_GLYPH_HEIGHT = 14
+_GLYPH_INSET = 4
+_GLYPH_DOT = 2.5
 
 #: One interval row: the marks and the value, then a line of words under them.
 _INTERVAL_ROW = 44
@@ -85,6 +101,12 @@ svg.viz .viz-zero { stroke: var(--viz-muted); stroke-width: 1; }
 svg.viz .viz-band { fill: var(--viz-band); }
 svg.viz .viz-whisker { stroke: var(--viz-ink); stroke-width: 2; stroke-linecap: round; }
 svg.viz .viz-dot { fill: var(--viz-passed); stroke: var(--viz-ink); stroke-width: 1; }
+svg.viz-glyph { width: 7.5em; height: 0.875em; vertical-align: -0.0625em; margin-right: 6px; overflow: visible; }
+svg.viz-glyph .viz-track { stroke: var(--viz-rule); stroke-width: 1; }
+svg.viz-glyph .viz-zero { stroke: var(--viz-muted); stroke-width: 1; }
+svg.viz-glyph .viz-band { fill: var(--viz-band); }
+svg.viz-glyph .viz-whisker { stroke: var(--viz-ink); stroke-width: 1.5; stroke-linecap: round; }
+svg.viz-glyph .viz-point { fill: var(--viz-ink); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
   clip-path: inset(50%); white-space: nowrap; border: 0; }
 """
@@ -113,11 +135,14 @@ def segment_words(bar: OutcomeBar) -> str:
 
 
 def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) -> str:
-    """The outcome bar: one stacked bar per arm, its segments scaled to the longest arm, every count written.
+    """The outcome bar: one stacked bar per arm under its label, its segments scaled to the longest arm, every count
+    written.
 
-    Each segment's count is written inside it where it fits, and every arm's whole census is written under its bar,
-    so no count is read off a length or a colour. A lost segment is grey with a dashed edge, the next lost cause
-    dotted, so two causes side by side read as two. A census too long for one line wraps, and its row is taller.
+    An arm's label is the line above its bar, wrapped where it is long and never cut, so the bar has the chart's
+    width. Each segment's count is written inside it where it fits, and every arm's whole census is written under
+    its bar, so no count is read off a length or a colour. A lost segment is grey with a dashed edge, the next lost
+    cause dotted, so two causes side by side read as two. A census too long for one line wraps, and its row is
+    taller. The key names only the states that occur.
 
     Args:
         title: What the chart shows.
@@ -129,15 +154,22 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
     """
     legend_height = 26
     longest = max((bar.total for bar in bars), default=0) or 1
-    start, labels = _label_column([bar.arm for bar in bars])
-    span = _PLOT_END - start
-    censuses = [_wrapped(segment_words(bar), start) for bar in bars]
-    height = legend_height + sum(_BAR_ROW + _LINE * (len(lines) - 1) for lines in censuses) + 6
-    marks = [_legend(start, legend_height)]
+    span = _BAR_END - _BAR_START
+    labels = [_wrapped(bar.arm, _BAR_START) for bar in bars]
+    censuses = [_wrapped(segment_words(bar), _BAR_START) for bar in bars]
+    rows = [
+        _BAR_ROW + _LINE * (len(label) - 1) + _LINE * (len(lines) - 1)
+        for label, lines in zip(labels, censuses, strict=True)
+    ]
+    height = legend_height + sum(rows) + 6
+    states = list(dict.fromkeys(segment.state for bar in bars for segment in bar.segments))
+    marks = [_legend(_BAR_START, legend_height, states)]
     top = legend_height
-    for bar, label, lines in zip(bars, labels, censuses, strict=True):
-        marks.append(_text(8, top + _BAR_HEIGHT - 3, label, title=bar.arm if label != bar.arm else None))
-        x = float(start)
+    for bar, label, lines, row_height in zip(bars, labels, censuses, rows, strict=True):
+        for offset, line in enumerate(label):
+            marks.append(_text(_BAR_START, top + 13 + _LINE * offset, line))
+        bar_top = top + 19 + _LINE * (len(label) - 1)
+        x = float(_BAR_START)
         lost = 0
         for segment in bar.segments:
             width = max(span * segment.count / longest - _SEGMENT_GAP, 1.0)
@@ -145,22 +177,83 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
             alt = " viz-alt" if segment.state == "lost" and lost % 2 else ""
             lost += segment.state == "lost"
             marks.append(
-                f'<rect class="viz-{segment.state}{alt}" x="{x:.1f}" y="{top}" width="{width:.1f}" '
+                f'<rect class="viz-{segment.state}{alt}" x="{x:.1f}" y="{bar_top}" width="{width:.1f}" '
                 f'height="{_BAR_HEIGHT}" rx="2"><title>{_escape(mark)}</title></rect>'
             )
             if width >= _COUNT_INSIDE:
                 inside = ' class="viz-on-fill"' if segment.state != "lost" else ""
                 marks.append(
-                    f'<text x="{x + width / 2:.1f}" y="{top + _BAR_HEIGHT - 4}"{inside} text-anchor="middle">'
+                    f'<text x="{x + width / 2:.1f}" y="{bar_top + _BAR_HEIGHT - 4}"{inside} text-anchor="middle">'
                     f"{segment.count}</text>"
                 )
             x += width + _SEGMENT_GAP
-        marks.append(_text(x + 6, top + _BAR_HEIGHT - 3, f"{bar.total} trials"))
+        marks.append(_text(x + 6, bar_top + _BAR_HEIGHT - 3, f"{bar.total} trials"))
         for offset, line in enumerate(lines):
-            marks.append(_text(start, top + _BAR_HEIGHT + 17 + _LINE * offset, line, muted=True))
-        top += _BAR_ROW + _LINE * (len(lines) - 1)
+            marks.append(_text(_BAR_START, bar_top + _BAR_HEIGHT + 17 + _LINE * offset, line, muted=True))
+        top += row_height
     desc = "; ".join(f"{bar.arm} ran {bar.total} trials: {segment_words(bar)}" for bar in bars)
     return _svg(chart_id, title, desc, height, marks)
+
+
+def interval_glyph_svg(
+    value: float,
+    low: float,
+    high: float,
+    *,
+    unit: str,
+    scale: tuple[float, float],
+    margin: float | None = None,
+) -> str:
+    """One figure's interval as the glyph a table cell draws beside it: a track from the scale's low end to its
+    high, a zero line where zero is on it, the margin as a quiet band either side of zero, the interval as a whisker
+    and the figure as a dot.
+
+    The scale is the caller's, shared by every cell of the column in the same unit, so one row's glyph reads against
+    the next; the scale's ends are written once under the table, not here. The glyph's ``<title>`` states its
+    numbers, so a hover reads them where the row's cells already print them.
+
+    Args:
+        value: The figure, in ``unit``.
+        low: The interval's low end, in ``unit``.
+        high: The interval's high end, in ``unit``.
+        unit: The unit the figures are in; empty for none.
+        scale: The track's low and high ends, which hold the interval, the margin and zero where it is drawn.
+        margin: A declared margin either side of zero, or None.
+
+    Returns:
+        The ``<svg>`` element.
+    """
+    first, last = scale
+    span = (last - first) or 1.0
+
+    def x_of(figure: float) -> float:
+        return _GLYPH_INSET + (figure - first) / span * (_GLYPH_WIDTH - 2 * _GLYPH_INSET)
+
+    middle = _GLYPH_HEIGHT / 2
+    said = f"{with_unit(value, unit)}, interval {_interval_words(low, high, unit)}"
+    if margin is not None:
+        said += f", margin ±{with_unit(margin, unit)}"
+    marks = [
+        f'<line class="viz-track" x1="{x_of(first):.1f}" y1="{middle}" x2="{x_of(last):.1f}" y2="{middle}"></line>'
+    ]
+    if margin is not None:
+        band_low, band_high = x_of(max(-margin, first)), x_of(min(margin, last))
+        marks.append(
+            f'<rect class="viz-band" x="{band_low:.1f}" y="1" width="{max(band_high - band_low, 0.0):.1f}" '
+            f'height="{_GLYPH_HEIGHT - 2}"></rect>'
+        )
+    if first <= 0.0 <= last:
+        marks.append(
+            f'<line class="viz-zero" x1="{x_of(0.0):.1f}" y1="0" x2="{x_of(0.0):.1f}" y2="{_GLYPH_HEIGHT}"></line>'
+        )
+    marks.append(
+        f'<line class="viz-whisker" x1="{x_of(low):.1f}" y1="{middle}" x2="{x_of(high):.1f}" y2="{middle}"></line>'
+    )
+    marks.append(f'<circle class="viz-point" cx="{x_of(value):.1f}" cy="{middle}" r="{_GLYPH_DOT}"></circle>')
+    return (
+        f'<svg class="viz-glyph" viewBox="0 0 {_GLYPH_WIDTH} {_GLYPH_HEIGHT}" role="img">'
+        f"<title>{_escape(said)}</title>" + "".join(marks) + "</svg>"
+    )
 
 
 def _label_column(labels: Sequence[str]) -> tuple[int, list[str]]:
@@ -179,14 +272,23 @@ def _label_column(labels: Sequence[str]) -> tuple[int, list[str]]:
     return start, [label if len(label) <= room else label[: room - 1] + "…" for label in labels]
 
 
-def _legend(start: int, height: int) -> str:
-    """The outcome bar's key: each state's swatch beside its name, so the colours are read off words."""
+def _legend(start: int, height: int, states: Sequence[str]) -> str:
+    """The outcome bar's key: each state that occurs, its swatch beside its name, so the colours are read off words.
+
+    A lost trial's name is the glossary's term, with its definition as the swatch's title, so a hover says what the
+    test setup spoiling a trial means without a line of its own.
+    """
     parts = []
     x = start
-    for state, words in (("passed", "passed"), ("failed", "failed"), ("lost", "lost to the test setup")):
-        parts.append(f'<rect class="viz-{state}" x="{x}" y="{height - 20}" width="12" height="12" rx="2"></rect>')
-        parts.append(_text(x + 17, height - 10, words, muted=True))
-        x += 17 + int(_CHAR_WIDTH * len(words)) + 18
+    for state in ("passed", "failed", "lost"):
+        if state not in states:
+            continue
+        title = f"<title>{_escape(GLOSSARY['lost'])}</title>" if state == "lost" else ""
+        parts.append(
+            f'<rect class="viz-{state}" x="{x}" y="{height - 20}" width="12" height="12" rx="2">{title}</rect>'
+        )
+        parts.append(_text(x + 17, height - 10, state, muted=True))
+        x += 17 + int(_CHAR_WIDTH * len(state)) + 18
     return "".join(parts)
 
 
@@ -268,6 +370,15 @@ def interval_rows_svg(
     return _svg(chart_id, title, desc, height, marks)
 
 
+def _interval_words(low: float, high: float, unit: str) -> str:
+    """An interval as a glyph's title says it, as the row's own interval cell spells it: the unit on each end where
+    it sits on the number (``[88.1%, 100%]``, ``[-$0.01, $0.06]``), once after the bracket otherwise
+    (``[-4.2, 2] pts``)."""
+    if unit == PERCENT or is_money(unit):
+        return f"[{with_unit(low, unit)}, {with_unit(high, unit)}]"
+    return interval_text(low, high, unit) + (f" {unit}" if unit else "")
+
+
 def row_words(row: IntervalRow, unit: str) -> str:
     """One interval row in words: its value and unit, its interval, its cases, and its verdict where it has one.
 
@@ -331,6 +442,7 @@ def _escape(text: str) -> str:
 __all__ = [
     "SVG_STYLE",
     "chart_svg",
+    "interval_glyph_svg",
     "interval_rows_svg",
     "outcome_bar_svg",
     "row_words",

@@ -16,12 +16,15 @@ what code says — the verdict, the basis, a table's caption, a reason something
 A code-only report (no analysis was generated) holds no ``text`` block at all, and its model refuses one, so a
 reader never takes code's computation for an analyst's judgement, or the reverse.
 
-**Two charts, drawn by the package.** A ``chart`` block is an outcome bar (one stacked bar per arm: passed, failed and
-lost by cause, every segment's count written beside it) or interval rows (a dot and its interval per row, with the
-value, the interval and the cases written as text). Both carry their values, so Markdown prints them as a table and
-HTML draws them as inline SVG (:mod:`~threetears.evals.analysis.report.svg`) beside the same table. A chart row is
-drawn only for an arm with :data:`~threetears.evals.analysis.report.verdict.MIN_CASES` usable cases and an
-interval, and a chart with no such row is not built.
+**One chart, and the intervals drawn inside the tables.** The page's one standalone ``chart`` block is the outcome
+bar (one stacked bar per arm: passed, failed and lost by cause, every segment's count written beside it). Every
+estimate's uncertainty is drawn where the estimate is read: a :class:`TableCell` holding a number may carry its
+interval (``low``, ``high``) and a declared ``margin``, and HTML draws them beside the number as a small glyph on one
+scale for the column (:mod:`~threetears.evals.analysis.report.svg`), the figures written in the row as text, so
+Markdown loses nothing. A ``chart`` block of interval rows (a dot and its interval per row) remains drawable, carrying
+its values so Markdown prints them as a table; the builder draws none, since the tables carry the intervals. A cell's
+interval is drawn only for an arm with :data:`~threetears.evals.analysis.report.verdict.MIN_CASES` usable cases
+and an interval computed.
 
 **The bundle is the machine form.** There is no published JSON of the report: a program reads ``bundle.json``,
 which :meth:`Report.write` puts beside the page, and the page names its fingerprint.
@@ -356,6 +359,30 @@ class TableCell(EvalDocumentModel):
             "report. Empty for a unitless number, for words, and wherever the column's header names the unit."
         ),
     )
+    low: float | None = Field(
+        default=None,
+        description=(
+            "The low end of the interval on the number, in `unit`, where the number has one: HTML draws the interval "
+            "beside the number as a small glyph, on one scale for every cell of the column in the same unit. None "
+            "where there is no interval, or the row writes it in a column of its own only."
+        ),
+    )
+    high: float | None = Field(default=None, description="The interval's high end, in `unit`; set with `low`.")
+    margin: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "A declared margin either side of zero, in `unit`, which the glyph draws as a quiet band; None where "
+            "none is declared or the number is not a difference."
+        ),
+    )
+    zero_line: bool = Field(
+        default=False,
+        description=(
+            "Whether the number is a difference, read against zero: the glyph holds zero on its scale and draws a "
+            "line there. False for a figure read on its own scale."
+        ),
+    )
 
     @model_validator(mode="after")
     def _a_unit_qualifies_a_number(self) -> Self:
@@ -364,13 +391,39 @@ class TableCell(EvalDocumentModel):
         Raises:
             ValueError: ``unit`` is set and ``value`` is not a number.
         """
-        if self.unit and (isinstance(self.value, bool) or not isinstance(self.value, int | float)):
+        if self.unit and not self.is_number:
             raise ValueError(f"a cell's unit qualifies a number, and this cell holds {self.value!r}")
         return self
 
+    @model_validator(mode="after")
+    def _an_interval_brackets_a_number(self) -> Self:
+        """Refuse an interval with one end, on anything but a number, or running backwards, and a margin alone.
+
+        Raises:
+            ValueError: ``low`` and ``high`` are not both set or both absent, the cell holds no number, ``low`` is
+                above ``high``, or ``margin`` is set with no interval.
+        """
+        if (self.low is None) != (self.high is None):
+            raise ValueError("a cell's interval has two ends, and this cell sets one")
+        if self.low is None:
+            if self.margin is not None:
+                raise ValueError("a cell's margin is drawn beside its interval, and this cell has none")
+            return self
+        if not self.is_number:
+            raise ValueError(f"a cell's interval brackets a number, and this cell holds {self.value!r}")
+        if self.high is not None and self.low > self.high:
+            raise ValueError(f"the cell's interval runs from {self.low} down to {self.high}")
+        return self
+
+    @property
+    def is_number(self) -> bool:
+        """Whether the cell holds a number (a boolean is not one)."""
+        return isinstance(self.value, int | float) and not isinstance(self.value, bool)
+
     @property
     def text(self) -> str:
-        """``value`` as every serializer prints it."""
+        """``value`` as every serializer prints it; the interval, where the cell has one, is the glyph's and the
+        row's own interval column's, never spelled here twice."""
         if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
             return with_unit(self.value, self.unit)
         return render_cell(self.value)
@@ -734,11 +787,11 @@ class Report(EvalDocumentModel):
     @property
     def section_titles(self) -> dict[str, str]:
         """Each section's heading on this page: :data:`SECTION_TITLES`, except that ``contrasts`` is headed
-        ``Readings`` where the page contrasts nothing — a one-arm page, whose section holds only the readings by
-        stratum and by label — so no heading promises a comparison the page does not make."""
+        ``Readings`` where the page contrasts nothing — a one-arm page, whose section holds only the arm's readings
+        over all its cases, by stratum and by label — so no heading promises a comparison the page does not make."""
         titles = dict(SECTION_TITLES)
         readings_only = all(
-            isinstance(block, TableBlock) and block.name in ("strata", "labels")
+            isinstance(block, TableBlock) and block.name in ("readings", "strata", "labels")
             for block in self.blocks
             if block.section == "contrasts"
         )
