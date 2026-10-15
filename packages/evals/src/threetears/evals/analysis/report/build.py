@@ -415,7 +415,7 @@ def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) 
     return f"{name}: {asked}"
 
 
-#: A first word that is a plain word, which a title may capitalize; an identifier (``dj_queue``, ``v4-flash``) is not.
+#: A first word that is a plain word, which a title may capitalize; an identifier (``queue_v5``, ``v4-flash``) is not.
 _PLAIN_WORD = re.compile(r"[a-z]+(?:['-][a-z]+)*(?=[\s,;:?!.]|$)")
 
 
