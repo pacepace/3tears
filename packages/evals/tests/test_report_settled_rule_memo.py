@@ -238,11 +238,11 @@ def _label_lines(report: Report) -> list[str]:
     return [
         block.text
         for block in report.blocks
-        if isinstance(block, DisclosureBlock) and block.section == "scoreboard" and block.text.startswith("The label")
+        if isinstance(block, DisclosureBlock) and block.section == "contrasts" and block.text.startswith("The label")
     ]
 
 
-async def test_a_cheaper_label_on_the_dearer_arm_gets_one_line_under_the_scoreboard() -> None:
+async def test_a_cheaper_label_on_the_dearer_arm_gets_one_line_in_the_contrasts() -> None:
     _, bundle = await _compare(0.003301)
     report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
     line = "The label 'cheaper candidate' says cheaper; it cost more per reply than production."
@@ -250,7 +250,9 @@ async def test_a_cheaper_label_on_the_dearer_arm_gets_one_line_under_the_scorebo
     assert lint_prose(line) == []
     markdown = report_markdown(report)
     first = markdown.split("\n## ", 1)[0]
-    assert first.index("**Scoreboard**") < first.index(line), "under the scoreboard, on the first screen"
+    contrasts = markdown.split("\n## Contrasts\n", 1)[1].split("\n## ", 1)[0]
+    # A step down from the first screen, beside the cost contrast it bears on.
+    assert line not in first and line in contrasts
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 

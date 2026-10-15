@@ -78,12 +78,13 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     lines = report_markdown(result.report).splitlines()
     assert lines[0] == "# invoices: does v2 do better than v1?"
     assert lines[1].startswith("v1 (control) vs v2 · ")
-    assert (
-        lines[3]
-        == "**Exploratory: v2 separated from v1 on no reading. Guardrail undecided for v2: no invented total.**"
+    assert lines[3] == (
+        "**Exploratory: no difference found between v2 and v1 on any reading. "
+        "Not yet shown safe: v2 on no invented total.**"
     )
+    # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it.
     assert lines[7] == (
-        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Failed otherwise | Cost per reply |"
+        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per reply |"
     )
     assert page_violations(result.report) == []
 

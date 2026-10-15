@@ -512,7 +512,7 @@ class TestGenerationAndTheStore:
         assert storage.load_case_strata(["a"], "another-scope") == []
         assert storage.load_case_strata([], _SCOPE) == []
 
-    def test_assembly_reads_only_each_cases_id_and_stratum(self) -> None:
+    def test_assembly_reads_only_each_cases_id_stratum_and_name(self) -> None:
         """A case carries the host's whole stimulus; assembling a bundle ships none of it."""
         store = _KeepRecordingStore()
         storage = EvalStorage(store)
@@ -526,4 +526,4 @@ class TestGenerationAndTheStore:
 
         bundle = _bundle(storage, campaign)
         assert [stratum.stratum for stratum in _cell(bundle, "sonnet").strata] == ["lookalike", "plain", None]
-        assert [keep for doc_type, keep in store.kept if doc_type == "eval_test_case"] == [("id", "stratum")]
+        assert [keep for doc_type, keep in store.kept if doc_type == "eval_test_case"] == [("id", "stratum", "name")]

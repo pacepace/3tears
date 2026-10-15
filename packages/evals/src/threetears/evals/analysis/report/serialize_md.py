@@ -1,7 +1,8 @@
 """The report as Markdown — the form an agent reads and a pull request quotes, with the page's values and order.
 
-Every block the page draws is printed here, in the page's order: the title on line 1, the arms on line 2, the verdict,
-the scoreboard; a chart is its title and the table of the values it draws, so a reader of Markdown can check every
+Every block the page draws is printed here, in the page's order: the title on line 1, the arms on line 2, the declared
+question quoted whole where there is one, the verdict, the scoreboard; a chart is its title and the table of the values
+it draws, so a reader of Markdown can check every
 number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. An
 outcome bar whose every column is one of the scoreboard's prints nothing here: its table would repeat the scoreboard. What
 the page folds (a trial's record, a finding's evidence, the engine's disclosures) is a ``<details>`` here as well.
@@ -45,16 +46,17 @@ def report_markdown(report: Report) -> str:
     for index, block in enumerate(head):
         # Line 2 is the arms, directly under the title: every other block is set off by a blank line.
         lines += [*([] if index == 0 else [""]), *_block(block)]
+    titles = report.section_titles
     for section in SECTION_TITLES:
         if section in FIRST_SCREEN or section == "glossary":
             continue
         blocks = [block for block in report.blocks if block.section == section and not _repeats_scoreboard(block)]
         if not blocks:
             continue
-        lines += ["", f"## {SECTION_TITLES[section]}"]
+        lines += ["", f"## {titles[section]}"]
         lines += _folded(blocks)
     if report.terms:
-        lines += ["", f"## {SECTION_TITLES['glossary']}", ""]
+        lines += ["", f"## {titles['glossary']}", ""]
         lines += [f"- **{term}**: {GLOSSARY[term]}" for term in report.terms]
     return "\n".join(lines) + "\n"
 

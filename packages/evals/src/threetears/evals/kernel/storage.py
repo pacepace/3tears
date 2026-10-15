@@ -1527,10 +1527,10 @@ class EvalStorage:
         return self._hydrate_all(EvalTestCase, items)
 
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
-        """Load the id and stratum of the named test cases, in one batch read.
+        """Load the id, stratum and given name of the named test cases, in one batch read.
 
-        The store reduces each case to those two fields before it is shipped, so a reader of a
-        campaign's strata pays for one short string a case rather than the host's whole stimulus.
+        The store reduces each case to those three fields before it is shipped, so a reader of a
+        campaign's strata pays for two short strings a case rather than the host's whole stimulus.
         Absent ids are skipped, as :meth:`load_test_cases_by_ids` skips them.
 
         Args:

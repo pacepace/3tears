@@ -1,8 +1,9 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-question in plain words —, the arms line, the verdict line, the scoreboard and the caveats under it, in normal
-weight), the decision rule clause by clause where one is declared, what it means (the memo's findings, each a table
+campaign's name —, the arms line, the question declared before the run quoted whole, the verdict line, the
+scoreboard and the one caveat under it that changes how the verdict is read, in normal weight; every other
+qualification is a step down, in the sections), the decision rule clause by clause where one is declared, what it means (the memo's findings, each a table
 code built and one sentence, then the contrasts against the control), the cases, the trials (one row each, every
 record folded), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
 of every term of art the page linked. Every count, rate, interval and cost in it is code's, computed from the
@@ -55,7 +56,9 @@ ReportSection = Literal[
 ]
 
 #: Each section's heading, in reading order — the order every serializer lays the sections out in, each three words
-#: or fewer. The first screen (``header`` and ``scoreboard``) carries no heading: it is the page's own head.
+#: or fewer. The first screen (``header`` and ``scoreboard``) carries no heading: it is the page's own head. A page
+#: reads its headings off :attr:`Report.section_titles`, which heads ``contrasts`` ``Readings`` where nothing is
+#: contrasted; the section's id stays ``contrasts`` either way.
 SECTION_TITLES: dict[str, str] = {
     "header": "",
     "scoreboard": "Scoreboard",
@@ -86,8 +89,10 @@ TextRole = Literal[
 ]
 
 #: Who a disclosure speaks for. ``arms``: the first screen's second line, each arm named in full once, the control
-#: marked. ``caveat``: a line under the scoreboard qualifying the result, in normal weight. ``basis``: whether a question was declared before the run (line 2). ``verdict``: the
-#: verdict line. ``design``, ``charts`` and ``cost``: the lines under the scoreboard. ``memo``: who wrote the memo,
+#: marked, and the design (``30 cases × 3 repeats``); in the contrasts, an arm's label that its own row contradicts.
+#: ``caveat``: a line under the scoreboard qualifying the result, in normal weight. ``basis``: the question declared
+#: before the run, quoted whole under the arms line. ``verdict``: the verdict line. ``design``, ``charts`` and
+#: ``cost``: how the run was laid out, what was not charted and where a cost is a floor, in the methods. ``memo``: who wrote the memo,
 #: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
 #: grading its own model's answers. ``comparisons``: how the contrasts against the control were tested and
@@ -611,7 +616,13 @@ class Report(EvalDocumentModel):
     """A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states."""
 
     basis: ReportBasis = Field(description="`analysis` over a generated memo, `code_only` over the evidence alone.")
-    title: str = Field(min_length=1, description="The title line: the question the campaign asks, in plain words.")
+    title: str = Field(
+        min_length=1,
+        description=(
+            "The title line, a name: the campaign's, with what it compares where no question was declared "
+            "(`invoices: does v2 do better than v1?`)."
+        ),
+    )
     finding_count: int = Field(ge=0, description="How many findings the memo holds.")
     source: ReportSource = Field(description="What this is a report of.")
     blocks: list[ReportBlock] = Field(description="The report, in reading order.")
@@ -662,6 +673,21 @@ class Report(EvalDocumentModel):
         if authored := [index for index, block in enumerate(self.blocks) if isinstance(block, TextBlock)]:
             raise ValueError(f"a code-only report holds no author's words, and blocks {authored} are text blocks")
         return self
+
+    @property
+    def section_titles(self) -> dict[str, str]:
+        """Each section's heading on this page: :data:`SECTION_TITLES`, except that ``contrasts`` is headed
+        ``Readings`` where the page contrasts nothing — a one-arm page, whose section holds only the readings by
+        stratum and by label — so no heading promises a comparison the page does not make."""
+        titles = dict(SECTION_TITLES)
+        readings_only = all(
+            isinstance(block, TableBlock) and block.name in ("strata", "labels")
+            for block in self.blocks
+            if block.section == "contrasts"
+        )
+        if readings_only:
+            titles["contrasts"] = "Readings"
+        return titles
 
     @property
     def terms(self) -> list[str]:

@@ -6,9 +6,10 @@ is ``<details>``; moving between the screens is ``#`` anchors. The two charts ar
 (:mod:`~threetears.evals.analysis.report.svg`), each beside a visually hidden table of the values it draws, so a
 screen reader and a page with styles off lose nothing.
 
-**The first screen is the page's ``<header>``**: the title (the question), the arms line (always line 2), the verdict
-line, the scoreboard with its outcome bar, and the caveats in normal weight. Everything a reader needs to decide
-whether to read on is there, written by code. Every term of art links to the glossary at the foot of the page.
+**The first screen is the page's ``<header>``**: the title (the campaign's name), the arms line (always line 2), the
+declared question quoted whole where there is one, the verdict line, the scoreboard with its outcome bar, and the one
+caveat in normal weight that changes how the verdict is read. Everything a reader needs to decide whether to read on
+is there, written by code. Every term of art links to the glossary at the foot of the page.
 
 The author's words are Markdown; this renders the part of it a memo uses — paragraphs, bullet lists, ``**bold**``
 and ``code`` — over text escaped first, so nothing an author wrote can become markup.
@@ -86,7 +87,8 @@ _CODE = re.compile(r"`([^`]+)`")
 #: A trial id in a table cell, linked to its drill-down.
 _TRIAL_ID = re.compile(r"\bT\d+\b")
 
-#: A case as the cases table numbers it, whose number its row's anchor is made of.
+#: A case as the cases table numbers it, whose number its row's anchor is made of; a case named by its author anchors
+#: by its name (``case-double-charge``).
 _CASE_NUMBER = re.compile(r"case (\d+)")
 
 
@@ -116,16 +118,17 @@ def report_html(report: Report) -> str:
         *(_block(block, index) for index, block in enumerate(head)),
         "</header>",
     ]
+    titles = report.section_titles
     sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN and section != "glossary"]
     present = [section for section in sections if any(block.section == section for block in report.blocks)]
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append(
-        "<nav>" + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in nav) + "</nav>"
+        "<nav>" + "".join(f'<a href="#{section}">{_escape(titles[section])}</a>' for section in nav) + "</nav>"
     )
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
-        parts.append(f"<h2>{_escape(SECTION_TITLES[section])}</h2>")
+        parts.append(f"<h2>{_escape(titles[section])}</h2>")
         parts.extend(_folded(blocks))
         parts.append("</section>")
     if report.terms:
@@ -133,7 +136,7 @@ def report_html(report: Report) -> str:
             f'<dt id="g-{_slug(term)}">{_escape(term)}</dt><dd>{_escape(GLOSSARY[term])}</dd>' for term in report.terms
         )
         parts.append(
-            f'<section id="glossary"><h2>{SECTION_TITLES["glossary"]}</h2>'
+            f'<section id="glossary"><h2>{titles["glossary"]}</h2>'
             f'<details class="glossary"><summary>Terms used on this page</summary><dl>{entries}</dl></details></section>'
         )
     parts += ["</article>", "</body>", "</html>"]
@@ -235,8 +238,9 @@ def _grid(block: TableBlock) -> str:
             cells.append(f"<td>{text}</td>")
         anchor = ""
         # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
-        if block.name == "cases" and "case" in row and (number := _CASE_NUMBER.fullmatch(row["case"].text)):
-            anchor = f' id="case-{number.group(1)}"'
+        if block.name == "cases" and "case" in row:
+            number = _CASE_NUMBER.fullmatch(row["case"].text)
+            anchor = f' id="case-{number.group(1) if number else _slug(row["case"].text)}"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
     return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 

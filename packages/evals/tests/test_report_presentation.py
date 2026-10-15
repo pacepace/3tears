@@ -64,24 +64,28 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
     assert lines[0] == "# G2: can the cheaper model replace production?"
-    assert (
-        lines[1] == "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026"
+    assert lines[1] == (
+        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
+        "4 cases × 3 repeats"
     )
-    assert lines[3].startswith("**Keep production: ")
-    assert lines[5:8] == [
+    # The question declared before the run is quoted whole, as the contract the verdict reads, then the verdict.
+    assert lines[3] == f'Asked before the run: "{G2_QUESTION}"'
+    assert lines[5].startswith("**Keep production: ")
+    assert lines[7:10] == [
         "**Scoreboard**",
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per reply |",
     ]
-    assert lines[9] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $0.003092 |"
+    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $0.003092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
-    # The rule settled keep on the counts, so the floor caveat says what four cases can and cannot do.
-    caveat = (
-        "4 cases per arm: enough to apply the rule, too few to estimate how large the difference is (that needs 5)."
-    )
+    # The rule settled keep on the counts, so the floor caveat says what four cases can and cannot do — and it is
+    # the one line under the scoreboard: the design is on line 2, the label's claim is in the contrasts.
+    caveat = "4 cases per arm: enough to apply the rule, too few to size the difference (needs 5)."
     assert caveat in first.splitlines(), "the case floor, in normal weight"
     assert "Too few cases to estimate a rate" not in first
     assert first.index("**Keep production") < first.index("**Scoreboard**") < first.index(caveat)
+    assert first.rstrip().endswith(caveat), "nothing under the scoreboard but the caveat"
+    assert "The label 'cheaper candidate' says cheaper" not in first
 
 
 async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2_ruled: tuple[Result, Report]) -> None:
@@ -92,19 +96,27 @@ async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2
     assert report_html(report).count('data-chart="outcome_bar"') == 1
 
 
-async def test_the_question_is_the_title_and_never_repeated_in_the_body(g2_ruled: tuple[Result, Report]) -> None:
+async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
+    g2_ruled: tuple[Result, Report],
+) -> None:
     _, report = g2_ruled
     markdown = report_markdown(report)
-    assert "does deepseek-v4-flash hold every pass/fail queue-discipline dimension" not in markdown
+    assert markdown.count("does deepseek-v4-flash hold every pass/fail queue-discipline dimension") == 1
+    (asked,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    assert asked.section == "header" and asked.text == f'Asked before the run: "{G2_QUESTION}"'
+    assert f'<p class="line" data-source="basis">{html.escape(asked.text)}</p>' in report_html(report)
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
 async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
+    # The quoted question aside too: it is the author's words, whole.
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    sections = re.split(r"\n## ", report_markdown(report).replace(verdict, "")) + [
-        _visible_text(part).replace(verdict, "") for part in report_html(report).split("<h2>")
+    (asked,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    quoted = report_markdown(report).replace(verdict, "").replace(asked, "")
+    sections = re.split(r"\n## ", quoted) + [
+        _visible_text(part).replace(verdict, "").replace(asked, "") for part in report_html(report).split("<h2>")
     ]
     assert "deepseek-v4-flash passed" in verdict
     for section in sections:
@@ -167,6 +179,34 @@ async def test_one_arm_reads_n_of_n_cases_passed_first() -> None:
     one = await Eval(CASES, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
     (verdict,) = [b for b in one.report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
     assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: case \d(, case \d)*", verdict.text), verdict.text
+
+
+async def test_one_arm_heads_its_readings_as_readings_since_nothing_is_contrasted() -> None:
+    one = await Eval(CASES, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
+    assert one.report.section_titles["contrasts"] == "Readings"
+    markdown = report_markdown(one.report)
+    assert "\n## Readings\n" in markdown and "## Contrasts" not in markdown
+    page = report_html(one.report)
+    assert '<section id="contrasts">\n<h2>Readings</h2>' in page and '<a href="#contrasts">Readings</a>' in page
+
+
+async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_otherwise() -> None:
+    named = [{**case, "id": f"queue-{index}"} for index, case in enumerate(CASES)]
+    one = await Eval(named, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
+    report = one.report
+    (verdict,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: queue-\d(, queue-\d)*", verdict.text), verdict.text
+    (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
+    assert sorted(row["case"] for row in cases.values()) == [f"queue-{index}" for index in range(4)]
+    trials = [block for block in report.blocks if isinstance(block, TrialBlock)]
+    assert trials and all(re.fullmatch(r"queue-\d", trial.case_label) for trial in trials)
+    assert "T1 · queue-0 · production · " in report_markdown(report)
+    # The row anchors by the name; a numbered case keeps anchoring by its number.
+    assert '<tr id="case-queue-0">' in report_html(report) and 'id="case-1"' not in report_html(report)
+    comparison = await Eval(CASES, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2).run(
+        store=":memory:"
+    )
+    assert '<tr id="case-1">' in report_html(comparison.report)
 
 
 # =============================================================================

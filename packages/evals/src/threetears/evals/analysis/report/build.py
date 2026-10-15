@@ -113,7 +113,6 @@ from threetears.evals.analysis.style import (
     humanize,
     lint_prose,
     measure_name,
-    sentences,
 )
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.quantities import with_unit
@@ -325,15 +324,25 @@ def _page(
         notes += [
             DisclosureBlock(section="methods", source="memo", text=text, fold="Style") for text in style.offending()
         ]
+    if (not_charted := charts.sentence()) is not None:
+        notes.append(_note(not_charted, "charts"))
     name = source.campaign_name or f"Campaign {source.campaign_id}"
+    verdict = verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle), model=_model_namer(names))
     blocks: list[ReportBlock] = [
         DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source)),
+        *(
+            [DisclosureBlock(section="header", source="basis", text=asked)]
+            if (asked := _question_line(bundle)) is not None
+            else []
+        ),
         DisclosureBlock(
             section="header",
             source="verdict",
-            text=verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle), model=_model_namer(names)).text,
+            text=verdict.text,
+            # A verdict that offers leads links the word that says why they are not decisions.
+            term="exploratory" if verdict.text.startswith("Exploratory: ") else None,
         ),
-        *_scoreboard_blocks(bundle, arm, charts),
+        *_scoreboard_blocks(bundle, arm),
         *_decision_blocks(bundle, arm),
         *written,
         *contrasts,
@@ -413,13 +422,15 @@ def _model_namer(names: dict[str, ArmName]) -> Callable[[str], str]:
 
 
 def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) -> str:
-    """The title: the question the campaign asks, in plain words, on one line, starting with a capital."""
+    """The title, a name: the campaign's, with the question it asks where none was declared before the run.
+
+    A name that is itself a question (the quick path's ``does v2 do better than v1?``) is the title as written. A
+    declared question is never cut down to a title: it is quoted whole on its own line (:func:`_question_line`).
+    """
     if name.rstrip().endswith("?"):
         return _capitalized(name)
-    if questions := _preregistered(bundle):
-        asked = sentences(questions[0].text)[0]
-        if not lint_prose(asked):
-            return _capitalized(asked)
+    if _preregistered(bundle):
+        return name
     control = _control_key(bundle)
     others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != control]
     if control is None or not others:
@@ -440,13 +451,25 @@ def _capitalized(title: str) -> str:
     return title[:1].upper() + title[1:] if _PLAIN_WORD.match(title) else title
 
 
+def _question_line(bundle: AnalysisContextBundle) -> str | None:
+    """Under the arms: the question declared before the run, quoted whole — the contract the verdict and the Decision
+    section read, never paraphrased, its first plain word capitalized as a sentence starts; None where none was
+    declared. The first question where several were."""
+    questions = _preregistered(bundle)
+    if not questions:
+        return None
+    return f'Asked before the run: "{_capitalized(" ".join(questions[0].text.split()))}"'
+
+
 def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource) -> str:
-    """Line 2: each arm named in full, once, the control first and marked, then the date."""
+    """Line 2: each arm named in full, once, the control first and marked, then the date, then the design."""
     control = _control_key(bundle)
     keys = [board.variant_key for board in bundle.scoreboard]
     ordered = ([control] if control is not None else []) + [key for key in keys if key != control]
     arms = " vs ".join(names[key].first() if key in names else _namer(names)(key) for key in ordered)
-    return " · ".join(part for part in (arms or "no arm ran", _date(source.generated_at)) if part)
+    return " · ".join(
+        part for part in (arms or "no arm ran", _date(source.generated_at), _design_words(bundle)) if part
+    )
 
 
 def _date(stamp: str) -> str:
@@ -464,10 +487,14 @@ def _dollars(amount: float | None) -> str | None:
     return None if amount is None else f"${format_number(amount)}"
 
 
-def _scoreboard_blocks(
-    bundle: AnalysisContextBundle, arm: Callable[[str], str], charts: _ChartLedger
-) -> list[ReportBlock]:
-    """The scoreboard table, its outcome bar, then the lines qualifying it, in normal weight."""
+def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+    """The scoreboard table, its outcome bar, then only what changes how the verdict is read, in normal weight.
+
+    The case floor and an arm whose every trial failed are said here. Everything else that qualifies the table is a
+    step down: an arm's label its row contradicts is in the contrasts; what was not charted and where a cost is a floor
+    are in the methods; a failure cause the scoreboard counts apart from checks and the judge heads its own column
+    where it is the only one, and the outcome bar names each where there are several.
+    """
     boards = bundle.scoreboard
     if not boards:
         return [
@@ -506,7 +533,7 @@ def _scoreboard_blocks(
         TableColumn(key="passed", header="Passed"),
         TableColumn(key="check", header="Failed by check"),
         TableColumn(key="judged", header="Failed by judge"),
-        *([TableColumn(key="other", header="Failed otherwise")] if other_causes else []),
+        *([TableColumn(key="other", header=_other_failures_header(other_causes))] if other_causes else []),
         TableColumn(key="cost", header="Cost per reply"),
     ]
     rows = [{column.key: row[column.key] for column in columns} for row in rows]
@@ -531,18 +558,6 @@ def _scoreboard_blocks(
         DisclosureBlock(section="scoreboard", source="caveat", text=line, term="case floor")
         for line in caveat_lines(bundle, arm)
     ]
-    blocks += [DisclosureBlock(section="scoreboard", source="arms", text=line) for line in _label_claims(bundle, arm)]
-    if other_causes:
-        blocks.append(
-            DisclosureBlock(
-                section="scoreboard",
-                source="caveat",
-                text=f"Failed otherwise: {', '.join(cause_short(cause) for cause in other_causes)}.",
-            )
-        )
-    blocks.append(DisclosureBlock(section="scoreboard", source="design", text=_design_line(bundle)))
-    if (sentence := charts.sentence()) is not None:
-        blocks.append(DisclosureBlock(section="scoreboard", source="charts", text=sentence))
     if bundle.all_failed_cells:
         every_failed = list(dict.fromkeys(arm(cell.variant_key) for cell in bundle.all_failed_cells))
         blocks.append(
@@ -555,18 +570,28 @@ def _scoreboard_blocks(
                 ),
             )
         )
-    unpriced = [board for board in boards if board.n_cost_unpriced]
-    if unpriced:
-        blocks.append(
-            DisclosureBlock(
-                section="scoreboard",
-                source="cost",
-                text="The cost is a floor where a trial's spend went unpriced: "
-                + "; ".join(f"{arm(board.variant_key)}, {board.n_cost_unpriced} of {board.ran}" for board in unpriced)
-                + ".",
-            )
-        )
     return blocks
+
+
+def _other_failures_header(causes: Sequence[str]) -> str:
+    """The header over failures the scoreboard counts apart from checks and the judge: the one cause's own words
+    (``Model failed``), or ``Failed otherwise`` over several, which the outcome bar then names one by one."""
+    if len(causes) == 1:
+        words = cause_short(causes[0])
+        return words[:1].upper() + words[1:]
+    return "Failed otherwise"
+
+
+def _unpriced_cost_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
+    """Where a trial's spend went unpriced, the arm's cost is a floor; None where every trial was priced."""
+    unpriced = [board for board in bundle.scoreboard if board.n_cost_unpriced]
+    if not unpriced:
+        return None
+    return (
+        "The cost is a floor where a trial's spend went unpriced: "
+        + "; ".join(f"{arm(board.variant_key)}, {board.n_cost_unpriced} of {board.ran}" for board in unpriced)
+        + "."
+    )
 
 
 def _label_claims(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
@@ -630,8 +655,10 @@ def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
     return OutcomeBar(arm=arm(board.variant_key), segments=segments)
 
 
-def _design_line(bundle: AnalysisContextBundle) -> str:
-    """One line on the design: how many cases, how many repeats of each."""
+def _design_words(bundle: AnalysisContextBundle) -> str:
+    """The design at the end of line 2: ``30 cases × 3 repeats``; where the arms differ, each range its own segment
+    (``4 to 6 cases per arm · 2 to 3 repeats``), so no segment carries more figures than a sentence may. Empty when
+    no arm ran; the cases alone where no repeat count was recorded."""
     cases = sorted({board.cases for board in bundle.scoreboard})
     repeats = sorted(
         {
@@ -641,15 +668,23 @@ def _design_line(bundle: AnalysisContextBundle) -> str:
             if value is not None
         }
     )
-    case_words = f"{cases[0]} cases" if len(cases) == 1 else f"{cases[0]} to {cases[-1]} cases per arm"
-    repeat_words = (
-        "repeats not recorded"
-        if not repeats
-        else f"{repeats[0]} repeat{'' if repeats[0] == 1 else 's'} each"
-        if len(repeats) == 1
-        else f"{repeats[0]} to {repeats[-1]} repeats each"
+    if not cases:
+        return ""
+    case_words = (
+        f"{cases[0]} case{'' if cases[0] == 1 else 's'}"
+        if len(cases) == 1
+        else f"{cases[0]} to {cases[-1]} cases per arm"
     )
-    return f"{case_words}, {repeat_words}."
+    if not repeats:
+        return case_words
+    repeat_words = (
+        f"{repeats[0]} repeat{'' if repeats[0] == 1 else 's'}"
+        if len(repeats) == 1
+        else f"{repeats[0]} to {repeats[-1]} repeats"
+    )
+    if len(cases) == 1 and len(repeats) == 1:
+        return f"{case_words} × {repeat_words}"
+    return f"{case_words} · {repeat_words}"
 
 
 def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
@@ -732,8 +767,8 @@ class _ChartLedger:
     """Which interval charts were drawn, and why each row left out was: the one sentence on the scoreboard.
 
     A row is drawn only when its arm has :data:`MIN_CASES` usable cases and an interval was computed, and a chart
-    with no such row is not built at all — no figure, no stub. Every row left out is counted here, so the scoreboard
-    says once, in one sentence, what was not charted and why.
+    with no such row is not built at all — no figure, no stub. Every row left out is counted here, so the methods
+    say once, in one sentence, what was not charted and why.
     """
 
     def __init__(self, bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> None:
@@ -760,7 +795,7 @@ class _ChartLedger:
 
     def sentence(self) -> str | None:
         """Every row not charted, in one sentence; None when nothing was left out, or no arm could be charted at all
-        (the caveat under the scoreboard says so)."""
+        (the caveat under the scoreboard says so). Read after the memo and the contrasts are laid out."""
         if all(usable < MIN_CASES for usable in self._usable.values()):
             return None
         parts = []
@@ -1013,11 +1048,12 @@ def _guardrail_standing(cells: Sequence[str], bundle: AnalysisContextBundle, arm
 
 
 def _cases_of(bundle: AnalysisContextBundle, rests_on: Sequence[int], findings: Sequence[Finding]) -> list[str]:
-    """The cases the trials of the named findings show, as ``case N`` links, in case order."""
+    """The cases the trials of the named findings show, each as the cases table names it, in case order."""
     named = {trial for position in rests_on if 0 <= position < len(findings) for trial in findings[position].trials}
     numbers = _case_numbers(bundle)
-    cases = sorted({numbers[trial.case_id] for trial in bundle.trials if trial.trial_id in named})
-    return [f"case {number}" for number in cases]
+    case_name = _case_namer(bundle)
+    cases = sorted({trial.case_id for trial in bundle.trials if trial.trial_id in named}, key=numbers.__getitem__)
+    return [case_name(case) for case in cases]
 
 
 def _finding_blocks(
@@ -1369,7 +1405,8 @@ def _question_words(design: CampaignDesign | None, question_id: str) -> str:
 
 
 def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
-    """On a code-only report: the declared questions past the first (the title carries it), and the unasked readings."""
+    """On a code-only report: every declared question where there are several (the first screen quotes only the
+    first), and the unasked readings."""
     design = bundle.declared_design
     scope = bundle.reading_scope
     blocks: list[ReportBlock] = []
@@ -1445,10 +1482,13 @@ def _contrast_blocks(
 ) -> list[ReportBlock]:
     """The contrasts against the control, their charts, the guardrails, and the readings by stratum and label.
 
+    An arm's label that its own row against the control contradicts is said first, beside the contrast it bears on.
     Engine text that explains how they were tested goes to the methods' closed ``Disclosures`` fold.
     """
     arm = _namer(names)
-    blocks: list[ReportBlock] = []
+    blocks: list[ReportBlock] = [
+        DisclosureBlock(section="contrasts", source="arms", text=line) for line in _label_claims(bundle, arm)
+    ]
     blocks.extend(_self_judging_blocks(bundle, surface, arm))
     blocks.extend(_guardrail_standing_blocks(bundle, arm))
     blocks.extend(_comparison_blocks(bundle, surface, contrasts_read, charts, arm))
@@ -2433,15 +2473,23 @@ _MARKS = {"passed": "✓", "failed": "✗", "lost": "–"}
 
 
 def _case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
-    """Each case's number, as the cases table numbers it: by label, from 1."""
+    """Each case's number, as the cases table orders it: by label, from 1."""
     labels = {trial.case_id: trial.case_label for trial in bundle.trials}
     return {case: index for index, case in enumerate(sorted(labels, key=lambda case: (labels[case], case)), start=1)}
 
 
 def _case_namer(bundle: AnalysisContextBundle) -> Callable[[str], str]:
-    """Name a case by its id as every table does: ``case N``, never its first input."""
+    """Name a case as every table does: by the name its author gave it where its label reads as one
+    (``double-charge``), else ``case N`` — never its first input."""
+    labels = {trial.case_id: trial.case_label for trial in bundle.trials}
     numbers = _case_numbers(bundle)
-    return lambda case: f"case {numbers[case]}" if case in numbers else humanize("case", case) or "a case"
+
+    def name(case: str) -> str:
+        if case not in numbers:
+            return humanize("case", case) or "a case"
+        return humanize("case", labels[case]) or f"case {numbers[case]}"
+
+    return name
 
 
 def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
@@ -2451,6 +2499,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     control = _control_key(bundle)
     arms = [board.variant_key for board in bundle.scoreboard]
     numbers = _case_numbers(bundle)
+    case_name = _case_namer(bundle)
     by_case: dict[str, list[TrialRow]] = {}
     for trial in bundle.trials:
         by_case.setdefault(trial.case_id, []).append(trial)
@@ -2469,7 +2518,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     for case in sorted(by_case, key=lambda case: (group(case), numbers[case])):
         trials = by_case[case]
         row: dict[str, CellValue] = {
-            "case": f"case {numbers[case]}",
+            "case": case_name(case),
             "flag": {0: "regression", 1: "no usable trial", 2: None}[group(case)],
         }
         if strata:
@@ -2496,7 +2545,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
                 TableColumn(key="trials", header="Trials"),
             ],
             rows=[table_row(row) for row in rows],
-            order="regressions first, then cases an arm has no usable trial of, then the rest, each by case number",
+            order="regressions first, then cases an arm has no usable trial of, then the rest, each in case order",
             total_rows=len(rows),
         )
     ]
@@ -2790,6 +2839,7 @@ def _method_blocks(
             )
     say("measurement", bundle.launch_disclosure)
     say("measurement", bundle.measurement_window_disclosure)
+    say("cost", _unpriced_cost_line(bundle, arm))
     if bundle.latency_contended:
         contended = _some_arms(bundle, bundle.latency_contended_cells, "Read under concurrency", arm)
         say("measurement", bundle.latency_contended + contended)
