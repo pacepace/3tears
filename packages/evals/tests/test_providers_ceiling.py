@@ -462,16 +462,16 @@ async def test_a_request_whose_first_read_fails_makes_one_fetch_and_the_next_req
     assert server.fetches == 2, "a request later reads again"
 
 
-async def test_a_request_whose_refresh_fails_makes_one_fetch_and_bounds_nothing_on_the_stale_rows() -> None:
+async def test_a_request_whose_refresh_fails_makes_one_fetch_and_is_priced_from_the_stale_rows() -> None:
     server = CatalogueServer((200, {"data": ROWS}), (503, {"error": "down"}))
-    shared = server.catalogue(refresh_after=timedelta(0))  # every load is due a refresh, so a second would fetch
+    # Every load is due a refresh, so a second would fetch; a read is reused only while younger than the bound.
+    shared = server.catalogue(refresh_after=timedelta(0), ceiling_stale_after=timedelta(minutes=1))
     await shared.load()
     haiku = _replying_haiku(shared)
 
     completion = await _request(haiku)
     assert server.fetches == 2, "boot's read, then the request's one refresh"
     assert completion.cost_usd is not None and completion.pricing_stale_since is not None
-    assert haiku.price_ceiling(system="", user="x") is None, "only a failed refresh leaves the rows past the bound"
 
 
 async def test_a_call_made_without_a_refresh_still_reads_for_itself() -> None:
@@ -496,35 +496,53 @@ def _counted_reads(shared: Catalogue, monkeypatch: pytest.MonkeyPatch) -> list[P
     return reads
 
 
-async def test_calls_made_together_after_one_refresh_take_its_read_once(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_refresh_a_ceiling_and_a_call_in_one_task_read_the_catalogue_once() -> None:
+    server = CatalogueServer((503, {"error": "down"}))  # a failed first fetch: every read would fetch again
+    haiku = _replying_haiku(server.catalogue())
+
+    await haiku.refresh_prices()
+    haiku.price_ceiling(system="", user="x")
+    completion = await haiku.generate(system="", user="x")
+
+    assert server.fetches == 1, "the ceiling and the call priced from the refresh's read"
+    assert completion.cost_usd is None and "could not be read" in (completion.pricing_failure or "")
+
+
+async def test_calls_made_together_after_one_refresh_each_read_for_themselves(monkeypatch: pytest.MonkeyPatch) -> None:
     shared = CatalogueServer((200, {"data": ROWS})).catalogue()
     haiku = _replying_haiku(shared)
     await haiku.refresh_prices()
     reads = _counted_reads(shared, monkeypatch)
 
     await asyncio.gather(haiku.generate(system="", user="x"), haiku.generate(system="", user="y"))
-    assert len(reads) == 1, "one call took the refresh's read, the other read for itself"
+    assert len(reads) == 2, "each call is a task of its own, not the refresh's"
 
 
-async def test_an_estimate_spends_the_refresh_so_a_later_call_reads_for_itself(monkeypatch: pytest.MonkeyPatch) -> None:
-    shared = CatalogueServer((200, {"data": ROWS})).catalogue()
+async def test_an_estimate_s_refresh_is_not_reused_once_older_than_the_ceiling_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = CatalogueServer((200, {"data": ROWS})).catalogue(refresh_after=_BRIEFLY)
     haiku = _replying_haiku(shared)
     await haiku.refresh_prices()
+    haiku.price_ceiling(system="", user="x")  # the estimate, which leaves the read to this task's next call
     reads = _counted_reads(shared, monkeypatch)
 
-    haiku.price_ceiling(system="", user="x")  # the estimate, which spends the read
+    await asyncio.sleep(2 * _BRIEFLY.total_seconds())
     await haiku.generate(system="", user="x")
-    assert len(reads) == 1
+    assert len(reads) == 1, "a read past ceiling_stale_after is never reused"
 
 
-async def test_a_failed_refresh_is_not_reused_by_a_second_call_in_a_task_started_after_it() -> None:
+async def test_a_failed_refresh_is_not_reused_by_a_task_started_after_it() -> None:
     server = CatalogueServer((503, {"error": "down"}))
     haiku = _replying_haiku(server.catalogue())
     await haiku.refresh_prices()
 
     first = await asyncio.create_task(haiku.generate(system="", user="x"))
+    assert server.fetches == 2, "the child task inherited the read and read for itself"
     second = await haiku.generate(system="", user="x")
-    assert server.fetches == 2, "the task took the refresh's failed read; the call after it tried again"
+    assert server.fetches == 2, "the refresh's own task's call took its read"
+    await haiku.generate(system="", user="x")
+    assert server.fetches == 3, "and consumed it"
     assert first.cost_usd is None and second.cost_usd is None
 
 
