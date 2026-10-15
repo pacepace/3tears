@@ -1,7 +1,7 @@
 """the walkers: every SQL text in a module, and the uncast catalogue name comparisons in each.
 
-A SQL text is a string literal, an f-string's literal parts, a ``+`` chain of those, or a ``str.join``
-over a list or tuple of them -- the ways a query is written across lines.
+A SQL text is a string literal, an f-string (a placeholder read as ``{}``), a ``+`` chain of those, or a
+``str.join`` over a list, a tuple or a generator of them -- the ways a query is written across lines.
 
 A comparison is flagged when a catalogue name column is compared with an array (``=``, ``<>`` or ``!=``
 against ``ANY``, ``ALL`` or ``SOME``) with no cast between the column and the operator:
@@ -46,7 +46,11 @@ _CATALOGUE_ONLY: Final[tuple[str, ...]] = (
 #: ``information_schema`` columns (domains over ``name``) an application table may also have
 _SHARED: Final[tuple[str, ...]] = ("table_name", "table_schema", "table_catalog", "column_name")
 
-_ARRAY_COMPARISON: Final[str] = r"\s*(?:=|<>|!=)\s*(?:ANY|ALL|SOME)\s*\("
+#: an operator, or an f-string placeholder standing where one would be (``f"relname {op} ANY("``).
+#: ``IN (...)`` is not here, deliberately: YugabyteDB 2026.1.1.1 answers ``relname IN ('a', 'b')``
+#: correctly (checked against the server, with ``ANY(ARRAY[...])`` failing beside it), because the
+#: list is coerced to the column's own type, never compared as ``text[]``.
+_ARRAY_COMPARISON: Final[str] = r"\s*(?:=|<>|!=|\{\})\s*(?:ANY|ALL|SOME)\s*\("
 
 _CATALOGUE_ONLY_UNCAST: Final[re.Pattern[str]] = re.compile(
     rf"\b(?:\w+\.)?({'|'.join(_CATALOGUE_ONLY)}){_ARRAY_COMPARISON}", re.IGNORECASE
@@ -85,8 +89,11 @@ def _literal_text(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         text = node.value
     elif isinstance(node, ast.JoinedStr):
+        # a placeholder reads as ``{}``, so an operator or a value interpolated between two literal
+        # parts still leaves a shape to match
         text = "".join(
-            part.value for part in node.values if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else "{}"
+            for part in node.values
         )
     elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left, right = _literal_text(node.left), _literal_text(node.right)
@@ -102,6 +109,15 @@ def _literal_text(node: ast.AST) -> str | None:
         parts = [_literal_text(element) for element in node.args[0].elts]
         if any(part is not None for part in parts):
             text = " ".join(part or "" for part in parts)
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.GeneratorExp | ast.ListComp | ast.SetComp)
+    ):
+        # a join over a generator: the element it repeats is the text each piece has
+        text = _literal_text(node.args[0].elt)
     return text
 
 

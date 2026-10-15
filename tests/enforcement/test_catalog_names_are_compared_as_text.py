@@ -37,7 +37,10 @@ def test_every_catalogue_name_is_compared_with_an_array_as_text() -> None:
         ("SELECT 1 FROM pg_attribute a WHERE a.attname <> ALL($1)", ["attname"]),
         ("SELECT 1 FROM pg_tables WHERE tablename != SOME($1)", ["tablename"]),
         ("SELECT 1 FROM information_schema.tables t WHERE t.table_name::text = ANY($1)", []),
+        # IN (...) is coerced to the column's type, and YugabyteDB 2026.1.1.1 answers it correctly
         ("SELECT 1 FROM pg_class WHERE relname IN ('a', 'b')", []),
+        # an operator interpolated between the column and ANY, as an f-string reads
+        ("SELECT 1 FROM pg_class WHERE relname {} ANY($1)", ["relname"]),
         # an application table's own table_name column is not the catalogue's
         ("SELECT id FROM collection_write_marks WHERE table_name = ANY($1::text[])", []),
     ],
@@ -50,10 +53,14 @@ def test_a_text_built_across_lines_is_read_whole(tmp_path: Path) -> None:
     module = tmp_path / "queries.py"
     module.write_text(
         'A = "SELECT c.relname FROM pg_catalog.pg_class c " + "WHERE c.relname = ANY($1::text[])"\n'
-        'B = " ".join(["SELECT 1 FROM information_schema.columns", "WHERE column_name = ANY($1)"])\n',
+        'B = " ".join(["SELECT 1 FROM information_schema.columns", "WHERE column_name = ANY($1)"])\n'
+        'C = f"SELECT 1 FROM pg_class WHERE relname {op} ANY($1)"\n'
+        'D = " OR ".join(f"a.attname = ANY(${i})" for i in range(2))\n',
         encoding="utf-8",
     )
     assert [entry.split(" ")[-1] for entry in find_catalog_name_violations([tmp_path], relative_to=tmp_path)] == [
         "relname",
         "column_name",
+        "relname",
+        "attname",
     ]
