@@ -1221,7 +1221,7 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
             measure_name(name, catalog[name].reader_name if name in catalog else None)
             for name in scope.exploratory_measures
         ),
-        *(f"{humanize('dimension', name)} (judged)" for name in scope.exploratory_dimensions),
+        *(f"{name} (judged)" for name in scope.exploratory_dimensions),
     ]
     if exploratory and scope.questions_declared:
         blocks += [

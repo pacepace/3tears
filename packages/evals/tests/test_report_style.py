@@ -114,7 +114,8 @@ def test_a_check_expression_is_code_and_never_humanized() -> None:
     expression = 'call_count("music.queue_track") >= 2'
     # Underscores and dots are part of the code a reader copies: humanize leaves an expression as written.
     assert humanize("dimension", expression) == expression
-    assert humanize("dimension", 'all(it.segue_text.length > 0 for it in calls("music.queue_track"))').count("_") == 1
+    nested = 'all(it.segue_text.length > 0 for it in calls("music.queue_track"))'
+    assert humanize("dimension", nested) == nested
     # A check's measure is named by its expression, as code, never "Pass rate of"; any other by its reader name.
     measure = f"goal_state:{expression}"
     assert measure_name(measure, f"Pass rate of {expression}") == f"`{expression}`"
