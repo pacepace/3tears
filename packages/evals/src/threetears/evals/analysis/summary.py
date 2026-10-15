@@ -900,8 +900,21 @@ class EvalSummary(BaseModel):
         """Each measure's state and line."""
         return [self._measure_line(measure) for measure in self.measures]
 
-    def _measure_line(self, measure: RunMeasureSummary) -> MeasureLine:
-        """One measure's state, and its line."""
+    def compared_measure_lines(self, guardrail_said: Mapping[str, str]) -> list[MeasureLine]:
+        """Each measure's line as a comparison prints this run: a guardrail's says what the comparison decided on it,
+        never that it is decided only in one.
+
+        Args:
+            guardrail_said: What the comparison came to on each guardrail for this run's arm, by measure name; a
+                guardrail it names nothing for is printed with its level alone.
+
+        Returns:
+            Each measure's state and line, in ``measures`` order.
+        """
+        return [self._measure_line(measure, guardrail_said.get(measure.name)) for measure in self.measures]
+
+    def _measure_line(self, measure: RunMeasureSummary, guardrail_said: str | None = _GUARDRAIL_ALONE) -> MeasureLine:
+        """One measure's state, and its line, a guardrail's with ``guardrail_said`` beside its level."""
         left_out = _left_out(measure)
         state: MeasureState
         if measure.n == 0 and measure.n_no_turn:
@@ -927,7 +940,7 @@ class EvalSummary(BaseModel):
             said = (
                 f"mean {stated(measure.mean)} (n={measure.n}, "
                 f"min {stated(measure.minimum)}, max {stated(measure.maximum)}{left_out})"
-                + (f"; {_GUARDRAIL_ALONE}" if measure.guardrail else "")
+                + (f"; {guardrail_said}" if measure.guardrail and guardrail_said else "")
             )
         return MeasureLine(name=measure.name, state=state, text=f"{measure.name}: {said}")
 

@@ -16,9 +16,9 @@
 5. **A declared question.** What its contrasts and guardrails came to, in their own verdict words. A question that
    wrote its decision rule as prose and declares none typed answers nothing here: no rule was applied, so the line is
    exploratory.
-6. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or that no difference was found on any
-   reading. A guardrail an arm is not shown safe on is a second sentence: ``Not yet shown safe: v2 on no invented
-   total.``
+6. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or ``nothing separated v2 from v1 on any
+   reading``, never "no difference". A guardrail an arm is not shown safe on is a second sentence: ``Not yet shown
+   safe: v2 on no invented total.``
 
 **A cause cannot exist without its words.** Every way a trial is lost (:data:`LOSS_CAUSE_WORDS`) and every way one
 fails (:data:`FAIL_CAUSE_WORDS`) is worded here, with the remedy a reader acts on, and each table is checked against
@@ -278,7 +278,7 @@ def verdict_line(
     return VerdictLine(
         rule="exploratory",
         text="Exploratory: "
-        + ("; ".join(leads) if leads else f"no difference found between {_every_arm(bundle, arm)} on any reading")
+        + ("; ".join(leads) if leads else f"{_nothing_separated(bundle, arm)} on any reading")
         + "."
         + _guardrail_words(bundle, arm),
     )
@@ -346,11 +346,13 @@ def _control_key(bundle: AnalysisContextBundle) -> str | None:
     return control if any(board.variant_key == control for board in bundle.scoreboard) else None
 
 
-def _every_arm(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """Every arm by name, the control last: ``v2 and v1``, ``v2, v3 and v1``."""
+def _nothing_separated(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
+    """That no contrast separated, the arms by name, the control last: ``nothing separated v2 from v1``,
+    ``nothing separated v2 or v3 from v1``. Never "no difference": a contrast not separated claims none."""
     key = _control_key(bundle) or bundle.scoreboard[0].variant_key
-    names = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != key] + [arm(key)]
-    return " and ".join(names) if len(names) <= 2 else f"{', '.join(names[:-1])} and {names[-1]}"
+    others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != key]
+    named = " or ".join(others) if len(others) <= 2 else f"{', '.join(others[:-1])} or {others[-1]}"
+    return f"nothing separated {named} from {arm(key)}"
 
 
 def _one_arm(bundle: AnalysisContextBundle, name: str, case_name: Callable[[str], str]) -> str:
@@ -566,7 +568,7 @@ def _declared(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str |
         if separated:
             clauses.append(f"{lead}: " + "; ".join(separated))
         elif tested:
-            clauses.append(f"{lead}: no difference found between {_every_arm(bundle, arm)}")
+            clauses.append(f"{lead}: {_nothing_separated(bundle, arm)}")
         else:
             clauses.append(f"{lead}: not tested")
     if not clauses:

@@ -186,15 +186,18 @@ GLOSSARY: dict[str, str] = {
     "bar": "A threshold a reading must clear on its own, without a control.",
     "exploratory": "No question was declared before the run, so the page offers leads, not decisions.",
     "settled": (
-        "Keep is settled when the run shows an arm breaks the clause; switch only when its interval shows the "
-        "clause holds, on at least 5 cases per arm."
+        "Keep where the run shows the arm breaks the clause or cannot show it holds. Switch only where its interval "
+        "shows the clause holds, on at least 5 cases per arm."
     ),
     "judge": "The model that scores each trial's transcript against a rubric.",
     "calibrated": "A judge whose scores have been shown to agree with people's.",
     "marks": "✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.",
     "ran": "Every trial the arm ran, usable or not.",
     "passed": "Usable trials that met every check and cleared every judged bar.",
-    "flag": "A case the control passed and a candidate failed is a regression; one an arm has no usable trial of says so.",
+    "flag": (
+        "Regression: a candidate passed a smaller share of its usable trials on the case than the control; a tie or "
+        "a gain never flags. No usable trial: an arm has none on the case."
+    ),
     "outcome": "How a trial ended: passed, failed, or lost to the test setup.",
     "why": "Which check or judged dimension failed the trial, or what the test setup broke.",
     "clause": "One condition of the decision rule, settled on its own; the rule switches only if every clause holds.",

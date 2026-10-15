@@ -15,7 +15,8 @@ never by changing directory. A path the file's own code opens is its own to plac
 Each eval runs into its default store, prints its result quietly (``--verbose`` prints it whole), and writes its
 report to ``.evals/reports/<name>/``. The exit code is the worst of the evals': 0 done, 1 a run did not complete,
 2 refused (the file, or what it declares), 3 an error nothing anticipated (its traceback printed), 4 a comparison's
-gate failed. Anything else is the host command line (:func:`~threetears.evals.quick.cli.run_cli`), unchanged.
+gate failed, with a line after its report's saying which verdict failed it, in the report's words. Anything else is
+the host command line (:func:`~threetears.evals.quick.cli.run_cli`), unchanged.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from threetears.evals.kernel.eval_file import loading_eval_file
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
     EXIT_FAILED,
+    EXIT_GATE_FAILED,
     EXIT_OK,
     EXIT_REFUSED,
     run_cli,
@@ -110,7 +112,11 @@ def run_file(path: Path, *, verbose: bool = False) -> int:
         _say(result.render(full=verbose))
         written = result.write(report_dir(ev.name))
         _say(f"report: {written['html']}")
-        code = max(code, result.exit_code())
+        exit_code = result.exit_code()
+        if exit_code == EXIT_GATE_FAILED:
+            # Why it exits 4, in one line and the page's words: the guardrail or contrast the gate failed on.
+            _say(f"exit {EXIT_GATE_FAILED}: the gate {result.gate().why()}")
+        code = max(code, exit_code)
     return code
 
 

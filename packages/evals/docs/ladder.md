@@ -237,7 +237,8 @@ if __name__ == "__main__":
 - **Two levers at once?** The file's docstring names arms as `k=v` pairs (`"prompt=v2, effort=high"`), so each
   pair is a factor of the design, and `result.against(...)` reads the same runs against another control.
 
-What the recording printed (made at `max_tokens=8192`), first lines and errors; it exits 4:
+What the recording printed (made at `max_tokens=8192`), first lines, errors and the last line, which says why it
+exits 4:
 
 ```text
 invoices: no arm separated from the control 'v1'
@@ -249,6 +250,8 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice
   Invalid JSON: expected `:` at line 1 column 7 [type=json_invalid, input_value='{"{  "currency": "GBP", ...7",  "total": 270.00  }', input_type=str]
+...
+exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it)
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen,
@@ -257,9 +260,9 @@ the contrast row for `number`, the guardrail's row, and the trials' census:
 ```text
 # invoices: does v2 do better than v1?
 v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
-**Exploratory: no difference found between v2 and v1 on any reading. Not yet shown safe: v2 on no invented total.**
+**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
 | Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-1.4, 34.7] pts | not separated from the control | 30 paired |
-| No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval on the difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within it nor beyond it) |
+| No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 179 passed and 1 failed.
 ```
 
