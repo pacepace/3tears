@@ -1513,8 +1513,9 @@
 "threetears.evals.providers.Completion": "stable",
 "threetears.evals.providers.describe_failure": "host-contract",
 "threetears.evals.providers.Model": "host-contract",
+"threetears.evals.providers.PriceRefresh": "host-contract",
 "threetears.evals.providers.PriceSource": "host-contract",
-"threetears.evals.providers.Provider": "stable",
+"threetears.evals.providers.Provider": "provisional",
 "threetears.evals.providers.ProviderError": "host-contract"
 }
 }

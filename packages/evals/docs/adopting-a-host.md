@@ -275,7 +275,11 @@ completions they price: `Completion.pricing_stale_since` is when those rates exp
 OpenRouter call, which its own figure prices), and `Catalogue.stale_since` and `refresh_failure` say the same.
 Several loads at once share one fetch, and one request makes at most one: a model's call takes the read its
 `refresh_prices()` made for it in the same task as its own, so a read that failed (a first read included) is tried
-again by the next request, never by the call it was made for.
+again by the next request, never by the call it was made for. `refresh_prices()` returns what its read found, a
+`PriceRefresh` (`refreshed`, `fetched_at`, `failure`), which the model keeps as `last_price_refresh` and
+`clients.refresh_prices()` answers once for every role: a `failure` with no `fetched_at` is a first read that failed,
+so no model can be priced, and one with a `fetched_at` is a refresh that failed, the rows read then kept. A host
+writes its own pricing-outage line from it.
 
 **The price ceiling is a true upper bound, or `None`.** `price_ceiling` bounds the prompt at one token per UTF-8 byte
 (after NFKC normalisation, where that is longer) plus a framing allowance, and prices it with every price the row

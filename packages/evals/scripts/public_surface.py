@@ -794,6 +794,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.ProviderError",
         # The words the client writes as a completion's `price_source`, which a host reading spend back compares with.
         "threetears.evals.providers.PriceSource",
+        # What a price-catalogue read found, which a host writes its own pricing-outage line from.
+        "threetears.evals.providers.PriceRefresh",
     }
 )
 
@@ -941,9 +943,9 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.transports.fastmcp.CallerResolver",
         "threetears.evals.transports.fastmcp.HostResolution",
         "threetears.evals.transports.fastmcp.ToolCall",
-        # The shipped client's reply and its provider names, beside the host-contract client names.
+        # The shipped client's reply, beside the host-contract client names. Its provider names (`Provider`, a
+        # Literal `Model`'s signature reaches) are provisional: no host imports them.
         "threetears.evals.providers.Completion",
-        "threetears.evals.providers.Provider",
         # A production host's further bindings in `threetears.evals.analysis`: what Discodon's production code imports.
         "threetears.evals.analysis.AsRecordedReporterKind",
         "threetears.evals.analysis.REPORTER_KIND",

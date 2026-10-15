@@ -56,6 +56,7 @@ __all__ = [
     "OPENROUTER_MODELS_URL",
     "RETRY_AFTER_FAILURE",
     "Catalogue",
+    "PriceRefresh",
 ]
 
 log = get_logger(__name__)
@@ -99,6 +100,28 @@ _TIERS: Final = "overrides"
 
 #: A date suffix on a direct provider's model id (``claude-haiku-4-5-20251001``), which the catalogue's ids leave off.
 _DATE_SUFFIX: Final = re.compile(r"-\d{8}$")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PriceRefresh:
+    """What one read of the price catalogue found: what ``Model.refresh_prices()`` and ``Clients.refresh_prices()``
+    return, and ``Model.last_price_refresh`` keeps.
+
+    A host writes its own pricing-outage line from it: a ``failure`` with no ``fetched_at`` is a first read that
+    failed, so no model can be priced; one with a ``fetched_at`` is a refresh that failed, the rows read then kept.
+
+    Attributes:
+        refreshed: Whether the read fetched the rows anew (by itself, or by a load in flight it shared); ``False``
+            when the rows held were young enough to keep, when the fetch failed, and while replaying.
+        fetched_at: When the rows the catalogue now holds were fetched (UTC), or ``None`` while it holds none.
+        failure: Why the prices are not current, naming the error's class and message: the first read failed
+            (``fetched_at`` is ``None``), or the last refresh did and the rows held are stale
+            (:attr:`Catalogue.refresh_failure`). ``None`` when they are current, and while replaying.
+    """
+
+    refreshed: bool
+    fetched_at: datetime | None
+    failure: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +381,28 @@ class Catalogue:
         Every completion priced from them carries it as ``pricing_stale_since``.
         """
         return self._stale_since
+
+    @property
+    def fetched_at(self) -> datetime | None:
+        """When the rows held were fetched (UTC), or ``None`` while the catalogue holds none."""
+        return self._read_at
+
+    async def read(self) -> PriceRefresh:
+        """:meth:`load`, saying what it found rather than raising: whether it fetched the rows anew, when the rows
+        held were fetched, and why the prices are not current. A first read that fails is logged at WARNING.
+
+        Returns:
+            The outcome (:class:`PriceRefresh`).
+        """
+        before = self._read_at
+        try:
+            await self.load()
+        except (httpx.HTTPError, ValueError) as failed:
+            failure = f"the price catalogue could not be read ({type(failed).__name__}: {failed})"
+            log.warning("eval.providers catalogue unread url=%s: %s", self.url, failure)
+            return PriceRefresh(refreshed=False, fetched_at=self._read_at, failure=failure)
+        fetched = self._read_at is not None and self._read_at != before
+        return PriceRefresh(refreshed=fetched, fetched_at=self._read_at, failure=self._refresh_failure)
 
     @property
     def refresh_failure(self) -> str | None:

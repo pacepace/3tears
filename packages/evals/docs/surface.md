@@ -91,4 +91,4 @@ Declared because the production host imports it: launch and judge plumbing, the 
 
 The shipped completion client: a model, the role factory a host hands its clients, the shared catalogue, the reply and the one error it raises.
 
-- `providers`: `Catalogue`, `Clients`, `Completion`, `describe_failure`, `Model`, `PriceSource`, `Provider`, `ProviderError`
+- `providers`: `Catalogue`, `Clients`, `Completion`, `describe_failure`, `Model`, `PriceRefresh`, `PriceSource`, `ProviderError`

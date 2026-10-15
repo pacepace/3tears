@@ -21,7 +21,7 @@ import pytest
 
 from threetears.evals.kernel import AdmittedCall, OutOfRunBudget, PlannedCall, ValidationFailedError
 from threetears.evals.ops import await_job, start_paid_call
-from threetears.evals.providers import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, Clients, Model
+from threetears.evals.providers import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, Clients, Model, PriceRefresh
 from threetears.evals.schema import BoundCompletionClient
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.testing import CompletionGuard
@@ -493,6 +493,44 @@ async def test_concurrent_requests_still_share_one_fetch(monkeypatch: pytest.Mon
     completions = await asyncio.gather(_request(judge), _request(judge), _request(analysis))
     assert server.fetches == 1, "three requests over one catalogue, one fetch"
     assert all(completion.cost_usd is None for completion in completions)
+
+
+# --- what a refresh found -----------------------------------------------------------------------------------------
+
+
+async def test_a_refresh_whose_first_read_fails_says_so_and_the_model_keeps_it() -> None:
+    haiku = _replying_haiku(CatalogueServer((503, {"error": "down"})).catalogue())
+    assert haiku.last_price_refresh is None, "nothing refreshed yet"
+
+    found = await haiku.refresh_prices()
+    assert found == PriceRefresh(refreshed=False, fetched_at=None, failure=found.failure)
+    assert found.failure is not None and "HTTPStatusError" in found.failure and "503" in found.failure
+    assert haiku.last_price_refresh == found
+
+
+async def test_a_refresh_that_succeeds_says_when_and_a_failed_one_after_it_keeps_that_time() -> None:
+    server = CatalogueServer((200, {"data": ROWS}), (503, {"error": "down"}))
+    haiku = _replying_haiku(server.catalogue(refresh_after=timedelta(0)))
+
+    fresh = await haiku.refresh_prices()
+    assert fresh.refreshed and fresh.fetched_at is not None and fresh.failure is None
+
+    stale = await haiku.refresh_prices()
+    assert not stale.refreshed and stale.fetched_at == fresh.fetched_at, "the rows read before are kept"
+    assert stale.failure is not None and "could not be refreshed" in stale.failure
+    assert haiku.last_price_refresh == stale
+
+
+async def test_clients_refreshes_its_one_catalogue_once_for_every_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    server = CatalogueServer((200, {"data": ROWS}))
+    clients = Clients(default="vendor/judge", catalogue=server.catalogue())
+
+    found = await clients.refresh_prices()
+    assert server.fetches == 1 and found.refreshed and found.failure is None
+    assert await clients("judge", None).refresh_prices() == PriceRefresh(  # type: ignore[attr-defined]
+        refreshed=False, fetched_at=found.fetched_at, failure=None
+    ), "a role's lease reads the same rows, young enough to keep"
 
 
 # --- the client a model opens for itself -------------------------------------------------------------------------

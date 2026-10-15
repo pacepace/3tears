@@ -32,7 +32,7 @@ from threetears.evals.negotiation import (
     facts_from_router_catalogue,
     negotiate,
 )
-from threetears.evals.providers.catalogue import Catalogue
+from threetears.evals.providers.catalogue import Catalogue, PriceRefresh
 from threetears.evals.providers.failures import Provider, ProviderError, error_from_response
 from threetears.evals.providers.wire import (
     BASE_URLS,
@@ -134,13 +134,16 @@ class Completion:
     pricing_stale_since: datetime | None
 
 
+#: What :meth:`Model.refresh_prices` answers while replaying: no catalogue is read, and none needs to be.
+_NOTHING_READ: Final = PriceRefresh(refreshed=False, fetched_at=None, failure=None)
+
+
 @dataclass(frozen=True, slots=True)
 class _ReadForCall:
-    """What a model's :meth:`Model.refresh_prices` read for the call it precedes: whose read it was, and why the
-    catalogue is unread, or ``None`` when it was read."""
+    """What a model's :meth:`Model.refresh_prices` read for the call it precedes, and whose read it was."""
 
     live: _Live
-    unread: str | None
+    read: PriceRefresh
 
 
 #: The catalogue read the last ``refresh_prices`` in this task made, which the model's next call in the task takes as
@@ -240,6 +243,8 @@ class _Live:
         self._opened: httpx.AsyncClient | None = None
         self._logged: set[tuple[str, ...]] = set()
         self._unbounded: set[str] = set()
+        #: What the last :meth:`refresh_prices` found, or ``None`` before the first.
+        self.last_refresh: PriceRefresh | None = None
 
     def _client(self) -> httpx.AsyncClient:
         if self._http is not None:
@@ -248,30 +253,14 @@ class _Live:
             self._opened = httpx.AsyncClient(timeout=self._timeout, headers=self._headers, transport=self._transport)
         return self._opened
 
-    async def _read_catalogue(self) -> str | None:
-        """Read the catalogue, or refresh it once its rows expired: why it is unread, or ``None`` once read.
-
-        A first read that fails is logged and returned as the reason calls go unpriced, and tried by the next read. A
-        refresh that fails keeps the rows, marked stale, without raising (:meth:`Catalogue.load`).
-        """
-        try:
-            await self._catalogue.load()
-        except (httpx.HTTPError, ValueError) as failed:
-            unread = f"the price catalogue could not be read ({type(failed).__name__}: {failed})"
-            log.warning(
-                "eval.providers catalogue unread provider=%s model=%s: %s", self.provider, self.model_name, unread
-            )
-            return unread
-        return None
-
-    async def _read_for_call(self) -> str | None:
+    async def _read_for_call(self) -> PriceRefresh:
         """The catalogue read this call makes: the one ``refresh_prices`` made for it in this task, taken once, or a
-        read of its own. Why the catalogue is unread, or ``None``."""
-        read = _READ_FOR_CALL.get()
-        if read is not None and read.live is self:
+        read of its own (:meth:`Catalogue.read`)."""
+        made = _READ_FOR_CALL.get()
+        if made is not None and made.live is self:
             _READ_FOR_CALL.set(None)
-            return read.unread
-        return await self._read_catalogue()
+            return made.read
+        return await self._catalogue.read()
 
     def _catalogue_id(self) -> str | None:
         """The catalogue's id for this model: its own on OpenRouter, the matching row's elsewhere."""
@@ -322,7 +311,7 @@ class _Live:
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
     ) -> Completion:  # Any: a JSON directive
         directive = directive_of(response_format)
-        unread = await self._read_for_call()
+        read = await self._read_for_call()
         declared = self._declared()
         asked = replace(self._asked, strict_output=directive.asks_strict(self.provider))
         refused: list[tuple[dict[str, Any], ProviderError]] = []  # Any: a JSON body
@@ -360,7 +349,7 @@ class _Live:
         self._log_moves(negotiated.notes)
         status, body = negotiated.reply
         reply = read_reply(self.provider, self.model_name, status, body)
-        cost, source, unpriced, stale_since = self._price(reply, unread)
+        cost, source, unpriced, stale_since = self._price(reply, read.failure)
         if reply.stop_reason == "truncated":
             log.warning(
                 "eval.providers reply read as truncated provider=%s model=%s provider_stop_reason=%s",
@@ -414,8 +403,11 @@ class _Live:
         source = f"{PriceSource.OPENROUTER_CATALOGUE}:{matched}{marker}"
         return float(dollars), source, None, self._catalogue.stale_since
 
-    async def refresh_prices(self) -> None:
-        _READ_FOR_CALL.set(_ReadForCall(self, await self._read_catalogue()))
+    async def refresh_prices(self) -> PriceRefresh:
+        read = await self._catalogue.read()
+        self.last_refresh = read
+        _READ_FOR_CALL.set(_ReadForCall(self, read))
+        return read
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         matched = self._catalogue_id()
@@ -587,6 +579,8 @@ class Model:
         rerecording = os.environ.get("RECORD") == "1"
         replaying = self.recording is not None and self.recording.exists() and not rerecording
         self._client: _Live | RecordedCompletions
+        self._live: _Live | None = None
+        self._last_price_refresh: PriceRefresh | None = None
         if replaying:
             from threetears.evals.testing import RecordedCompletions, RecordingRefused
 
@@ -618,6 +612,7 @@ class Model:
             timeout=timeout,
             headers=headers,
         )
+        self._live = live
         if self.recording is None:
             self._client = live
             return
@@ -764,7 +759,12 @@ class Model:
         """
         return self._client.price_ceiling(system=system, user=user, response_format=response_format)
 
-    async def refresh_prices(self) -> None:
+    @property
+    def last_price_refresh(self) -> PriceRefresh | None:
+        """What the last :meth:`refresh_prices` found, or ``None`` before the first; a call's own read leaves it."""
+        return self._last_price_refresh
+
+    async def refresh_prices(self) -> PriceRefresh:
         """Read the catalogue, or refresh rows past ``refresh_after``, as a live call does before it is sent.
 
         What the engine awaits before it prices a call (:func:`~threetears.evals.kernel.capped_completion.refresh_prices`),
@@ -774,8 +774,17 @@ class Model:
         again by the call it was made for. Never raises: a first read that fails leaves :meth:`price_ceiling` ``None``
         and the call unpriced, and a refresh that fails keeps the rows, stale, as a live call does; either is logged.
         Free while replaying.
+
+        Returns:
+            What the read found (:class:`~threetears.evals.providers.PriceRefresh`), also kept as
+            :attr:`last_price_refresh`: whether it fetched the rows anew, when the rows held were fetched, and why the
+            prices are not current. While replaying, nothing read and no failure.
         """
-        await self._client.refresh_prices()
+        await self._client.refresh_prices()  # recording, the recorder forwards it to the live client
+        read = _NOTHING_READ if self._live is None else self._live.last_refresh
+        assert read is not None, "a live client's refresh_prices records what it read"
+        self._last_price_refresh = read
+        return read
 
     async def aclose(self) -> None:
         """Close the HTTP client the model opened, and the one handed in when ``own_http=True``; either only once."""
@@ -819,8 +828,8 @@ class _Lease:
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         return self._model.price_ceiling(system=system, user=user, response_format=response_format)
 
-    async def refresh_prices(self) -> None:
-        await self._model.refresh_prices()
+    async def refresh_prices(self) -> PriceRefresh:
+        return await self._model.refresh_prices()
 
     async def aclose(self) -> None:
         """Release nothing: the factory closes its models in :meth:`Clients.aclose`."""
@@ -926,6 +935,15 @@ class Clients:
             self._models[key] = built
         return _Lease(built)
 
+    async def refresh_prices(self) -> PriceRefresh:
+        """Read the one catalogue every model shares, once, or refresh rows past ``refresh_after``: one outcome for
+        every role, since each prices from the same rows. Never raises; a first read that fails is logged.
+
+        Returns:
+            What the read found (:class:`~threetears.evals.providers.PriceRefresh`).
+        """
+        return await self.catalogue.read()
+
     async def load_prices(self) -> dict[str, str]:
         """Read the catalogue, so every model's price ceiling can answer: the boot step.
 
@@ -938,12 +956,9 @@ class Clients:
             for template in (self._default, *self._roles.values())
             if template is not None
         }
-        try:
-            await self.catalogue.load()
-        except (httpx.HTTPError, ValueError) as failed:
-            why = f"the price catalogue could not be read ({type(failed).__name__}: {failed})"
-            log.warning("eval.providers catalogue unread: %s", why)
-            return dict.fromkeys(sorted(named), why)
+        read = await self.catalogue.read()
+        if not self.catalogue.loaded:
+            return dict.fromkeys(sorted(named), read.failure or "the price catalogue has not been read")
         unpriced: dict[str, str] = {}
         for model_id, template in sorted(named.items()):
             provider = template.provider if isinstance(template, Model) else ("openrouter" if "/" in model_id else None)
