@@ -138,19 +138,6 @@ class Completion:
 _NOTHING_READ: Final = PriceRefresh(refreshed=False, fetched_at=None, failure=None)
 
 
-@dataclass(frozen=True, slots=True)
-class _ReadForCall:
-    """What a model's :meth:`Model.refresh_prices` read for the call it precedes, and whose read it was."""
-
-    live: _Live
-    read: PriceRefresh
-
-
-#: The catalogue read the last ``refresh_prices`` in this task made, which the model's next call in the task takes as
-#: its own rather than reading again: one request, one catalogue fetch, even when that fetch failed.
-_READ_FOR_CALL: ContextVar[_ReadForCall | None] = ContextVar("threetears_evals_read_for_call", default=None)
-
-
 def _provider_of(model_id: str, provider: Provider | None, base_url: str | None) -> Provider:
     """The provider a model id goes to: as named; else OpenRouter for a ``vendor/model`` id, an OpenAI-compatible
     endpoint for a ``base_url``; a bare id with neither is refused, never guessed."""
@@ -245,6 +232,12 @@ class _Live:
         self._unbounded: set[str] = set()
         #: What the last :meth:`refresh_prices` found, or ``None`` before the first.
         self.last_refresh: PriceRefresh | None = None
+        #: The catalogue read this model's last ``refresh_prices`` in this task made, which its next call in the task
+        #: takes as its own rather than reading again: one request, one catalogue fetch, even when that fetch failed.
+        #: The model's own, so no other model, and no other host, ever takes it.
+        self._made_read: ContextVar[PriceRefresh | None] = ContextVar(
+            f"threetears_evals_read_for_call_{id(self):x}", default=None
+        )
 
     def _client(self) -> httpx.AsyncClient:
         if self._http is not None:
@@ -256,10 +249,10 @@ class _Live:
     async def _read_for_call(self) -> PriceRefresh:
         """The catalogue read this call makes: the one ``refresh_prices`` made for it in this task, taken once, or a
         read of its own (:meth:`Catalogue.read`)."""
-        made = _READ_FOR_CALL.get()
-        if made is not None and made.live is self:
-            _READ_FOR_CALL.set(None)
-            return made.read
+        made = self._made_read.get()
+        if made is not None:
+            self._made_read.set(None)
+            return made
         return await self._catalogue.read()
 
     def _catalogue_id(self) -> str | None:
@@ -406,7 +399,7 @@ class _Live:
     async def refresh_prices(self) -> PriceRefresh:
         read = await self._catalogue.read()
         self.last_refresh = read
-        _READ_FOR_CALL.set(_ReadForCall(self, read))
+        self._made_read.set(read)
         return read
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
