@@ -208,9 +208,14 @@ async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_other
     assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: queue-\d(, queue-\d)*", verdict.text), verdict.text
     (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
     assert sorted(row["case"] for row in cases.values()) == [f"queue-{index}" for index in range(4)]
+    # Only a failed or lost trial has a record, so its summary is read off the first record the page lays out; a
+    # passed trial names its case in the closed table instead.
     trials = [block for block in report.blocks if isinstance(block, TrialBlock)]
     assert trials and all(re.fullmatch(r"queue-\d", trial.case_label) for trial in trials)
-    assert "T1 · queue-0 · production · " in report_markdown(report)
+    first = trials[0]
+    assert f"{first.trial_id} · {first.case_label} · production · {first.state}" in report_markdown(report)
+    (passed,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "passed_trials"]
+    assert all(re.fullmatch(r"queue-\d", str(row["case"])) for row in passed.values())
     # The row anchors by the name; a numbered case keeps anchoring by its number.
     assert '<tr id="case-queue-0">' in report_html(report) and 'id="case-1"' not in report_html(report)
     comparison = await Eval(CASES, {"a": answering(4, 0.001), "b": answering(1, 0.001)}, ["label"], k=2).run(
