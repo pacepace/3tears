@@ -129,4 +129,5 @@ async def test_an_arm_under_the_case_floor_is_not_charted_and_the_caveat_says_so
     page = report_html(comparison.report)
     assert page.count("<svg") == 1
     # Under the floor on every arm, the one caveat under the scoreboard says so, and no "not charted" line repeats it.
-    assert page.count(f"(needs {MIN_CASES})") == 1 and "Not charted" not in page
+    assert page.count(f"Under {MIN_CASES} independent cases a rate is shown as a count") == 1
+    assert "Not charted" not in page

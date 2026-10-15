@@ -486,9 +486,12 @@ class TestAnAnalysisReportNamesArmsByTheRule:
         (facts,) = [
             block for block in report.blocks if isinstance(block, TableBlock) and block.name == "recommendation_facts"
         ]
-        assert {"item": "Arms", "value": "; ".join(names)} in facts.values()
+        # The facts are one row, a column per fact, so each header links its term.
+        assert [column.header for column in facts.columns] == ["Confidence", "Arms"]
+        (row,) = facts.values()
+        assert row["arms"] == "; ".join(names)
         assert "**Deferred:** Keep the current assistant prompt." in report_markdown(report).splitlines()
-        assert f"| Arms | {'; '.join(names)} |" in report_markdown(report)
+        assert f"| high | {'; '.join(names)} |" in report_markdown(report)
         # A cell of words long enough is classed prose, so the page wraps it at a measure; the words are unchanged.
         cell = html.escape("; ".join(names))
         page = report_html(report)

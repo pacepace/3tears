@@ -104,6 +104,9 @@ def _block(block: ReportBlock) -> list[str]:
     if isinstance(block, TableBlock):
         if block.details:
             return [f"<details><summary>{block.title}</summary>", "", *_table(block), "", "</details>"]
+        # A table in a fold of its own name is titled once, by the fold's summary.
+        if block.fold == block.title:
+            return _table(block)
         return [f"**{block.title}**", "", *_table(block)]
     if isinstance(block, ChartBlock):
         headers, rows = block.values_table()

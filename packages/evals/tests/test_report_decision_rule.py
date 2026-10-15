@@ -110,8 +110,14 @@ def test_equal_rates_on_too_few_cases_are_unsettled_not_switch() -> None:
     verdict = evaluate_rule(rule, equal)
     assert [clause.outcome for clause in verdict.clauses] == ["unsettled", "unsettled"]
     assert verdict.outcome == "unsettled"
-    assert verdict.clauses[0].reason == "4 cases cannot show the drop stays within 10 points (a rate needs 5)"
-    assert verdict.clauses[1].reason == "4 cases cannot show the cost is lower (a difference needs 5)"
+    # What is withheld and why, in the reader's terms: never a bare "needs 5".
+    assert verdict.clauses[0].reason == (
+        "4 cases cannot show the drop stays within 10 points, which takes an interval estimated only from 5 "
+        "independent cases"
+    )
+    assert verdict.clauses[1].reason == (
+        "4 cases cannot show the cost is lower, which takes an interval estimated only from 5 independent cases"
+    )
 
 
 def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
@@ -286,7 +292,8 @@ async def test_four_cases_are_unsettled_on_the_case_floor() -> None:
     bundle, control, candidate = await _ruled([3] * 4, [3] * 4)
     assert _rate_clause(bundle, control, candidate) == (
         "unsettled",
-        "4 cases cannot show the drop stays within 10 points (a rate needs 5)",
+        "4 cases cannot show the drop stays within 10 points, which takes an interval estimated only from 5 "
+        "independent cases",
     )
 
 

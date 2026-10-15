@@ -287,8 +287,10 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
         arm: Names an arm by its variant key.
 
     Returns:
-        The lines: today, that an arm is under the case floor a rate is estimated on. Where a declared rule settled
-        keep on every candidate, the line says the rule is read on the counts and only the size is not estimated.
+        The lines: today, that an arm is under the case floor. A "too few" line says what is withheld and why, in
+        the reader's terms, never a bare count: under the floor no interval is estimated, so a rate is shown as a
+        count and no gap between the arms is sized. Where a declared rule settled keep on every candidate, the line
+        says keep follows from the counts and only how much worse the candidate is goes unestimated.
     """
     small = [board for board in bundle.scoreboard if board.usable_cases < MIN_CASES]
     if not small:
@@ -300,9 +302,16 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             cases = f"{small[0].usable_cases} cases per arm"
         else:
             cases = "Usable cases " + ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
-        return [f"{cases}: enough to apply the rule, too few to size the difference (needs {MIN_CASES})."]
+        candidate = "the candidate" if len(verdicts) == 1 else "each candidate"
+        return [
+            f"{cases}: keep follows from the counts above. How much worse {candidate} is goes unestimated: a gap is "
+            f"estimated only from {MIN_CASES} independent cases."
+        ]
     named = ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
-    return [f"Too few usable cases to estimate a rate: {named} (needs {MIN_CASES})."]
+    return [
+        f"Usable cases: {named}. Under {MIN_CASES} independent cases a rate is shown as a count, and how far apart "
+        "the arms are is not estimated."
+    ]
 
 
 def _rule_verdicts(bundle: AnalysisContextBundle) -> list[RuleVerdict]:

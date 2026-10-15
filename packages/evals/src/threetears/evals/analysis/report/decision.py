@@ -189,12 +189,29 @@ def parse_decision_rule(text: str) -> DecisionRule | None:
     Returns:
         The rule; a clause this reader does not know is kept as ``unread``, never dropped.
     """
+    return split_decision_rule(text)[1]
+
+
+def split_decision_rule(text: str) -> tuple[str, DecisionRule | None]:
+    """A declared question split where its decision rule begins: the question's own words, and the rule.
+
+    The page lays each part out where it is read — the question on the first screen, the rule at the head of the
+    Decision section — so the split is the parser's own boundary (the ``Decision rule:`` statement), never a
+    boundary of the page's choosing.
+
+    Args:
+        text: The declared question.
+
+    Returns:
+        ``(asked, rule)``: the words before the rule statement, and the rule as :func:`parse_decision_rule` reads
+        it. The whole text and None where no rule parses.
+    """
     if (stated := _RULE.search(text)) is None:
-        return None
+        return text, None
     body = stated["body"].strip()
     conditions = _ONLY_IF.search(body)
     if conditions is None:
-        return None
+        return text, None
     parts = re.split(r"\s+AND\s+", conditions["conditions"].strip())
     if len(parts) == 1:
         parts = re.split(r"\s+and\s+(?=the |no |every )", parts[0])
@@ -206,7 +223,7 @@ def parse_decision_rule(text: str) -> DecisionRule | None:
             clauses.append(RuleClause(text=part, kind="cost_lower"))
         else:
             clauses.append(RuleClause(text=part, kind="unread"))
-    return DecisionRule(text=body, clauses=tuple(clauses))
+    return text[: stated.start()].strip(), DecisionRule(text=body, clauses=tuple(clauses))
 
 
 def evaluate_rule(rule: DecisionRule, readings: RuleReadings) -> RuleVerdict:
@@ -255,7 +272,8 @@ def _rate_clause(clause: RuleClause, margin: float, readings: RuleReadings) -> C
         return ClauseVerdict(
             clause,
             "unsettled",
-            f"{fewest} cases cannot show the drop stays within {points} points (a rate needs {_FLOOR})",
+            f"{fewest} cases cannot show the drop stays within {points} points, which takes an interval estimated "
+            f"only from {_FLOOR} independent cases",
         )
     for rate in readings.rates:
         worst = rate.worst_drop()
@@ -288,7 +306,10 @@ def _cost_clause(clause: RuleClause, readings: RuleReadings) -> ClauseVerdict:
         return ClauseVerdict(clause, "unsettled", "the usable cases were not counted on both arms")
     if fewest < _FLOOR:
         return ClauseVerdict(
-            clause, "unsettled", f"{fewest} cases cannot show the cost is lower (a difference needs {_FLOOR})"
+            clause,
+            "unsettled",
+            f"{fewest} cases cannot show the cost is lower, which takes an interval estimated only from {_FLOOR} "
+            "independent cases",
         )
     if readings.cost_interval is None or readings.cost_interval[1] >= 0:
         return ClauseVerdict(clause, "unsettled", "the cost difference did not separate")
@@ -461,4 +482,5 @@ __all__ = [
     "evaluate_rule",
     "parse_decision_rule",
     "rule_readings",
+    "split_decision_rule",
 ]

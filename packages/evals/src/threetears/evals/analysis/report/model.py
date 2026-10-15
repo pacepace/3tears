@@ -1,8 +1,8 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the arms line, the question declared before the run quoted whole, the verdict line, the
-scoreboard and the one caveat under it that changes how the verdict is read, in normal weight; every other
+campaign's name —, the arms line, the question declared before the run quoted, the verdict line, the
+scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the decision rule clause by clause where one is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
 cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
@@ -90,9 +90,10 @@ TextRole = Literal[
 ]
 
 #: Who a disclosure speaks for. ``arms``: the first screen's second line, each arm named in full once, the control
-#: marked, and the design (``30 cases × 3 repeats``); in the contrasts, an arm's label that its own row contradicts.
-#: ``caveat``: a line under the scoreboard qualifying the result, in normal weight. ``basis``: the question declared
-#: before the run, quoted whole under the arms line. ``verdict``: the verdict line. ``design``, ``charts`` and
+#: marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the scoreboard that changes how the
+#: verdict is read, in normal weight: the case floor, an arm's label that its own row contradicts. ``basis``: the
+#: question declared before the run, quoted under the arms line, and the decision rule it states, quoted at the head
+#: of the Decision section. ``verdict``: the verdict line. ``design``, ``charts`` and
 #: ``cost``: how the run was laid out, what was not charted and where a cost is a floor, in the methods. ``memo``: who wrote the memo,
 #: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
@@ -598,7 +599,9 @@ class DisclosureBlock(_Block):
     term: str | None = Field(
         default=None, description="The glossary term the line links to, where it uses one; None for none."
     )
-    tone: _VerdictTone | None = Field(
+    # The tone's values are spelled here and on the method, not through the private alias: a type a public signature
+    # hands a host must be one it can name, and a Literal of strings needs no name.
+    tone: Literal["decided", "open", "failed", "summary"] | None = Field(
         default=None,
         description=(
             "On the verdict line, what kind of verdict it is — decided, open, failed (the test setup) or summary (one "
@@ -607,7 +610,7 @@ class DisclosureBlock(_Block):
     )
 
     @staticmethod
-    def verdict_tone(rule: str) -> _VerdictTone:
+    def verdict_tone(rule: str) -> Literal["decided", "open", "failed", "summary"]:
         """The tone a verdict line is set in, by the rule that wrote it.
 
         Args:
