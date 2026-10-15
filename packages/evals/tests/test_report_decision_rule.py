@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from threetears.evals import Answer, Eval, Result
-from threetears.evals.analysis import AnalysisContextBundle, Report, assemble_context_bundle, get_campaign
+from threetears.evals.analysis import (
+    AnalysisContextBundle,
+    Report,
+    assemble_context_bundle,
+    build_code_only_report,
+    get_campaign,
+)
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.decision import (
     RateReading,
@@ -198,13 +204,17 @@ def _passing(passes: Sequence[int], cost: float) -> Callable[[Mapping[str, Any]]
     return run
 
 
+#: G2's question, as the one live question a ruled campaign asks unless told otherwise.
+_G2_ASKED = Question(id="q-g2", text=G2_QUESTION, asked_at="2000-01-01T00:00:00+00:00")
+
+
 async def _ruled(
-    control_passes: Sequence[int], candidate_passes: Sequence[int]
+    control_passes: Sequence[int], candidate_passes: Sequence[int], questions: Sequence[Question] = (_G2_ASKED,)
 ) -> tuple[AnalysisContextBundle, str, str]:
     """Two arms over ``len(control_passes)`` cases × 3 repeats, each passing its cases' counts, with G2's rule asked first.
 
-    The question is on the campaign before its bundle is assembled, so the family of comparisons is the one the rule
-    reads: the label check's pass rate (compared as ``accuracy``) and the overall pass rate.
+    The questions are on the campaign before its bundle is assembled, so each family of comparisons is one a rule can
+    read: G2's is the label check's pass rate (compared as ``accuracy``) and the overall pass rate.
     """
     cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(len(control_passes))]
     # Each arm at one cost per reply: a gap with no spread on a measure with no declared range, which no test reads, so
@@ -214,9 +224,8 @@ async def _ruled(
     storage = comparison.host.storage
     campaign = off_loop(get_campaign, storage, comparison.campaign_id, comparison.scope_id)
     assert campaign.declared_design is not None
-    asked = Question(id="q-g2", text=G2_QUESTION, asked_at="2000-01-01T00:00:00+00:00")
     campaign = campaign.model_copy(
-        update={"declared_design": campaign.declared_design.model_copy(update={"questions": [asked]})}
+        update={"declared_design": campaign.declared_design.model_copy(update={"questions": list(questions)})}
     )
     bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=comparison.host.profile)
     assert bundle.design.control_arm is not None
@@ -226,11 +235,13 @@ async def _ruled(
     return bundle, control, candidate
 
 
-def _rate_clause(bundle: AnalysisContextBundle, control: str, candidate: str) -> tuple[str, str]:
-    """The rate clause of G2's rule on the bundle: its outcome and its reason."""
+def _rate_clause(
+    bundle: AnalysisContextBundle, control: str, candidate: str, question_id: str | None = "q-g2"
+) -> tuple[str, str]:
+    """The rate clause of G2's rule on the bundle, read in ``question_id``'s family: its outcome and its reason."""
     rule = parse_decision_rule(G2_QUESTION)
     assert rule is not None
-    clause = evaluate_rule(rule, rule_readings(bundle, control, candidate)).clauses[0]
+    clause = evaluate_rule(rule, rule_readings(bundle, control, candidate, question_id=question_id)).clauses[0]
     assert clause.clause.kind == "rate_drop"
     return clause.outcome, clause.reason
 
@@ -255,7 +266,7 @@ async def test_the_overall_pass_rate_joins_the_family_of_the_question_whose_rule
 async def test_seven_cases_with_the_bounded_interval_inside_the_margin_switch_on_the_rate_clause() -> None:
     # Only a sweep settles a 10-point clause on seven cases: the candidate passes every trial, the control none.
     bundle, control, candidate = await _ruled([0] * 7, [3] * 7)
-    readings = rule_readings(bundle, control, candidate)
+    readings = rule_readings(bundle, control, candidate, question_id="q-g2")
     assert [rate.name for rate in readings.rates] == ["the pass rate", "Label matched"]
     assert all(rate.interval is not None and rate.interval[0] > -0.10 for rate in readings.rates)
     assert _rate_clause(bundle, control, candidate) == ("switch", "the interval keeps every pass rate within 10 points")
@@ -285,7 +296,12 @@ def test_a_bundle_stored_before_the_bounded_interval_never_settles_switch() -> N
     (candidate,) = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
     # Twelve cases a side and a check contrast with a t interval: what a switch needs is still missing.
     assert min(board.usable_cases for board in bundle.scoreboard) >= 5
-    assert _rate_clause(bundle, control, candidate) == ("unsettled", "this bundle predates the interval a switch needs")
+    # It asked no question: its one family is campaign-wide.
+    assert [family.question_id for family in bundle.multiple_comparisons.families] == [None]
+    assert _rate_clause(bundle, control, candidate, question_id=None) == (
+        "unsettled",
+        "this bundle predates the interval a switch needs",
+    )
 
 
 async def test_a_check_clause_no_longer_switches_on_a_t_interval_the_bounded_one_does_not_back() -> None:
@@ -306,7 +322,7 @@ async def test_a_check_clause_no_longer_switches_on_a_t_interval_the_bounded_one
     assert check.bounded_interval[0] < -0.10, "the bounded interval does not"
     rule = parse_decision_rule(G2_QUESTION)
     assert rule is not None
-    readings = rule_readings(bundle, control, candidate)
+    readings = rule_readings(bundle, control, candidate, question_id="q-g2")
     (label,) = [rate for rate in readings.rates if rate.name == "Label matched"]
     assert label.interval == check.bounded_interval
     alone = replace(readings, rates=(label,))
@@ -361,6 +377,44 @@ async def test_a_goal_check_carried_as_a_mean_is_read_as_its_count_with_its_boun
         }
     )
     (contrast,) = [c for family in families for c in family.comparisons if c.name == check]
-    (rate,) = [rate for rate in rule_readings(as_goal_check, control, candidate).rates if rate.measure == check]
+    (rate,) = [
+        rate
+        for rate in rule_readings(as_goal_check, control, candidate, question_id="q-g2").rates
+        if rate.measure == check
+    ]
     assert (rate.control_passed, rate.control_n, rate.candidate_passed, rate.candidate_n) == (20, 21, 21, 21)
     assert rate.interval == contrast.bounded_interval
+
+
+async def test_a_rule_reads_its_own_questions_family_and_never_another_at_another_level() -> None:
+    """Two questions, two families of different sizes, so each carries the label check's interval at its own level.
+
+    The first asks about quality with no rule: its family is the label check alone, at 95%. G2's, which states the
+    rule, adds the overall pass rate, so its intervals are at 97.5%. A rule read the first matching contrast across
+    families until ``.30``, which here was the other question's.
+    """
+    quality = Question(
+        id="q-quality", text="Is the candidate better?", merit_axes=["quality"], asked_at=_G2_ASKED.asked_at
+    )
+    bundle, control, candidate = await _ruled([3, 3, 3, 3, 3, 3, 2], [3] * 7, questions=(quality, _G2_ASKED))
+    families = {family.question_id: family for family in bundle.multiple_comparisons.families}
+    assert list(families) == ["q-quality", "q-g2"]
+    assert (families["q-quality"].family_size, families["q-g2"].family_size) == (1, 2)
+    label = {
+        question: next(c.bounded_interval for c in family.comparisons if c.name == "accuracy")
+        for question, family in families.items()
+    }
+    assert label["q-quality"] != label["q-g2"]
+    readings = rule_readings(bundle, control, candidate, question_id="q-g2")
+    assert [rate.name for rate in readings.rates] == ["the pass rate", "Label matched"]
+    assert readings.rates[1].interval == label["q-g2"]
+    # The question with no rule has no pass-rate contrast: read there, the overall pass rate has no interval.
+    elsewhere = rule_readings(bundle, control, candidate, question_id="q-quality")
+    assert elsewhere.rates[0].interval is None and elsewhere.rates[1].interval == label["q-quality"]
+    # The page reads the rule in the question that states it.
+    report = build_code_only_report(bundle, assembled_at="2026-10-14T12:00:00+00:00", campaign_name="two questions")
+    (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "decision"]
+    (outcome,) = [
+        row["outcome"] for row in table.values() if row["outcome"] is not None and row["reading"] == "the pass rate"
+    ]
+    assert outcome == "unsettled: the interval a switch reads allows the pass rate to drop up to 49 points"

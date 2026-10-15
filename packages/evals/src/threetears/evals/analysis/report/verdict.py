@@ -315,11 +315,14 @@ def _rule_verdicts(bundle: AnalysisContextBundle) -> list[RuleVerdict]:
     control = _control_key(bundle)
     if not bundle.question_declared or control is None:
         return []
-    rules = [rule for question in _declared_questions(bundle) if (rule := parse_decision_rule(question.text))]
+    rules = [
+        (question.id, rule) for question in _declared_questions(bundle) if (rule := parse_decision_rule(question.text))
+    ]
     if not rules:
         return []
+    asked, rule = rules[0]
     return [
-        evaluate_rule(rules[0], rule_readings(bundle, control, board.variant_key))
+        evaluate_rule(rule, rule_readings(bundle, control, board.variant_key, question_id=asked))
         for board in bundle.scoreboard
         if board.variant_key != control
     ]

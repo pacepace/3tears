@@ -223,7 +223,7 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
     ruled = next(((question, parsed) for question in questions if (parsed := parse_decision_rule(question.text))), None)
     verdict = sentence = None
     if ruled is not None and control is not None and len(candidates) == 1:
-        verdict = evaluate_rule(ruled[1], rule_readings(bundle, control, candidates[0]))
+        verdict = evaluate_rule(ruled[1], rule_readings(bundle, control, candidates[0], question_id=ruled[0].id))
         namer = _namer(names)
         sentence = rule_sentence(verdict, control=namer(control), candidate=namer(candidates[0]), bundle=bundle)
     return MemoStyle(
@@ -660,14 +660,15 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     """
     control = _control_key(bundle)
     questions = _preregistered(bundle)
-    rule = next((parsed for question in questions if (parsed := parse_decision_rule(question.text))), None)
-    if rule is None or control is None:
+    ruled = next(((question, parsed) for question in questions if (parsed := parse_decision_rule(question.text))), None)
+    if ruled is None or control is None:
         return []
+    asked, rule = ruled
     rows: list[dict[str, CellValue]] = []
     for board in bundle.scoreboard:
         if board.variant_key == control:
             continue
-        readings = rule_readings(bundle, control, board.variant_key)
+        readings = rule_readings(bundle, control, board.variant_key, question_id=asked.id)
         verdict = evaluate_rule(rule, readings)
         for clause in verdict.clauses:
             shown: list[tuple[str, str | None, str | None]] = []

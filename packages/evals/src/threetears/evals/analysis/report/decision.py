@@ -300,14 +300,25 @@ _BOUNDED_SHAPE = 55
 
 
 def _contrast(
-    bundle: AnalysisContextBundle, reading: str, name: str, control: str, candidate: str, *, bounded: bool
+    bundle: AnalysisContextBundle,
+    reading: str,
+    name: str,
+    control: str,
+    candidate: str,
+    *,
+    bounded: bool,
+    question_id: str | None,
 ) -> FamilyComparison | None:
-    """The bundle's contrast of ``candidate`` against ``control`` on one reading with the interval asked for.
+    """The contrast of ``candidate`` against ``control`` on one reading, in ``question_id``'s family, with the interval
+    asked for.
 
-    ``bounded`` asks for the bounded interval a non-inferiority claim reads, else the family's interval. None when the
-    bundle tested none, or none carrying that interval.
+    ``bounded`` asks for the bounded interval a non-inferiority claim reads, else the family's interval. Only the
+    family of the question the rule was stated in is read: another family's interval is at another level. None when
+    that family tested none, or none carrying that interval.
     """
     for family in bundle.multiple_comparisons.families:
+        if family.question_id != question_id:
+            continue
         for comparison in family.comparisons:
             if (
                 comparison.reading == reading
@@ -353,7 +364,9 @@ def _bounded_better_way(comparison: FamilyComparison | None) -> tuple[float, flo
     return (low, high) if comparison.higher_is_better else (-high, -low)
 
 
-def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -> RuleReadings:
+def rule_readings(
+    bundle: AnalysisContextBundle, control: str, candidate: str, *, question_id: str | None
+) -> RuleReadings:
     """The figures a rule is read against for one candidate arm, from the bundle alone.
 
     The pass rates are every trial's, then each check's pass rate the arms' cells carry (a goal check's as its mean
@@ -366,6 +379,8 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
         bundle: The campaign's evidence.
         control: The control's variant key.
         candidate: The candidate's variant key.
+        question_id: The question the rule is stated in, whose family alone the intervals are read from; None for
+            the campaign-wide family.
 
     Returns:
         The readings.
@@ -384,7 +399,9 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
             theirs.usable,
             lost_control,
             lost_candidate,
-            interval=_bounded_better_way(_contrast(bundle, "trial", TRIAL_PASS_NAME, control, candidate, bounded=True)),
+            interval=_bounded_better_way(
+                _contrast(bundle, "trial", TRIAL_PASS_NAME, control, candidate, bounded=True, question_id=question_id)
+            ),
         )
     ]
     measures: dict[str, dict[str, tuple[int, int]]] = {}
@@ -407,12 +424,20 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
                     lost_control,
                     lost_candidate,
                     interval=_bounded_better_way(
-                        _contrast(bundle, "measure", _compared_as(name), control, candidate, bounded=True)
+                        _contrast(
+                            bundle,
+                            "measure",
+                            _compared_as(name),
+                            control,
+                            candidate,
+                            bounded=True,
+                            question_id=question_id,
+                        )
                     ),
                     measure=name,
                 )
             )
-    cost = _contrast(bundle, "measure", _REPLY_COST, control, candidate, bounded=False)
+    cost = _contrast(bundle, "measure", _REPLY_COST, control, candidate, bounded=False, question_id=question_id)
     return RuleReadings(
         rates=tuple(rates),
         control_cost=ours.reply_cost_usd,
