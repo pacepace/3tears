@@ -346,8 +346,13 @@ def _page(
             source="verdict",
             text=verdict.text,
             tone=DisclosureBlock.verdict_tone(verdict.rule),
-            # A verdict that offers leads links the word that says why they are not decisions.
-            term="exploratory" if verdict.text.startswith("Exploratory: ") else None,
+            # A verdict that offers leads links the word that says why they are not decisions: the exploratory rule's
+            # line, and the too-small rule's where no question was declared, which is when it leads "Exploratory:".
+            term=(
+                "exploratory"
+                if verdict.rule == "exploratory" or (verdict.rule == "too_small" and not bundle.question_declared)
+                else None
+            ),
         ),
         *_scoreboard_blocks(bundle, arm),
         *_decision_blocks(bundle, arm),

@@ -368,11 +368,12 @@ def _grid(block: TableBlock) -> str:
                 css = classes[column.key] or (' class="prose"' if len(cell.text) >= _PROSE_CELL else "")
             cells.append(f"<td{css}>{text}</td>")
         anchor = ""
-        # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
         if block.name == "cases" and "case" in row:
+            # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
             number = _CASE_NUMBER.fullmatch(row["case"].text)
             anchor = f' id="case-{number.group(1) if number else _slug(row["case"].text)}"'
         # A passed trial has no record of its own, so the link every table makes of its id lands on its row here.
+        # prose-canary: allow — a trial id (T4), which code numbered, not anything a model wrote
         elif block.name == "passed_trials" and "trial" in row and _TRIAL_ID.fullmatch(row["trial"].text):
             anchor = f' id="{row["trial"].text}"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
