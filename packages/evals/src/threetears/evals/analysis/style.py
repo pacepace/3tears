@@ -183,6 +183,21 @@ BANNED_PHRASES: tuple[str, ...] = (
     "no measurable",
 )
 
+#: Comparative words an arm's label may carry, each with what it claims against the control: ``cost`` read on cost per
+#: reply, ``speed`` on latency, and which way, ``lower`` (cheaper, faster) or ``higher``. Narrow on purpose: a label
+#: is a name, and only a word that plainly claims a direction is read against the arm's own row.
+LABEL_CLAIMS: tuple[tuple[str, Literal["cost", "speed"], Literal["lower", "higher"]], ...] = (
+    ("cheaper", "cost", "lower"),
+    ("cheap", "cost", "lower"),
+    ("lower-cost", "cost", "lower"),
+    ("costlier", "cost", "higher"),
+    ("pricier", "cost", "higher"),
+    ("more expensive", "cost", "higher"),
+    ("faster", "speed", "lower"),
+    ("quicker", "speed", "lower"),
+    ("slower", "speed", "higher"),
+)
+
 #: The most words a sentence may carry, and the most numerals before it should be a table.
 MAX_WORDS = 28
 MAX_NUMERALS = 3
@@ -319,6 +334,7 @@ __all__ = [
     "CASE_LABEL_CHARS",
     "GLOSSARY",
     "HUMANIZE_OVERRIDES",
+    "LABEL_CLAIMS",
     "MAX_HEADER_WORDS",
     "MAX_NUMERALS",
     "MAX_WORDS",

@@ -60,6 +60,8 @@ v1 (control) vs v2 · 14 Oct 2026
   where it splits a cause the scoreboard lumps together), then the caveats in normal weight (the case floor: five
   usable cases before a rate is estimated), never bold, never first. Where a declared rule settled keep under the
   floor, the caveat says the rule was read on the counts and only the size of the difference is not estimated.
+  Where an arm's label claims a cost or speed its own row contradicts, one line says so (`The label 'cheaper
+  candidate' says cheaper; it cost more per reply than production.`); latency only where it was read serially.
 
 The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too few,
 and no rate (a pass rate, pass^k) is estimated for an arm: a pass rate reads as a count, and pass^k states only the cases it rests on. A measure's mean is shown with its
@@ -75,8 +77,9 @@ template whose results are compared across arms, whatever its declared reading.
   (for cost, wholly below zero). A run that shows neither is unsettled ("the cost difference did not separate").
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
   readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
-  sit in a closed `Evidence` fold. An answer the settled rule replaced points at the Decision table. The memo's words are held to the page's
-  style (below).
+  sit in a closed `Evidence` fold. Where a declared rule settled every clause, its question has no answer line: the
+  verdict and the Decision table answer it; a clause left open is the one line (`Still open: whether …`). The memo's
+  words are held to the page's style (below).
 - **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size and
   the adjusted p folded; the guardrails; strata and per-label tables, folded.
 - **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`); one row per trial, its record folded
@@ -94,7 +97,9 @@ no `key=value`, no chain of dashes, no sentence over 28 words or with more than 
 header over three words, and the declared question only in the title. `humanize` is the one seam an identifier
 passes on its way to a reader. A memo's sentence breaking a rule code can fix is dropped or replaced (a title
 restating a measured number becomes the table's own row); one contradicting a settled decision rule becomes the
-verdict line's sentence, disclosed in Methods; what is left is counted there (`style: N violations`) and listed.
+verdict line's sentence, and one saying the evidence cannot confirm a difference a settled clause decided becomes
+code's counts on that reading, the size of the difference left to more cases; both are disclosed in Methods. What
+is left is counted there (`style: N violations`) and listed.
 
 ### The two charts
 
