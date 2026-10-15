@@ -460,7 +460,7 @@ def test_a_uniform_shift_on_a_measure_with_no_range_is_not_separated_and_says_wh
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
-    assert row["verdict"].startswith("not separated") and "declare value_range" in row["verdict"]
+    assert " not separated (" in row["verdict"] and "declare value_range" in row["verdict"]
 
 
 @pytest.mark.parametrize(("threshold", "expected"), [(0.05, "immaterial"), (0.01, "material"), (None, "material")])
@@ -488,7 +488,7 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
 
     # A margin on a share is stated in points, as the change it bounds is.
     assert (
-        row["verdict"].startswith("improved")
+        " better than " in row["verdict"]
         and "immaterial: the observed delta is inside the margin of ±5 pts on Field accuracy, which does not show"
         in row["verdict"]
     )
@@ -511,7 +511,7 @@ def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> No
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
-    assert row["verdict"].startswith("equivalent") and "(margin ±25 pts)" in row["verdict"]
+    assert " equivalent, within the measure's margin (margin ±25 pts)" in row["verdict"]
     assert "does not show" not in row["verdict"]
 
 

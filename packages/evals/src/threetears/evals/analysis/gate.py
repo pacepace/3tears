@@ -181,9 +181,12 @@ class GateResult:
 
 
 def _line(verdict: Verdict) -> str:
-    """One verdict as a gate prints it: what, whose, against what, and the report's words."""
-    against = f" vs {verdict.control}" if verdict.control is not None else ""
+    """One verdict as a gate prints it: what, whose, against what, and the report's words; a contrast whose words
+    name both arms (``v2 worse than v1``) is not told whose twice."""
     what = {"contrast": "", "bar": f"bar {verdict.threshold} on ", "guardrail": "guardrail "}[verdict.kind]
+    if verdict.kind == "contrast" and verdict.words.startswith(f"{verdict.arm} "):
+        return f"{what}{verdict.heading}: {verdict.words}"
+    against = f" vs {verdict.control}" if verdict.control is not None else ""
     return f"{what}{verdict.heading}, {verdict.arm}{against}: {verdict.words}"
 
 

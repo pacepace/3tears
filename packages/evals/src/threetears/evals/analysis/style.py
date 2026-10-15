@@ -254,9 +254,9 @@ _KEY_VALUE = re.compile(r"\b[a-z_][a-z0-9_]*=[^\s,;)}=]+")
 _FACT_LINE = re.compile(r"^[A-Z][a-z ]+: .* · [A-Z][a-z ]+: ")
 _CODE_SPAN = re.compile(r"`[^`]*`")
 _CASE_NUMBER = re.compile(r"\bcase \d+\b")
-#: A line quoting something whole, as the first screen quotes the declared question (``Asked before the run: "…"``):
-#: the quotation is the page's data, held to no prose rule.
-_QUOTED_LINE = re.compile(r'^[A-Z][a-z]+(?: [a-z]+)*: ".+"$')
+#: A line quoting something whole, alone (the first screen's declared question, ``"…"``) or after a lead
+#: (``Asked: "…"``): the quotation is the page's data, held to no prose rule.
+_QUOTED_LINE = re.compile(r'^(?:[A-Z][a-z]+(?: [a-z]+)*: )?".+"$')
 
 
 @dataclass(frozen=True)
@@ -339,7 +339,7 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
 
     Headings and table headers are held to the header rule; prose lines to every rule. Table body cells, fenced
     blocks, folded trial details, the methods' disclosures fold and a line quoting something whole (the declared
-    question under the arms line) are data and quoted text, not prose.
+    question under the title) are data and quoted text, not prose.
 
     Args:
         markdown: The page.

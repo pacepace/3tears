@@ -135,5 +135,5 @@ async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -
     cost = by_reading["Production cost ($/1,000 replies)"]
     # Two arms: the candidate's figure heads its own column, by its name.
     assert next(column.header for column in tables["comparisons"].columns if column.key == "arm") == "cheaper"
-    assert cost["verdict"] == "improved on the control"
+    assert cost["verdict"] == "cheaper better than dearer (lower is better)"
     assert isinstance(cost["change"], float) and cost["change"] < 0

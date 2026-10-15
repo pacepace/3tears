@@ -48,11 +48,11 @@ async def test_with_no_api_key_the_writer_repairs_the_canned_draft_from_the_reco
     # The code's verdict comes first, with its interval, for a reader to hold the analysis's conclusion against.
     # The accuracy contrast's rows are on the percent ruler: its delta and interval in points.
     verdict = re.search(
-        r"\nCode's verdict: candidate vs baseline on Accuracy: delta \+33\.33, interval \[-[\d.]+, [\d.]+\] pts at 95%, "
+        r"\nCode's verdict on Accuracy: delta \+33\.33, interval \[-[\d.]+, [\d.]+\] pts at 95%, "
         r"Holm-adjusted p [\d.e-]+: (.+)\n",
         out,
     )
-    assert verdict is not None and verdict.group(1) == "not separated from the control"
+    assert verdict is not None and verdict.group(1) == "candidate and baseline not separated"
     assert out.index("Code's verdict") < out.index("\n- ")  # before the first finding the writer wrote
     # This run's bundle is frozen and reloads to the fingerprint printed; the writer read the recorded one.
     saved = tmp_path / "bundle.json"

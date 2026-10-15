@@ -111,29 +111,60 @@ def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
     return EVIDENCE_TIER_WORDS[tier]
 
 
-#: What a contrast's test said against the control, as a reader says it.
+#: What a contrast's test said against the control, as a reader says it: each arm by its label and the direction by
+#: name, never "the control", which a reader took for a place ("improved on the control" read as "in the control").
+#: Filled by :func:`comparison_words`.
 COMPARISON_VERDICT_WORDS = worded(
     {
-        "improved": "improved on the control",
-        "regressed": "regressed from the control",
-        "equivalent": "equivalent to the control, within the measure's margin",
-        "not_separated": "not separated from the control",
+        "improved": "{arm} better than {control}{better_end}",
+        "regressed": "{arm} worse than {control}{better_end}",
+        "equivalent": "{arm} and {control} equivalent, within the measure's margin",
+        "not_separated": "{arm} and {control} not separated",
         "untested": "untested",
     },
     ComparisonVerdict,
     "a comparison verdict",
 )
 
-#: What a guardrail came to for an arm against the control, as a reader says it.
+#: A measure's better end, in brackets, where it is not the higher one a reader assumes.
+LOWER_IS_BETTER = " (lower is better)"
+
+
+def comparison_words(verdict: ComparisonVerdict, arm: str, control: str, *, higher_is_better: bool = True) -> str:
+    """A contrast's verdict in words, each arm by its label: ``v2 better than v1``, ``v2 worse than v1 (lower is
+    better)``, ``v2 and v1 not separated``.
+
+    Args:
+        verdict: What the contrast's test came to.
+        arm: The arm read against the control, as the page names it.
+        control: The control, as the page names it.
+        higher_is_better: The reading's direction; a lower-is-better reading's better end is said in brackets.
+
+    Returns:
+        The words.
+    """
+    better_end = "" if higher_is_better else LOWER_IS_BETTER
+    return COMPARISON_VERDICT_WORDS[verdict].format(arm=arm, control=control, better_end=better_end)
+
+
+#: What a guardrail came to for an arm against the control, as a reader says it, each arm by its label. Filled by
+#: :func:`guardrail_words`.
 GUARDRAIL_DECISION_WORDS = worded(
     {
-        "held": "held: shown no worse than the control by more than the margin",
-        "breached": "breached: shown worse than the control by more than the margin",
+        "held": "held: {arm} shown no worse than {control} by more than the margin",
+        "breached": "breached: {arm} shown worse than {control} by more than the margin",
         "undecided": "undecided: not shown held, so not known to be safe",
     },
     GuardrailDecision,
     "a guardrail decision",
 )
+
+
+def guardrail_words(decision: GuardrailDecision, arm: str, control: str) -> str:
+    """A guardrail's decision in words, each arm by its label: ``held: v2 shown no worse than v1 by more than the
+    margin``."""
+    return GUARDRAIL_DECISION_WORDS[decision].format(arm=arm, control=control)
+
 
 #: What a bar came to on one arm, as a reader says it.
 BAR_DECISION_WORDS = worded(
@@ -316,10 +347,13 @@ __all__ = [
     "EVIDENCE_TIER_WORDS",
     "FIRST_SCREEN_BANNED",
     "GUARDRAIL_DECISION_WORDS",
+    "LOWER_IS_BETTER",
     "arm_namer",
     "cell_arm_labels",
+    "comparison_words",
     "counted",
     "evidence_rows",
+    "guardrail_words",
     "positions",
     "reading_heading",
     "reading_name",

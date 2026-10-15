@@ -74,7 +74,7 @@ triage_eval = Eval("emails.jsonl", runner=triage, grader=["category", "urgent", 
 What it printed:
 
 ```text
-emails: 18/30 cases passed; 12 misses: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more
+emails: 18/30 cases passed; 12 misses: double-charge, gdpr-delete, book-demo, phish-suspend, phish-invoice, and 7 more
 90 result(s): 90 scored
   urgent: mean 0.8333 (n=90, min 0, max 1)
   escalates: mean 0.9889 (n=90, min 0, max 1)
@@ -84,12 +84,14 @@ emails: 18/30 cases passed; 12 misses: double-charge, refund-after-cancel, gdpr-
     ...
   total spend: $0.00192, the results' cost
 top misses (5 of 20):
-  case double-charge (repeat 2): urgent gave 0
-  case refund-after-cancel (repeat 1): urgent gave 0
+  case double-charge (repeat 1): urgent gave 0
+  case gdpr-delete (repeat 1): urgent gave 0
   ...
 stored in .evals/evals.sqlite, scope 'emails'
 report: .evals/reports/emails/report.html
 ```
+
+The misses print in the report's order, the order its Trials table lists the failed trials in.
 
 **The lesson: the rule you write decides what you measured, so read the misses before the means.** Rung 0 graded
 `needs_human` both ways and read 0.81; 16 of its 17 misses were emails escalated that did not need a person, a minute
@@ -241,7 +243,7 @@ What the recording printed (made at `max_tokens=8192`), first lines, errors and 
 exits 4:
 
 ```text
-invoices: no arm separated from the control 'v1'
+invoices: nothing separated v2 from v1
 v1 (control): 90 result(s): 90 scored
   number: mean 0.8333 (n=90, min 0, max 1)
   ...
@@ -261,7 +263,7 @@ the contrast row for `number`, the guardrail's row, and the trials' census:
 # invoices: does v2 do better than v1?
 v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 **Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
-| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-1.4, 34.7] pts | not separated from the control | 30 paired |
+| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-1.4, 34.7] pts | v2 and v1 not separated | 30 paired |
 | No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```

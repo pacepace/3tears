@@ -8,8 +8,9 @@ MCP action — adds, drops or reorders a block.
 
 The page, screen by screen:
 
-1. **The first screen.** The title (the declared question, or the campaign's name and what it compares); the arms
-   line (each arm named in full once, the control marked, the date); the verdict line
+1. **The first screen.** The title (the campaign's name, and what it compares where no question was declared); the
+   declared question quoted on its own line, and under it the subhead: the arms line (each arm named in full once by
+   the version that answered it, the control marked, the date) and the rule's sentence; the verdict line
    (:func:`~threetears.evals.analysis.report.verdict.verdict_line`), result first; the scoreboard, a bare table of
    counts and the cost per reply, and its outcome bar; then the caveats, in normal weight.
 2. **Decision.** A declared decision rule, clause by clause, settled or not (:mod:`.decision`).
@@ -28,6 +29,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime
 from itertools import chain
 
@@ -60,6 +62,7 @@ from threetears.evals.analysis.report.figures import (
     surface_order_sentence,
 )
 from threetears.evals.analysis.report.model import (
+    RULE_ANCHOR,
     CellValue,
     ChartBlock,
     SECTION_TITLES,
@@ -84,7 +87,6 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.analysis.report.decision import (
     PROSE_RULE_LINE,
     RateReading,
-    RuleReadings,
     RuleVerdict,
     evaluate_rule,
     keep_is_the_default,
@@ -107,10 +109,10 @@ from threetears.evals.analysis.report.verdict import (
 )
 from threetears.evals.analysis.report.words import (
     BAR_DECISION_WORDS,
-    COMPARISON_VERDICT_WORDS,
     CONFIDENCE_WORDS,
-    GUARDRAIL_DECISION_WORDS,
+    comparison_words,
     evidence_rows,
+    guardrail_words,
     reading_heading,
     reading_name,
     stands_on_words,
@@ -366,12 +368,7 @@ def _page(
     name = source.campaign_name or f"Campaign {source.campaign_id}"
     verdict = verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle), model=_model_namer(names))
     blocks: list[ReportBlock] = [
-        DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source)),
-        *(
-            [DisclosureBlock(section="header", source="basis", text=asked)]
-            if (asked := _question_line(bundle)) is not None
-            else []
-        ),
+        *_heading_blocks(bundle, names, source, arm),
         DisclosureBlock(
             section="header",
             source="verdict",
@@ -462,7 +459,7 @@ def _namer(names: dict[str, ArmName]) -> Callable[[str], str]:
 def _model_namer(names: dict[str, ArmName]) -> Callable[[str], str]:
     """Name an arm by its model, vendor dropped, where it has one, else as every table names it.
 
-    Only line 2 and the verdict sentence name a model: a label like ``cheaper candidate`` beside "costs more" reads
+    Only the arms line and the verdict sentence name a model: a label like ``cheaper candidate`` beside "costs more" reads
     as a contradiction, and the model does not.
     """
     label = _namer(names)
@@ -504,24 +501,60 @@ def _capitalized(title: str) -> str:
     return title[:1].upper() + title[1:] if _PLAIN_WORD.match(title) else title
 
 
+def _heading_blocks(
+    bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource, arm: Callable[[str], str]
+) -> list[ReportBlock]:
+    """The first screen's lines between the title and the verdict.
+
+    With no question declared before the run, the arms line alone (line 2). With one, the question quoted on its own
+    line, then the subhead carrying what the question need not: the arms line, each arm with its version, and the
+    typed rule's sentence (:func:`_rule_line`), anchored so the Decision section links up to it.
+    """
+    arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
+    asked = _question_line(bundle)
+    if asked is None:
+        return [arms]
+    rule = _rule_line(bundle, arm)
+    return [
+        DisclosureBlock(section="header", source="basis", text=asked),
+        arms,
+        *([DisclosureBlock(section="header", source="rule", text=rule)] if rule is not None else []),
+    ]
+
+
 def _question_line(bundle: AnalysisContextBundle) -> str | None:
-    """Under the arms: the question declared before the run, quoted whole — the contract the verdict reads, never
-    paraphrased, its first plain word capitalized as a sentence starts; None where none was declared. The first
-    question where several were. Its decision rule is typed, not words, so the Decision section states it in a
-    sentence code writes (:func:`_decision_blocks`).
+    """Under the title: the question declared before the run, quoted whole and alone on its line — the contract the
+    verdict reads, never paraphrased, its first plain word capitalized as a sentence starts; None where none was
+    declared. The first question where several were. The arms' versions and the rule are the subhead's
+    (:func:`_heading_blocks`), so a question need not carry them.
     """
     questions = _preregistered(bundle)
     if not questions:
         return None
-    return f'Asked before the run: "{_capitalized(" ".join(questions[0].text.split()))}"'
+    return f'"{_capitalized(" ".join(questions[0].text.split()))}"'
 
 
 def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource) -> str:
-    """Line 2: each arm named in full, once, the control first and marked, then the date, then the design."""
+    """The arms line: each arm named in full, once, the control first and marked, then the date, then the design.
+
+    An arm named by its model is named by the version that answered it where the responses named one model other
+    than the one asked for (``arm_served_models``, the served-models check's own reading): what ran, not the alias.
+    """
     control = _control_key(bundle)
     keys = [board.variant_key for board in bundle.scoreboard]
     ordered = ([control] if control is not None else []) + [key for key in keys if key != control]
-    arms = " vs ".join(names[key].first() if key in names else _namer(names)(key) for key in ordered)
+    served = {
+        reading.variant_key: humanize("model", reading.served_models[0])
+        for reading in bundle.arm_served_models
+        if reading.state == "one" and len(reading.served_models) == 1
+    }
+    versioned = {
+        key: replace(name, model=served[key])
+        if name.model is not None and key in served and served[key] != humanize("model", name.model)
+        else name
+        for key, name in names.items()
+    }
+    arms = " vs ".join(versioned[key].first() if key in versioned else _namer(names)(key) for key in ordered)
     return " · ".join(
         part for part in (arms or "no arm ran", _date(source.generated_at), _design_words(bundle)) if part
     )
@@ -737,7 +770,7 @@ def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
 
 
 def _design_words(bundle: AnalysisContextBundle) -> str:
-    """The design at the end of line 2: ``30 cases × 3 repeats``; where the arms differ, each range its own segment
+    """The design at the end of the arms line: ``30 cases × 3 repeats``; where the arms differ, each range its own segment
     (``4 to 6 cases per arm · 2 to 3 repeats``), so no segment carries more figures than a sentence may. Empty when
     no arm ran; the cases alone where no repeat count was recorded."""
     cases = sorted({board.cases for board in bundle.scoreboard})
@@ -768,12 +801,34 @@ def _design_words(bundle: AnalysisContextBundle) -> str:
     return f"{case_words} · {repeat_words}"
 
 
-def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
-    """A declared decision rule: the rule in one sentence code writes, the arms by name, on the section's first line,
-    then clause by clause on each arm against the control as a table, never prose.
+def _rule_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
+    """The declared decision rule in the one sentence code writes from its clauses, the arms by name, for the first
+    screen's subhead: ``Switch to v2 only if … Otherwise stay on v1.``; None where no typed rule was declared or no
+    arm ran beside the control.
 
     The rule is typed (``Question.decision``), so its sentence is code's (:func:`~.decision.rule_statement`), never
-    the operator's words parsed. Each clause's row opens with the clause as a sentence naming its arm. The control
+    the operator's words parsed.
+    """
+    control = _control_key(bundle)
+    asked = ruled_question(_preregistered(bundle))
+    if asked is None or asked.decision is None or control is None:
+        return None
+    others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
+    if not others:
+        return None
+    return rule_statement(
+        asked.decision,
+        control=arm(control),
+        candidates=[arm(key) for key in others],
+        readings=rule_readings(bundle, control, others[0], question_id=asked.id),
+    )
+
+
+def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+    """A declared decision rule clause by clause, on each arm against the control, as a table, never prose.
+
+    The rule's own sentence is the first screen's subhead (:func:`_rule_line`), said once: the table's title links up
+    to it rather than say it again one screen down. Each clause's row opens with the clause as a sentence naming its arm. The control
     heads its column by name, as does a lone other arm; with several, an ``Arm`` column names each row's and its
     figures are under ``Value``. A question that wrote its rule as prose and declares none typed gets one line saying
     so, and nothing is settled.
@@ -789,10 +844,8 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     cost = _cost_ruler(bundle)
     others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
     rows: list[dict[str, CellValue]] = []
-    first_readings: RuleReadings | None = None
     for key in others:
         readings = rule_readings(bundle, control, key, question_id=asked.id)
-        first_readings = first_readings or readings
         verdict = evaluate_rule(rule, readings, control=arm(control), candidate=arm(key))
         for clause in verdict.clauses:
             shown: list[tuple[str, str | None, str | None]] = []
@@ -826,13 +879,6 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                 )
     if not rows:
         return []
-    stated = DisclosureBlock(
-        section="decision",
-        source="basis",
-        text=rule_statement(
-            rule, control=arm(control), candidates=[arm(key) for key in others], readings=first_readings
-        ),
-    )
     # A lone other arm heads its own column by name; several share a "Value" column, each row naming its arm.
     single = len(others) == 1
     columns = [
@@ -844,11 +890,12 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
         TableColumn(key="outcome", header="Outcome", term="settled"),
     ]
     return [
-        stated,
         TableBlock(
             section="decision",
             name="decision",
             title="Clauses",
+            # The rule's sentence is the first screen's subhead, said once on the page: the table's title links to it.
+            title_ref=RULE_ANCHOR,
             columns=columns,
             rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
             order="clause by clause, each arm against the control",
@@ -1846,12 +1893,14 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
             margin = _contrast_margin(bundle, comparison)
             ruler = rulers.of(comparison.name, comparison.reading)
             reason, detail = _contrast_reason(comparison)
+            named = arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id)
+            control = arm(comparison.control.variant_key, comparison.control.apparatus_class_id)
             if (small := _small_n(comparison)) is not None:
                 reason = "too_few_cases"
                 detail = f"{small} case{'' if small == 1 else 's'}, under the {MIN_CASES} a rate needs"
                 words = f"not tested (n={small})"
             else:
-                words = _contrast_words(comparison, margin, heading, ruler)
+                words = _contrast_words(comparison, (named, control), margin, heading, ruler)
             verdicts.append(
                 Verdict(
                     kind="contrast",
@@ -1861,10 +1910,10 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
                     reading=comparison.reading,
                     name=comparison.name,
                     heading=heading,
-                    arm=arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
+                    arm=named,
                     variant_key=comparison.contrast.variant_key,
                     apparatus_class_id=comparison.contrast.apparatus_class_id,
-                    control=arm(comparison.control.variant_key, comparison.control.apparatus_class_id),
+                    control=control,
                     question_id=family.question_id,
                     delta=comparison.delta,
                     interval=comparison.interval,
@@ -1879,11 +1928,14 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
     return verdicts
 
 
-def _contrast_words(comparison: FamilyComparison, margin: float | None, heading: str, ruler: MeasureRuler) -> str:
-    """A tested contrast's verdict in words: the verdict, why where there is more to say, its margin, materiality."""
+def _contrast_words(
+    comparison: FamilyComparison, arms: tuple[str, str], margin: float | None, heading: str, ruler: MeasureRuler
+) -> str:
+    """A tested contrast's verdict in words: the verdict naming the arm and the control (``arms``) by label, why where
+    there is more to say, its margin, materiality."""
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
     return (
-        COMPARISON_VERDICT_WORDS[comparison.verdict]
+        comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
         + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
         + (f" ({comparison.not_separated_reason})" if comparison.not_separated_reason else "")
         + (
@@ -2231,7 +2283,11 @@ def guardrail_verdicts(
                     None if not check.margin_declared else "campaign" if check.reading == "judged" else "measure"
                 ),
                 guardrail=True,
-                words=GUARDRAIL_DECISION_WORDS[check.decision]
+                words=guardrail_words(
+                    check.decision,
+                    arm(check.contrast.variant_key, check.contrast.apparatus_class_id),
+                    arm(check.control.variant_key, check.control.apparatus_class_id),
+                )
                 + (
                     f" ({_straddled(check, rulers.of(check.name, check.reading))})"
                     if reason == "interval_straddles"
@@ -2938,7 +2994,7 @@ def _trial_why(trial: TrialRow) -> str | None:
         return "check: " + ", ".join(code(check.expression) for check in trial.failed_checks)
     if trial.cause == "judged":
         under = [entry.dim for entry in trial.judge if entry.scale == "pass_fail" and entry.score == 0]
-        return "judge: " + (", ".join(humanize("dimension", dim) for dim in under) or "scored below the bar")
+        return "judge: " + ", ".join(humanize("dimension", dim) for dim in under) if under else "failed by the judge"
     return cause_short(trial.cause or "unknown")
 
 

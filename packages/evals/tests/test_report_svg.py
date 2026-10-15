@@ -97,6 +97,40 @@ def test_two_lost_causes_side_by_side_are_two_marks() -> None:
     assert 'class="viz-lost viz-alt"' in svg
 
 
+def test_two_failure_causes_are_two_inks_of_one_hue_and_the_key_names_each() -> None:
+    """A failed check and the judge's fail are two segments in the one failed hue, told apart in ink alone, each the
+    same on every bar, and the key names each cause, so no third category reads as a state of its own."""
+    bars = [
+        OutcomeBar(
+            arm="v1",
+            segments=[
+                OutcomeSegment(state="passed", label="passed", count=29),
+                OutcomeSegment(state="failed", label="failed: check", count=26),
+                OutcomeSegment(state="failed", label="failed: judge", count=5),
+            ],
+        ),
+        OutcomeBar(
+            arm="v2",
+            segments=[
+                OutcomeSegment(state="passed", label="passed", count=14),
+                OutcomeSegment(state="failed", label="failed: judge", count=35),
+                OutcomeSegment(state="failed", label="failed: check", count=11),
+            ],
+        ),
+    ]
+    svg = chart_svg(ChartBlock(section="scoreboard", chart="outcome_bar", title="Outcomes", bars=bars), chart_id="c1")
+    inks = re.findall(r'<rect class="(viz-failed[^"]*)"[^>]*><title>(v\d): (failed: \w+),', svg)
+    assert sorted(set(inks)) == [
+        ("viz-failed", "v1", "failed: check"),
+        ("viz-failed", "v2", "failed: check"),
+        ("viz-failed viz-alt", "v1", "failed: judge"),
+        ("viz-failed viz-alt", "v2", "failed: judge"),
+    ]
+    key = svg[: svg.index("v1</text>")]
+    assert re.findall(r">(passed|failed: \w+|failed|lost)</text>", key) == ["passed", "failed: check", "failed: judge"]
+    assert "--viz-failed-" not in SVG_STYLE and SVG_STYLE.count("stroke: var(--viz-failed)") == 2, "one hue, ink only"
+
+
 def test_the_marks_are_coloured_by_css_variables_set_for_light_and_dark() -> None:
     assert "prefers-color-scheme: dark" in SVG_STYLE and ':root[data-theme="dark"]' in SVG_STYLE
     for variable in ("--viz-passed", "--viz-failed", "--viz-lost", "--viz-ink"):

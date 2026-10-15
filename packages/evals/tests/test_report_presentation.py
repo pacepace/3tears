@@ -20,6 +20,7 @@ import pytest
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     AnalysisContextBundle,
+    ArmServedModel,
     Report,
     build_code_only_report,
     build_report,
@@ -69,23 +70,28 @@ async def g2_ruled() -> tuple[Result, Report]:
 async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
+    # The title is the campaign's name; the question declared before the run is quoted whole on its own line under
+    # it, the contract the verdict reads; then the subhead says what the question need not: each arm with its
+    # version, and the typed rule in code's sentence. Then the verdict.
     assert lines[0] == "# G2: can the cheaper model replace production?"
-    assert lines[1] == (
+    assert lines[1] == f'"{G2_QUESTION}"'
+    assert lines[3] == (
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
-    # The question declared before the run is quoted whole as the contract the verdict reads; its typed rule is
-    # stated in code's sentence at the head of the Decision section. Then the verdict.
-    assert lines[3] == f'Asked before the run: "{G2_QUESTION}"'
-    assert f"\n## Decision\n\n{G2_STATEMENT}\n\n**Clauses**\n" in report_markdown(report)
-    assert lines[5].startswith("**Keep production: ")
+    assert lines[5] == G2_STATEMENT
+    # Said once: the Decision section opens on its clauses, whose title links up to the subhead.
+    assert "\n## Decision\n\n**Clauses**\n" in report_markdown(report)
+    assert '<h3><a href="#rule">Clauses</a></h3>' in report_html(report)
+    assert f'<p class="arms" id="rule">{html.escape(G2_STATEMENT)}</p>' in report_html(report)
+    assert lines[7].startswith("**Keep production: ")
     # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
-    assert lines[7:10] == [
+    assert lines[9:12] == [
         "**Scoreboard**",
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
+    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
     # The rule settled keep on the counts, so the floor caveat says what is withheld under four cases and why, in
     # the reader's terms; then the one other fact that changes how the verdict reads, the label its row contradicts.
@@ -102,6 +108,34 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     assert "The label" not in report_markdown(report)
 
 
+async def test_the_subhead_names_each_arm_by_the_version_that_answered_it(g2_ruled: tuple[Result, Report]) -> None:
+    """An arm asked for an alias and answered by one dated version is named by that version on the arms line; an
+    arm whose responses named the model it asked for, or several, keeps the name it asked by."""
+    comparison, report = g2_ruled
+    production, candidate = (comparison.arm_variants[name] for name in (PRODUCTION, CANDIDATE))
+    served = [
+        ArmServedModel(
+            variant_key=production,
+            served_models=["deepseek/deepseek-v4.1-flash"],
+            n_results=12,
+            n_unrecorded=0,
+            state="one",
+        ),
+        ArmServedModel(
+            variant_key=candidate,
+            served_models=["deepseek/deepseek-v4-flash-20261001"],
+            n_results=12,
+            n_unrecorded=0,
+            state="one",
+        ),
+    ]
+    bundle = report.bundle.model_copy(update={"arm_served_models": served})
+    lines = report_markdown(build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")).splitlines()
+    assert lines[3].startswith(
+        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash-20261001 (cheaper candidate) · "
+    )
+
+
 async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     # Passed, failed by check and failed by judge are the scoreboard's own columns: the bar's table would repeat it.
@@ -110,17 +144,22 @@ async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2
     assert report_html(report).count('data-chart="outcome_bar"') == 1
 
 
-async def test_the_question_is_quoted_once_under_the_arms_and_never_in_the_body(
+async def test_the_question_is_quoted_once_under_the_title_and_never_in_the_body(
     g2_ruled: tuple[Result, Report],
 ) -> None:
     _, report = g2_ruled
     markdown = report_markdown(report)
     assert markdown.count("does deepseek-v4-flash hold every pass/fail queue-discipline dimension") == 1
     assert markdown.count(G2_STATEMENT) == 1
-    asked, rule = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
-    assert asked.section == "header" and asked.text == f'Asked before the run: "{G2_QUESTION}"'
-    assert rule.section == "decision" and rule.text == G2_STATEMENT
-    assert f'<p class="line" data-source="basis">{html.escape(asked.text)}</p>' in report_html(report)
+    (asked,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    (rule,) = [
+        b
+        for b in report.blocks
+        if isinstance(b, DisclosureBlock) and b.source == "rule" and b.text.startswith("Switch")
+    ]
+    assert asked.section == "header" and asked.text == f'"{G2_QUESTION}"'
+    assert rule.section == "header" and rule.text == G2_STATEMENT
+    assert f'<p class="question">{html.escape(asked.text)}</p>' in report_html(report)
     assert lint_page(markdown, question=G2_QUESTION) == []
 
 
@@ -129,7 +168,8 @@ async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[
     # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
     # The quoted question aside too, the author's words whole, and the rule's sentence beside it.
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    asked, rule = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    (asked,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "basis"]
+    (rule,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.text == G2_STATEMENT]
     quoted = report_markdown(report).replace(verdict, "").replace(asked, "").replace(rule, "")
     sections = re.split(r"\n## ", quoted) + [
         _visible_text(part).replace(verdict, "").replace(asked, "").replace(rule, "")

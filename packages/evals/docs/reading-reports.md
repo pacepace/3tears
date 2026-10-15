@@ -46,14 +46,17 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 | v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.07036 |
 ```
 
-A campaign with a question declared before the run (a host's two-model campaign, G2) opens the same way, with the question quoted
-whole between the arms and the verdict:
+A campaign with a question declared before the run (a host's two-model campaign, G2) opens on its name, then the
+question quoted on its own line, then a subhead saying what the question need not: each arm with the version that
+answered it, and the decision rule in a sentence code writes from its clauses:
 
 ```markdown
 # G2: Kairo queue discipline
+"Does deepseek-v4-flash outperform production's deepseek-v4.1-flash on Kairo's queue-discipline set?"
+
 deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · 4 cases × 3 repeats
 
-Asked before the run: "On Kairo's queue-discipline regression set (dj_queue_discipline_v5), does deepseek-v4-flash hold every pass/fail queue-discipline dimension within 10 points of deepseek-v4.1-flash's pass rate, at lower cost per turn?"
+Switch to cheaper candidate only if no pass rate drops by more than 10 points and cheaper candidate costs less per reply. Otherwise stay on production.
 
 **Keep production: deepseek-v4-flash passed 2 of 12 trials to deepseek-v4.1-flash's 10, and cost more per reply.**
 ```
@@ -63,12 +66,17 @@ The first screen carries the minimum a reader needs to grasp the result; every c
 - **Title**: a name — the campaign's (`G2: Kairo queue discipline`), with what it compares where no question was
   declared before the run (`invoices: does v2 do better than v1?`). A declared question is never cut down to a
   title.
-- **Line 2**: each arm named in full once (`deepseek-v4.1-flash (production, control)`), then the date, then the
-  design (`30 cases × 3 repeats`). After that an arm is its given label (`production`), the control marked `▸` in
-  a table. Only line 2 and the verdict name a model.
-- **Line 3**, where a question was declared before the run: the question quoted, `Asked before the run: "…"`. It
-  is the contract the verdict reads, so it is never paraphrased, and it is quoted whole. Its decision rule is not
-  words but typed clauses (`Question.decision`), so the Decision section states it in a sentence code writes.
+- **The question**, where one was declared before the run: quoted alone on the line under the title. It is the
+  contract the verdict reads, so it is never paraphrased, and it is quoted whole: declare it short, since the arms'
+  versions and the rule are the subhead's.
+- **The arms line** (line 2 where no question was declared, else the subhead's first line): each arm named in full
+  once (`deepseek-v4.1-flash (production, control)`), by the version its responses named where that is one model other
+  than the one asked for (`deepseek-v4-flash-20261001`), then the date, then the design (`30 cases × 3 repeats`).
+  After that an arm is its given label (`production`), the control marked `▸` in a table. Only the arms line and the
+  verdict name a model.
+- **The rule**, the subhead's second line where the question declares one: not words but typed clauses
+  (`Question.decision`), stated in the sentence code writes (`Switch to v2 only if … Otherwise stay on v1.`). It is
+  said once on the page: the Decision section opens on its clauses, the table's title linking up to it.
 - **Verdict**, written by code and never by a memo, result first: one sentence for the decision, a second only for
   a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
   models.`, the arm, the cause, the fix); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
@@ -106,10 +114,10 @@ reading.
 The sections follow in this order, each reached from a sticky nav; Cases, Trials, Not tested, Methods and the
 Glossary start folded, and a nav link opens the one it lands on.
 
-- **Decision**: the declared decision rule in one sentence code writes from its clauses, the arms by name (`Switch to
-  v2 only if no pass rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on v1.`; a clause
-  naming one reading says `no tone rate drops by more than 2 points`), then one row per clause and reading, the
-  clause's own sentence first, each arm's column headed by its name, then the clause's own outcome, `keep`,
+- **Decision**: the declared decision rule, its sentence the first screen's subhead (`Switch to v2 only if no pass
+  rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on v1.`; a clause naming one reading
+  says `no tone rate drops by more than 2 points`), which the `Clauses` table's title links up to: one row per clause
+  and reading, the clause's own sentence first, each arm's column headed by its name, then the clause's own outcome, `keep`,
   `switch` or `unsettled`, with the reason in words, the counts and the margin naming the arms (`keep: v2 passed 14
   of 60 to v1's 29, a drop of 25 points against a margin of 10`; `unsettled: v2's drop is not shown to stay within
   10 points (it could be as much as 53.6)`). One line under the table says what unsettled means: `Keep is the
@@ -150,7 +158,8 @@ Glossary start folded, and a nav link opens the one it lands on.
   line (`180 trials ran. Of them 161 passed and 19 failed.`) and only what went wrong: one row per failed or lost
   trial, the failed first, and each one's record under `T4 · double-charge · cheaper candidate · failed` (never the
   start of what the case asked), the first twelve open. A failed check is named by its expression, as code
-  (``check: `call_count("music.queue_track") >= 2` ``). The passed trials are one closed `Passed trials` table
+  (``check: `call_count("music.queue_track") >= 2` ``), and a judge's fail by its dimensions (`judge: tone`), else
+  `failed by the judge`. The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
 - **Not tested**: what the campaign could not speak to, one line each. A lever that ran at one level
@@ -170,8 +179,8 @@ Glossary start folded, and a nav link opens the one it lands on.
 `threetears.evals.analysis.style` holds every rendered sentence to one set of rules, `lint_prose`: no meta-prose
 about the page ("rests on", "written by", "a count, not a ranking"), no hedge on a measured fact ("no measurable"),
 no `key=value`, no chain of dashes, no sentence over 28 words or with more than three numbers (that is a table), no
-header over three words, and the declared question only in the title. `humanize` is the one seam an identifier
-passes on its way to a reader. A memo's sentence breaking a rule code can fix is dropped or replaced (a title
+header over three words, and the declared question only on its own quoted line. `humanize` is the one seam an
+identifier passes on its way to a reader. A memo's sentence breaking a rule code can fix is dropped or replaced (a title
 restating a measured number becomes the table's own row); one contradicting a settled decision rule becomes the
 verdict line's sentence, and one saying the evidence cannot confirm a difference a settled clause decided becomes
 code's counts on that reading, the size of the difference left to more cases; both are disclosed in Methods. What
@@ -181,7 +190,9 @@ is left is counted there (`style: N violations`) and listed.
 
 The page draws two marks, as inline SVG with no dependency. The **outcome bar**, under the scoreboard, is the page's
 one chart: a census, so it is always drawn, one bar per arm with its label above it, passed, failed and lost to the
-test setup cause by cause, each count written beside the bar, and a key naming only the states that occur. An
+test setup cause by cause, each count written beside the bar, and a key naming only the states that occur. A
+failure's causes share its one colour and differ in ink alone (solid, then a lighter tone), each alike on every bar,
+and the key names each (`failed: check`, `failed: judge`); a lost cause's edge is dashed, the next dotted. An
 **interval glyph** is drawn in the table row that states the figure (Tufte's table-graphic): the interval as a
 whisker, the point as a dot, a zero line for a change, and a declared margin as a quiet band. Every cell of a column
 in one unit shares one scale, written once under the table (`Change drawn from -7 to 36.7 pts`), so the rows compare
@@ -231,9 +242,14 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
   drain wait, and `cost_usd` and `program_cost`, which include what the judge spent. The candidate's spend
   is tested as `production_replicating_cost`.
 
+Each verdict is printed naming both arms by label, never "the control", with a reading's better end in brackets
+where it is the lower one: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within
+the measure's margin`, `v2 and v1 not separated`. The verdict line names the reading too (`v2 better than v1 on
+cost per reply (lower is better)`).
+
 | Verdict | Means | Do |
 |---|---|---|
-| improved / regressed | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
+| better / worse (typed `improved` / `regressed`) | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
 | not separated | the cases could not tell the arms apart, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side; the row says why | fix what it names (usually too few cases) |
