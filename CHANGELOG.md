@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A catalogue name is compared with an array as text
+
+- YugabyteDB 2026.1.1.1 mis-evaluates a `name` column compared with a `text[]`:
+  `relname = ANY(ARRAY['a', 'b'])` fails `compressed lz4 data is corrupt`, intermittently, once the
+  server has taken some load. `relname::text = ANY(...)`, `relname = ANY(...::name[])` and `IN (...)`
+  do not fail. Two kinds of query issued that shape:
+  - The write-mark backstop and the migration runner's trigger hook compared
+    `information_schema.tables.table_name` with `ANY($1::text[])`. That stopped every fresh platform
+    bring-up on 2026.1.1.1 at the end of the chain.
+  - The asyncpg datasource driver's three introspection queries filtered `table_schema` that way.
+
+  All now compare as text. `tests/enforcement/test_catalog_names_are_compared_as_text.py` fails any
+  SQL string that reads the catalogue and compares one of its name columns with `ANY(...)` uncast.
+  2026.1.0.0-b118, the version cobalt runs, does not show the defect.
+
 ### acl: many evaluations share their reads
 
 - `evaluate_many_with_trail(contexts, cache=)` answers many questions at once, each exactly as

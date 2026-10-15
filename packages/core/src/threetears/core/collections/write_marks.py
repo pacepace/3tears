@@ -200,7 +200,7 @@ class SqlPool(SqlConnection, Protocol):
 _MISSING_SQL: Final[str] = """
 SELECT t.table_schema AS table_schema, t.table_name AS table_name
 FROM information_schema.tables t
-WHERE t.table_type = 'BASE TABLE' AND t.table_name = ANY($1::text[]) AND NOT EXISTS (
+WHERE t.table_type = 'BASE TABLE' AND t.table_name::text = ANY($1::text[]) AND NOT EXISTS (
     SELECT 1 FROM pg_trigger g
     JOIN pg_class c ON c.oid = g.tgrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
