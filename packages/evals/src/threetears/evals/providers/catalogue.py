@@ -23,7 +23,10 @@ output token at the highest of the completion, reasoning and output-image or -au
 within the request's output cap), the per-request fee, and a long-context tier (``overrides``) wherever the prompt
 bound reaches its ``min_prompt_tokens``; a time-of-day tier is taken to apply, since a call's billing time is not
 known before it is made. Image and audio input prices apply to inputs the client never sends, and a web-search price
-to searches it never asks for. A price the client cannot bound (one it does not know the unit of, one that is not a
+to searches it never asks for. A completion is priced from the same reading (:meth:`Catalogue.cost`), at the tier
+its prompt fell in: its reasoning tokens at the reasoning rate where the row lists one apart from the completion
+rate, its cache reads and writes at their rates, and the request fee; a price that applies and that the reply's
+counts cannot price (reasoning tokens the reply does not split out) leaves it unpriced, never priced lower. A price the client cannot bound (one it does not know the unit of, one that is not a
 number, a web search on a model that can search unasked) answers no ceiling and says why, never a lower one; so do
 rows read longer ago than ``ceiling_stale_after`` (``refresh_after`` unless the constructor says otherwise), so an
 enforced cap never holds a call against prices that old. A completion is still priced from them, marked stale.
@@ -107,6 +110,28 @@ class _Row:
     pricing: Mapping[str, object]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Usage:
+    """What a reply reports it was billed for, as :meth:`Catalogue.cost` takes it.
+
+    Attributes:
+        input_tokens: Prompt tokens, cache reads and writes included.
+        output_tokens: Completion tokens, reasoning included.
+        reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when the reply does not split it.
+        cache_read_tokens: Prompt tokens read from a cache.
+        cache_write_tokens: Prompt tokens written to a cache, both lifetimes.
+        cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply does not
+            split it.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    reasoning_tokens: int | None = None
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_write_1h_tokens: int | None = 0
+
+
 def _rate(pricing: Mapping[str, object], key: str) -> Decimal | None:
     """A per-token rate the catalogue states as a decimal string, or ``None`` when it states none or no number."""
     value = pricing.get(key)
@@ -148,12 +173,17 @@ def _tier_applies(tier: Mapping[str, object], prompt_tokens: int) -> bool:
         return True
 
 
-def _ceiling(row: _Row, *, prompt_tokens: int, output_tokens: int) -> tuple[Decimal | None, str | None]:
-    """The most one call can be billed under ``row``, or ``None`` and why when a price it lists cannot be bounded."""
+def _prices(row: _Row, prompt_tokens: int) -> tuple[dict[str, Decimal] | None, str | None]:
+    """Every nonzero price that can bill a call of ``prompt_tokens`` under ``row``, each at the highest the row and the
+    tiers that apply to that prompt list it, or ``None`` and why when a price cannot be read or bounded.
+
+    The one reading of a row both the ceiling and a completion's cost are priced from, so the two cannot disagree on
+    what a row charges.
+    """
     tiers = row.pricing.get(_TIERS, [])
     if not isinstance(tiers, list) or not all(isinstance(tier, Mapping) for tier in tiers):
         return None, f"its price tiers (`{_TIERS}`) are not a list of objects"
-    input_rate = output_rate = fee = Decimal(0)
+    prices: dict[str, Decimal] = {}
     for tier in (row.pricing, *(tier for tier in tiers if _tier_applies(tier, prompt_tokens))):
         for key, value in tier.items():
             if key in _TIER_CONDITIONS or key == _TIERS:
@@ -163,21 +193,78 @@ def _ceiling(row: _Row, *, prompt_tokens: int, output_tokens: int) -> tuple[Deci
                 return None, f"its `{key}` price ({value!r}) is not a price (a number, 0 or more)"
             if rate == 0 or key in _UNSENT_INPUTS:
                 continue
-            if key in _INPUT_PRICES:
-                input_rate = max(input_rate, rate)
-            elif key in _OUTPUT_PRICES:
-                output_rate = max(output_rate, rate)
-            elif key == _REQUEST_FEE:
-                fee = max(fee, rate)
-            elif key == _WEB_SEARCH:
+            if key == _WEB_SEARCH:
                 if row.parameters is not None and "web_search_options" in row.parameters:
                     return None, (
                         f"it can search the web unasked (it takes web_search_options) at {value} a search, and "
-                        "nothing bounds how many searches one call makes"
+                        "nothing says how many searches one call makes"
                     )
-            else:
+                continue
+            if key not in _INPUT_PRICES | _OUTPUT_PRICES | {_REQUEST_FEE}:
                 return None, f"it lists a `{key}` price ({value}) the client does not know the unit of"
-    return prompt_tokens * input_rate + output_tokens * output_rate + fee, None
+            prices[key] = max(prices.get(key, rate), rate)
+    return prices, None
+
+
+def _ceiling(row: _Row, *, prompt_tokens: int, output_tokens: int) -> tuple[Decimal | None, str | None]:
+    """The most one call can be billed under ``row``, or ``None`` and why when a price it lists cannot be bounded."""
+    prices, why = _prices(row, prompt_tokens)
+    if prices is None:
+        return None, why
+    input_rate = max((prices.get(key, Decimal(0)) for key in _INPUT_PRICES), default=Decimal(0))
+    output_rate = max((prices.get(key, Decimal(0)) for key in _OUTPUT_PRICES), default=Decimal(0))
+    return prompt_tokens * input_rate + output_tokens * output_rate + prices.get(_REQUEST_FEE, Decimal(0)), None
+
+
+def _cost(prices: Mapping[str, Decimal], usage: _Usage) -> tuple[Decimal | None, bool, str | None]:
+    """What a call cost under ``prices`` (the tier its prompt fell in), whether a cache share was priced at a rate the
+    row does not list for it, or ``None`` and why when a price applies that the reply's counts cannot price."""
+    plain = prices.get("prompt", Decimal(0))
+    approximate = False
+
+    def cache_rate(*keys: str) -> Decimal:
+        nonlocal approximate
+        listed = [prices[key] for key in keys if key in prices]
+        if len(listed) != 1:  # none listed: the plain rate; more than one, unsplit: the dearest. Either is a guess.
+            approximate = True
+        return max(listed, default=plain)
+
+    one_hour = usage.cache_write_1h_tokens
+    cached = usage.cache_read_tokens + usage.cache_write_tokens
+    fresh = usage.input_tokens - cached
+    if fresh < 0:
+        return (
+            None,
+            False,
+            (f"the reply counts {cached} cached prompt tokens within {usage.input_tokens} prompt tokens in all"),
+        )
+    dollars = fresh * plain
+    if usage.cache_read_tokens:
+        dollars += usage.cache_read_tokens * cache_rate("input_cache_read")
+    if usage.cache_write_tokens:
+        if one_hour is None:
+            dollars += usage.cache_write_tokens * cache_rate("input_cache_write", "input_cache_write_1h")
+        else:
+            if usage.cache_write_tokens - one_hour:
+                dollars += (usage.cache_write_tokens - one_hour) * cache_rate("input_cache_write")
+            if one_hour:
+                dollars += one_hour * cache_rate("input_cache_write_1h")
+    completion = prices.get("completion", Decimal(0))
+    reasoning = prices.get("internal_reasoning")
+    if reasoning is not None and reasoning != completion and usage.output_tokens:
+        if usage.reasoning_tokens is None:
+            return (
+                None,
+                False,
+                (
+                    f"it prices reasoning tokens at {reasoning} and other output at {completion}, and the reply did not "
+                    "say how many of its output tokens were reasoning"
+                ),
+            )
+        dollars += usage.reasoning_tokens * reasoning + (usage.output_tokens - usage.reasoning_tokens) * completion
+    else:
+        dollars += usage.output_tokens * completion
+    return dollars + prices.get(_REQUEST_FEE, Decimal(0)), approximate, None
 
 
 def _plain(model_id: str) -> str:
@@ -193,9 +280,10 @@ class Catalogue:
     together and learn from each other's refusals. Await :meth:`load` at boot when a model's
     :meth:`~threetears.evals.providers.Model.price_ceiling` must answer before its first call; a live call loads it
     otherwise, and refreshes it once its rows are older than ``refresh_after``. A price ceiling answers only from rows
-    younger than ``ceiling_stale_after``: a process that prices calls before making them, with no live call between,
-    awaits :meth:`load` on a timer, and sets ``refresh_after`` below ``ceiling_stale_after`` so a refresh is due
-    before the ceiling stops answering.
+    younger than ``ceiling_stale_after``; the engine awaits a model's
+    :meth:`~threetears.evals.providers.Model.refresh_prices`, which loads, before it prices a call, so rows reach
+    that age only when a refresh failed. ``ceiling_stale_after`` below ``refresh_after`` is refused: rows past it
+    would not be due a refresh, and no call could be priced.
 
     Attributes:
         url: Where the catalogue is read from.
@@ -222,18 +310,19 @@ class Catalogue:
             refresh_after: How long the rows read are kept before the next load fetches them again; zero refreshes
                 on every load.
             ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them; older, it answers
-                no ceiling. ``None`` is ``refresh_after``.
+                no ceiling. ``None`` is ``refresh_after``; below it is refused.
 
         Raises:
-            ValueError: ``refresh_after`` or ``ceiling_stale_after`` is negative.
+            ValueError: ``refresh_after`` is negative, or ``ceiling_stale_after`` is below it.
         """
         if refresh_after < timedelta(0):
             raise ValueError(
                 f"refresh_after {refresh_after} is negative: a catalogue keeps its rows for no time or more"
             )
-        if ceiling_stale_after is not None and ceiling_stale_after < timedelta(0):
+        if ceiling_stale_after is not None and ceiling_stale_after < refresh_after:
             raise ValueError(
-                f"ceiling_stale_after {ceiling_stale_after} is negative: a ceiling answers from rows of no age or more"
+                f"ceiling_stale_after {ceiling_stale_after} is below refresh_after {refresh_after}: rows past it would "
+                "not be due a refresh, so no call could be priced from them"
             )
         self.url = url
         self.refresh_after = refresh_after
@@ -389,6 +478,58 @@ class Catalogue:
         if ceiling is None:
             return None, f"{model_id!r} cannot be bounded: {why}"
         return ceiling, None
+
+    def cost(
+        self,
+        model_id: str,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        reasoning_tokens: int | None = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        cache_write_1h_tokens: int | None = 0,
+    ) -> tuple[Decimal | None, bool, str | None]:
+        """What a call on the model cost, from what its reply reports, priced as the ceiling bounds it.
+
+        Priced at the tier its prompt fell in, and from the rows held however old (a completion discloses that with
+        ``pricing_stale_since``). A cache share priced at a rate the row does not list for it (the plain prompt rate,
+        or the dearer of two write rates the reply does not split between) is approximate.
+
+        Args:
+            model_id: The catalogue's id for the model.
+            input_tokens: Prompt tokens, cache reads and writes included.
+            output_tokens: Completion tokens, reasoning included.
+            reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when the reply does not split it.
+            cache_read_tokens: Prompt tokens read from a cache.
+            cache_write_tokens: Prompt tokens written to a cache, both lifetimes.
+            cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply does not
+                split it.
+
+        Returns:
+            ``(cost, approximate, None)``, or ``(None, False, why)``: not loaded, no priced row, a price that cannot
+            be read or bounded, or one that applies and that the reply's counts cannot price.
+        """
+        if self._rows is None:
+            return None, False, "the price catalogue has not been read"
+        row = self._rows.get(model_id)
+        if row is None or row.rates is None:
+            return None, False, f"no priced row of OpenRouter's catalogue is {model_id!r}"
+        usage = _Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cache_write_1h_tokens=cache_write_1h_tokens,
+        )
+        prices, why = _prices(row, input_tokens)
+        if prices is None:
+            return None, False, f"{model_id!r} cannot be priced: {why}"
+        cost, approximate, unpriced = _cost(prices, usage)
+        if cost is None:
+            return None, False, f"{model_id!r} cannot be priced: {unpriced}"
+        return cost, approximate, None
 
     def supported_parameters(self, model_id: str) -> frozenset[str] | None:
         """The parameters some endpoint of the model takes, or ``None`` when the catalogue does not say.

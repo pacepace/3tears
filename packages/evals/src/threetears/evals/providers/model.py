@@ -66,8 +66,8 @@ _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
 #: The tokens a price ceiling allows for a prompt's framing beyond its text (role markers, a schema's re-encoding).
 _FRAMING_TOKENS: Final = 2048
 
-#: What a catalogue-priced cost's source gains when the prompt read or wrote a cache: the cost prices every prompt
-#: token at the plain input rate, though a cache read or write bills at another.
+#: What a catalogue-priced cost's source gains when a cache read or write was priced at a rate the catalogue row does
+#: not list for it: the plain prompt rate, or the dearer of two write rates the reply does not split between.
 _CACHE_APPROXIMATE: Final = ";cache-approximate"
 
 #: When this module was imported. Under ``RECORD=1`` a recording last written before it is from an earlier run and
@@ -100,8 +100,8 @@ class Completion:
         cost_usd: What the call cost, or ``None`` when unpriced (``pricing_failure`` says why).
         price_source: Who priced it, in :class:`~threetears.evals.providers.PriceSource`'s words: ``openrouter:reported``
             (OpenRouter's figure), ``openrouter:reported+upstream`` (its fee and a bring-your-own-key upstream's
-            charge), or ``openrouter-catalogue:<id>`` (tokens times the catalogue's rates, ending
-            ``;cache-approximate`` when a cache was read or written).
+            charge), or ``openrouter-catalogue:<id>`` (the reply's tokens priced by the catalogue row, ending
+            ``;cache-approximate`` when a cache share was priced at a rate the row does not list for it).
         model: The model id the client was built for.
         served_model: The model the reply named; ``None`` when it named none, or named a requested alias back.
         temperature: The temperature the served request carried, or ``None``.
@@ -374,10 +374,23 @@ class _Live:
             return None, None, f"no single priced row of OpenRouter's catalogue matches {self.model_name!r}", None
         if reply.input_tokens is None or reply.output_tokens is None:
             return None, None, "the reply reported no input or output token count, so there is nothing to price", None
-        dollars = reply.input_tokens * rates[0] + reply.output_tokens * rates[1]
-        marker = _CACHE_APPROXIMATE if reply.cache_tokens else ""
+        dollars, approximate, why = self._catalogue.cost(
+            matched,
+            input_tokens=reply.input_tokens,
+            output_tokens=reply.output_tokens,
+            reasoning_tokens=reply.reasoning_tokens,
+            cache_read_tokens=reply.cache_read_tokens,
+            cache_write_tokens=reply.cache_write_tokens,
+            cache_write_1h_tokens=reply.cache_write_1h_tokens,
+        )
+        if dollars is None:
+            return None, None, why, None
+        marker = _CACHE_APPROXIMATE if approximate else ""
         source = f"{PriceSource.OPENROUTER_CATALOGUE}:{matched}{marker}"
         return float(dollars), source, None, self._catalogue.stale_since
+
+    async def refresh_prices(self) -> None:
+        await self._load_catalogue()
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         matched = self._catalogue_id()
@@ -688,7 +701,9 @@ class Model:
         long-context tier the prompt bound reaches. ``None``, never a lower figure, until the catalogue is loaded
         (await :meth:`Catalogue.load` on the one handed in, or :meth:`Clients.load_prices`), once its rows are
         ``Catalogue.ceiling_stale_after`` old, for a model it does not price, and for a row listing a price the client
-        cannot bound; each reason is logged at WARNING once. ``0.0`` while replaying.
+        cannot bound; each reason is logged at WARNING once. The engine awaits :meth:`refresh_prices` before it prices
+        a call, so rows go that old only when a refresh failed, not because the model sat idle. ``0.0`` while
+        replaying.
 
         Args:
             system: The system message the call would send.
@@ -699,6 +714,16 @@ class Model:
             The ceiling in dollars, or ``None``.
         """
         return self._client.price_ceiling(system=system, user=user, response_format=response_format)
+
+    async def refresh_prices(self) -> None:
+        """Read the catalogue, or refresh rows past ``refresh_after``, as a live call does before it is sent.
+
+        What the engine awaits before it prices a call (:func:`~threetears.evals.kernel.capped_completion.refresh_prices`),
+        so a model idle past ``Catalogue.ceiling_stale_after`` is priced from fresh rows rather than refused. Loads
+        made together share one fetch. Never raises: a first read that fails leaves :meth:`price_ceiling` ``None``,
+        and a refresh that fails keeps the rows, stale, as a live call does; either is logged. Free while replaying.
+        """
+        await self._client.refresh_prices()
 
     async def aclose(self) -> None:
         """Close the HTTP client the model opened; one handed in is the caller's."""
@@ -736,6 +761,9 @@ class _Lease:
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         return self._model.price_ceiling(system=system, user=user, response_format=response_format)
+
+    async def refresh_prices(self) -> None:
+        await self._model.refresh_prices()
 
     async def aclose(self) -> None:
         """Release nothing: the factory closes its models in :meth:`Clients.aclose`."""

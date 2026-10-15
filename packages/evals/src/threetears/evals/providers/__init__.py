@@ -25,8 +25,8 @@ What a completion carries, member by member:
   (:mod:`threetears.evals.negotiation` chooses them, reads a refusal and resends; nothing else is retried).
 * ``cost_usd``: on OpenRouter its own reported figure, and under bring-your-own-key that figure plus
   ``cost_details.upstream_inference_cost`` (a BYOK reply without it is unpriced, as is a reply carrying no
-  ``is_byok``); on Anthropic and OpenAI, tokens
-  times OpenRouter's catalogue rates for the matching ``vendor/model`` row. ``price_source`` names which, in
+  ``is_byok``); on Anthropic and OpenAI, the reply's tokens priced by OpenRouter's catalogue row for the matching
+  ``vendor/model`` (the tier its prompt fell in, reasoning and cache tokens at their rates, the request fee). ``price_source`` names which, in
   :class:`PriceSource`'s words (``openrouter:reported``, ``openrouter:reported+upstream``,
   ``openrouter-catalogue:<id>``). Unpriced is ``None`` with
   ``pricing_failure`` saying why, never ``0``. The catalogue refreshes every ``refresh_after`` (six hours by
