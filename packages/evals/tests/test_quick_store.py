@@ -122,7 +122,7 @@ async def test_a_comparison_keeps_its_margins_with_a_store(tmp_path: Path) -> No
             k=2,
         ).run(store=store, scope="kept")
     (row,) = comparison.contrasts("correct")
-    assert row["verdict"].startswith("equivalent to the control") and "(margin ±0.1)" in row["verdict"]
+    assert row["verdict"].startswith("equivalent to the control") and "(margin ±10 pts)" in row["verdict"]
     with SqliteDocumentStore(path) as reopened:
         host = callable_host([correct], arms=True, margins={"correct": 0.1}, store=reopened)
         assert [campaign.id for campaign in off_loop(list_campaigns, host.storage, "kept")] == [comparison.campaign_id]

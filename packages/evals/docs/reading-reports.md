@@ -206,7 +206,10 @@ Every verdict here is also a typed value (`report.verdicts`, `Result.verdicts()`
 `Result.contrasts()`): its outcome, a reason code, the margin it read and where that came from
 (`margin_source`: `measure`, `run` or, for a judged guardrail, `campaign`), its materiality, and whether it is a
 guardrail. The printed verdict is rendered from it, so code branches on the outcome, never on the words. The
-same values drive the CI gate ([`gate`](serving.md#gate)).
+same values drive the CI gate ([`gate`](serving.md#gate)). The typed values are in the measure's own units; the
+rows `Result.contrasts()` and `Result.guardrails()` return are the page's figures on the page's ruler (a share in
+percent, its change in points, a cost per 1,000 replies where the page states it so), and each contrast row's
+`unit` says which.
 
 `equivalent` needs a margin and a paired test. A host declares a measure's margin
 (`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on

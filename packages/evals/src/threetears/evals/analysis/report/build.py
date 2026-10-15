@@ -1985,14 +1985,16 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
 
     The page shows only the contrasts that can resolve; a program reads them all here. A contrast with a side under
     the case floor states no change, interval, effect size or p: on so few cases a rate states none. Every figure
-    is on the reading's one ruler for the report: a share in percent, its change and interval in points; a cost on
-    the scale its ``reading`` names.
+    is the page's, on the reading's one ruler for the report, and ``unit`` names it: a share in percent (its change
+    and interval in points), a cost on the scale its ``reading`` names, a time in the unit the page states it in. A
+    program that wants the measure's own units reads :attr:`Report.verdicts` or the bundle, never these rows.
 
     Args:
         bundle: The campaign's evidence.
 
     Returns:
         One row per contrast, keyed ``question`` (in the words it was asked, or ``(campaign-wide)``), ``reading``,
+        ``unit`` (the unit ``control_mean``, ``arm_mean`` and ``delta`` are in; a percent's delta is in points),
         ``contrast`` and ``control`` (each arm as the page names it), ``control_mean``, ``arm_mean``, ``delta`` and
         ``change`` (the delta with its interval, in words), ``interval`` (with the level it holds at), ``hedges_g``,
         ``pairing_r``, ``p_adjusted``, ``verdict`` (in words) and ``cases``.
@@ -2016,6 +2018,7 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
                         else "(campaign-wide)"
                     ),
                     "reading": ruler.scaled(verdict.heading),
+                    "unit": ruler.unit,
                     "contrast": verdict.arm,
                     "control": verdict.control,
                     "control_mean": _figure(comparison.control.mean, ruler).value,
