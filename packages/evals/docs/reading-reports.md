@@ -150,7 +150,8 @@ Glossary start folded, and a nav link opens the one it lands on.
   line (`180 trials ran. Of them 161 passed and 19 failed.`) and only what went wrong: one row per failed or lost
   trial, the failed first, and each one's record under `T4 · double-charge · cheaper candidate · failed` (never the
   start of what the case asked), the first twelve open. A failed check is named by its expression, as code
-  (``check: `call_count("music.queue_track") >= 2` ``). The passed trials are one closed `Passed trials` table
+  (``check: `call_count("music.queue_track") >= 2` ``), and a judge's fail by its dimensions (`judge: tone`), else
+  `failed by the judge`. The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
 - **Not tested**: what the campaign could not speak to, one line each. A lever that ran at one level
@@ -181,7 +182,9 @@ is left is counted there (`style: N violations`) and listed.
 
 The page draws two marks, as inline SVG with no dependency. The **outcome bar**, under the scoreboard, is the page's
 one chart: a census, so it is always drawn, one bar per arm with its label above it, passed, failed and lost to the
-test setup cause by cause, each count written beside the bar, and a key naming only the states that occur. An
+test setup cause by cause, each count written beside the bar, and a key naming only the states that occur. A
+failure's causes share its one colour and differ in ink alone (solid, then a lighter tone), each alike on every bar,
+and the key names each (`failed: check`, `failed: judge`); a lost cause's edge is dashed, the next dotted. An
 **interval glyph** is drawn in the table row that states the figure (Tufte's table-graphic): the interval as a
 whisker, the point as a dot, a zero line for a change, and a declared margin as a quiet band. Every cell of a column
 in one unit shares one scale, written once under the table (`Change drawn from -7 to 36.7 pts`), so the rows compare

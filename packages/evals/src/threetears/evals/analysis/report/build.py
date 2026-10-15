@@ -2930,7 +2930,7 @@ def _trial_why(trial: TrialRow) -> str | None:
         return "check: " + ", ".join(code(check.expression) for check in trial.failed_checks)
     if trial.cause == "judged":
         under = [entry.dim for entry in trial.judge if entry.scale == "pass_fail" and entry.score == 0]
-        return "judge: " + (", ".join(humanize("dimension", dim) for dim in under) or "scored below the bar")
+        return "judge: " + ", ".join(humanize("dimension", dim) for dim in under) if under else "failed by the judge"
     return cause_short(trial.cause or "unknown")
 
 

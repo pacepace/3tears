@@ -122,9 +122,9 @@ FAIL_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
         short="check",
     ),
     "judged": CauseWords(
-        words="a judged dimension scored under the bar",
+        words="failed by the judge, on a judged dimension",
         remedy="read the judge's reasons below",
-        short="below the bar",
+        short="judge",
     ),
 }
 
