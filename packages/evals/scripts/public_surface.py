@@ -611,6 +611,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # An authored judge case in a host's boot seed, which a production seed builds in memory
         # (`SeedCorpus(judge_cases=...)`) as well as reads from `judge_cases/*.json`.
         "threetears.evals.run.SeedJudgeCase",
+        # A release step brings seeded definitions up to date: the drift read over its corpus, the reset, and the two
+        # catalogue actions a host mounts over them (Discodon runs the read and the reset as a release step).
+        "threetears.evals.run.definition_drift",
+        "threetears.evals.run.reset_definitions",
+        "threetears.evals.actions.definition_drift_actions",
         "threetears.evals.kernel.default_job_timeout",
         "threetears.evals.kernel.EvalCampaign",
         # The stored documents a host's kind and launcher build and its own code reads back.
@@ -819,8 +824,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.quick.WorldRunner",
         "threetears.evals.quick.run_cli",
         # What a `Result` hands back when it is read case by case, verdict by verdict, or label by label.
-        "threetears.evals.analysis.CaseResult",
-        "threetears.evals.analysis.LabelStatistics",
         "threetears.evals.analysis.Verdict",
         # How a report speaks: the prose lint every rendered sentence and a memo's are held to, the one seam an
         # identifier passes on its way to a reader, and the glossary of every term of art a page links.
@@ -941,7 +944,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.providers.Provider",
         # A production host's further bindings in `threetears.evals.analysis`: what Discodon's production code imports.
         "threetears.evals.analysis.AsRecordedReporterKind",
-        "threetears.evals.analysis.CampaignReadStore",
         "threetears.evals.analysis.REPORTER_KIND",
         "threetears.evals.analysis.ReporterKind",
         "threetears.evals.analysis.ReporterOverlays",
