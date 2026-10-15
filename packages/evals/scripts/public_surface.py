@@ -618,6 +618,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # catalogue actions a host mounts over them (Discodon runs the read and the reset as a release step).
         "threetears.evals.run.definition_drift",
         "threetears.evals.run.reset_definitions",
+        # What the reset returns, and the digests a host computes over the corpus it seeded before `.30` (the guide
+        # tells a host to write both).
+        "threetears.evals.run.DefinitionReset",
+        "threetears.evals.run.corpus_digests",
         "threetears.evals.actions.definition_drift_actions",
         "threetears.evals.kernel.default_job_timeout",
         "threetears.evals.kernel.EvalCampaign",
@@ -790,6 +794,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.Model",
         "threetears.evals.providers.Clients",
         "threetears.evals.providers.Catalogue",
+        # The timeout the catalogue fetches with on its own, which a host handing it an `http` client matches.
+        "threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S",
         "threetears.evals.providers.describe_failure",
         "threetears.evals.providers.ProviderError",
         # The words the client writes as a completion's `price_source`, which a host reading spend back compares with.
@@ -969,11 +975,8 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.DeliveryTicket",
         "threetears.evals.kernel.EvalJobTimeout",
         "threetears.evals.kernel.ExternalRateTable",
-        "threetears.evals.kernel.FIND_TEMPLATE",
         "threetears.evals.kernel.JUDGE_KIND_CONTRACT",
         "threetears.evals.kernel.JUDGE_KIND_MEASURES",
-        "threetears.evals.kernel.KIND_TEMPLATE",
-        "threetears.evals.kernel.KIND_TEXT",
         "threetears.evals.kernel.MeritAxis",
         "threetears.evals.kernel.OutOfRunBudget",
         "threetears.evals.kernel.PlannedCall",

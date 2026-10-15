@@ -1864,7 +1864,7 @@
     "threetears.evals.kernel.FIND_TEMPLATE": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.kernel.FIND_TEST_CASE": {
       "kind": "constant (str)",
@@ -2149,12 +2149,12 @@
     "threetears.evals.kernel.KIND_TEMPLATE": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.kernel.KIND_TEXT": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.kernel.lease_lapsed": {
       "kind": "function",
@@ -3403,8 +3403,8 @@
     },
     "threetears.evals.run.corpus_digests": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "corpus_digests(host: EvalHost, corpus: SeedCorpus) -> dict[str, str]",
+      "tier": "host-contract"
     },
     "threetears.evals.run.create_judge_config": {
       "kind": "function",
@@ -3458,8 +3458,8 @@
     },
     "threetears.evals.run.DefinitionReset": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "DefinitionReset(scope_id: str, reset: list[ResetDefinition], after: DefinitionDrift)",
+      "tier": "host-contract"
     },
     "threetears.evals.run.DefinitionState": {
       "kind": "literal",
@@ -4048,7 +4048,7 @@
     },
     "threetears.evals.run.reset_definitions": {
       "kind": "function",
-      "signature": "reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], discard_customization: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset",
+      "signature": "reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], overwrite_customized: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset",
       "tier": "host-contract"
     },
     "threetears.evals.run.ResetDefinition": {
@@ -7539,7 +7539,7 @@
     "threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S": {
       "kind": "constant (float)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "host-contract"
     },
     "threetears.evals.providers.Clients": {
       "kind": "class",

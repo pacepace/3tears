@@ -15,7 +15,7 @@ Pinned here:
 - **The seed never grows a battery**: a case the corpus adds to a judge template already holding cases is withheld
   (``needs_reset``), with any case set listing it; the drift read calls the template stale, and its reset writes the
   next revision with every case. A first boot seeds a template and its cases together.
-- **A customized or unknown definition is refused**, nothing written, every refusal named; ``discard_customization``
+- **A customized or unknown definition is refused**, nothing written, every refusal named; ``overwrite_customized``
   accepts it.
 - **A pre-.30 row** reads ``unknown``, or ``stale`` when the host supplies the digest of what it seeded then. The
   supplied map is the whole of what the host seeded, so a judge case it does not name reads ``stale`` (never seeded,
@@ -522,9 +522,9 @@ def test_customized_definitions_are_refused_all_named_and_nothing_written_then_a
         _reset(storage, moved, keys)
 
     said = str(refused.value)
-    assert all(key in said for key in keys) and "discard_customization=True" in refused.value.remedy, said
+    assert all(key in said for key in keys) and "overwrite_customized=True" in refused.value.remedy, said
     assert store.documents == before, "a refused reset writes nothing"
-    reset = _reset(storage, moved, keys, discard_customization=True)
+    reset = _reset(storage, moved, keys, overwrite_customized=True)
     assert [entry.discarded for entry in reset.reset] == [True, True]
     assert all(_states(reset.after)[key] == "current" for key in keys)
 
@@ -555,7 +555,7 @@ def test_an_unknown_row_is_reset_with_discard() -> None:
     moved = _full_corpus(templates=(_template_moved(), _judge_template()))
     key = f"eval_template/{toyhost_judged_template().name}"
 
-    reset = _reset(storage, moved, [key], discard_customization=True)
+    reset = _reset(storage, moved, [key], overwrite_customized=True)
 
     assert (reset.reset[0].before, reset.reset[0].discarded) == ("unknown", True)
     assert _states(reset.after)[key] == "current"
@@ -613,7 +613,7 @@ def test_a_case_the_supplied_digests_name_that_nothing_stored_matches_reads_cust
     assert reading.reason == "seeded as its corpus content, since removed by an operator"
     with pytest.raises(ConflictError, match="customized"):
         _reset(storage, _grown(), [GROWN_KEY], seeded_digests=then)
-    reset = _reset(storage, _grown(), [GROWN_KEY], seeded_digests=then, discard_customization=True)
+    reset = _reset(storage, _grown(), [GROWN_KEY], seeded_digests=then, overwrite_customized=True)
     assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
 
 
@@ -643,7 +643,7 @@ def test_a_judge_template_whose_revision_holds_cases_the_corpus_does_not_carry_i
     with pytest.raises(ConflictError, match="does not carry"):
         _reset(storage, moved, [key])
 
-    reset = _reset(storage, moved, [key], discard_customization=True)
+    reset = _reset(storage, moved, [key], overwrite_customized=True)
     assert _states(reset.after)[key] == "current"
 
 
@@ -676,10 +676,10 @@ async def test_the_actions_read_drift_refuse_a_customized_reset_and_reset_with_d
     drift = await tool.call({"action": "definitions_drift"}, host=host, caller=caller)
     refused = await tool.call({"action": "definitions_reset", "definitions": [key]}, host=host, caller=caller)
     reset = await tool.call(
-        {"action": "definitions_reset", "definitions": [key], "discard_customization": True}, host=host, caller=caller
+        {"action": "definitions_reset", "definitions": [key], "overwrite_customized": True}, host=host, caller=caller
     )
 
     assert drift.text.splitlines()[0] == "drift: 0 stale, 1 customized, 0 unknown, 0 absent, 6 current", drift.text
-    assert refused.is_error and key in refused.text and "discard_customization" in refused.text, refused.text
+    assert refused.is_error and key in refused.text and "overwrite_customized" in refused.text, refused.text
     assert not reset.is_error and f"{key}: customized -> revision 2" in reset.text, reset.text
     assert reset.text.splitlines()[-1] == "drift: 0 stale, 0 customized, 0 unknown, 0 absent, 7 current"

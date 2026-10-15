@@ -299,18 +299,12 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 - **`CONFUSION_CELL_MEASURE`** · constant (str) · The core measure a classification's confusion-matrix cell is reported under.
   <br>`= 'confusion_cell'`
-- **`FIND_TEMPLATE`** · constant (str) · How a caller finds a template's id.
-  <br>`= "templates_list names this scope's templates"`
 - **`IDENTITY_VERSION`** · *host contract* · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.
   <br>`= 24`
 - **`JUDGE_KIND`** · constant (str) · The `candidate_kind` a judge template declares.
   <br>`= 'judge'`
 - **`JUDGE_KIND_CONTRACT`** · constant (KindContract) · The judge kind's contract: its overlays, and the rig it fills.
 - **`JUDGE_KIND_MEASURES`** · constant (tuple) · The measures a judge trial lands on `host_measures`, for a host to declare on its measure registry.
-- **`KIND_TEMPLATE`** · constant (str) · A seed whose constant is a sectioned template, registered with a template registry.
-  <br>`= 'template'`
-- **`KIND_TEXT`** · constant (str) · A seed whose constant is a single string, registered with a shared-prompt registry.
-  <br>`= 'text'`
 - **`MATCH_MEASURE`** · constant (str) · The core measure one classification's verdict is reported under — the one a classifier kind lands on `host_measures`, a bool.
   <br>`= 'match'`
 - **`SEED_PROMPTS`** · constant (tuple) · Every prompt the engine ships a default for, in the order a registry seeds them.
@@ -379,6 +373,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`assert_preconditions(template: EvalTemplate, test_case: EvalTestCase, seeded: Mapping[str, Any], *, world: WorldRegistry | None) -> list[PreconditionOutcome]`
 - **`build_judge_service`** · function · Build the `JudgeService` for a run, with its judge attribution.
   <br>`build_judge_service(host: EvalHost, template: EvalTemplate, judge_model: str, selection: dict[str, str] | None = None, *, judged_artifact: JudgedArtifact) -> RunJudge`
+- **`corpus_digests`** · *host contract* · function · The digest of every definition of a corpus, by its key: what a seed of it records.
+  <br>`corpus_digests(host: EvalHost, corpus: SeedCorpus) -> dict[str, str]`
 - **`create_template`** · function · Create and persist a template from an authoring definition.
   <br>`create_template(host: EvalHost, definition: dict[str, Any], *, scope_id: str, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> EvalTemplate`
 - **`definition_drift`** · *host contract* · function · Read every definition of a seed corpus against its scope's stored one. Writes nothing, spends nothing.
@@ -430,7 +426,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
 - **`reset_definitions`** · *host contract* · function · Write the corpus's content for the named definitions, each as a new revision or record, never in place.
-  <br>`reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], discard_customization: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset`
+  <br>`reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], overwrite_customized: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset`
 - **`resolve_judge_pin`** · function · The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
   <br>`resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str`
 - **`run_blocking`** · *host contract* · async function · Run `fn(*args, **kwargs)` on `executor` and await its result.
@@ -458,6 +454,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`CandidateTurn`** · dataclass · One candidate-side response captured by the kind and fed back into the simulator.
 - **`CellContext`** · dataclass · What the runner knows about one cell when it asks a kind's factory for the cell's kind.
 - **`CellExecutor`** · protocol · Runs a run's cells, at most `width` at once, starting them in the order given.
+- **`DefinitionReset`** · *host contract* · model · What a reset wrote, and how the corpus reads after it.
 - **`FidelityContract`** · dataclass · One shared construction path and the callers required to reach it.
 - **`GoalCheckUnevaluable`** · exception · A goal check raised while being evaluated — a fault of the rig, not a verdict on the candidate.
 - **`JudgeRepeatReport`** · model · What a repeat did: which results it recorded a repeat on, what it spent, and what it left out.
@@ -913,6 +910,11 @@ The completion client: a model id in, the engine's completion port out, over eac
 
 - **`Provider`** · literal · The providers the client speaks to: OpenRouter, Anthropic's Messages API, and any OpenAI-compatible chat endpoint.
   <br>`'openrouter'` | `'anthropic'` | `'openai'`
+
+**Constants**
+
+- **`CATALOGUE_FETCH_TIMEOUT_S`** · *host contract* · constant (float) · How long the catalogue fetch may take, in seconds, on a client the catalogue opens itself.
+  <br>`= 30.0`
 
 **Also exported here**
 

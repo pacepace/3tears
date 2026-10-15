@@ -1420,7 +1420,7 @@ same name (`EvalTemplate.revision`), the old one archived and readable by id, so
 the content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest
 revision. A judge case resets with its judge template, whose new revision holds the corpus's whole battery, and the
 corpus's case sets over it are minted again. The reset refuses `customized` and `unknown`, and a judge template holding
-live cases the corpus does not carry, unless `discard_customization=True`; it writes nothing when it refuses and names
+live cases the corpus does not carry, unless `overwrite_customized=True`; it writes nothing when it refuses and names
 every refusal. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
 bundle), since their results are two datasets; two templates that only share a name at one revision number are not
 revisions of each other and are not refused. For rows seeded before `.30`, compute `corpus_digests(host, corpus)`
