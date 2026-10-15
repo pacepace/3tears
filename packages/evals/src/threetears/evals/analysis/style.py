@@ -160,8 +160,8 @@ GLOSSARY: dict[str, str] = {
     "failed by judge": "A trial the judge model scored below the bar on some dimension.",
     "cost per reply": "What production would spend per reply, from the models the arm runs.",
     "case floor": (
-        "Five independent cases per arm: under that, rates are counts and no gap is estimated; from there, an "
-        "interval says how precisely a gap is known."
+        "Five independent cases per arm: below it a gap has no interval; from there an interval says whether the "
+        "gap would hold on more cases."
     ),
     "separated": "The difference from the control is larger than chance explains, after correcting for every test.",
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",

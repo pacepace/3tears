@@ -86,10 +86,11 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   it, in normal weight, never bold, never first, the facts that change how the verdict is read and nothing else, in
   this order: the case floor; an arm's label that its own row contradicts (`'cheaper candidate' is not cheaper: it
   cost more per reply than production.`, latency only where it was read serially); an arm whose every trial failed.
-  A "too few" line says what is withheld and why, in the reader's terms, never a bare count: `4 cases per arm: keep
-  follows from the counts above. No estimate of how much worse the candidate is: a gap is estimated only from 5
-  independent cases.` where a declared rule settled keep, `Usable cases: v4.1-flash 3, v4-flash 1. Under 5
-  independent cases a rate is shown as a count, and how far apart the arms are is not estimated.` otherwise.
+  A "too few" line says what is withheld and why, in the reader's terms, never a bare count — and what is withheld
+  is only the interval, never the gap, which is measured and stated: `4 cases per arm: keep follows from the counts
+  above. Whether the gap holds on more cases is not estimated: an interval takes 5 independent cases.` where a
+  declared rule settled keep, `Usable cases: v4.1-flash 3, v4-flash 1. Under 5 independent cases a rate is shown as
+  a count, and whether the arms' gap holds on more cases is not estimated.` otherwise.
   Everything else is a step down: what was not charted and where a cost is a floor are in the Methods.
 
 The floor counts independent cases, never trials or repeats. Below it no interval is estimated: no contrast is tested,
@@ -117,7 +118,7 @@ reading.
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Where a
   clause of a settled rule reads the finding's one reading, the sentence is code's: the two values plainly, then
   under the case floor one sentence of what is not estimated (`Cheaper candidate cost $3.301 per 1,000 replies to
-  production's $3.092. The size of the difference is not estimated below 5 independent cases.`). Findings are
+  production's $3.092. Whether that gap holds on more cases is not estimated below 5 independent cases.`). Findings are
   evidence: one that names no reading is not a finding, so it is not laid out here but noted in one line under Not
   tested (`The analysis also noted: …`). Where a declared rule settled every clause, its question has no answer
   line: the verdict and the Decision table answer it; a clause left open is the one line (`Still open: whether …`).

@@ -1304,9 +1304,10 @@ def _settled_sentence(
     """A finding's one reading, which a clause of the declared rule settled, as code says it: the two values plainly,
     candidate first, then under the case floor one sentence of what is not estimated and why.
 
-    ``Cheaper candidate passed 6 of 12 on `call_count("inventory.place_order") >= 2` to production's 11. The size of
-    the difference is not estimated below 5 independent cases.`` None where no settled clause reads the finding's one
-    reading on the control and the candidate.
+    ``Cheaper candidate passed 6 of 12 on `call_count("inventory.place_order") >= 2` to production's 11. Whether that
+    gap holds on more cases is not estimated below 5 independent cases.`` The gap is measured and stated; what the
+    floor withholds is its interval. None where no settled clause reads the finding's one reading on the control and
+    the candidate.
     """
     rule = style.rule
     if rule is None or bundle is None or resolution is None or len(values) != 2:
@@ -1332,7 +1333,7 @@ def _settled_sentence(
     fewest = rule.readings.fewest_cases() if rule.readings is not None else None
     if fewest is None or fewest >= MIN_CASES:
         return f"{said}."
-    return f"{said}. The size of the difference is not estimated below {MIN_CASES} independent cases."
+    return f"{said}. Whether that gap holds on more cases is not estimated below {MIN_CASES} independent cases."
 
 
 def _rate_of(
@@ -1982,7 +1983,7 @@ def _comparison_blocks(
                 source="comparisons",
                 text=(
                     f"No contrast can resolve: a side has {min(under)} usable case{'' if min(under) == 1 else 's'}; "
-                    f"a difference is estimated only from {MIN_CASES} independent cases."
+                    f"a difference is tested only from {MIN_CASES} independent cases."
                 ),
                 term="case floor",
             )

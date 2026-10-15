@@ -32,8 +32,9 @@ last.
 - **The first screen carries the minimum, and every fact that changes the reading.** The title is the campaign's
   name; the declared question is quoted on its own line, and its decision rule opens the Decision section beside
   its clauses (split where the parser splits it). A "too few cases" line says what is withheld and why
-  (`4 cases per arm: keep follows from the counts above. No estimate of how much worse the candidate is: a gap is
-  estimated only from 5 independent cases.`), never a bare number. An arm's label its row contradicts is said
+  (`4 cases per arm: keep follows from the counts above. Whether the gap holds on more cases is not estimated: an
+  interval takes 5 independent cases.`) — the gap is measured and stated, only its interval is withheld — never a
+  bare number. An arm's label its row contradicts is said
   under the scoreboard (`'cheaper candidate' is not cheaper: it cost more per reply than production.`). A finding
   that stands on no reading is filed under Not tested; Coverage is folded into Methods.
 - **Machine-readable:** `Result.contrasts()` rows are the page's figures on the page's ruler and now carry

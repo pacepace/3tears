@@ -302,15 +302,15 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             cases = f"{small[0].usable_cases} cases per arm"
         else:
             cases = "Usable cases " + ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
-        candidate = "the candidate" if len(verdicts) == 1 else "each candidate"
+        # The gap itself is measured and stated; what the floor withholds is the interval: whether it would hold.
         return [
-            f"{cases}: keep follows from the counts above. No estimate of how much worse {candidate} is: a gap is "
-            f"estimated only from {MIN_CASES} independent cases."
+            f"{cases}: keep follows from the counts above. Whether the gap holds on more cases is not estimated: an "
+            f"interval takes {MIN_CASES} independent cases."
         ]
     named = ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
     return [
-        f"Usable cases: {named}. Under {MIN_CASES} independent cases a rate is shown as a count, and how far apart "
-        "the arms are is not estimated."
+        f"Usable cases: {named}. Under {MIN_CASES} independent cases a rate is shown as a count, and whether the "
+        "arms' gap holds on more cases is not estimated."
     ]
 
 

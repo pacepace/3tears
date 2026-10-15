@@ -97,8 +97,8 @@ def test_exactly_one_chart_is_drawn_and_it_is_the_outcome_bar(g2: Report) -> Non
     # the floor and why, never a bare "needs 5".
     first = _first_screen_md(markdown)
     caveat = (
-        "Usable cases: v4.1-flash 3, v4-flash 1. Under 5 independent cases a rate is shown as a count, and how far "
-        "apart the arms are is not estimated."
+        "Usable cases: v4.1-flash 3, v4-flash 1. Under 5 independent cases a rate is shown as a count, and whether "
+        "the arms' gap holds on more cases is not estimated."
     )
     assert caveat in first.splitlines() and f"**{caveat}" not in first
     assert first.index(SCOREBOARD_HEADER) < first.index(caveat)
@@ -122,7 +122,7 @@ def test_the_contrasts_collapse_to_one_line_under_the_case_floor(g2: Report, doo
     # The challenger kept 2 usable trials, both of one case: no contrast can resolve, and none is a row.
     page = report_html(g2) if door == "html" else report_markdown(g2)
     assert (
-        "No contrast can resolve: a side has 1 usable case; a difference is estimated only from 5 independent cases."
+        "No contrast can resolve: a side has 1 usable case; a difference is tested only from 5 independent cases."
         in page
     )
     assert 'data-table="comparisons"' not in page and "| Reading | Arm | Change |" not in page

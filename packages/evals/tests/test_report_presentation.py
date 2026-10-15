@@ -86,8 +86,8 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     # the reader's terms; then the one other fact that changes how the verdict reads, the label its row contradicts.
     # Nothing else is under the scoreboard: the design is on line 2.
     caveat = (
-        "4 cases per arm: keep follows from the counts above. No estimate of how much worse the candidate is: a gap "
-        "is estimated only from 5 independent cases."
+        "4 cases per arm: keep follows from the counts above. Whether the gap holds on more cases is not estimated: "
+        "an interval takes 5 independent cases."
     )
     label = "'cheaper candidate' is not cheaper: it cost more per reply than production."
     assert caveat in first.splitlines(), "the case floor, in normal weight"

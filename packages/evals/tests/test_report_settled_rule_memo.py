@@ -152,12 +152,13 @@ async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_he
     )
     markdown = report_markdown(report)
     titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
-    # The two values plainly, then one sentence of what is not estimated and why: never a bare "needs 5".
+    # The two values plainly (the gap is measured and stated), then one sentence of what is withheld and why: the
+    # gap's interval, never the gap, and never a bare "needs 5".
     assert titles == [
-        "Cheaper candidate passed 2 of 12 on Label matched to production's 10. The size of the difference is not "
-        "estimated below 5 independent cases.",
-        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092. The size of the difference is not "
-        "estimated below 5 independent cases.",
+        "Cheaper candidate passed 2 of 12 on Label matched to production's 10. Whether that gap holds on more cases "
+        "is not estimated below 5 independent cases.",
+        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092. Whether that gap holds on more "
+        "cases is not estimated below 5 independent cases.",
     ]
     assert "cannot statistically confirm" not in markdown.split("## Methods", 1)[0]
     # The body keeps what it adds and drops its hedge: the title already states code's counts.
