@@ -52,6 +52,7 @@ from threetears.evals.analysis.agreement import (
     person_scores_by_result,
 )
 from threetears.evals.analysis.judge_drift import judge_drift
+from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.analysis.judge_profiles import judged_ratings, judges_tiers
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.contention import (
@@ -342,6 +343,13 @@ def assemble_context_bundle(
 
     # Deterministic input order → deterministic lens output → stable fingerprint.
     runs = sorted(resolved, key=lambda r: (r.created_at, r.id))
+    # Before anything pools them: runs of two revisions of one template are two datasets (`revisions`), and the cell
+    # algebra below has no coordinate that would keep them apart.
+    refuse_pooled_revisions(
+        (run.template_id for run in runs),
+        lambda template_id: storage.load_template(template_id, scope_id),
+        what=f"campaign {campaign.name!r}",
+    )
     # When the campaign's evidence began: its earliest member run, archived ones included (an archived run's results
     # existed all the same). A question asked after it confirms nothing (`preregistered_questions`).
     first_run_at = min((run.created_at for run in loaded.values()), default=None)

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 from pydantic import BaseModel, Field
 
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
@@ -247,6 +248,7 @@ def create_campaign(
     except ValidationError as e:
         raise ValidationFailedError(f"invalid campaign definition: {e}", remedy=SCHEMA_REMEDY) from e
     _refuse_runs_outside_scope(storage, campaign.run_ids, scope_id)
+    _refuse_pooled_revisions(storage, campaign.run_ids, scope_id, what=f"campaign {campaign.name!r}")
     campaign = campaign.model_copy(update={"template_id": _campaign_template(storage, campaign)})
     if campaign.declared_design is not None:
         campaign = campaign.model_copy(
@@ -349,6 +351,16 @@ def _templates_run(storage: CampaignStore, campaign: EvalCampaign) -> list[str]:
         if (run := storage.load_eval_run(run_id, campaign.scope_id)) is not None
     }
     return sorted(ran)
+
+
+def _refuse_pooled_revisions(storage: CampaignStore, run_ids: Sequence[str], scope_id: str, *, what: str) -> None:
+    """Refuse membership that would hold runs of two revisions of one template (:mod:`.revisions`).
+
+    Raises:
+        ValidationFailedError: Naming the template and its revisions; nothing was written.
+    """
+    ran = (run.template_id for run_id in run_ids if (run := storage.load_eval_run(run_id, scope_id)) is not None)
+    refuse_pooled_revisions(ran, lambda template_id: storage.load_template(template_id, scope_id), what=what)
 
 
 def _refuse_runs_outside_scope(storage: CampaignStore, run_ids: Sequence[str], scope_id: str) -> None:
@@ -859,6 +871,7 @@ def add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str
     if campaign is None:
         raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     _refuse_runs_outside_scope(storage, [run_id for run_id in run_ids if run_id not in campaign.run_ids], scope_id)
+    _refuse_pooled_revisions(storage, [*campaign.run_ids, *run_ids], scope_id, what=f"campaign {campaign.name!r}")
     seen = set(campaign.run_ids)
     merged = list(campaign.run_ids)
     for run_id in run_ids:
