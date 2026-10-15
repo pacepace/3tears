@@ -46,8 +46,9 @@ async def test_with_no_api_key_the_writer_repairs_the_canned_draft_from_the_reco
     assert replay.served() == 1, "the repair: the first draft is canned"
     assert out.startswith("ANTHROPIC_API_KEY is not set: replaying recordings/llm_analysis.jsonl, Claude (")
     # The code's verdict comes first, with its interval, for a reader to hold the analysis's conclusion against.
+    # The accuracy contrast's rows are on the percent ruler: its delta and interval in points.
     verdict = re.search(
-        r"\nCode's verdict: candidate vs baseline on Accuracy: delta \+0\.33, interval \[-[\d.]+, [\d.]+\] at 95%, "
+        r"\nCode's verdict: candidate vs baseline on Accuracy: delta \+33\.33, interval \[-[\d.]+, [\d.]+\] pts at 95%, "
         r"Holm-adjusted p [\d.e-]+: (.+)\n",
         out,
     )

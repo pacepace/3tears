@@ -258,8 +258,8 @@ And what the report (`.evals/reports/invoices/report.md`, the same page as `repo
 v1 (control) vs v2 · 14 Oct 2026
 **Exploratory: v2 separated from v1 on no reading. Guardrail undecided for v2: no invented total.**
 v2 is not known to be safe on the guardrail No invented total score.
-| Number score | v2 | 0.1667 | [-0.01363, 0.347] at 99% | not separated from the control | 30 paired |
-| No invented total score | v2 | 0.9889 | 0.9889 | 30 paired | 0 | [-0.1343, 0.1343] at 95% | 0.02 | undecided: not shown held, so not known to be safe (the interval on the difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within it nor beyond it) |
+| Number score | v2 | 16.7 pts | [-1.4, 34.7] pts | not separated from the control | 30 paired |
+| No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval on the difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within it nor beyond it) |
 | T12 | case 2 | v2 | failed | model failed |
 ```
 
@@ -267,7 +267,7 @@ v2 is not known to be safe on the guardrail No invented total score.
 rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones, and still
 no arm separated: on 30 invoices the corrected interval on that gain reaches just below zero. The guardrail is the
 question the report names as unanswered: each arm stated a total on one noisy invoice that prints none, the interval
-on the difference is ±0.13 against a margin of 0.02, and an undecided guardrail is never read as held, so the gate
+on the difference is ±13 points against a margin of 2 points, and an undecided guardrail is never read as held, so the gate
 fails and the run exits 4. What would answer it is a narrower interval on that guardrail, and only an invoice that
 prints no amount due can fail it (7 of the 30 do): more of those hard-negative cases. One v2 trial failed on malformed
 JSON from the model, and it counts against v2, stated, never excluded: a model's unusable answer is the candidate's

@@ -136,8 +136,9 @@ class TestWordsAndEvidenceReadOnTheRuler:
 
     def test_an_evidence_row_states_its_value_and_spread_on_the_ruler(self) -> None:
         surface = _surface(threshold=1500.0)
-        # What evidence_rows reads of an analysis: the decision surface it was resolved under.
-        subject = SimpleNamespace(decision_surface=surface)
+        # What evidence_rows reads of an analysis: the decision surface it was resolved under, and the frozen
+        # bundle's catalog, which says which measures are shares (none here).
+        subject = SimpleNamespace(decision_surface=surface, bundle={})
         slow = next(c for c in surface.cells if c.variant_key == entry(CANDIDATE).variant_key)
         row = EvidenceRow(
             cell_ref=cell_ref(slow.variant_key, slow.apparatus_class_id),
@@ -158,7 +159,7 @@ class TestWordsAndEvidenceReadOnTheRuler:
 
     def test_a_goal_check_s_pass_rate_is_stated_as_its_count(self) -> None:
         surface = _surface(threshold=1500.0)
-        subject = SimpleNamespace(decision_surface=surface)
+        subject = SimpleNamespace(decision_surface=surface, bundle={})
         cell = surface.cells[0]
         row = EvidenceRow(
             cell_ref=cell_ref(cell.variant_key, cell.apparatus_class_id),

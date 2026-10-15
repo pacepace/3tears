@@ -47,9 +47,13 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.references import cell_index, resolve_reading
 from threetears.evals.analysis.report.figures import (
     NO_SUCCESSFUL_RESULTS,
+    SHARE,
     UNITLESS,
     MeasureRuler,
-    measure_rulers,
+    Rulers,
+    analysis_rulers,
+    reply_cost_ruler,
+    report_rulers,
     surface_order_sentence,
 )
 from threetears.evals.analysis.report.model import (
@@ -116,7 +120,7 @@ from threetears.evals.analysis.style import (
     sentences,
 )
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
-from threetears.evals.analysis.quantities import with_unit
+from threetears.evals.analysis.quantities import PERCENT, delta_unit, is_money, number_in, with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.authored import Finding
 from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, ReadingKind, VariantIndexEntry
@@ -308,6 +312,7 @@ def _page(
     out is counted on the way, for the scoreboard's one line about what was not charted.
     """
     surface = bundle_decision_surface(bundle)
+    rulers = report_rulers(surface, bundle.measure_catalog)
     names = _arm_names(bundle)
     arm = _namer(names)
     cell_name = _cell_namer(surface, names)
@@ -316,8 +321,8 @@ def _page(
     bars_read = bar_verdicts(surface, cell_name)
     contrasts_read = contrast_verdicts(bundle, surface)
     written = memo(charts, names)
-    contrasts = _contrast_blocks(bundle, surface, contrasts_read, guardrails_read, charts, names)
-    contrasts += _bar_blocks(surface, bars_read)
+    contrasts = _contrast_blocks(bundle, surface, contrasts_read, guardrails_read, charts, names, rulers)
+    contrasts += _bar_blocks(surface, bars_read, rulers)
     notes = [block for block in contrasts if block.section == "methods"]
     contrasts = [block for block in contrasts if block.section != "methods"]
     if style is not None:
@@ -459,9 +464,21 @@ def _date(stamp: str) -> str:
     return f"{moment.day} {moment:%b %Y}"
 
 
-def _dollars(amount: float | None) -> str | None:
-    """A cost as the scoreboard prints it: ``$0.003092``; None where none was measured."""
-    return None if amount is None else f"${format_number(amount)}"
+def _dollars(amount: float | None, ruler: MeasureRuler = UNITLESS) -> str | None:
+    """A cost as the scoreboard prints it, on its ruler: ``$0.003092``, or ``$3.092`` per 1,000 replies; None where
+    none was measured."""
+    return None if amount is None else format_number(amount * ruler.factor, prefix="$")
+
+
+def _cost_ruler(bundle: AnalysisContextBundle) -> MeasureRuler:
+    """The ruler every cost per reply on the page is stated on, chosen over the scoreboard's arms."""
+    return reply_cost_ruler(board.reply_cost_usd for board in bundle.scoreboard)
+
+
+def _per_reply(bundle: AnalysisContextBundle | None) -> str:
+    """The words a sentence says a cost per reply is per: ``per reply``, or ``per 1,000 replies`` on that ruler."""
+    per = _cost_ruler(bundle).per if bundle is not None else ""
+    return per or "per reply"
 
 
 def _scoreboard_blocks(
@@ -479,6 +496,7 @@ def _scoreboard_blocks(
     earlier = bundle.design.earlier_control
     lost_any = any(board.lost for board in boards)
     other_causes = sorted({cause for board in boards for cause in board.failed if cause not in ("check", "judged")})
+    cost = _cost_ruler(bundle)
     rows: list[dict[str, CellValue]] = []
     for board in boards:
         row: dict[str, CellValue] = {
@@ -490,7 +508,7 @@ def _scoreboard_blocks(
             "passed": board.passed,
             "check": board.failed.get("check", 0),
             "judged": board.failed.get("judged", 0),
-            "cost": _dollars(board.reply_cost_usd),
+            "cost": _dollars(board.reply_cost_usd, cost),
         }
         if lost_any:
             row["lost"] = sum(board.lost.values())
@@ -507,7 +525,7 @@ def _scoreboard_blocks(
         TableColumn(key="check", header="Failed by check"),
         TableColumn(key="judged", header="Failed by judge"),
         *([TableColumn(key="other", header="Failed otherwise")] if other_causes else []),
-        TableColumn(key="cost", header="Cost per reply"),
+        TableColumn(key="cost", header=f"Cost {_per_reply(bundle)}"),
     ]
     rows = [{column.key: row[column.key] for column in columns} for row in rows]
     blocks: list[ReportBlock] = [
@@ -664,6 +682,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     if ruled is None or control is None:
         return []
     asked, rule = ruled
+    cost = _cost_ruler(bundle)
     rows: list[dict[str, CellValue]] = []
     for board in bundle.scoreboard:
         if board.variant_key == control:
@@ -673,7 +692,13 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
         for clause in verdict.clauses:
             shown: list[tuple[str, str | None, str | None]] = []
             if clause.clause.kind == "cost_lower":
-                shown = [("cost per reply", _dollars(readings.control_cost), _dollars(readings.candidate_cost))]
+                shown = [
+                    (
+                        f"cost {_per_reply(bundle)}",
+                        _dollars(readings.control_cost, cost),
+                        _dollars(readings.candidate_cost, cost),
+                    )
+                ]
             elif clause.clause.kind == "rate_drop":
                 shown = [
                     (
@@ -1128,7 +1153,7 @@ def _row_sentence(
         return None
     (measure,) = measures
     said = (
-        f"{candidate} cost {theirs} per reply to {label(control)}'s {ours}"
+        f"{candidate} cost {theirs} {_per_reply(bundle)} to {label(control)}'s {ours}"
         if measure == "production_replicating_cost"
         else f"{reading}: {candidate} {theirs} to {label(control)}'s {ours}"
     )
@@ -1174,7 +1199,7 @@ def _settled_sentence(
     (ours,) = [value for arm, value in values if arm == label(control)]
     ((candidate, theirs),) = [(arm, value) for arm, value in values if arm != label(control)]
     if measure == "production_replicating_cost" and rule.settles_cost():
-        said = f"{candidate} cost {theirs} per reply to {label(control)}'s {ours}"
+        said = f"{candidate} cost {theirs} {_per_reply(bundle)} to {label(control)}'s {ours}"
     elif (rate := _rate_of(bundle, rule, measure, control, candidate, label)) is not None and rule.settles(rate):
         said = (
             f"{candidate} passed {rate.candidate_passed} of {rate.candidate_n} on {rate.name} to {label(control)}'s "
@@ -1283,15 +1308,15 @@ def _finding_charts(
     """An interval chart per reading a finding cites, drawing the arms with the cases for one; none when none has."""
     blocks: list[ReportBlock] = []
     surface = analysis.decision_surface
-    rulers = measure_rulers(surface)
+    rulers = analysis_rulers(analysis)
     cited: dict[tuple[str, ReadingKind], list[str]] = {}
     for row in resolution.evidence:
         cells = cited.setdefault((row.measure_id, row.reading), [])
         if row.cell_ref not in cells:
             cells.append(row.cell_ref)
     for (name, reading), refs in cited.items():
-        ruler = rulers.get(name, UNITLESS) if reading == "measure" else UNITLESS
-        what = reading_heading(surface, name, reading)
+        ruler = rulers.of(name, reading)
+        what = ruler.scaled(reading_heading(surface, name, reading))
         rows = []
         for ref in refs:
             try:
@@ -1442,6 +1467,7 @@ def _contrast_blocks(
     guardrails_read: Sequence[Verdict],
     charts: _ChartLedger,
     names: dict[str, ArmName],
+    rulers: Rulers,
 ) -> list[ReportBlock]:
     """The contrasts against the control, their charts, the guardrails, and the readings by stratum and label.
 
@@ -1451,10 +1477,10 @@ def _contrast_blocks(
     blocks: list[ReportBlock] = []
     blocks.extend(_self_judging_blocks(bundle, surface, arm))
     blocks.extend(_guardrail_standing_blocks(bundle, arm))
-    blocks.extend(_comparison_blocks(bundle, surface, contrasts_read, charts, arm))
-    blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read))
-    blocks.extend(_strata_blocks(surface, names))
-    blocks.extend(_label_blocks(surface, names))
+    blocks.extend(_comparison_blocks(bundle, surface, contrasts_read, charts, arm, rulers))
+    blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read, rulers))
+    blocks.extend(_strata_blocks(surface, names, rulers))
+    blocks.extend(_label_blocks(surface, names, rulers))
     return blocks
 
 
@@ -1558,13 +1584,44 @@ def _figure(value: float | None, ruler: MeasureRuler) -> TableCell:
     return TableCell(value=value * ruler.factor, unit=ruler.unit)
 
 
-def _interval_on_delta(interval: tuple[float, float] | None, ruler: MeasureRuler, level: float | None) -> str | None:
-    """An interval on a delta, on the measure's ruler with its unit, and the level it holds at."""
-    if interval is None or level is None:
+def _change(delta: float | None, ruler: MeasureRuler) -> TableCell:
+    """A change in a measure as a table cell: on the measure's ruler, in the unit a change in it is stated in."""
+    if delta is None:
+        return TableCell(value=None)
+    return TableCell(value=delta * ruler.factor, unit=delta_unit(ruler.unit))
+
+
+def _interval_cell(low: float, high: float, unit: str) -> str:
+    """An interval as ``[low, high]`` with its unit: on each end where the unit sits on the number (``[88.1%,
+    100%]``, ``[-$0.01, $0.06]``), once after the bracket otherwise (``[0.45, 0.55] s``)."""
+    if unit == PERCENT or is_money(unit):
+        return f"[{with_unit(low, unit)}, {with_unit(high, unit)}]"
+    return f"[{number_in(low, unit)}, {number_in(high, unit)}]" + (f" {unit}" if unit else "")
+
+
+def _interval_on_delta(
+    interval: tuple[float, float] | None, ruler: MeasureRuler, level: float | None = None
+) -> str | None:
+    """An interval on a delta, on the measure's ruler in the unit a change is stated in.
+
+    The level it holds at is said once, in the table's header, so a cell carries it only where a caller asks — a
+    program's row (:func:`contrast_rows`), which has no header to carry it.
+    """
+    if interval is None:
         return None
-    low, high = (format_number(bound * ruler.factor) for bound in interval)
-    unit = f" {ruler.unit}" if ruler.unit else ""
-    return f"[{low}, {high}]{unit} at {format_number(100 * level)}%"
+    low, high = (bound * ruler.factor for bound in interval)
+    text = _interval_cell(low, high, delta_unit(ruler.unit))
+    return text if level is None else f"{text} at {_level_text(level)}"
+
+
+def _level_text(level: float) -> str:
+    """An interval's level as a reader reads it: ``99%``."""
+    return with_unit(100 * level, PERCENT)
+
+
+def _interval_header(levels: set[float]) -> str:
+    """The interval column's header, carrying the one level every row holds at; bare where the rows differ."""
+    return f"Interval ({_level_text(next(iter(levels)))})" if len(levels) == 1 else "Interval"
 
 
 def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
@@ -1580,8 +1637,8 @@ def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison
 
 
 def _margin_text(margin: float, ruler: MeasureRuler) -> str:
-    """A margin as the row's reading is stated: on its measure's one ruler, with its unit."""
-    return f"±{with_unit(margin * ruler.factor, ruler.unit)}"
+    """A margin as the row's reading is stated: on its measure's one ruler, in the unit a change in it is stated in."""
+    return f"±{with_unit(margin * ruler.factor, delta_unit(ruler.unit))}"
 
 
 def _immaterial_words(margin: float | None, heading: str, ruler: MeasureRuler) -> str:
@@ -1616,13 +1673,13 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
     outcome is the test's, and the words state no difference, as a rate on so few cases states none.
     """
     arm = _cell_namer(surface, _arm_names(bundle))
-    rulers = measure_rulers(surface)
+    rulers = report_rulers(surface, bundle.measure_catalog)
     verdicts = []
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             heading = reading_heading(surface, comparison.name, comparison.reading)
             margin = _contrast_margin(bundle, comparison)
-            ruler = rulers.get(comparison.name, UNITLESS) if comparison.reading == "measure" else UNITLESS
+            ruler = rulers.of(comparison.name, comparison.reading)
             reason, detail = _contrast_reason(comparison)
             if (small := _small_n(comparison)) is not None:
                 reason = "too_few_cases"
@@ -1683,12 +1740,14 @@ def _comparison_blocks(
     verdicts: Sequence[Verdict],
     charts: _ChartLedger,
     arm: Callable[[str], str],
+    rulers: Rulers,
 ) -> list[ReportBlock]:
     """The contrasts that can resolve, as a table with their statistics folded away, and a chart per reading.
 
     A contrast with a side under the case floor is never a row: when none can resolve, the section is one line, and
     otherwise one line counts the ones left out. A reading one side carries on no trial is no contrast at all, and the
-    methods count it.
+    methods count it. The level the intervals hold at is said once, in the column's header, where every shown row
+    holds at one level; where families differ, each cell says its own.
     """
     comparisons = bundle.multiple_comparisons
     if not comparisons.families:
@@ -1696,7 +1755,6 @@ def _comparison_blocks(
             return [DisclosureBlock(section="contrasts", source="comparisons", text=comparisons.withheld)]
         return []
     typed = iter(verdicts)
-    rulers = measure_rulers(surface)
     shown: list[dict[str, TableCell]] = []
     statistics: list[dict[str, TableCell]] = []
     drawn: dict[str, list[IntervalRow]] = {}
@@ -1704,21 +1762,31 @@ def _comparison_blocks(
     units: dict[str, str] = {}
     under: list[int] = []
     questions = {question.id: index for index, question in enumerate(_preregistered(bundle), start=1)}
+    # The level every shown interval holds at: one, and the header says it; more, and each cell says its own.
+    levels = {
+        family.interval_level
+        for family in comparisons.families
+        for comparison in family.comparisons
+        if family.interval_level is not None and comparison.interval is not None and _small_n(comparison) is None
+    }
     for family in comparisons.families:
         for comparison in family.comparisons:
             verdict = next(typed)
             if min(comparison.control.n_cases, comparison.contrast.n_cases) == 0:
                 continue
-            ruler = rulers.get(comparison.name, UNITLESS) if comparison.reading == "measure" else UNITLESS
+            ruler = rulers.of(comparison.name, comparison.reading)
             if (small := _small_n(comparison)) is not None:
                 under.append(small)
                 continue
-            interval = _interval_on_delta(comparison.interval, ruler, family.interval_level)
+            heading = ruler.scaled(verdict.heading)
+            interval = _interval_on_delta(
+                comparison.interval, ruler, None if len(levels) == 1 else family.interval_level
+            )
             shown.append(
                 {
-                    "reading": TableCell(value=verdict.heading),
+                    "reading": TableCell(value=heading),
                     "contrast": TableCell(value=verdict.arm),
-                    "change": _figure(comparison.delta, ruler),
+                    "change": _change(comparison.delta, ruler),
                     "interval": TableCell(value=interval),
                     "verdict": TableCell(value=verdict.words),
                     "cases": TableCell(value=_comparison_cases(comparison)),
@@ -1731,7 +1799,7 @@ def _comparison_blocks(
                         if family.question_id in questions
                         else "campaign-wide"
                     ),
-                    "reading": TableCell(value=verdict.heading),
+                    "reading": TableCell(value=heading),
                     "contrast": TableCell(value=verdict.arm),
                     "control_mean": _figure(comparison.control.mean, ruler),
                     "arm_mean": _figure(comparison.contrast.mean, ruler),
@@ -1746,13 +1814,13 @@ def _comparison_blocks(
                 comparison.contrast.variant_key,
                 min(comparison.contrast.n_cases, comparison.control.n_cases),
                 comparison.interval if comparison.delta is not None else None,
-                verdict.heading,
+                heading,
             )
             control_ok = charts.drawable(
-                comparison.control.variant_key, comparison.control.n_cases, (0.0, 0.0), verdict.heading
+                comparison.control.variant_key, comparison.control.n_cases, (0.0, 0.0), heading
             )
             if arm_ok and control_ok and comparison.interval is not None and comparison.delta is not None:
-                drawn.setdefault(verdict.heading, []).append(
+                drawn.setdefault(heading, []).append(
                     IntervalRow(
                         label=verdict.arm,
                         value=comparison.delta * ruler.factor,
@@ -1763,8 +1831,8 @@ def _comparison_blocks(
                     )
                 )
                 margin = _contrast_margin(bundle, comparison)
-                margins[verdict.heading] = margin * ruler.factor if margin is not None else None
-                units[verdict.heading] = ruler.unit
+                margins[heading] = margin * ruler.factor if margin is not None else None
+                units[heading] = delta_unit(ruler.unit)
     blocks: list[ReportBlock] = []
     if under and not shown:
         blocks.append(
@@ -1798,7 +1866,7 @@ def _comparison_blocks(
                     TableColumn(key="reading", header="Reading"),
                     TableColumn(key="contrast", header="Arm"),
                     TableColumn(key="change", header="Change"),
-                    TableColumn(key="interval", header="Interval", term="interval"),
+                    TableColumn(key="interval", header=_interval_header(levels), term="interval"),
                     TableColumn(key="verdict", header="Verdict", term="separated"),
                     TableColumn(key="cases", header="Cases"),
                 ],
@@ -1859,7 +1927,9 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
     """Every contrast the bundle tested against the control, one row each, in :func:`contrast_verdicts`' order.
 
     The page shows only the contrasts that can resolve; a program reads them all here. A contrast with a side under
-    the case floor states no change, interval, effect size or p: on so few cases a rate states none.
+    the case floor states no change, interval, effect size or p: on so few cases a rate states none. Every figure
+    is on the reading's one ruler for the report: a share in percent, its change and interval in points; a cost on
+    the scale its ``reading`` names.
 
     Args:
         bundle: The campaign's evidence.
@@ -1867,18 +1937,19 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
     Returns:
         One row per contrast, keyed ``question`` (in the words it was asked, or ``(campaign-wide)``), ``reading``,
         ``contrast`` and ``control`` (each arm as the page names it), ``control_mean``, ``arm_mean``, ``delta`` and
-        ``change`` (the delta with its interval, in words), ``interval``, ``hedges_g``, ``pairing_r``,
-        ``p_adjusted``, ``verdict`` (in words) and ``cases``.
+        ``change`` (the delta with its interval, in words), ``interval`` (with the level it holds at), ``hedges_g``,
+        ``pairing_r``, ``p_adjusted``, ``verdict`` (in words) and ``cases``.
     """
     surface = bundle_decision_surface(bundle)
     verdicts = iter(contrast_verdicts(bundle, surface))
-    rulers = measure_rulers(surface)
+    rulers = report_rulers(surface, bundle.measure_catalog)
     rows: list[dict[str, CellValue]] = []
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             verdict = next(verdicts)
-            ruler = rulers.get(comparison.name, UNITLESS) if comparison.reading == "measure" else UNITLESS
+            ruler = rulers.of(comparison.name, comparison.reading)
             small = _small_n(comparison)
+            # A program's row has no header to carry the interval's level, so the cell says it.
             interval = _interval_on_delta(comparison.interval, ruler, family.interval_level)
             rows.append(
                 {
@@ -1887,15 +1958,15 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
                         if family.question_id is not None
                         else "(campaign-wide)"
                     ),
-                    "reading": verdict.heading,
+                    "reading": ruler.scaled(verdict.heading),
                     "contrast": verdict.arm,
                     "control": verdict.control,
                     "control_mean": _figure(comparison.control.mean, ruler).value,
                     "arm_mean": _figure(comparison.contrast.mean, ruler).value,
-                    "delta": None if small is not None else _figure(comparison.delta, ruler).value,
+                    "delta": None if small is not None else _change(comparison.delta, ruler).value,
                     "change": None
                     if small is not None or comparison.delta is None
-                    else with_unit(comparison.delta * ruler.factor, ruler.unit) + (f" {interval}" if interval else ""),
+                    else _change(comparison.delta, ruler).text + (f" {interval}" if interval else ""),
                     "interval": None if small is not None else interval,
                     "hedges_g": None if small is not None else comparison.hedges_g,
                     "pairing_r": comparison.pairing_correlation.r
@@ -2022,7 +2093,7 @@ def bar_verdicts(surface: DecisionSurface, arm: Callable[[str, str], str]) -> li
 
 
 def _guardrail_blocks(
-    surface: DecisionSurface, guardrails: GuardrailReadings | None, verdicts: Sequence[Verdict]
+    surface: DecisionSurface, guardrails: GuardrailReadings | None, verdicts: Sequence[Verdict], rulers: Rulers
 ) -> list[ReportBlock]:
     """Each guardrail, held, breached or undecided for each arm against the control; the rule said once beside it."""
     if guardrails is None:
@@ -2031,14 +2102,13 @@ def _guardrail_blocks(
         return [DisclosureBlock(section="contrasts", source="guardrails", text=guardrails.withheld)]
     if not guardrails.checks:
         return []
-    rulers = measure_rulers(surface)
     rows: list[dict[str, TableCell]] = []
     for check, verdict in zip(guardrails.checks, verdicts, strict=True):
-        ruler = rulers.get(check.name, UNITLESS) if check.reading == "measure" else UNITLESS
-        interval = _interval_on_delta(check.interval, ruler, INTERVAL_LEVEL)
+        ruler = rulers.of(check.name, check.reading)
+        interval = _interval_on_delta(check.interval, ruler)
         rows.append(
             {
-                "guardrail": TableCell(value=verdict.heading),
+                "guardrail": TableCell(value=ruler.scaled(verdict.heading)),
                 "arm": TableCell(value=verdict.arm),
                 "control_mean": _figure(check.control.mean, ruler),
                 "arm_mean": _figure(check.contrast.mean, ruler),
@@ -2049,14 +2119,14 @@ def _guardrail_blocks(
                         else f"{check.contrast.n_cases} vs {check.control.n_cases}"
                     )
                 ),
-                "delta": _figure(check.delta, ruler),
+                "delta": _change(check.delta, ruler),
                 "interval": TableCell(
                     value=None
                     if interval is None
                     else interval + (" (t: no declared range)" if check.interval_basis == "t" else "")
                 ),
                 "margin": TableCell(
-                    value=with_unit(check.margin * ruler.factor, ruler.unit)
+                    value=with_unit(check.margin * ruler.factor, delta_unit(ruler.unit))
                     if check.margin_declared
                     else "0 (none declared)"
                 ),
@@ -2075,7 +2145,7 @@ def _guardrail_blocks(
                 TableColumn(key="arm_mean", header="Arm mean"),
                 TableColumn(key="cases", header="Cases"),
                 TableColumn(key="delta", header="Change"),
-                TableColumn(key="interval", header="Interval", term="interval"),
+                TableColumn(key="interval", header=_interval_header({INTERVAL_LEVEL}), term="interval"),
                 TableColumn(key="margin", header="Margin", term="margin"),
                 TableColumn(key="decision", header="Decision"),
             ],
@@ -2087,24 +2157,24 @@ def _guardrail_blocks(
     ]
 
 
-def _bar_blocks(surface: DecisionSurface, verdicts: Sequence[Verdict]) -> list[ReportBlock]:
+def _bar_blocks(surface: DecisionSurface, verdicts: Sequence[Verdict], rulers: Rulers) -> list[ReportBlock]:
     """Each adjudicated bar, read on each arm, and every bar no arm could be read against."""
     blocks: list[ReportBlock] = []
-    rulers = measure_rulers(surface)
     if verdicts:
         rows: list[dict[str, TableCell]] = []
         for verdict in verdicts:
-            ruler = rulers.get(verdict.name, UNITLESS) if verdict.reading == "measure" else UNITLESS
+            ruler = rulers.of(verdict.name, verdict.reading)
             rows.append(
                 {
-                    "bar": TableCell(value=verdict.heading),
+                    "bar": TableCell(value=ruler.scaled(verdict.heading)),
                     "arm": TableCell(value=verdict.arm),
                     "value": _figure(verdict.value, ruler),
                     "interval": TableCell(
                         value=None
                         if verdict.interval is None
-                        else f"[{format_number(verdict.interval[0] * ruler.factor)}, "
-                        f"{format_number(verdict.interval[1] * ruler.factor)}]"
+                        else _interval_cell(
+                            verdict.interval[0] * ruler.factor, verdict.interval[1] * ruler.factor, ruler.unit
+                        )
                     ),
                     "threshold": _figure(verdict.threshold, ruler),
                     "decision": TableCell(value=verdict.words),
@@ -2150,7 +2220,7 @@ NO_STRATUM = "(no stratum)"
 TOO_FEW_CASES = "too few cases to read alone"
 
 
-def _strata_blocks(surface: DecisionSurface, arms: dict[str, ArmName]) -> list[ReportBlock]:
+def _strata_blocks(surface: DecisionSurface, arms: dict[str, ArmName], rulers: Rulers) -> list[ReportBlock]:
     """Each arm's figures per stratum beside its pooled figure — or nothing, when no case declares a stratum."""
     control = surface.control_variant_key
     cells = surface_order(
@@ -2189,8 +2259,8 @@ def _strata_blocks(surface: DecisionSurface, arms: dict[str, ArmName]) -> list[R
                 plural = "" if stratum.n_cases == 1 else "s"
                 thin.append(f"{_stratum_word(name)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})")
         rows.append(cases)
-        rows.extend(_measure_rows(arm, cell, by_name, columns, surface))
-        rows.extend(_judged_rows(arm, cell, by_name, columns))
+        rows.extend(_measure_rows(arm, cell, by_name, columns, surface, rulers))
+        rows.extend(_judged_rows(arm, cell, by_name, columns, rulers))
     blocks: list[ReportBlock] = [
         TableBlock(
             section="contrasts",
@@ -2239,6 +2309,7 @@ def _measure_rows(
     by_name: dict[str | None, StratumFacts],
     columns: dict[str | None, str],
     surface: DecisionSurface,
+    rulers: Rulers,
 ) -> list[dict[str, CellValue]]:
     """One row per measure the arm or any of its strata holds — every one but a text measure."""
     pooled = {summary.name: summary for summary in cell.measures.measures}
@@ -2253,20 +2324,18 @@ def _measure_rows(
             if not summary.texts
         }
     )
-    rulers = measure_rulers(surface)
     rows: list[dict[str, CellValue]] = []
     for measure in measures:
-        factor, unit = rulers.get(measure, UNITLESS)
+        ruler = rulers.of(measure, "measure")
 
         def figure(summaries: dict[str, MeasureSummary], facts_of: CellFacts | StratumFacts) -> CellValue:
             if measure in summaries:
-                return _summary_text(summaries[measure], factor)
+                return _summary_text(summaries[measure], ruler)
             return NO_SUCCESSFUL_RESULTS if facts_of.all_failed else None
 
-        heading = reading_heading(surface, measure)
         row: dict[str, CellValue] = {
             "arm": arm,
-            "reading": f"{heading} ({unit})" if unit else heading,
+            "reading": ruler.labelled(reading_heading(surface, measure)),
             "all": figure(pooled, cell),
         }
         for name in columns:
@@ -2276,7 +2345,11 @@ def _measure_rows(
 
 
 def _judged_rows(
-    arm: str, cell: CellFacts, by_name: dict[str | None, StratumFacts], columns: dict[str | None, str]
+    arm: str,
+    cell: CellFacts,
+    by_name: dict[str | None, StratumFacts],
+    columns: dict[str | None, str],
+    rulers: Rulers,
 ) -> list[dict[str, CellValue]]:
     """One row per judged dimension the arm or any of its strata was scored on."""
     pooled = {reading.dimension: reading for reading in cell.judged}
@@ -2286,58 +2359,74 @@ def _judged_rows(
     dimensions = sorted({dimension for readings in (pooled, *per_stratum.values()) for dimension in readings})
     rows: list[dict[str, CellValue]] = []
     for dimension in dimensions:
+        ruler = rulers.of(dimension, "judged")
         row: dict[str, CellValue] = {
             "arm": arm,
             "reading": f"{reading_name(dimension)} (judged)",
-            "all": _judged_text(pooled[dimension]) if dimension in pooled else None,
+            "all": _judged_text(pooled[dimension], ruler) if dimension in pooled else None,
         }
         for name in columns:
             readings = per_stratum.get(name, {})
-            row[columns[name]] = _judged_text(readings[dimension]) if dimension in readings else None
+            row[columns[name]] = _judged_text(readings[dimension], ruler) if dimension in readings else None
         rows.append(row)
     return rows
 
 
-def _summary_text(summary: MeasureSummary, factor: float) -> str:
-    """One measure's figure with the n it rests on: a rate as a count below :data:`MIN_CASES` cases."""
+def _summary_text(summary: MeasureSummary, ruler: MeasureRuler) -> str:
+    """One measure's figure with the n it rests on, on its ruler: a rate as a count below :data:`MIN_CASES` cases.
+
+    A rate is a share by its shape, so it reads as a percent (:data:`SHARE`) whatever the catalog said of its
+    measure; a mean is stated with its unit on the figure, and its spread as a bare number beside it on the same
+    scale (``98.9% ± 6.5``, ``$0.0459 ± 0.007414``).
+    """
     n = _n_text(summary.n, summary.n_independent)
     if summary.rate is not None:
         if summary.n_independent < MIN_CASES:
             return f"{round(summary.rate * summary.n)} of {summary.n} {n}"
-        return f"{format_number(summary.rate)}{_interval(summary.ci_low, summary.ci_high)} {n}"
+        return f"{_mean_text(summary.rate, SHARE)}{_interval(summary.ci_low, summary.ci_high, SHARE)} {n}"
     if summary.mean is not None:
-        spread = f" ± {format_number(summary.sem * factor)}" if summary.sem is not None else ""
-        return f"{format_number(summary.mean * factor)}{spread} {n}"
+        spread = f" ± {number_in(summary.sem * ruler.factor, ruler.unit)}" if summary.sem is not None else ""
+        return f"{_mean_text(summary.mean, ruler)}{spread} {n}"
     counts = sorted(summary.categories.items(), key=lambda item: (-item[1], item[0]))
     return "; ".join(f"{category}: {count}" for category, count in counts) + f" {n}"
 
 
-def _interval(low: float | None, high: float | None) -> str:
-    """An interval as ``[low, high]``, or nothing when either end is unestimated."""
+def _mean_text(value: float, ruler: MeasureRuler) -> str:
+    """A mean on its ruler, the unit on the figure where the unit sits there (``98.9%``, ``$0.0459``), bare where the
+    row's heading names it (a latency's ``950`` under ``Turn time (ms)``)."""
+    scaled = value * ruler.factor
+    if ruler.unit == PERCENT or is_money(ruler.unit):
+        return with_unit(scaled, ruler.unit)
+    return number_in(scaled, ruler.unit)
+
+
+def _interval(low: float | None, high: float | None, ruler: MeasureRuler) -> str:
+    """An interval as ``[low, high]`` on its ruler, or nothing when either end is unestimated."""
     if low is None or high is None:
         return ""
-    return f" [{format_number(low)}, {format_number(high)}]"
+    return f" {_interval_cell(low * ruler.factor, high * ruler.factor, ruler.unit)}"
 
 
-def _judged_text(reading: JudgedReading) -> str:
-    """One judged dimension's mean, with its standard error and the scores it rests on."""
+def _judged_text(reading: JudgedReading, ruler: MeasureRuler) -> str:
+    """One judged dimension's mean, with its standard error and the scores it rests on, on the dimension's ruler."""
     if reading.mean is None:
         return f"no score (n={reading.n})"
-    spread = f" ± {format_number(reading.sem)}" if reading.sem is not None else ""
-    text = f"{format_number(reading.mean)}{spread} {_n_text(reading.n, reading.n_independent)}"
+    spread = f" ± {number_in(reading.sem * ruler.factor, ruler.unit)}" if reading.sem is not None else ""
+    text = f"{_mean_text(reading.mean, ruler)}{spread} {_n_text(reading.n, reading.n_independent)}"
     if (powered := reading.prediction_powered) is not None:
-        text += f"; {_prediction_powered_text(powered)}"
+        text += f"; {_prediction_powered_text(powered, ruler)}"
     return text
 
 
-def _prediction_powered_text(powered: PredictionPoweredReading) -> str:
+def _prediction_powered_text(powered: PredictionPoweredReading, ruler: MeasureRuler) -> str:
     """The prediction-powered estimate beside a judged mean: its value and interval, or why it is not available."""
     rated = f"{powered.n_labelled} rated by people"
     if powered.mean is None:
         return f"with people's ratings: not available ({rated}, under {powered.min_labelled})"
+    rectifier = with_unit((powered.rectifier or 0.0) * ruler.factor, delta_unit(ruler.unit))
     return (
-        f"with people's ratings: {format_number(powered.mean)}{_interval(powered.ci_low, powered.ci_high)} "
-        f"(rectifier {format_number(powered.rectifier or 0.0)}; {rated})"
+        f"with people's ratings: {_mean_text(powered.mean, ruler)}{_interval(powered.ci_low, powered.ci_high, ruler)} "
+        f"(rectifier {rectifier}; {rated})"
     )
 
 
@@ -2356,7 +2445,7 @@ _LABEL_STATISTICS: tuple[tuple[ClassifierStatistic, str], ...] = (
 )
 
 
-def _label_blocks(surface: DecisionSurface, names: dict[str, ArmName]) -> list[ReportBlock]:
+def _label_blocks(surface: DecisionSurface, names: dict[str, ArmName], rulers: Rulers) -> list[ReportBlock]:
     """A classifier's per-label precision, recall and F1, every arm's, as one table — or nothing for no classifier."""
     control = surface.control_variant_key
     cell_name = _cell_namer(surface, names)
@@ -2392,7 +2481,7 @@ def _label_blocks(surface: DecisionSurface, names: dict[str, ArmName]) -> list[R
             }
             for statistic, _ in _LABEL_STATISTICS:
                 figure = by_statistic.get(statistic)
-                row[statistic] = None if figure is None else _summary_text(figure, 1.0)
+                row[statistic] = None if figure is None else _summary_text(figure, rulers.of(figure.name, "measure"))
                 missing = missing or figure is None
             rows.append(row)
     said = [

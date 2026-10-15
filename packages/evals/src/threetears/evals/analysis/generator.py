@@ -865,7 +865,7 @@ def _resolved_analysis(
     _reject_contradicted_arms(document, bundle)
     _reject_unseparated_adoptions(document, bundle)
     _reject_unestablished_nulls(document, bundle)
-    document = render_prose_figures(document, surface)
+    document = render_prose_figures(document, surface, bundle.measure_catalog)
     resolutions = [
         _resolution_of(finding, surface, where=f"findings[{index}]") for index, finding in enumerate(document.findings)
     ]

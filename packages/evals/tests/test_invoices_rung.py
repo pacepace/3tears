@@ -82,8 +82,9 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
         lines[3]
         == "**Exploratory: v2 separated from v1 on no reading. Guardrail undecided for v2: no invented total.**"
     )
+    # Both prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies.
     assert lines[7] == (
-        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Failed otherwise | Cost per reply |"
+        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Failed otherwise | Cost per 1,000 replies |"
     )
     assert page_violations(result.report) == []
 

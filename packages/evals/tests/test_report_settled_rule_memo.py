@@ -152,12 +152,13 @@ async def test_a_title_disputing_a_settled_drop_is_code_s_counts_and_its_body_he
     )
     markdown = report_markdown(report)
     titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
-    # Four numbers do not fit one sentence, so the size is said in the case floor line's own words.
+    # Four numbers do not fit one sentence, so the size is said in the case floor line's own words; the cost per
+    # 1,000 replies counts as one of them.
     assert titles == [
         "Cheaper candidate passed 2 of 12 on Label matched to production's 10; too few cases to estimate how large "
         "the difference is.",
-        "Cheaper candidate cost $0.003301 per reply to production's $0.003092; how large the difference is needs 5 "
-        "cases.",
+        "Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092; too few cases to estimate how large "
+        "the difference is.",
     ]
     assert "cannot statistically confirm" not in markdown.split("## Methods", 1)[0]
     # The body keeps what it adds and drops its hedge: the title already states code's counts.

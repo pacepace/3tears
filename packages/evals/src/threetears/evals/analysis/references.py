@@ -48,6 +48,7 @@ from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import ReadingKind
@@ -402,11 +403,14 @@ def _find_judged(cell: CellFacts, dimension: str) -> JudgedReading | None:
     return next((j for j in cell.judged if j.dimension == dimension), None)
 
 
-def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, n: int, n_cases: int | None) -> str:
+def _dispersion(
+    sem: float | None, ci_low: float | None, ci_high: float | None, n: int, n_cases: int | None, unit: str = ""
+) -> str:
     """State a reading's spread in words, including when there is none to state.
 
     The interval it states is already computed over the cases, so a clustered cell needs no caveat
-    beside it; the one case it explains is the interval a single case cannot have.
+    beside it; the one case it explains is the interval a single case cannot have. The figures are spelled in
+    ``unit`` where the row states one — a percent's interval reads ``[88.1%, 100%]`` — and bare otherwise.
 
     Returns:
         The dispersion text an evidence row carries.
@@ -421,13 +425,17 @@ def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, 
         return f"unestimable at {n_cases} case{'' if n_cases == 1 else 's'}"
     # A rate carries its interval and no standard error, and its interval is its spread: stated, never
     # reported as unestimable because the sem it does not have is absent.
-    text = f"{stats.INTERVAL_LEVEL:.0%} CI [{format_number(ci_low)}, {format_number(ci_high)}]"
+    # The unit on each end where it sits on the number (``[88.1%, 100%]``); a spaced unit is the value's, and the
+    # interval beside it stays bare (``[0.8, 1.1]`` under ``0.95 s``), as it always read.
+    on_the_number = unit == PERCENT or is_money(unit)
+    low, high = ((with_unit(bound, unit) if on_the_number else format_number(bound)) for bound in (ci_low, ci_high))
+    text = f"{stats.INTERVAL_LEVEL:.0%} CI [{low}, {high}]"
     if sem is not None:
-        text = f"sem {format_number(sem)}; {text}"
+        text = f"sem {number_in(sem, unit)}; {text}"
     return text
 
 
-def restated_dispersion(reading: ResolvedReading, factor: float) -> str:
+def restated_dispersion(reading: ResolvedReading, factor: float, *, unit: str = "") -> str:
     """A reading's spread in words, its standard error and interval restated by ``factor`` onto its measure's ruler.
 
     The evidence table states a reading's value on the one ruler the report states its measure on, so its spread
@@ -436,6 +444,7 @@ def restated_dispersion(reading: ResolvedReading, factor: float) -> str:
     Args:
         reading: The resolved reading.
         factor: Its measure's ruler factor (``1.0`` where the ruler is the measure's own unit).
+        unit: The ruler's unit, which the restated figures are spelled in; empty for a bare number.
 
     Returns:
         :attr:`ResolvedReading.dispersion` where nothing is restated; otherwise the same words over restated figures.
@@ -450,6 +459,7 @@ def restated_dispersion(reading: ResolvedReading, factor: float) -> str:
         reading.ci_high * factor,
         reading.n,
         reading.n_cases,
+        unit,
     )
 
 
