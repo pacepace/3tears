@@ -109,7 +109,8 @@ def read_trial(result: EvalResult, *, rubric_threshold: int, catalog: Mapping[st
 
 
 def _failed_checks(result: EvalResult, catalog: Mapping[str, MetricDescriptor]) -> list[TrialCheck]:
-    """Every check the trial failed: each goal check, then each pass/fail scorer on its wrong side, then a wrong label."""
+    """Every check the trial failed: each goal check, then a wrong label and each check measure on its wrong side
+    (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`: a boolean, or a scorer graded 0 or 1)."""
     failed = [
         TrialCheck(name=_reader_name(goal_check_measure(check.expression), catalog), expression=check.expression)
         for check in result.goal_state_outcomes
@@ -121,10 +122,10 @@ def _failed_checks(result: EvalResult, catalog: Mapping[str, MetricDescriptor]) 
             if value is False:
                 failed.append(TrialCheck(name=_reader_name(name, catalog), expression=f"{name} == expected label"))
             continue
-        if descriptor is None or descriptor.data_type != "boolean" or not isinstance(value, bool):
-            continue
-        if descriptor.higher_is_better is not None and value != descriptor.higher_is_better:
-            failed.append(TrialCheck(name=_reader_name(name, catalog), expression=f"{name} is {value}"))
+        if descriptor is not None and descriptor.check_failed(value):
+            # A pass/fail scorer lands 0 or 1: named by the side it fell on, as a boolean's is.
+            fell = value if isinstance(value, bool) else not descriptor.higher_is_better
+            failed.append(TrialCheck(name=_reader_name(name, catalog), expression=f"{name} is {fell}"))
     return failed
 
 
@@ -132,12 +133,7 @@ def _has_criterion(result: EvalResult, catalog: Mapping[str, MetricDescriptor]) 
     """Whether anything could have failed the trial: a goal check, a judge, a label, or a pass/fail scorer."""
     if has_pass_criterion(result) or MATCH_MEASURE in result.host_measures:
         return True
-    return any(
-        (descriptor := catalog.get(name)) is not None
-        and descriptor.data_type == "boolean"
-        and descriptor.higher_is_better is not None
-        for name in result.host_measures
-    )
+    return any((descriptor := catalog.get(name)) is not None and descriptor.is_check for name in result.host_measures)
 
 
 def _reader_name(name: str, catalog: Mapping[str, MetricDescriptor]) -> str:

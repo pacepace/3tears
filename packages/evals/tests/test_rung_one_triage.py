@@ -131,6 +131,24 @@ def test_the_toml_file_runs_from_another_directory_and_its_symmetric_field_misse
     assert (triage_dir.parent / ".evals" / "reports" / "triage" / "report.html").is_file()
 
 
+def test_the_console_and_the_page_count_one_number_of_cases_passed(
+    triage_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A case passes when every check the file declares passes (``category``, ``urgent`` and ``needs_human`` alike),
+    on the console's first line as on the page's verdict, read off one run."""
+    assert main(["triage.toml"]) == 0
+
+    console = re.match(r"triage: (\d+/\d+) cases passed; (\d+) misses", capsys.readouterr().out)
+    reports = triage_dir / ".evals" / "reports" / "triage"
+    markdown = re.search(r"\*\*triage: (\d+/\d+) cases passed; (\d+) misses", (reports / "report.md").read_text())
+    page = re.search(
+        r'class="verdict"[^>]*><strong>triage: (\d+/\d+) cases passed; (\d+) misses',
+        (reports / "report.html").read_text(),
+    )
+    assert console is not None and markdown is not None and page is not None
+    assert console.groups() == markdown.groups() == page.groups() == ("16/30", "14")
+
+
 def test_the_program_runs_from_another_directory_through_the_module_entry(
     triage_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

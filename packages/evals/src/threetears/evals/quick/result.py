@@ -722,8 +722,10 @@ def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
 def _cases_verdict(summary: EvalSummary) -> str:
     """How one arm's cases came out, in plain words: passed of usable, the cases missed, the cases excluded by cause.
 
-    A case is usable when any of its repeats was not excluded, and passed when none of those repeats is a miss; a case
-    every repeat of which was excluded is counted under the cause its first repeat records.
+    Counted as the page counts them, off each repeat's :attr:`~threetears.evals.analysis.summary.CaseResult.state`,
+    which the page's own trial reader decided: a case is usable when any of its repeats was not lost, and passed when
+    none of those failed — every check the template declares passed on each. A case every repeat of which was lost is
+    counted under the cause its first repeat records.
     """
     repeats: dict[str, list[CaseResult]] = {}
     for result in summary.results():
@@ -732,13 +734,13 @@ def _cases_verdict(summary: EvalSummary) -> str:
     missed: list[str] = []
     excluded: dict[str, int] = {}
     for case, results in repeats.items():
-        kept = [result for result in results if result.outcome != "excluded"]
+        kept = [result for result in results if result.state != "lost"]
         if not kept:
             cause = (results[0].errors or ["no reason recorded"])[0]
             excluded[cause] = excluded.get(cause, 0) + 1
             continue
         usable += 1
-        if any(result.missed for result in kept):
+        if any(result.state == "failed" for result in kept):
             missed.append(case)
     text = f"{usable - len(missed)}/{usable} cases passed; {len(missed)} {'miss' if len(missed) == 1 else 'misses'}"
     if missed:
