@@ -107,25 +107,28 @@ _KV_KEY_GRAMMAR: Final = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
 _ABSENT_MARKER_PREFIX: Final = b"\x00threetears.collections.absent\x00"
 
 #: the framework-owned L1 table holding negative-cache markers for every collection on a backend,
-#: beside the collections' own tables -- the same arrangement as the write buffer's table.
+#: beside the collections' own tables -- the same arrangement as the write buffer's table. Recorded
+#: absences live here and nowhere else: never in the shared L2 bucket, which has no bound a
+#: per-table count could be kept under.
 _ABSENT_MARKER_TABLE: Final = "collection_absent_markers"
 _ABSENT_MARKER_METADATA: Final = MetaData()
 Table(
     _ABSENT_MARKER_TABLE,
     _ABSENT_MARKER_METADATA,
     Column("key", String, primary_key=True),
+    # the collection's table, so the per-table count and the drop on a generation move are one query
+    Column("table_name", String, nullable=False, index=True),
     Column("generation", Text, nullable=False),
     # monotonic seconds: this row is never shared across processes, so the local clock is the
-    # only one that ever reads it.
+    # only one that ever reads it. The cover for writers that predate the write marks, until the
+    # recorded-absence age is contracted; nothing expires a marker by it.
     Column("deadline", Float, nullable=False),
 )
 
 
-#: how often a collection sweeps expired absent-markers from its pod's L1, and the default number
-#: of rows one sweep query removes (:attr:`BaseCollection.negative_cache_sweep_batch`). Bounded so
-#: no single query is a cost a lookup notices; a sweep keeps querying until the backlog is gone.
-_ABSENT_MARKER_SWEEP_INTERVAL_SECONDS: Final = 60.0
-_ABSENT_MARKER_SWEEP_BATCH: Final = 500
+#: the default count of recorded absences one table may hold in a pod's L1
+#: (:attr:`BaseCollection.negative_cache_max_entries`).
+_ABSENT_MARKER_MAX_ENTRIES: Final = 10_000
 _GENERATION_WARNING_INTERVAL_SECONDS: Final = 60.0
 
 #: full-jitter bound between compare-and-swap rounds, seconds. Without it the losers of a round
@@ -171,12 +174,15 @@ class _L2Lookup:
         row, or when L2 could not be read
     :ivar untrusted_row: whether the key held a live row this read did not trust, because the
         table was dropped in this process since the key was last read through from L3
+    :ivar stale: whether the key held an entry no read may answer with and nothing else will
+        remove -- an absent-marker an older release wrote, an expired row, or an undecodable entry
     """
 
     row: dict[str, Any] | None
     marker: _AbsentMarker | None
     revision: int | None
     untrusted_row: bool = False
+    stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,40 +570,40 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: Without it, a lookup of a key nobody ever wrote misses L1 and L2 and reaches L3 every
     #: time -- which, for a denylist checked on every request ("is this token revoked?"), puts a
     #: database query behind nearly every call. Setting it records a full miss as an absent-marker
-    #: in L1 and in L2, stamped with the table's write generation
+    #: in this pod's L1 -- never in L2 -- stamped with the table's write generation
     #: (:meth:`CollectionRegistry.set_generation_source`), read BEFORE the L3 lookup that found
     #: nothing. A marker answers only while its stamp is the table's current generation, and every
     #: committed write advances the generation, so a marker cannot outlive a write that landed
     #: after its L3 read -- whichever pod, principal, broadcast or clock was involved.
     #:
     #: The max age is the backstop, not the mechanism: it bounds a marker only when a write
-    #: commits and then fails to advance the generation, and it is the server-side lifetime that
-    #: keeps markers from filling the shared L2 bucket. It is the one age kept on a cache the
-    #: generations invalidate, by the owner's ruling of 2026-10-13: a writer that dies between
-    #: its commit and its advance raises nothing anywhere, and until the generation is advanced
-    #: in the write's own transaction this age is all that ends that window
-    #: (docs/epoch-task-06-collection-generations-by-default.md, "The One Timer That Stays"). Opting in requires a generation source on
+    #: commits and then fails to advance the generation. It is the one age kept on a cache the
+    #: generations invalidate, by the owner's rulings of 2026-10-13 and 2026-10-15: the write marks
+    #: now advance a generation whose writer died between its commit and its advance, and the age
+    #: stays only as cover for writers that predate them, until its contract date
+    #: (docs/epoch-task-06-collection-generations-by-default.md, "The One Timer That Stays"). It
+    #: bounds nothing's size: :attr:`negative_cache_max_entries` does, and a marker under a
+    #: generation the table has moved past is dropped when a read sees the move. Opting in requires a generation source on
     #: the registry, refuses deferred L3 flushes (a write visible before its row lands would be
     #: hidden by a marker recorded in between), and refuses subscript writes (fire-and-forget
     #: cannot report a generation it failed to advance).
     #:
-    #: A failed L2 write degrades exactly as it does on any collection: the marker it did not
-    #: replace was stamped before the commit advanced the generation, so it has already stopped
-    #: answering.
+    #: An absent-marker an older release left in L2 is never trusted: it is read as no row, and a
+    #: miss L3 confirms deletes it at the revision read.
     #:
     #: **Wiring.** Without an L3 pool the opt-in is inert -- there is no durable tier for an
     #: absence to be an absence OF. With an L3 pool it is live whether or not an L2 client is
     #: wired, deliberately: a writer that has L3 and no L2 must still advance the generation,
-    #: because the absences it has to invalidate were recorded by OTHER pods that do have L2. So
+    #: because the absences it has to invalidate were recorded by OTHER pods. So
     #: construction still requires a generation source there, and still refuses the write shapes
     #: above.
     negative_cache_max_age: ClassVar[timedelta | None] = None
 
-    #: How many expired absent-markers one sweep step deletes from this pod's L1 before checking
-    #: for more. A sweep keeps taking steps until the backlog is gone, so this bounds the size of
-    #: one query, never how much a sweep removes. Only meaningful with
+    #: How many recorded absences this table may hold in a pod's L1. Recording one more drops the
+    #: oldest, so a flood of distinct keys -- a denylist checks a new one per token -- costs at
+    #: most this many rows, by count and never by time. Only meaningful with
     #: :attr:`negative_cache_max_age` set; must be at least one.
-    negative_cache_sweep_batch: ClassVar[int] = _ABSENT_MARKER_SWEEP_BATCH
+    negative_cache_max_entries: ClassVar[int] = _ABSENT_MARKER_MAX_ENTRIES
 
     #: The column holding each row's expiry time, or ``None`` for rows that never expire.
     #:
@@ -677,7 +683,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: None
         :raises TypeError: when :attr:`expires_at_column` is not a declared datetime column, or
             :attr:`negative_cache_max_age` is under one second, or
-            :attr:`negative_cache_sweep_batch` is under one, or :attr:`write_generation` is not
+            :attr:`negative_cache_max_entries` is under one, or :attr:`write_generation` is not
             one of the three declarations, or opts out while :attr:`negative_cache_max_age` is
             set, or :attr:`invalidation_columns` is not a tuple of column names
         """
@@ -720,10 +726,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"{cls.__name__}.negative_cache_max_age must be at least one second, the finest "
                 f"server-side lifetime an L2 entry can carry; got {cls.negative_cache_max_age}"
             )
-        if cls.negative_cache_sweep_batch < 1:
+        if cls.negative_cache_max_entries < 1:
             raise TypeError(
-                f"{cls.__name__}.negative_cache_sweep_batch must be at least 1, or a sweep could never "
-                f"remove an expired absent-marker; got {cls.negative_cache_sweep_batch}"
+                f"{cls.__name__}.negative_cache_max_entries must be at least 1, or no absence could be "
+                f"recorded; got {cls.negative_cache_max_entries}"
             )
         if isinstance(cls.write_generation, WriteGeneration) or cls.negative_cache_max_age is not None:
             _GENERATION_CLASSES.add(cls)
@@ -774,7 +780,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._l1 = registry.get_l1_backend(self.table_name) if type(self).caches_in_l1 else None
         self._l1_change_listeners = []
         self.l3_pool = registry.get_l3_pool(self.table_name)
-        self._next_absent_marker_sweep = 0.0
+        # the generation this pod last saw its table's markers under; a read that sees another
+        # drops every marker recorded under an older one
+        self._marker_generation: str | None = None
         self._last_generation_warning: float | None = None
         self._refuse_unsound_negative_cache()
         if self._negative_cache_active and self._l1 is not None:
@@ -1710,7 +1718,8 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _l1_marker_matches(self, entity_id: Any, generation: str) -> bool:
         """whether this pod's L1 holds a live absent-marker for ``entity_id`` under ``generation``.
 
-        A marker under any other generation, or past its deadline, is removed.
+        A marker under any other generation, or past its deadline (the cover for writers that
+        predate the write marks), is removed.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
@@ -1721,6 +1730,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
+        self._drop_markers_of_moved_generations(generation)
         key = (self._absent_marker_key(entity_id),)
         row = self._l1.select_by_id(_ABSENT_MARKER_TABLE, key, ("key",))
         if row is None:
@@ -1730,8 +1740,30 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._l1.delete_by_id(_ABSENT_MARKER_TABLE, key, ("key",))
         return False
 
+    def _drop_markers_of_moved_generations(self, generation: str) -> None:
+        """drop every marker of this table recorded under a generation other than ``generation``.
+
+        Runs once per generation this pod sees its table at: a marker under a generation the
+        table has moved past can never answer again, so it goes when the move is seen rather than
+        when its own key is next read -- which, for a key looked up once, is never.
+
+        :param generation: the table's current write generation
+        :ptype generation: str
+        :return: None
+        :rtype: None
+        """
+        if self._l1 is None or generation == self._marker_generation:
+            return
+        dead = self._l1.execute_query(
+            f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? AND generation != ?",
+            (self.table_name, generation),
+        )
+        for row in dead:
+            self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
+        self._marker_generation = generation
+
     def _write_l1_marker(self, entity_id: Any, generation: str) -> None:
-        """record in this pod's L1 that ``entity_id`` is absent under ``generation``.
+        """record in this pod's L1 that ``entity_id`` is absent under ``generation``, within the table's cap.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
@@ -1742,47 +1774,43 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None or self.negative_cache_max_age is None:
             return
-        now = time.monotonic()
+        self._drop_markers_of_moved_generations(generation)
         self._l1.upsert(
             _ABSENT_MARKER_TABLE,
             {
                 "key": self._absent_marker_key(entity_id),
+                "table_name": self.table_name,
                 "generation": generation,
-                "deadline": now + self.negative_cache_max_age.total_seconds(),
+                "deadline": time.monotonic() + self.negative_cache_max_age.total_seconds(),
             },
             "key",
         )
-        if now >= self._next_absent_marker_sweep:
-            self._next_absent_marker_sweep = now + _ABSENT_MARKER_SWEEP_INTERVAL_SECONDS
-            self._sweep_expired_l1_markers(now)
+        self._hold_markers_to_the_cap()
 
-    def _sweep_expired_l1_markers(self, now: float) -> None:
-        """delete every absent-marker past its deadline from this pod's L1.
+    def _hold_markers_to_the_cap(self) -> None:
+        """drop this table's oldest recorded absences past :attr:`negative_cache_max_entries`.
 
-        A marker is otherwise removed only when its own key is read or written again, and the keys
-        a denylist checks -- one per token -- are rarely seen twice, so without this the table grows
-        with every distinct key ever looked up. Runs from the marker write path at most once per
-        :data:`_ABSENT_MARKER_SWEEP_INTERVAL_SECONDS` per collection and drains the backlog in
-        batches of :attr:`negative_cache_sweep_batch`, so the table never holds more than the
-        markers written within one max age plus one interval, whatever the miss rate.
+        Oldest by when the marker was first recorded (the row's insertion order), so a flood of
+        distinct keys keeps the newest and never grows the table past the cap.
 
-        :param now: the monotonic time the caller already read
-        :ptype now: float
         :return: None
         :rtype: None
         """
         if self._l1 is None:
             return
-        batch = type(self).negative_cache_sweep_batch
-        while True:
-            expired = self._l1.execute_query(
-                f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE deadline <= ? LIMIT {batch:d}",
-                (now,),
-            )
-            for row in expired:
-                self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
-            if len(expired) < batch:
-                return
+        cap = type(self).negative_cache_max_entries
+        counted = self._l1.execute_query(
+            f"SELECT COUNT(*) AS n FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ?", (self.table_name,)
+        )
+        excess = int(counted[0]["n"]) - cap if counted else 0
+        if excess <= 0:
+            return
+        oldest = self._l1.execute_query(
+            f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? ORDER BY rowid LIMIT {excess:d}",
+            (self.table_name,),
+        )
+        for row in oldest:
+            self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
 
     def _clear_l1_marker(self, entity_id: Any) -> None:
         """drop this pod's L1 absent-marker for ``entity_id``, if it holds one.
@@ -2195,13 +2223,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                     },
                 },
             )
-            # keep the revision: a negative-caching collection replaces the poisoned entry rather
-            # than creating over it, which would fail and send every later read to L3 too.
-            return _L2Lookup(row=None, marker=None, revision=revision)
+            # keep the revision: a negative-caching collection removes the poisoned entry at it
+            # rather than leaving it to send every later read to L3 too.
+            return _L2Lookup(row=None, marker=None, revision=revision, stale=True)
         if isinstance(decoded, _AbsentMarker):
-            return _L2Lookup(row=None, marker=decoded, revision=revision)
+            return _L2Lookup(row=None, marker=decoded, revision=revision, stale=True)
         if self._row_is_expired(decoded):
-            return _L2Lookup(row=None, marker=None, revision=revision)
+            return _L2Lookup(row=None, marker=None, revision=revision, stale=True)
         if distrust_row:
             return _L2Lookup(row=None, marker=None, revision=revision, untrusted_row=True)
         return _L2Lookup(row=decoded, marker=None, revision=None)
@@ -2224,41 +2252,6 @@ class BaseCollection(ABC, Generic[EntityT]):
             except UnicodeDecodeError as exc:
                 raise CorruptCacheEntry(self.table_name, "absent-marker generation", raw) from exc
         return self.decode_row(raw)
-
-    async def _write_l2_marker(self, entity_id: Any, generation: str, revision: int | None) -> None:
-        """record in L2 that ``entity_id`` is absent under ``generation``, never over a writer's value.
-
-        Creates the marker when the key held nothing, or compare-and-swaps it over the stale
-        marker, expired row or undecodable entry the lookup found; a value a writer put since then
-        makes either write fail, and the writer's value stands. The entry carries a server-side
-        lifetime of :attr:`negative_cache_max_age`, so markers nobody reads again leave the bucket.
-        A failure here costs one more L3 read later, never correctness, so it degrades to a
-        warning -- including the refusal of a bucket its declarer has not yet let carry lifetimes.
-
-        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
-        :ptype entity_id: Any
-        :param generation: the generation read before the L3 lookup that found nothing
-        :ptype generation: str
-        :param revision: revision of the entry to replace, or ``None`` to create
-        :ptype revision: int | None
-        :return: None
-        :rtype: None
-        """
-        marker = _ABSENT_MARKER_PREFIX + generation.encode("utf-8")
-        try:
-            kv = await self._ensure_kv()
-            if kv is None:
-                return
-            key = self.l2_key(entity_id)
-            if revision is None:
-                await kv.create(key=key, value=marker, ttl=self.negative_cache_max_age)
-            else:
-                await kv.update(key=key, value=marker, revision=revision, ttl=self.negative_cache_max_age)
-        except KvError as exc:
-            log.warning(
-                "L2 absent-marker write failed; the next lookup will ask L3 again",
-                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
-            )
 
     async def _save_to_l2(self, entity_id: Any, data: dict[str, Any]) -> bool:
         """write entity payload to the L2 NATS KV bucket.
@@ -2431,11 +2424,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         """Async pull-through: L2 -> L1, then L3 -> L1+L2. Returns the data or None.
 
         An expired row is absent at every tier, L3's included. When negative caching is on, the
-        table's write generation is read FIRST -- before L2 and before L3 -- and an absent-marker
-        in L1 or L2 answers ``None`` only when stamped with that generation. A full miss is then
-        recorded under it in both tiers. Because every committed write advances the generation, a
-        marker recorded from an L3 read that predated a write carries a generation that write
-        already moved past, and never answers again.
+        table's write generation is read FIRST -- before L2 and before L3 -- and this pod's L1
+        absent-marker answers ``None`` only when stamped with that generation. A full miss is then
+        recorded under it in L1, never in L2. Because every committed write advances the
+        generation, a marker recorded from an L3 read that predated a write carries a generation
+        that write already moved past, and never answers again.
 
         The row is cached in L1 only while no write of the key began, and no eviction of it
         landed, in this process since the read started (:class:`_L1Fence`): either means the row
@@ -2472,21 +2465,18 @@ class BaseCollection(ABC, Generic[EntityT]):
             if self._l1 is not None and self._l1_fence.still_newest(ticket):
                 self._l1_upsert(lookup.row, self.primary_key_columns)
             return lookup.row
-        if generation is not None and lookup.marker is not None and lookup.marker.generation == generation:
-            self._write_l1_marker(entity_id, generation)
-            log.debug(
-                "absence served from an L2 marker",
-                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
-            )
-            return None
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None and self._row_is_expired(pg_data):
             pg_data = None
         if pg_data is not None:
             pg_data = await self._seed_l2_from_store(entity_id, pg_data, lookup.revision, ticket)
         elif generation is not None:
+            # recorded in this pod's L1 only. L2 is told nothing, but an entry there no read may
+            # answer with -- an older release's marker, an expired row, an undecodable entry -- is
+            # removed at the revision read, so a writer's value since stands.
             self._write_l1_marker(entity_id, generation)
-            await self._write_l2_marker(entity_id, generation, lookup.revision)
+            if lookup.stale and lookup.revision is not None:
+                await self._delete_l2_at(entity_id, lookup.revision)
         elif lookup.untrusted_row and lookup.revision is not None:
             # L3 holds no row and L2 held one this read did not trust: it is the stale entry of a
             # row deleted since, and nothing else will ever remove it.

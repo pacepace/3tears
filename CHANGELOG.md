@@ -25,6 +25,14 @@ packages (bumped in lock-step).
 
 ### Core: a committed write cannot lose its generation advance
 
+- **Recorded absences are bounded by count, never by time, and live in L1 only.** A negative-caching
+  collection records a miss in its pod's L1 and nowhere else. It no longer writes an absent-marker to
+  L2, never trusts one an older release left there, and deletes that marker (or an expired row, or an
+  undecodable entry) at the revision read once L3 confirms the miss. `negative_cache_max_entries`
+  (default 10,000) caps one table's markers per pod, dropping the oldest. A read that sees the table's
+  generation move drops every marker recorded under another. `negative_cache_sweep_batch` and the
+  timed sweep are gone. The max age stays only as cover for writers that predate the write marks,
+  until its contract date. One L3 read per key per pod per generation, where L2 used to share it.
 - **The switch is the table's declaration:** `TableSchema.write_generation` (`WRITE_GENERATION`).
   A collection class over a switched-on schema reads its `write_generation` from it, so code reading
   the class attribute keeps working. A migration package declares the switched-on tables it creates

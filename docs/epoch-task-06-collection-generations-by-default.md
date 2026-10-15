@@ -1233,8 +1233,11 @@ on purpose, not overlooked.
   row, because every write to a table would lock that one row. The age now covers only commits by
   writers that predate the marks. It goes, with this section, in the contract commit dated
   2027-01-05; `tests/enforcement/test_recorded_absence_age_is_contracted_by_its_date.py` fails the
-  build from that date while it remains. The bound on recorded absences (L1 only, a count cap per
-  table, dropped when the generation moves) is the next piece.
+  build from that date while it remains. The bound on recorded absences is built too: they live in
+  each pod's L1 only, never in L2 (`collection_absent_markers`); a table holds at most
+  `negative_cache_max_entries` of them per pod, the oldest dropped first; and every marker under a
+  generation the table has moved past is dropped when a read sees the move. The age no longer
+  bounds anything's size, and the timed sweep is gone.
 
 ### What Must Already Be Deployed Everywhere
 
