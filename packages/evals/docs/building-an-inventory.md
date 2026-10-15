@@ -73,10 +73,10 @@ criterion's wording, so a reworded dimension is a new criterion that no earlier 
 
 Every report carries a **Not tested** section. It lists what the campaign could not
 speak to: levers declared and not swept, cases an arm has no usable trial of, goal checks not shown to beat doing
-nothing, measures tested with no margin declared, guardrails left undecided, cost not measured, and each judge not yet
-calibrated against people ([reading reports](reading-reports.md#the-rest-of-the-page)). The behaviour tree's untested
-leaves are not in that list, because the package does not hold the tree: publish them yourself, beside the report. A
-reader should learn what the eval cannot see before they learn what it found.
+nothing, measures tested with no margin declared, readings no declared question asked about, cost not measured, and
+each judge not yet calibrated against people ([reading reports](reading-reports.md#the-rest-of-the-page)). The
+behaviour tree's untested leaves are not in that list, because the package does not hold the tree: publish them
+yourself, beside the report. A reader should learn what the eval cannot see before they learn what it found.
 
 ## 7. Write it down and run it (15 min)
 
@@ -112,17 +112,17 @@ needs_human = "bool"
 
 Run it with `python -m threetears.evals examples/1-triage/triage.toml` (from `packages/evals`); paths in the file are
 read beside it. The first run records the model's answers into `recording`, on
-`OPENROUTER_API_KEY`; every run after replays them, offline and free. It prints each field's pass rate, a confusion
-matrix for `category`, and the misses, and writes its report to `.evals/reports/triage/`. When a leaf needs a rule a
-field name cannot say ("never leave alone an email a person must see"), that is
-[rung 1](ladder.md#rung-1-your-own-function): the same eval, in 15 lines of Python.
+`OPENROUTER_API_KEY`; every run after replays them, offline and free. It prints each field's pass rate, each
+`category` label's precision and recall, and the top misses, and writes its report, the confusion matrix included, to
+`.evals/reports/triage/`. When a leaf needs a rule a field name cannot say ("never leave alone an email a person
+must see"), that is [rung 1](ladder.md#rung-1-your-own-function): the same eval, in 15 lines of Python.
 
 ## Then: a baseline
 
 Run one baseline of your current production configuration at k=3, with as many cases per behavior as you can
-write (a contrast on fewer than 5 cases is reported `not tested`; 20 or more gives a usable interval), and read the
-bars it proposes (`bars_propose`, or `propose_bars`). A baseline proposes a bar on each measure it measured, seeded
-from where the incumbent performs. It never adopts one: you write the bars you accept into your host's registrations,
+write (below 5 cases a contrast is not tested; 20 or more gives a usable interval), and read the bars it proposes
+(`bars_propose`, or `propose_bars`). A baseline proposes a bar on each measure it measured, seeded from where the
+incumbent performs. It never adopts one: you write the bars you accept into your host's registrations,
 and a looser bar than the one registered is refused. From then on, a worse release is a red line, not a debate. Every
 new incident becomes a regression case before its fix merges.
 
@@ -318,7 +318,7 @@ Ten cases cannot tell a 90% model from a 65% one, which shapes how you size the 
   cases a label's figure is a smoke test.
 - **Start with at least ten hand-written cases per label**, most of them boundary cases, lookalikes and
   contrast pairs, then grow the set from production mistakes ([maintaining the set](#maintaining-the-set)). The
-  package's examples use one to four cases per label so they run in seconds: they show the mechanics, and by
+  package's examples use as few as two cases per label so they run in seconds: they show the mechanics, and by
   this rule their figures are smoke tests.
 
 ### Feed the classifier exactly what production feeds it

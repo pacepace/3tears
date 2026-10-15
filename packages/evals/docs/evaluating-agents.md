@@ -279,8 +279,9 @@ for result in results:
 
 **A change, better or worse.** `Eval(CASES, {"old": ROOM(old_agent), "new": ROOM(new_agent)}, [checks...])`, the
 first key the control, runs both agents on the same seeded cases. Each goal check becomes a
-reading named `goal_state:<check>` in the contrasts table, with its interval and verdict, and an unproven check is
-disclosed under Methods. [Reading a comparison](reading-reports.md#reading-a-comparison) explains the verdicts.
+reading in the contrasts table, headed by its expression (its key is `goal_state:<check>`), with its interval and
+verdict, and an unproven check is named under Not tested.
+[Reading a comparison](reading-reports.md#reading-a-comparison) explains the verdicts.
 
 **Placements.** Every run records what it did with each dimension:
 
@@ -472,11 +473,6 @@ with every call refused, single campaign.
 observations under different worlds never pool. A name registered as both a sweepable and a world dimension is
 refused. *Rejected:* detecting that through a shared binding table, since a sweepable's after-the-fact reader and a
 live world handle are different callables that never collide.
-
-### Review
-
-An independent review found two outside citations in the first draft fabricated or misquoted, now corrected.
-Walking the design against three other applications produced both contract-level changes.
 
 ### What the contract still cannot see
 

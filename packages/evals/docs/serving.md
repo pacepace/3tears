@@ -267,7 +267,7 @@ Each job writes its own record, and polling reads it:
 | `judge-temperature:<id>` | `judge_temperature` | `EvalJudgeTemperatureCheck`, every answer kept | `result`: the comparison |
 | `action:<id>` | a host action ([Adopting the engine](adopting-a-host.md)) | `EvalActionJob` | `result`: the action's typed result |
 
-A launch is one job now, not one per arm: its arms are prepared inside it — where a generating launch
+A launch is one job, not one per arm: its arms are prepared inside it — where a generating launch
 (`n_variations`) calls its variation writer — and its record names its runs once they start, so an agent polls
 the launch and reads each run with `run_get`. One `job_cancel` of a launch stops every run it started.
 
