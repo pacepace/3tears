@@ -40,6 +40,7 @@ from threetears.evals.actions.catalogue import (
     read_only_tools,
     standard_tools,
 )
+from threetears.evals.actions.definitions import definition_drift_actions
 from threetears.evals.actions.engine import engine_actions, eval_catalogue
 from threetears.evals.actions.render import render_jobs_started
 
@@ -65,6 +66,7 @@ __all__ = [
     "RefusalKind",
     "ToolHints",
     "ToolSpec",
+    "definition_drift_actions",
     "engine_actions",
     "eval_catalogue",
     "read_only_tools",
