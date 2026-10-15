@@ -107,6 +107,7 @@ details[open] > summary::before { transform: rotate(90deg); }
 details.section { margin: 40px 0 0; }
 details.section > summary { padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
 details.section > summary > h2 { display: inline; margin: 0; padding: 0; border: 0; }
+.section-body { scroll-margin-top: 48px; }
 .count { color: var(--muted); font-size: 0.9375rem; }
 details.fold, details[data-table] { margin: 8px 0 16px; }
 details.fold > summary, details[data-table] > summary { font-size: 0.875rem; color: var(--muted); }
@@ -195,7 +196,9 @@ def report_html(report: Report) -> str:
     present = [section for section in sections if any(block.section == section for block in report.blocks)]
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append(
-        "<nav>" + "".join(f'<a href="#{section}">{_escape(SECTION_TITLES[section])}</a>' for section in nav) + "</nav>"
+        "<nav>"
+        + "".join(f'<a href="#{_section_anchor(section)}">{_escape(SECTION_TITLES[section])}</a>' for section in nav)
+        + "</nav>"
     )
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
@@ -214,12 +217,28 @@ def report_html(report: Report) -> str:
 
 
 def _section(section: str, body: Sequence[str], *, count: int | None) -> list[str]:
-    """A section's heading and body: open, or closed in a ``<details>`` whose summary is the heading and its size."""
+    """A section's heading and body: open, or closed in a ``<details>`` whose summary is the heading and its size.
+
+    A closed section's body is one element with an id of its own (``cases-body``), the one the nav links: a browser
+    opens a closed ``<details>`` for a link that lands inside its content and not for one that lands on the
+    ``<section>`` around it, which would scroll to a shut summary. Every id inside the fold — a trial, a case, a
+    term — is inside that element too, so a link to any of them opens the fold as well.
+    """
     heading = f"<h2>{_escape(SECTION_TITLES[section])}</h2>"
     if section not in _FOLDED_SECTIONS:
         return [heading, *body]
     size = f' <span class="count">· {count}</span>' if count is not None else ""
-    return [f'<details class="section"><summary>{heading}{size}</summary>', *body, "</details>"]
+    return [
+        f'<details class="section"><summary>{heading}{size}</summary>',
+        f'<div class="section-body" id="{_section_anchor(section)}">',
+        *body,
+        "</div></details>",
+    ]
+
+
+def _section_anchor(section: str) -> str:
+    """The id a link to a section lands on: the section itself when open, its body inside the fold when closed."""
+    return f"{section}-body" if section in _FOLDED_SECTIONS else section
 
 
 def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> int | None:
