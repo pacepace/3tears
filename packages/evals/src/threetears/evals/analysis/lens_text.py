@@ -36,12 +36,13 @@ def _contestant(model: str, variant_key: str) -> str:
 
 
 def _pass_hat_k_text(k: int, value: float, n_cases: int, low: float | None, high: float | None) -> str:
-    """A point's pass^k: a rate over :data:`MIN_CASES` or more cases, else a count of them, as a pass rate is stated.
+    """A point's pass^k: a rate over :data:`MIN_CASES` or more cases, else only the case count it rests on.
 
-    Below the floor no interval is shown either, since a rate on so few cases is not estimated.
+    Below the floor no figure is printed, count or interval: pass^k averages fractional per-case estimates, so no count
+    of cases passed was observed.
     """
     if n_cases < MIN_CASES:
-        return f"pass^{k} {round(value * n_cases)} of {n_cases} case(s), too few to state as a rate"
+        return f"pass^{k} over {n_cases} case(s), too few to state as a rate (a rate needs {MIN_CASES})"
     interval = f" [{format_number(low)}, {format_number(high)}]" if low is not None and high is not None else ""
     return f"pass^{k} {format_number(value)}{interval} over {n_cases} case(s)"
 

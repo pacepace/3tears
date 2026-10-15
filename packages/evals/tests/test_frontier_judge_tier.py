@@ -149,15 +149,14 @@ def test_the_scope_frontier_reads_its_judges_tiers_from_the_scope() -> None:
     assert subject["verdict"]["judge_evidence_tier"] == "calibrated"
 
 
-def test_a_pass_k_over_fewer_cases_than_the_floor_reads_as_a_count_and_over_enough_as_a_rate(
+def test_a_pass_k_over_fewer_cases_than_the_floor_states_no_figure_and_over_enough_a_rate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys.modules[__name__], "_CASES", 3)
     run, results = _corpus(judged=False)
     few = frontier_text(compute_frontier([run], results, bar=0.5, archived_run_ids=None))
-    assert (
-        "pass^1 3 of 3 case(s), too few to state as a rate" in few and "[" not in few.split("pass^1")[1].split(",")[0]
-    )
+    assert "pass^1 over 3 case(s), too few to state as a rate (a rate needs 5)" in few
+    assert " of 3 case" not in few and "pass^1 1" not in few and "[" not in few.split("pass^1")[1].split(",")[0]
 
     monkeypatch.setattr(sys.modules[__name__], "_CASES", MIN_CASES)
     run, results = _corpus(judged=False)

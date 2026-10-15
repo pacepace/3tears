@@ -62,7 +62,7 @@ v1 (control) vs v2 · 14 Oct 2026
   floor, the caveat says the rule was read on the counts and only the size of the difference is not estimated.
 
 The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too few,
-and no rate (a pass rate, pass^k) is estimated for an arm: it reads as a count. A measure's mean is shown with its
+and no rate (a pass rate, pass^k) is estimated for an arm: a pass rate reads as a count, and pass^k states only the cases it rests on. A measure's mean is shown with its
 interval. A declared rule can still settle keep on what was observed, never switch. So a host's seed gate covers every
 template whose results are compared across arms, whatever its declared reading.
 
