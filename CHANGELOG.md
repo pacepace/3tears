@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### acl: many evaluations share their reads
+
+- `evaluate_many_with_trail(contexts, cache=)` answers many questions at once, each exactly as
+  `evaluate_with_trail` answers it alone. Each side's group set is planned once per actor and
+  customer. The (group, namespace) contributions the cache does not hold are computed together: one
+  read of the assignments the missing groups hold, one of their roles and one of the groups. Each
+  pair is still walked by the same code, and still stored under the read fence. `evaluate_with_trail`
+  (and with it `evaluate_decision`) is its one-question case, so a single decision for a person in
+  dozens of groups also reads once rather than twice per group. A person in a bundle nested in 51
+  state groups: an audit snapshot over 357 namespaces fell from 37,848 round trips to 14, and a
+  two-sided `tool.call` decision from 108 to 6.
+- `HeldAssignmentsLoader` (optional, `load_assignments_held_by_groups`): a grant loader that can
+  return every assignment a set of groups holds. `CollectionGrantLoader` is one. A loader without it
+  is asked once per namespace for every missing group, with the same answers.
+- `NamespaceCollection.get_many(namespace_ids)`: many namespaces in one read, the batch form of
+  `find_by_id`.
+
 ### Core: a committed write cannot lose its generation advance
 
 - **The switch is the table's declaration:** `TableSchema.write_generation` (`WRITE_GENERATION`).

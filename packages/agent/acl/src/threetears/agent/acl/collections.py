@@ -1760,6 +1760,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "get_by_agent_id",
             "get_by_owner_and_customer",
             "find_by_id",
+            # ``get_many`` is ``find_by_id`` for many ids: ``namespace_id`` is unique platform-wide,
+            # so the partition adds nothing to the lookup.
+            "get_many",
             # ``ensure_namespace`` DERIVES the partition from ``customer_id`` (``create`` does) and
             # addresses the existing row by ``namespace_id``, unique platform-wide; a ``row_scope``
             # argument would let a caller name a partition that contradicts the customer.
@@ -2108,6 +2111,33 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
+        return result
+
+    async def get_many(self, namespace_ids: Sequence[UUID]) -> dict[UUID, NamespaceEntity]:
+        """resolve many namespaces by ``namespace_id`` in one read, the batch form of :meth:`find_by_id`.
+
+        For a caller that would otherwise ask one row at a time -- an audit snapshot over every
+        namespace a member reaches, each a round trip to L3. Rows are promoted into L1/L2 exactly as
+        :meth:`find_by_id` promotes one. Empty input reads nothing.
+
+        :param namespace_ids: the namespace UUIDs
+        :ptype namespace_ids: Sequence[UUID]
+        :return: each found namespace by its id; an id with no row is absent
+        :rtype: dict[UUID, NamespaceEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        result: dict[UUID, NamespaceEntity] = {}
+        if self.l3_pool is not None and len(namespace_ids) > 0:
+            rows = await self.l3_pool.fetch(
+                "SELECT * FROM namespaces WHERE namespace_id = ANY($1::uuid[])",
+                list(namespace_ids),
+            )
+            for row in rows:
+                data = self._coerce_row(dict(row))
+                self.write_to_cache_sync(data, read_since=read_ticket)
+                key = _coerce_uuid(data["namespace_id"])
+                if key is not None:
+                    result[key] = self.entity_class(data, is_new=False, collection=self)
         return result
 
     async def ensure_namespace(

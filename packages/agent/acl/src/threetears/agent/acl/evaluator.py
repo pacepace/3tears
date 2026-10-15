@@ -11,6 +11,10 @@ two entry points share one resolution algorithm:
   ``(group, assignment, role)`` chain. trail-mode reads the same
   cache layers and stores the produced trails alongside the action
   set so subsequent decision-mode lookups serve from cache.
+- :func:`evaluate_many_with_trail` -- many trail-mode questions at once
+  (an audit snapshot across every namespace an actor reaches). the
+  answers are :func:`evaluate_with_trail`'s, which is its one-question
+  case; the reads are shared across the questions (step 2b).
 
 resolution rules (in order):
 
@@ -47,11 +51,14 @@ resolution rules (in order):
         cache's :class:`MembershipLoader` and write back via
         :meth:`AclCache.put_membership`.
      b. for each eligible group, consult
-        :meth:`AclCache.get_group_namespace`; on miss walk the cache's
-        :class:`GrantLoader` for the group + namespace and write back
-        via :meth:`AclCache.put_group_namespace`. trails are stored
-        alongside actions so trail-mode and decision-mode share one
-        cached value.
+        :meth:`AclCache.get_group_namespace`; the misses are read from
+        the cache's :class:`GrantLoader` together -- every missing
+        group's assignments in one read (one per namespace when the
+        loader is not a :class:`HeldAssignmentsLoader`), their roles and
+        groups in one read each -- walked per group + namespace, and
+        written back via :meth:`AclCache.put_group_namespace`. trails
+        are stored alongside actions so trail-mode and decision-mode
+        share one cached value.
      c. union the per-group action sets and trails into the side's
         contribution.
 
@@ -91,6 +98,8 @@ be calling, but never to same side via wrong member type.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Iterable, Literal
 from uuid import UUID
@@ -100,6 +109,7 @@ from threetears.agent.acl.cache import (
     ActorMembershipKey,
     GroupNamespaceKey,
 )
+from threetears.agent.acl.loader import HeldAssignmentsLoader
 from threetears.agent.acl.types import (
     EvaluationContext,
     EvaluationResult,
@@ -121,6 +131,7 @@ __all__ = [
     "WRITE_FILE_MATCHING_PREFIX",
     "evaluate_decision",
     "evaluate_file_access",
+    "evaluate_many_with_trail",
     "evaluate_with_trail",
 ]
 
@@ -207,6 +218,76 @@ async def evaluate_with_trail(
         carries ``group_id`` alongside a user or an agent (a group
         member is answered alone)
     """
+    results = await evaluate_many_with_trail((ctx,), cache=cache)
+    return results[0]
+
+
+@traced
+async def evaluate_many_with_trail(
+    contexts: Sequence[EvaluationContext],
+    *,
+    cache: AclCache,
+) -> list[EvaluationResult]:
+    """answer many questions together; each answer is :func:`evaluate_with_trail`'s.
+
+    the questions share their reads. each side's group set is planned once per actor and
+    customer (the customer wall is the only thing a namespace changes about it), and every
+    (group, namespace) contribution the cache does not hold is computed from one read of the
+    assignments those groups hold, one of their roles and one of the groups -- not one read
+    per group per namespace. a reader of hundreds of namespaces through dozens of groups is
+    a handful of round trips rather than tens of thousands.
+
+    what is computed is stored in the cache's per-namespace layer under the read fence, as a
+    single evaluation stores it, and used for this call whether or not the cache keeps it.
+
+    :param contexts: the questions, each validated as :func:`evaluate_with_trail` validates it
+    :ptype contexts: Sequence[EvaluationContext]
+    :param cache: shared :class:`AclCache` carrying loaders + layers
+    :ptype cache: AclCache
+    :return: one result per context, in order
+    :rtype: list[EvaluationResult]
+    :raises ValueError: when a context names no actor, or a group alongside a person
+    """
+    for ctx in contexts:
+        _check_context(ctx)
+    planner = _GroupSetPlanner(cache)
+    plans: list[_SidePlan] = []
+    for ctx in contexts:
+        plans.append(await planner.plan(ctx))
+    wanted: dict[GroupNamespaceKey, Namespace] = {}
+    for ctx, plan in zip(contexts, plans, strict=True):
+        for group_id in (*plan.user_groups, *plan.agent_groups):
+            wanted[GroupNamespaceKey(group_id=group_id, namespace_id=ctx.namespace.id)] = ctx.namespace
+    contributions = await _group_namespace_contributions(wanted, cache)
+    results: list[EvaluationResult] = []
+    for ctx, plan in zip(contexts, plans, strict=True):
+        user_actions, user_trails = _accumulate_groups(plan.user_groups, ctx.namespace, contributions)
+        agent_actions: frozenset[str] = _OWNER_ACTIONS if plan.agent_owner_short_circuited else frozenset()
+        agent_trails: tuple[Trail, ...] = ()
+        if plan.agent_groups:
+            agent_actions, agent_trails = _accumulate_groups(plan.agent_groups, ctx.namespace, contributions)
+        results.append(
+            _assemble_result(
+                ctx=ctx,
+                user_actions=user_actions,
+                agent_actions=agent_actions,
+                user_trails=user_trails,
+                agent_trails=agent_trails,
+                agent_owner_short_circuited=plan.agent_owner_short_circuited,
+            )
+        )
+    return results
+
+
+def _check_context(ctx: EvaluationContext) -> None:
+    """refuse a question that names no actor, or a group alongside a person.
+
+    :param ctx: evaluation context
+    :ptype ctx: EvaluationContext
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when the context's actors are not a question the evaluator answers
+    """
     if ctx.group_id is not None and (ctx.user_id is not None or ctx.agent_id is not None):
         raise ValueError(
             "evaluate_with_trail answers for a group member alone; group_id cannot be combined with user_id or agent_id",
@@ -215,53 +296,6 @@ async def evaluate_with_trail(
         raise ValueError(
             "evaluate_with_trail requires at least one of user_id, agent_id or group_id",
         )
-
-    user_actions: frozenset[str] = frozenset()
-    agent_actions: frozenset[str] = frozenset()
-    user_trails: tuple[Trail, ...] = ()
-    agent_trails: tuple[Trail, ...] = ()
-    agent_owner_short_circuited = False
-
-    if ctx.group_id is not None:
-        user_actions, user_trails = await _resolve_group_member_side(
-            group_id=ctx.group_id,
-            namespace=ctx.namespace,
-            cache=cache,
-        )
-
-    if ctx.user_id is not None:
-        user_actions, user_trails = await _resolve_side(
-            actor_id=ctx.user_id,
-            member_type=MemberType.USER,
-            namespace=ctx.namespace,
-            cache=cache,
-        )
-
-    if ctx.agent_id is not None:
-        if _agent_owns_namespace(ctx.namespace, ctx.agent_id):
-            # ownership short-circuit: agent side is implicitly full
-            # access. record a sentinel "every action" set and skip
-            # loader trip. trail surface stays empty because there
-            # is no grant to point at.
-            agent_actions = _OWNER_ACTIONS
-            agent_owner_short_circuited = True
-        else:
-            agent_actions, agent_trails = await _resolve_side(
-                actor_id=ctx.agent_id,
-                member_type=MemberType.AGENT,
-                namespace=ctx.namespace,
-                cache=cache,
-            )
-
-    result = _assemble_result(
-        ctx=ctx,
-        user_actions=user_actions,
-        agent_actions=agent_actions,
-        user_trails=user_trails,
-        agent_trails=agent_trails,
-        agent_owner_short_circuited=agent_owner_short_circuited,
-    )
-    return result
 
 
 @traced
@@ -545,41 +579,113 @@ _OWNER_ACTIONS: _AllActionsSet = _AllActionsSet()
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_side(
+@dataclass(frozen=True)
+class _SidePlan:
+    """the groups each side of one question reaches on its namespace, walls applied.
+
+    :param user_groups: the user side's groups (or a group member's), depth-expanded
+    :param agent_groups: the agent side's groups, empty when the agent owns the namespace
+    :param agent_owner_short_circuited: whether the agent side is its owner's full set
+    """
+
+    user_groups: tuple[UUID, ...]
+    agent_groups: tuple[UUID, ...]
+    agent_owner_short_circuited: bool
+
+
+class _GroupSetPlanner:
+    """plan each question's group sets, once per actor and customer within one call.
+
+    a side's group set depends on its namespace only through the cross-customer wall
+    (:func:`_filter_memberships` reads ``namespace.customer_id`` and nothing else), so one
+    plan serves every namespace of a customer. the plan is this call's working set, not a
+    cache: the next call plans again, through the :class:`AclCache` membership layer as a
+    single evaluation does.
+    """
+
+    def __init__(self, cache: AclCache) -> None:
+        """
+        :param cache: shared :class:`AclCache` carrying loaders + layers
+        :ptype cache: AclCache
+        :return: nothing
+        :rtype: None
+        """
+        self._cache = cache
+        self._planned: dict[tuple[str, UUID, UUID | None], tuple[UUID, ...]] = {}
+
+    async def plan(self, ctx: EvaluationContext) -> _SidePlan:
+        """the groups each side of ``ctx`` reaches.
+
+        :param ctx: a validated evaluation context
+        :ptype ctx: EvaluationContext
+        :return: the plan
+        :rtype: _SidePlan
+        """
+        user_groups: tuple[UUID, ...] = ()
+        agent_groups: tuple[UUID, ...] = ()
+        owner = False
+        if ctx.group_id is not None:
+            user_groups = await self._groups("group", ctx.group_id, ctx.namespace)
+        if ctx.user_id is not None:
+            user_groups = await self._groups("user", ctx.user_id, ctx.namespace)
+        if ctx.agent_id is not None:
+            owner = _agent_owns_namespace(ctx.namespace, ctx.agent_id)
+            if not owner:
+                agent_groups = await self._groups("agent", ctx.agent_id, ctx.namespace)
+        return _SidePlan(user_groups=user_groups, agent_groups=agent_groups, agent_owner_short_circuited=owner)
+
+    async def _groups(self, kind: str, actor_id: UUID, namespace: Namespace) -> tuple[UUID, ...]:
+        """one side's depth-expanded groups on ``namespace``, planned once per customer.
+
+        :param kind: ``user``, ``agent``, or ``group`` (a direct member of the group)
+        :ptype kind: str
+        :param actor_id: the actor, or the group whose direct member is evaluated
+        :ptype actor_id: UUID
+        :param namespace: namespace under evaluation
+        :ptype namespace: Namespace
+        :return: the side's groups, deterministic order
+        :rtype: tuple[UUID, ...]
+        """
+        key = (kind, actor_id, namespace.customer_id)
+        planned = self._planned.get(key)
+        if planned is None:
+            if kind == "group":
+                direct: tuple[UUID, ...] = (actor_id,)
+            else:
+                direct = await _direct_groups(
+                    actor_id=actor_id,
+                    member_type=MemberType.USER if kind == "user" else MemberType.AGENT,
+                    namespace=namespace,
+                    cache=self._cache,
+                )
+            planned = await _expand_group_parents(direct_group_ids=direct, namespace=namespace, cache=self._cache)
+            self._planned[key] = planned
+        return planned
+
+
+async def _direct_groups(
     *,
     actor_id: UUID,
     member_type: MemberType,
     namespace: Namespace,
     cache: AclCache,
-) -> tuple[frozenset[str], tuple[Trail, ...]]:
-    """compute one side's action set + trails for ``actor_id``, cache-aware.
+) -> tuple[UUID, ...]:
+    """the groups ``actor_id`` is a direct member of that may count on ``namespace``.
 
-    runs four-step pipeline against :class:`AclCache`:
-
-    1. consult membership layer for ``(actor_kind, actor_id)``; on
-       miss, call cache's :class:`MembershipLoader` and write back.
-    2. filter memberships by member_type (a user-side resolution
-       only counts memberships where actor is a user member,
-       and vice versa) and by customer (cross-customer wall).
-    3. for each eligible group, consult per-namespace layer for
-       ``(group_id, namespace.id)``; on miss, ask cache's
-       :class:`GrantLoader` for assignments + roles + groups
-       restricted to ``group_id``, walk them, and write back the
-       resulting ``(actions, trails)`` pair.
-    4. union per-group contributions into side's action set + trail
-       tuple.
+    consults the membership layer for ``(actor_kind, actor_id)``; on a miss, calls the
+    cache's :class:`MembershipLoader` and writes back. memberships are then filtered by
+    member type and by customer (the cross-customer wall).
 
     :param actor_id: user UUID or agent UUID under evaluation
     :ptype actor_id: UUID
-    :param member_type: user or agent — drives both loader call
-        and membership filter
+    :param member_type: user or agent -- drives both loader call and membership filter
     :ptype member_type: MemberType
     :param namespace: namespace under evaluation
     :ptype namespace: Namespace
     :param cache: shared :class:`AclCache` carrying loaders + layers
     :ptype cache: AclCache
-    :return: ``(action_set, trails)`` pair for this side
-    :rtype: tuple[frozenset[str], tuple[Trail, ...]]
+    :return: depth-1 group ids, first-seen order
+    :rtype: tuple[UUID, ...]
     """
     actor_kind = "user" if member_type == MemberType.USER else "agent"
     membership_key = ActorMembershipKey(
@@ -603,97 +709,34 @@ async def _resolve_side(
         member_type=member_type,
         namespace=namespace,
     )
-    eligible_group_ids = tuple(_unique_ordered(m.group_id for m in eligible))
-    eligible_group_ids = await _expand_group_parents(
-        direct_group_ids=eligible_group_ids,
-        namespace=namespace,
-        cache=cache,
-    )
-    return await _accumulate_groups(group_ids=eligible_group_ids, namespace=namespace, cache=cache)
+    return tuple(_unique_ordered(m.group_id for m in eligible))
 
 
-async def _resolve_group_member_side(
-    *,
-    group_id: UUID,
-    namespace: Namespace,
-    cache: AclCache,
-) -> tuple[frozenset[str], tuple[Trail, ...]]:
-    """compute what a direct member of ``group_id`` reaches on ``namespace``.
-
-    the user side with its first step replaced: a direct member's depth-1
-    group is ``group_id`` itself, so there is no membership row to load or
-    filter. everything after -- the parent expansion to
-    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` and every wall on the way -- is the
-    same code a user member runs through.
-
-    :param group_id: the group whose direct members are evaluated
-    :ptype group_id: UUID
-    :param namespace: namespace under evaluation
-    :ptype namespace: Namespace
-    :param cache: shared :class:`AclCache` carrying loaders + layers
-    :ptype cache: AclCache
-    :return: ``(action_set, trails)`` pair for a direct member
-    :rtype: tuple[frozenset[str], tuple[Trail, ...]]
-    """
-    eligible_group_ids = await _expand_group_parents(
-        direct_group_ids=(group_id,),
-        namespace=namespace,
-        cache=cache,
-    )
-    return await _accumulate_groups(group_ids=eligible_group_ids, namespace=namespace, cache=cache)
-
-
-async def _accumulate_groups(
-    *,
+def _accumulate_groups(
     group_ids: tuple[UUID, ...],
     namespace: Namespace,
-    cache: AclCache,
+    contributions: dict[GroupNamespaceKey, tuple[frozenset[str], tuple[Trail, ...]]],
 ) -> tuple[frozenset[str], tuple[Trail, ...]]:
     """union what each reachable group contributes on ``namespace``.
 
-    the one place a side's reachable groups become an action set, shared by
-    every kind of side so their answers cannot drift.
+    the one place a side's reachable groups become an action set, shared by every kind of
+    side so their answers cannot drift.
 
     :param group_ids: every group the side reaches, depth-expanded
     :ptype group_ids: tuple[UUID, ...]
     :param namespace: namespace under evaluation
     :ptype namespace: Namespace
-    :param cache: shared :class:`AclCache` carrying loaders + layers
-    :ptype cache: AclCache
+    :param contributions: each (group, namespace) pair's contribution
+    :ptype contributions: dict[GroupNamespaceKey, tuple[frozenset[str], tuple[Trail, ...]]]
     :return: ``(action_set, trails)`` pair for the side
     :rtype: tuple[frozenset[str], tuple[Trail, ...]]
     """
-    eligible_group_ids = group_ids
-    if not eligible_group_ids:
-        return frozenset(), ()
-
-    # per-group resolution: cache the (group, namespace) contribution
-    # so two evaluations against the same namespace re-using the same
-    # group serve the second from cache. the layer is keyed on the
-    # group id, so different actors who happen to share a group also
-    # benefit.
     actions_acc: set[str] = set()
     trails_acc: list[Trail] = []
-    for group_id in eligible_group_ids:
-        ns_key = GroupNamespaceKey(
-            group_id=group_id,
-            namespace_id=namespace.id,
-        )
-        ns_entry = cache.get_group_namespace(ns_key)
-        if ns_entry is not None:
-            actions_acc.update(ns_entry.actions)
-            trails_acc.extend(ns_entry.trails)
-            continue
-
-        fence = cache.read_fence()
-        group_actions, group_trails, role_ids = await _resolve_group_for_namespace(
-            group_id=group_id,
-            namespace=namespace,
-            cache=cache,
-        )
-        cache.put_group_namespace(ns_key, group_actions, group_trails, role_ids=role_ids, fence=fence)
-        actions_acc.update(group_actions)
-        trails_acc.extend(group_trails)
+    for group_id in group_ids:
+        actions, trails = contributions[GroupNamespaceKey(group_id=group_id, namespace_id=namespace.id)]
+        actions_acc.update(actions)
+        trails_acc.extend(trails)
 
     # deterministic trail ordering across groups so two runs with the
     # same dataset produce the same trail order.
@@ -706,48 +749,73 @@ async def _accumulate_groups(
     return frozenset(actions_acc), tuple(trails_acc)
 
 
-async def _resolve_group_for_namespace(
-    *,
-    group_id: UUID,
-    namespace: Namespace,
+async def _group_namespace_contributions(
+    wanted: dict[GroupNamespaceKey, Namespace],
     cache: AclCache,
-) -> tuple[frozenset[str], tuple[Trail, ...], frozenset[UUID]]:
-    """resolve one group's contribution against ``namespace`` via loaders.
+) -> dict[GroupNamespaceKey, tuple[frozenset[str], tuple[Trail, ...]]]:
+    """what each (group, namespace) pair contributes, from the cache or read in bulk.
 
-    cache-miss path for the per-namespace layer. asks the cache's
-    :class:`GrantLoader` for assignments held by ``group_id`` covering
-    ``namespace``, plus the roles and group rows the trail builder
-    needs, then walks them.
+    a pair the per-namespace layer holds is served from it. the rest are computed together:
+    the groups' assignments in one read when the grant loader is a
+    :class:`HeldAssignmentsLoader` (else one read per namespace, for every missing group at
+    once), then their roles and the groups in one read each, and each pair walked by
+    :func:`_walk_assignments` exactly as a single evaluation walks it. every computed pair is
+    stored under the fence taken before the reads, so an eviction that lands meanwhile keeps
+    a stale answer out of the cache.
 
-    :param group_id: group to resolve
-    :ptype group_id: UUID
-    :param namespace: namespace under evaluation
-    :ptype namespace: Namespace
-    :param cache: shared :class:`AclCache`
+    :param wanted: each pair the evaluation needs, with its namespace
+    :ptype wanted: dict[GroupNamespaceKey, Namespace]
+    :param cache: shared :class:`AclCache` carrying loaders + layers
     :ptype cache: AclCache
-    :return: ``(action_set, trails, role_ids)`` for this group, ``role_ids``
-        being every role its covering assignments name, which the cache keeps
-        so a role edit evicts exactly the entries that read the role
-    :rtype: tuple[frozenset[str], tuple[Trail, ...], frozenset[UUID]]
+    :return: ``(actions, trails)`` for every wanted pair
+    :rtype: dict[GroupNamespaceKey, tuple[frozenset[str], tuple[Trail, ...]]]
     """
-    group_ids = (group_id,)
-    assignments = await cache.grant_loader.load_assignments_for_groups(
-        group_ids=group_ids,
-        namespace=namespace,
-    )
-    role_ids = tuple(_unique_ordered(a.role_id for a in assignments))
-    roles = await cache.grant_loader.load_roles(role_ids) if role_ids else {}
-    groups_raw = await cache.grant_loader.load_groups(group_ids)
-    groups = _coerce_groups(groups_raw)
+    result: dict[GroupNamespaceKey, tuple[frozenset[str], tuple[Trail, ...]]] = {}
+    missing: dict[GroupNamespaceKey, Namespace] = {}
+    for key, namespace in wanted.items():
+        entry = cache.get_group_namespace(key)
+        if entry is not None:
+            result[key] = (entry.actions, entry.trails)
+        else:
+            missing[key] = namespace
+    if not missing:
+        return result
 
-    actions, trails = _walk_assignments(
-        assignments=assignments,
-        roles=roles,
-        groups=groups,
-        eligible_group_ids=frozenset(group_ids),
-        namespace=namespace,
-    )
-    return actions, trails, frozenset(role_ids)
+    fence = cache.read_fence()
+    loader = cache.grant_loader
+    missing_groups = tuple(_unique_ordered(key.group_id for key in missing))
+    held: dict[tuple[UUID, UUID], tuple[RoleAssignment, ...]] = {}
+    if isinstance(loader, HeldAssignmentsLoader):
+        by_group: dict[UUID, list[RoleAssignment]] = {}
+        for assignment in await loader.load_assignments_held_by_groups(missing_groups):
+            by_group.setdefault(assignment.group_id, []).append(assignment)
+        for key, namespace in missing.items():
+            held[(key.group_id, key.namespace_id)] = tuple(
+                a for a in by_group.get(key.group_id, ()) if a.covers(namespace)
+            )
+    else:
+        by_namespace: dict[UUID, tuple[Namespace, list[UUID]]] = {}
+        for key, namespace in missing.items():
+            by_namespace.setdefault(key.namespace_id, (namespace, []))[1].append(key.group_id)
+        for namespace_id, (namespace, group_ids) in by_namespace.items():
+            loaded = await loader.load_assignments_for_groups(group_ids=tuple(group_ids), namespace=namespace)
+            for group_id in group_ids:
+                held[(group_id, namespace_id)] = tuple(a for a in loaded if a.group_id == group_id)
+    role_ids = tuple(_unique_ordered(a.role_id for assignments in held.values() for a in assignments))
+    roles = await loader.load_roles(role_ids) if role_ids else {}
+    groups = _coerce_groups(await loader.load_groups(missing_groups))
+    for key, namespace in missing.items():
+        assignments = held[(key.group_id, key.namespace_id)]
+        actions, trails = _walk_assignments(
+            assignments=assignments,
+            roles=roles,
+            groups=groups,
+            eligible_group_ids=frozenset((key.group_id,)),
+            namespace=namespace,
+        )
+        cache.put_group_namespace(key, actions, trails, role_ids=frozenset(a.role_id for a in assignments), fence=fence)
+        result[key] = (actions, trails)
+    return result
 
 
 async def _expand_group_parents(

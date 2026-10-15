@@ -36,6 +36,7 @@ from threetears.agent.acl.types import (
 
 __all__ = [
     "GrantLoader",
+    "HeldAssignmentsLoader",
     "MembershipLoader",
 ]
 
@@ -168,4 +169,27 @@ class GrantLoader(Protocol):
         :return: mapping group_id -> object exposing the
             :class:`Group` shape
         :rtype: dict[UUID, object]
+        """
+
+
+@runtime_checkable
+class HeldAssignmentsLoader(Protocol):
+    """a :class:`GrantLoader` that can also answer "every assignment these groups hold".
+
+    optional. the evaluator asks it once for a whole batch of namespaces, so evaluating an
+    actor over many namespaces costs one assignment read rather than one per group per
+    namespace. a grant loader without it is asked per namespace through
+    :meth:`GrantLoader.load_assignments_for_groups`, and the answers are the same.
+    """
+
+    async def load_assignments_held_by_groups(self, group_ids: tuple[UUID, ...]) -> tuple[RoleAssignment, ...]:
+        """return every assignment ``group_ids`` hold, whatever namespace it covers.
+
+        may NOT under-return: an assignment a group holds that is missing here is a grant
+        the evaluator never sees.
+
+        :param group_ids: tuple of group UUIDs to inspect
+        :ptype group_ids: tuple[UUID, ...]
+        :return: every assignment the groups hold
+        :rtype: tuple[RoleAssignment, ...]
         """

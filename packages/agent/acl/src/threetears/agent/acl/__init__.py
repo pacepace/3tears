@@ -200,10 +200,11 @@ from threetears.agent.acl.evaluator import (
     WRITE_FILE_MATCHING_PREFIX,
     evaluate_decision,
     evaluate_file_access,
+    evaluate_many_with_trail,
     evaluate_with_trail,
 )
 
-from threetears.agent.acl.loader import GrantLoader, MembershipLoader
+from threetears.agent.acl.loader import GrantLoader, HeldAssignmentsLoader, MembershipLoader
 from threetears.agent.acl.loaders import (
     CollectionGrantLoader,
     CollectionMembershipLoader,
@@ -263,6 +264,7 @@ __all__ = [
     "EvaluationResult",
     "ExternalAudienceNotSupported",
     "GrantLoader",
+    "HeldAssignmentsLoader",
     "Group",
     "GroupCascade",
     "GroupCollection",
@@ -330,6 +332,7 @@ __all__ = [
     "escalating_permissions",
     "evaluate_decision",
     "evaluate_file_access",
+    "evaluate_many_with_trail",
     "evaluate_with_trail",
     "evict_after_rbac_write",
     "held_actions_on",
