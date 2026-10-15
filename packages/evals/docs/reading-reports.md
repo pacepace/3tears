@@ -234,9 +234,14 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
   drain wait, and `cost_usd` and `program_cost`, which include what the judge spent. The candidate's spend
   is tested as `production_replicating_cost`.
 
+Each verdict is printed naming both arms by label, never "the control", with a reading's better end in brackets
+where it is the lower one: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within
+the measure's margin`, `v2 and v1 not separated`. The verdict line names the reading too (`v2 better than v1 on
+cost per reply (lower is better)`).
+
 | Verdict | Means | Do |
 |---|---|---|
-| improved / regressed | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
+| better / worse (typed `improved` / `regressed`) | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
 | not separated | the cases could not tell the arms apart, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side; the row says why | fix what it names (usually too few cases) |

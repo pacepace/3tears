@@ -107,10 +107,10 @@ from threetears.evals.analysis.report.verdict import (
 )
 from threetears.evals.analysis.report.words import (
     BAR_DECISION_WORDS,
-    COMPARISON_VERDICT_WORDS,
     CONFIDENCE_WORDS,
-    GUARDRAIL_DECISION_WORDS,
+    comparison_words,
     evidence_rows,
+    guardrail_words,
     reading_heading,
     reading_name,
     stands_on_words,
@@ -1838,12 +1838,14 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
             margin = _contrast_margin(bundle, comparison)
             ruler = rulers.of(comparison.name, comparison.reading)
             reason, detail = _contrast_reason(comparison)
+            named = arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id)
+            control = arm(comparison.control.variant_key, comparison.control.apparatus_class_id)
             if (small := _small_n(comparison)) is not None:
                 reason = "too_few_cases"
                 detail = f"{small} case{'' if small == 1 else 's'}, under the {MIN_CASES} a rate needs"
                 words = f"not tested (n={small})"
             else:
-                words = _contrast_words(comparison, margin, heading, ruler)
+                words = _contrast_words(comparison, (named, control), margin, heading, ruler)
             verdicts.append(
                 Verdict(
                     kind="contrast",
@@ -1853,10 +1855,10 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
                     reading=comparison.reading,
                     name=comparison.name,
                     heading=heading,
-                    arm=arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
+                    arm=named,
                     variant_key=comparison.contrast.variant_key,
                     apparatus_class_id=comparison.contrast.apparatus_class_id,
-                    control=arm(comparison.control.variant_key, comparison.control.apparatus_class_id),
+                    control=control,
                     question_id=family.question_id,
                     delta=comparison.delta,
                     interval=comparison.interval,
@@ -1871,11 +1873,14 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
     return verdicts
 
 
-def _contrast_words(comparison: FamilyComparison, margin: float | None, heading: str, ruler: MeasureRuler) -> str:
-    """A tested contrast's verdict in words: the verdict, why where there is more to say, its margin, materiality."""
+def _contrast_words(
+    comparison: FamilyComparison, arms: tuple[str, str], margin: float | None, heading: str, ruler: MeasureRuler
+) -> str:
+    """A tested contrast's verdict in words: the verdict naming the arm and the control (``arms``) by label, why where
+    there is more to say, its margin, materiality."""
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
     return (
-        COMPARISON_VERDICT_WORDS[comparison.verdict]
+        comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
         + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
         + (f" ({comparison.not_separated_reason})" if comparison.not_separated_reason else "")
         + (
@@ -2223,7 +2228,11 @@ def guardrail_verdicts(
                     None if not check.margin_declared else "campaign" if check.reading == "judged" else "measure"
                 ),
                 guardrail=True,
-                words=GUARDRAIL_DECISION_WORDS[check.decision]
+                words=guardrail_words(
+                    check.decision,
+                    arm(check.contrast.variant_key, check.contrast.apparatus_class_id),
+                    arm(check.control.variant_key, check.control.apparatus_class_id),
+                )
                 + (
                     f" ({_straddled(check, rulers.of(check.name, check.reading))})"
                     if reason == "interval_straddles"

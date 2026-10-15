@@ -501,8 +501,8 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     assert comparisons.rows and {row["question"] for row in statistics.values()} == {"Q1"}
     assert {row["question"] for row in contrast_rows(report.bundle)} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}
-    assert by_reading["Field accuracy"] == "improved on the control"
-    assert by_reading["Turn time"] == "regressed from the control"
+    assert by_reading["Field accuracy"] == "1024tok better than 256tok"
+    assert by_reading["Turn time"] == "1024tok worse than 256tok (lower is better)"
     assert any(
         isinstance(block, DisclosureBlock) and block.source == "comparisons" and "Holm" in block.text
         for block in report.blocks

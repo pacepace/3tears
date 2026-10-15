@@ -466,9 +466,10 @@ class Result:
             return f"{self.name}: {_cases_verdict(self.summary, rank=lambda result: rank(arm, result))}"
         decided = [row for row in self.contrasts() if row["outcome"] in ("improved", "regressed", "equivalent")]
         if not decided:
-            return f"{self.name}: no arm separated from the control {self.control!r}"
-        said = "; ".join(f"{row['arm']} {row['outcome']} on {row['reading']}" for row in decided)
-        return f"{self.name}: against the control {self.control!r}, {said}"
+            others = " or ".join(arm for arm in self.arms if arm != self.control)
+            return f"{self.name}: nothing separated {others} from {self.control}"
+        # The report's words, which name both arms: ``Accuracy: v2 better than v1``.
+        return f"{self.name}: " + "; ".join(f"{row['reading']}: {row['verdict']}" for row in decided)
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the report as one self-contained page, its Markdown and its bundle, and the judged answers to label.
