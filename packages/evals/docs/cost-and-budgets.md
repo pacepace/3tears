@@ -64,7 +64,10 @@ another part's, and a sibling cell sees all of it.
   tokens, so a judge-role `price_ceiling` well above what 10,240 output tokens plus the prompt cost at the model's
   rates is pricing a larger output cap than the judge sends.
 - **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) holds nothing; it is
-  made only while the cap is not yet reached. Such calls can pass the cap by about one call per running cell.
+  made only while the cap is not yet reached. Such calls can pass the cap by about one call per running cell. The
+  shipped client answers `None` before its catalogue is read, for a model the catalogue does not price or lists a
+  price for that it cannot bound, and once the rows are `Catalogue.ceiling_stale_after` old (six hours by default):
+  an enforced cap never holds a call against old prices ([Adopting the engine](adopting-a-host.md#bringing-a-provider)).
 - **Spend nothing reported** is counted only once the cell's result lands, so a kind that neither reserves its
   calls nor reports them (`CellSink.add_spend`) can pass the cap by up to one whole cell per running cell.
 
