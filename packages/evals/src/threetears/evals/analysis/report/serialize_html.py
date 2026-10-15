@@ -147,8 +147,9 @@ dl.glossary dd { margin: 2px 0 0 16px; max-width: 72ch; }
 #: The sections a reader opens on demand: everything after the result, the decision, what it means and the contrasts.
 _FOLDED_SECTIONS: frozenset[str] = frozenset({"cases", "trials", "not_tested", "methods", "glossary"})
 
-#: The folded sections made of units a reader counts — one row per case, per trial — whose summary says how many.
-_COUNTED_SECTIONS: frozenset[str] = frozenset({"cases", "trials"})
+#: The folded sections whose own table lists every one of their units, so the summary can say how many: the cases.
+#: Not the trials — their table lists only the failed and lost, and the section's census line counts the rest.
+_COUNTED_SECTIONS: frozenset[str] = frozenset({"cases"})
 
 #: Inline Markdown a memo uses, applied to text already escaped — so its delimiters are the only markup it can make.
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -222,7 +223,7 @@ def _section(section: str, body: Sequence[str], *, count: int | None) -> list[st
 
 
 def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> int | None:
-    """How many cases or trials a section lists, for its closed summary; None for a section not made of units."""
+    """How many units a section lists in full (its cases), for its closed summary; None for every other section."""
     if section not in _COUNTED_SECTIONS:
         return None
     table = next((block for _, block in blocks if isinstance(block, TableBlock) and block.name == section), None)
