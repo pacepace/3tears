@@ -9,9 +9,12 @@ measured them, and none at all for a pick no judge scored.
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
-from threetears.evals.analysis import frontier_text
+import pytest
+
+from threetears.evals.analysis import MIN_CASES, frontier_text
 from threetears.evals.analysis.lenses.frontier import FrontierResult, compute_frontier
 from threetears.evals.analysis.reads import frontier
 from threetears.evals.kernel import EvalStorage
@@ -144,3 +147,19 @@ def test_the_scope_frontier_reads_its_judges_tiers_from_the_scope() -> None:
     answered = frontier(storage, run.scope_id, list_runs=lambda scope_id, **_: [run], bar=0.5)
     (subject,) = answered["subjects"]
     assert subject["verdict"]["judge_evidence_tier"] == "calibrated"
+
+
+def test_a_pass_k_over_fewer_cases_than_the_floor_reads_as_a_count_and_over_enough_as_a_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "_CASES", 3)
+    run, results = _corpus(judged=False)
+    few = frontier_text(compute_frontier([run], results, bar=0.5, archived_run_ids=None))
+    assert (
+        "pass^1 3 of 3 case(s), too few to state as a rate" in few and "[" not in few.split("pass^1")[1].split(",")[0]
+    )
+
+    monkeypatch.setattr(sys.modules[__name__], "_CASES", MIN_CASES)
+    run, results = _corpus(judged=False)
+    enough = frontier_text(compute_frontier([run], results, bar=0.5, archived_run_ids=None))
+    assert f"over {MIN_CASES} case(s)" in enough and "too few to state" not in enough

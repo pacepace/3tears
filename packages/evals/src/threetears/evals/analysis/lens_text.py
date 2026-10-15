@@ -12,6 +12,7 @@ from threetears.evals.analysis.arms import short_digest
 
 
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
 from threetears.evals.analysis.reporting import ProjectionExclusions
@@ -34,6 +35,17 @@ def _contestant(model: str, variant_key: str) -> str:
     return f"{model} · {short_digest(variant_key)}"
 
 
+def _pass_hat_k_text(k: int, value: float, n_cases: int, low: float | None, high: float | None) -> str:
+    """A point's pass^k: a rate over :data:`MIN_CASES` or more cases, else a count of them, as a pass rate is stated.
+
+    Below the floor no interval is shown either, since a rate on so few cases is not estimated.
+    """
+    if n_cases < MIN_CASES:
+        return f"pass^{k} {round(value * n_cases)} of {n_cases} case(s), too few to state as a rate"
+    interval = f" [{format_number(low)}, {format_number(high)}]" if low is not None and high is not None else ""
+    return f"pass^{k} {format_number(value)}{interval} over {n_cases} case(s)"
+
+
 def frontier_text(result: FrontierResult) -> str:
     """A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict."""
     bar = "no bar, so no verdict" if result.bar is None else f"bar {format_number(result.bar)} on pass^k"
@@ -48,13 +60,9 @@ def frontier_text(result: FrontierResult) -> str:
             lines.append(subject.boundary_pillar)
         for point in subject.points:
             quality = (
-                f"pass^{point.k} {format_number(point.pass_hat_k)}"
-                + (
-                    f" [{format_number(point.pass_hat_k_ci_low)}, {format_number(point.pass_hat_k_ci_high)}]"
-                    if point.pass_hat_k_ci_low is not None and point.pass_hat_k_ci_high is not None
-                    else ""
+                _pass_hat_k_text(
+                    point.k, point.pass_hat_k, point.n_pass_cases, point.pass_hat_k_ci_low, point.pass_hat_k_ci_high
                 )
-                + f" over {point.n_pass_cases} case(s)"
                 if point.pass_hat_k is not None
                 else f"no pass^k ({point.pass_hat_k_unmeasured_reason or 'no case scored that deep'})"
             )

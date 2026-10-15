@@ -61,6 +61,11 @@ v1 (control) vs v2 · 14 Oct 2026
   usable cases before a rate is estimated), never bold, never first. Where a declared rule settled keep under the
   floor, the caveat says the rule was read on the counts and only the size of the difference is not estimated.
 
+The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too few,
+and no rate (a pass rate, pass^k) is estimated for an arm: it reads as a count. A measure's mean is shown with its
+interval. A declared rule can still settle keep on what was observed, never switch. So a host's seed gate covers every
+template whose results are compared across arms, whatever its declared reading.
+
 ### The rest of the page
 
 - **Decision**: a declared decision rule (`Decision rule: switch … only if … AND …; otherwise keep …`), one row per
