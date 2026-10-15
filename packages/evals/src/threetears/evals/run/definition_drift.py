@@ -365,7 +365,23 @@ class _Survey:
                         "since changed, beside their current words",
                     }
                 )
+            elif missing := self.missing_cases(stored):
+                reading = reading.model_copy(
+                    update={
+                        "state": "stale",
+                        "reason": f"{reason}; its battery lacks {len(missing)} corpus case(s), which the seed never "
+                        "adds to a battery holding cases",
+                    }
+                )
         self.readings[key] = reading
+
+    def missing_cases(self, judge: EvalTemplate) -> list[str]:
+        """The keys of the corpus cases a judge template's revision lacks while it holds cases: only a reset adds them."""
+        stored = self.stored_cases(judge)
+        held = {case.content_hash for case in stored}
+        if not stored:
+            return []
+        return [key for key, (_case, _authored, digest) in self.built_of(judge.name) if digest not in held]
 
     def superseded_cases(self, judge: EvalTemplate) -> list[EvalTestCase]:
         """The live cases of a judge template's revision that were seeded as a corpus case the corpus has changed."""
@@ -420,6 +436,9 @@ class _Survey:
                 recorded,
                 f"seeded into {case.judge_template!r} revision {judge.revision}",
             )
+        if not stored:
+            # An empty battery: the boot seed fills it.
+            return self._reading(key, "judge_case", digest, None, "", None)
         if judge.seed_digest is None:
             # Seeded before the record existed: a case it lacks may have a predecessor nothing names.
             return DefinitionReading(
@@ -429,13 +448,32 @@ class _Survey:
                 seed_digest=digest,
                 reason=f"{case.judge_template!r} was seeded before seeds recorded their cases",
             )
-        return self._reading(key, "judge_case", digest, None, "", None)
+        # The seed never adds a case to a battery already holding cases (it would change the revision runs were
+        # measured against), so only a reset writes it.
+        return DefinitionReading(
+            key=key,
+            definition_type="judge_case",
+            state="stale",
+            seed_digest=digest,
+            reason=f"new to the corpus; {case.judge_template!r} revision {judge.revision} already holds cases, so only "
+            "a reset writes it",
+        )
 
     def _read_case_set(self, corpus_set: SeedCaseSet, stored: CaseSet | None) -> DefinitionReading:
         key = definition_key("case_set", corpus_set.name)
         authored = {case.name: built for case, built, _digest in self.built.values() if case.name}
         seed = seed_case_set_digest(corpus_set, authored)
         if stored is None:
+            listed = [definition_key("judge_case", corpus_set.template, name) for name in corpus_set.judge_cases]
+            if withheld := [k for k in listed if self.readings[k].state == "stale" and not self.readings[k].stored_id]:
+                # The seed withholds a set listing a case it withholds (`needs_reset`): only a reset mints it.
+                return DefinitionReading(
+                    key=key,
+                    definition_type="case_set",
+                    state="stale",
+                    seed_digest=seed,
+                    reason=f"lists {len(withheld)} case(s) only a reset writes",
+                )
             return self._reading(key, "case_set", seed, None, "", None)
         storage, scope = self.host.storage, self.corpus.scope_id
         template = storage.load_template(stored.template_id, scope)

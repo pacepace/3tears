@@ -1355,9 +1355,12 @@ builds each through the door `judge_case_author` uses (`author_judge_case`: the 
 that words it, the verdict held to its scale) before anything is written, refusing the whole seed by name for any
 case authoring would refuse, then freezes it into its judge template after the templates are written, as the same
 `AuthoredJudgeCase` under the same content-derived id. A case already stored is reported `already present` under
-`judge_case`, and one whose words or verdict changed is a new case beside it, never an update. A launch naming no
-case set runs every live case of the judge template, so a host boots with its hard negatives in place and no
-authoring tool of its own over `judge_case_author`.
+`judge_case`. A launch naming no case set runs every live case of the judge template, so a host boots with its hard
+negatives in place and no authoring tool of its own over `judge_case_author`. **Since `.30` the seed fills a case only
+into a judge template holding no cases yet** (one it creates in the same pass, or an empty one): a new case, or one
+whose words or verdict changed, for a template that already holds cases would change what its runs were measured
+against under the same id. It is no longer written beside the old ones. It is withheld and reported under
+`needs_reset` on every boot, with any case set listing it, until you reset the template (below).
 
 **A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
 case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
@@ -1398,7 +1401,8 @@ live cases the corpus does not carry, unless `discard_customization=True`; it wr
 every refusal. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
 bundle), since their results are two datasets. For rows seeded before `.30`, compute `corpus_digests(host, corpus)`
 over the corpus you seeded then (from your history) and pass it as `seeded_digests`: they read `stale` rather than
-`unknown`. `definition_drift_actions(boot_seed_corpus, ...)` (from
+`unknown`. A judge template whose boot reported `needs_reset` reads `stale`, and its reset writes the next revision
+with every corpus case. `definition_drift_actions(boot_seed_corpus, ...)` (from
 `threetears.evals.actions`) adds `definitions_drift` and `definitions_reset` to your catalogue.
 
 **A stored verdict is graded again through one door: `regrade`** (`threetears.evals.run`, and the `result_regrade`

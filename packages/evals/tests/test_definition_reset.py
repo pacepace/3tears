@@ -12,6 +12,9 @@ Pinned here:
   stays readable by id, and every run, result and case keeps pointing at the revision it ran against.
 - **The seed records what it wrote**, and the drift read compares the store with it: a stale definition per doc
   type resets and reads current after.
+- **The seed never grows a battery**: a case the corpus adds to a judge template already holding cases is withheld
+  (``needs_reset``), with any case set listing it; the drift read calls the template stale, and its reset writes the
+  next revision with every case. A first boot seeds a template and its cases together.
 - **A customized or unknown definition is refused**, nothing written, every refusal named; ``discard_customization``
   accepts it.
 - **A pre-.30 row** reads ``unknown``, or ``stale`` when the host supplies the digest of what it seeded then.
@@ -394,20 +397,57 @@ def test_a_stale_judge_case_resets_with_its_judge_template_and_its_case_sets() -
     assert len(storage.query_test_cases(TOYHOST_SCOPE, template_id=first.id)) == 2, "revision 1 keeps its battery"
 
 
-def test_a_battery_a_boot_seed_grew_beside_its_old_words_reads_stale_and_resets() -> None:
+def test_a_case_the_corpus_adds_to_a_seeded_battery_is_withheld_by_the_seed_and_written_by_a_reset() -> None:
+    """The seed never grows a battery runs were measured against: a new case waits for a reset's new revision, and
+    runs of the two revisions never pool."""
     storage, _ = _seeded()
-    moved = _judge_case_moved()
+    grown = _full_corpus(judge_cases=(_judge_case("a"), _judge_case("b"), _judge_case("c")))
     first = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
     assert first is not None
-    _seed(storage, moved)  # fill-only: the new words land beside the old in revision 1
+    _run_on(storage, first, "run-two", 2)
 
-    drift = _drift(storage, moved)
-    assert _states(drift)[f"judge_case/{JUDGE_NAME}/a"] == "current"
-    assert drift.keys("stale") == [f"eval_template/{JUDGE_NAME}", "case_set/hard_negatives"], drift.render()
-    reset = _reset(storage, moved, drift.keys("stale"))
+    boot = seed_eval_definitions(toyhost_host(storage=storage), grown, **CHECKS)
 
-    _assert_a_new_battery(storage, first, reset)
-    assert len(storage.query_test_cases(TOYHOST_SCOPE, template_id=first.id)) == 3
+    assert boot.created["judge_case"] == 0 and boot.needs_reset == {"judge_case": [f"{JUDGE_NAME}/c"]}
+    assert len(storage.query_test_cases(TOYHOST_SCOPE, template_id=first.id)) == 2, "the battery is as it was"
+    drift = _drift(storage, grown)
+    assert drift.keys("stale") == [f"eval_template/{JUDGE_NAME}", f"judge_case/{JUDGE_NAME}/c"], drift.render()
+
+    reset = _reset(storage, grown, drift.keys("stale"))
+
+    assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
+    second = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert second is not None and second.revision == 2
+    battery = storage.query_test_cases(TOYHOST_SCOPE, template_id=second.id)
+    assert sorted(case.seed_name or "" for case in battery) == ["a", "b", "c"]
+    _run_on(storage, second, "run-three", 3)
+    with pytest.raises(ValidationFailedError, match="revision 1.*revision 2"):
+        assemble_context_bundle(_campaign(["run-two", "run-three"]), storage=storage, profile=toyhost_profile())
+
+
+def test_a_case_set_listing_a_withheld_case_is_withheld_with_it() -> None:
+    storage, _ = _seeded()
+    grown = _full_corpus(
+        judge_cases=(_judge_case("a"), _judge_case("b"), _judge_case("c")),
+        case_sets=(
+            SeedCaseSet(name="hard_negatives", template=JUDGE_NAME, judge_cases=("a",)),
+            SeedCaseSet(name="smoke", template=JUDGE_NAME, judge_cases=("a", "c")),
+        ),
+    )
+
+    boot = seed_eval_definitions(toyhost_host(storage=storage), grown, **CHECKS)
+
+    assert boot.needs_reset["case_set"] == ["smoke"] and not storage.query_case_sets(TOYHOST_SCOPE, name="smoke")
+    assert _states(_drift(storage, grown))["case_set/smoke"] == "stale"
+
+
+def test_a_first_boot_seeds_a_judge_template_and_its_cases_together() -> None:
+    storage, _ = memory_storage()
+
+    boot = seed_eval_definitions(toyhost_host(storage=storage), _full_corpus(), **CHECKS)
+
+    assert boot.created["judge_case"] == 2 and boot.created["case_set"] == 1 and not boot.needs_reset
+    assert set(_states(_drift(storage, _full_corpus())).values()) == {"current"}
 
 
 def test_a_stale_case_set_whose_cases_are_current_is_a_new_mint_on_the_same_revision() -> None:

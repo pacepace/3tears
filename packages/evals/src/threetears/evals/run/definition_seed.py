@@ -62,8 +62,10 @@ tombstone, so a template deleted straight from the store still empties its slot.
 :func:`~threetears.evals.run.judge_kind.author_judge_case` (the criterion read from the template that words it, the
 verdict held to its scale) and frozen with :func:`~threetears.evals.run.freeze_judge_cases` (``authored=``) into
 its judge template, so it is the :class:`~threetears.evals.kernel.AuthoredJudgeCase` ``judge_case_author`` writes,
-under the same content-derived id. Its slot is that id: a case already stored is ``already present``, one whose
-words or verdict changed is a new case beside it, never an update. A template is resolved in the store first (the
+under the same content-derived id. Its slot is that id: a case already stored is ``already present``. A case is
+written only into a judge template revision that held no cases when the seed began (since ``.30``): one whose words or
+verdict changed, or a new one, for a revision already holding cases would change that revision's battery under the
+same id, so it is withheld under ``needs_reset`` until ``reset_definitions`` writes the next revision. A template is resolved in the store first (the
 store is master, and the template a stored case is judged against) and else in the corpus, which the same seed
 writes. Every case is built before anything is written, and a case authoring would refuse refuses the whole seed,
 naming each. No operation deletes a judge case, so, as for a template, a case deleted straight from the store
@@ -357,6 +359,11 @@ class SeedOutcome:
     #: Natural keys NOT written because an operator deleted them (a tombstone), per doc type — rubric
     #: dims and judge configs. Reported rather than counted as present: the slot is empty by decision.
     deleted: dict[str, list[str]] = field(default_factory=dict)
+    #: Natural keys NOT written because writing them would change the content of a definition already stored, per doc
+    #: type: a judge case whose judge template's current revision already holds cases (it would join a battery runs
+    #: were measured against, under the same revision id), and a case set listing such a case. Reported on every boot
+    #: until ``reset_definitions`` writes the template's next revision with the whole battery.
+    needs_reset: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def total_created(self) -> int:
@@ -384,6 +391,11 @@ class SeedOutcome:
         return sum(len(keys) for keys in self.deleted.values())
 
     @property
+    def total_needs_reset(self) -> int:
+        """Definitions withheld because only a reset can write them: they would change a stored definition."""
+        return sum(len(keys) for keys in self.needs_reset.values())
+
+    @property
     def nothing_to_do(self) -> bool:
         """True when the pass neither wrote, skipped, failed nor withheld anything.
 
@@ -393,7 +405,12 @@ class SeedOutcome:
         as a warning rather than the routine "already present" line.
         """
         return not (
-            self.total_created or self.total_skipped or self.total_failed or self.total_conflicted or self.total_deleted
+            self.total_created
+            or self.total_skipped
+            or self.total_failed
+            or self.total_conflicted
+            or self.total_deleted
+            or self.total_needs_reset
         )
 
     def summary(self) -> str:
@@ -409,7 +426,12 @@ class SeedOutcome:
             return "no definitions in the seed corpus"
         parts = []
         for doc_type in sorted(
-            set(self.created) | set(self.skipped) | set(self.failed) | set(self.conflicted) | set(self.deleted)
+            set(self.created)
+            | set(self.skipped)
+            | set(self.failed)
+            | set(self.conflicted)
+            | set(self.deleted)
+            | set(self.needs_reset)
         ):
             part = f"{doc_type}: {self.created.get(doc_type, 0)} created"
             if keys := self.created_keys.get(doc_type):
@@ -421,6 +443,11 @@ class SeedOutcome:
                 part += f", {len(conflicted)} NOT WRITTEN, CONFLICTING WITH THE STORE ({', '.join(conflicted)})"
             if deleted := self.deleted.get(doc_type):
                 part += f", {len(deleted)} not written, deleted by an operator ({', '.join(deleted)})"
+            if needs_reset := self.needs_reset.get(doc_type):
+                part += (
+                    f", {len(needs_reset)} NOT WRITTEN, A STORED DEFINITION WOULD CHANGE: RESET IT "
+                    f"({', '.join(needs_reset)})"
+                )
             parts.append(part)
         return "; ".join(parts)
 
@@ -542,7 +569,9 @@ def seed_eval_definitions(
 
     Returns:
         Per-doc-type created, skipped and failed counts, the natural keys written, the keys
-        withheld as conflicting with the store, and the keys withheld as deleted.
+        withheld as conflicting with the store, the keys withheld as deleted, and the keys withheld because only a
+        reset can write them (``needs_reset``: a judge case for a judge template already holding cases, and a case set
+        listing one).
 
     Raises:
         ValidationFailedError: A corpus template fails a gate ``create_template`` applies, or a
@@ -679,21 +708,37 @@ def _seed_judge_cases(
     outcome: SeedOutcome, host: EvalHost, scope_id: str, cases: Sequence[tuple[SeedJudgeCase, AuthoredJudgeCase]]
 ) -> dict[str, str]:
     """Freeze each authored case into its judge template as ``judge_case_author`` does, recording it under
-    ``judge_case``: created, already present (the same case is stored), or failed (the store refused it, or its
-    judge template, written by this seed, is not stored).
+    ``judge_case``: created, already present (the same case is stored), withheld (``needs_reset``), or failed (the
+    store refused it, or its judge template, written by this seed, is not stored).
+
+    **A case joins only an empty battery.** A judge template's live cases are what a launch of it runs, so a case added
+    to a revision that already holds cases would change, under the same revision id, what runs before and after this
+    boot were measured against, and their results would pool. A case is therefore written only into a revision that
+    held no cases when this pass began (one this seed just created, or an empty one), and is otherwise withheld under
+    ``needs_reset``, keyed ``<judge template>/<corpus name>``: ``reset_definitions`` writes the template's next
+    revision with the whole battery.
 
     Returns:
         Each named case that is stored now, created or already present, by its corpus name: its test case id.
     """
     storage = host.storage
     created_keys: list[str] = []
+    withheld: list[str] = []
     stored: dict[str, str] = {}
     skipped = failed = 0
+    held: dict[str, set[str]] = {}
     for case, authored in cases:
         judge = storage.load_template_by_name(case.judge_template, scope_id)
         if judge is None:
             # Its corpus template's write was refused (counted under eval_template): the next boot retries both.
             failed += 1
+            continue
+        if judge.id not in held:
+            # Read once per revision, before this pass writes into it: what it held when the boot began.
+            held[judge.id] = {c.content_hash or "" for c in storage.query_test_cases(scope_id, template_id=judge.id)}
+        digest = JudgeCase.from_authored(authored).content_digest()
+        if held[judge.id] and digest not in held[judge.id]:
+            withheld.append(f"{case.judge_template}/{case.name or digest}")
             continue
         try:
             frozen = freeze_seeded_judge_case(
@@ -712,6 +757,8 @@ def _seed_judge_cases(
     outcome.created_keys["judge_case"] = created_keys
     outcome.skipped["judge_case"] = skipped
     outcome.failed["judge_case"] = failed
+    if withheld:
+        outcome.needs_reset["judge_case"] = withheld
     return stored
 
 
@@ -731,10 +778,16 @@ def _seed_case_sets(
     """
     storage = host.storage
     created_keys: list[str] = []
+    withheld = set(outcome.needs_reset.get("judge_case", []))
+    needs_reset: list[str] = []
     skipped = failed = 0
     for case_set in corpus.case_sets:
         if storage.query_case_sets(corpus.scope_id, name=case_set.name):
             skipped += 1
+            continue
+        if any(f"{case_set.template}/{name}" in withheld for name in case_set.judge_cases):
+            # It lists a case only a reset can write, so it is minted with that reset.
+            needs_reset.append(case_set.name)
             continue
         judge = storage.load_template_by_name(case_set.template, corpus.scope_id)
         if judge is None or any(name not in frozen for name in case_set.judge_cases):
@@ -760,6 +813,8 @@ def _seed_case_sets(
     outcome.created_keys["case_set"] = created_keys
     outcome.skipped["case_set"] = skipped
     outcome.failed["case_set"] = failed
+    if needs_reset:
+        outcome.needs_reset["case_set"] = needs_reset
 
 
 def seed_case_set_digest(case_set: SeedCaseSet, authored: Mapping[str, AuthoredJudgeCase]) -> str:
