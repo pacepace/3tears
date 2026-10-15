@@ -102,7 +102,6 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>values: `'max_turns'`, `'user_done'`, `'participants_ended'`, `'simulator_error'`, `'apparatus_error'`, `'candidate_error'`, `'budget_stopped'`
 - **`DocumentStore`** · *host contract* · protocol · A narrow document store over one `(scope_id, doc_type, id)`-keyed collection.
 - **`EvalBaseModel`** · model · Base model for the eval engine's own Pydantic models.
-- **`EvalCaseStratum`** · model · What the analysis reads off a test case: which case, the stratum it declares and the name its author gave it.
 - **`EvalResult`** · *host contract* · model · One test case x one model x one k-iteration.
 - **`EvalRun`** · *host contract* · model · One execution of a template (or explicit test case set) against one candidate model.
 - **`EvalTemplate`** · *host contract* · model · Abstract scenario blueprint — subject-agnostic, domain-level.
@@ -354,6 +353,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`StyleProfile`** · dataclass · One host's bounded presentation contract.
 - **`Sweepable`** · *host contract* · dataclass · One score-determining input: what it is called, who owns it, how to read it.
 - **`SweepableRegistry`** · *host contract* · class · The declared inputs for one host, validated at construction.
+- **`TemplateChecks`** · *host contract* · dataclass · The three questions about a template that only the host can answer, asked wherever a template is admitted.
 - **`Triggered`** · dataclass · State that arrives on a condition rather than at t=0.
 - **`UnsupportedSchemaError`** · exception · A schema uses a construct outside `HONOURED_KEYWORDS` — a gap to extend, never a value to pass.
 - **`WorldConformanceError`** · exception · An ENGINE gap: a check the kit cannot run, or a record its own vocabulary forbids.
@@ -383,7 +383,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`corpus_digests`** · *host contract* · function · The digest of every definition of a corpus, by its key: what a seed of it records.
   <br>`corpus_digests(host: EvalHost, corpus: SeedCorpus) -> dict[str, str]`
 - **`create_template`** · function · Create and persist a template from an authoring definition.
-  <br>`create_template(host: EvalHost, definition: dict[str, Any], *, scope_id: str, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> EvalTemplate`
+  <br>`create_template(host: EvalHost, definition: dict[str, Any], *, scope_id: str) -> EvalTemplate`
 - **`definition_drift`** · *host contract* · function · Read every definition of a seed corpus against its scope's stored one. Writes nothing, spends nothing.
   <br>`definition_drift(host: EvalHost, corpus: SeedCorpus, *, seeded_digests: Mapping[str, str] | None = None) -> DefinitionDrift`
 - **`delete_run`** · function · Delete a run, the results it owns, and its campaign memberships.
@@ -427,7 +427,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
 - **`reset_definitions`** · *host contract* · function · Write the corpus's content for the named definitions, each as a new revision or record, never in place.
-  <br>`reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], overwrite_customized: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset`
+  <br>`reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, overwrite_customized: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset`
 - **`resolve_judge_pin`** · function · The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
   <br>`resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str`
 - **`run_blocking`** · *host contract* · async function · Run `fn(*args, **kwargs)` on `executor` and await its result.
@@ -439,7 +439,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`second_judge_work`** · async function · Admit a second judge's pass over a finished run — every call priced and admitted, none made — as work to run.
   <br>`second_judge_work(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, asked_by: SecondJudgeAskedBy = 'judge_second', sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> JobWork[EvalSecondJudgePass]`
 - **`seed_eval_definitions`** · function · Create any corpus definition whose natural key is absent from the corpus's scope.
-  <br>`seed_eval_definitions(host: EvalHost, corpus: SeedCorpus, *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> SeedOutcome`
+  <br>`seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome`
 - **`start_run`** · *host contract* · async function · Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
   <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> list[EvalRun]`
 - **`sweep_abandoned_runs`** · function · Write lost every run left not ended by a process that has gone, in the scopes the host names.
@@ -472,6 +472,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`SeedCorpus`** · dataclass · A host's authored definitions for one scope, already constructed through their production models.
 - **`SeedJudgeCase`** · *host contract* · model · One authored judge case a seed corpus writes: `judge_case_author`'s arguments, its templates named by name.
 - **`SeedOutcome`** · dataclass · What one seeding pass did, per doc type.
+- **`SeedTemplateCase`** · *host contract* · model · One of a template's own cases a seed corpus writes with it: a stimulus the host authored, under a name.
 - **`SimulatorTurn`** · dataclass · One user-side utterance produced by the simulator.
 - **`TurnDriver`** · dataclass · Multi-actor round scheduler and utterance generator.
 - **`UnknownSubject`** · *host contract* · dataclass · A host's answer that it holds no subject of the id a launch named — and how its caller finds one it does.
@@ -568,7 +569,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ReporterOverlays`** · model · The one knob a reporter launch may turn: which preset of the analysis generator's prompt writes the memos.
 - **`RequestSettingsReading`** · *host contract* · model · What one role asked for and what its calls were actually sent with, across the results read.
 - **`SentSettingsShare`** · *host contract* · model · One value a role's calls were sent with, and how many of the role's units carried it.
-- **`StyleViolation`** · dataclass · One rule a piece of text breaks.
 - **`Verdict`** · model · One verdict the report states, typed: what a program reads instead of the words printed from it.
 
 **Types**
@@ -747,7 +747,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted`
 - **`start_paid_call`** · async function · Start a host action's one paid model call: admitted against its cap in the call, made in a job.
   <br>`start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: KnownOutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted`
-- **`templates_list`** · function · The scope's templates.
+- **`templates_list`** · function · The scope's templates, each with its revision: a reset template's older revisions are archived, so the active listing shows each name once, at the revision a launch by name runs.
   <br>`templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> TemplateListing`
 
 **Classes**
@@ -790,7 +790,7 @@ The action catalogue: every eval action, declared once, for any transport to mou
 **Functions**
 
 - **`definition_drift_actions`** · *host contract* · function · `definitions_drift` and `definitions_reset`, for the host's catalogue.
-  <br>`definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]`
+  <br>`definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]`
 - **`eval_catalogue`** · function · The engine's catalogue, with the host's own actions after the engine's.
   <br>`eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue`
 - **`render_jobs_started`** · *host contract* · function · What a start returned: each job, and how to poll it.

@@ -14,9 +14,26 @@ from __future__ import annotations
 
 from threetears.evals.kernel import EvalStorage, withhold_failure_detail
 from threetears.evals.storage import InMemoryDocumentStore
-from threetears.evals.kernel.host import CompletionClients, EvalHost, HostProfile, default_cell_timeout
+from threetears.evals.kernel.host import (
+    CompletionClients,
+    EvalHost,
+    HostProfile,
+    TemplateChecks,
+    default_cell_timeout,
+)
 from threetears.evals.schema import TraceSink
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+
+
+def _admit(_checked: object) -> None:
+    """A toy host check: it has nothing to refuse by."""
+
+
+#: The toy host's template checks: it has no tool catalog, seed walk or kind capability table of its own, so each
+#: admits, which is a decision stated here rather than a default.
+TOYHOST_TEMPLATE_CHECKS = TemplateChecks(
+    require_known_tools_allowed=_admit, refuse_undeclared_world_seed=_admit, refuse_undeliverable_template=_admit
+)
 
 
 def toyhost_host(
@@ -25,6 +42,7 @@ def toyhost_host(
     storage: EvalStorage | None = None,
     trace_sink: TraceSink | None = None,
     clients: CompletionClients | None = None,
+    template_checks: TemplateChecks | None = TOYHOST_TEMPLATE_CHECKS,
 ) -> EvalHost:
     """The toy host as the engine receives it.
 
@@ -36,6 +54,8 @@ def toyhost_host(
         trace_sink: The host's tracing, or ``None`` for none — a decision rather than a default.
         clients: The completion-client factory, for a drive that judges or analyses through the
             engine. The standard matrix calls no model.
+        template_checks: The checks a template is admitted under; :data:`TOYHOST_TEMPLATE_CHECKS` (each admits)
+            unless a test holds a template to a check of its own, or ``None`` for a host supplying none.
 
     Returns:
         The host.
@@ -51,7 +71,8 @@ def toyhost_host(
         # The toy host has no operation registry, so the engine's bare asyncio budget is the right one.
         cell_timeout=default_cell_timeout,
         clients=clients,
+        template_checks=template_checks,
     )
 
 
-__all__ = ["toyhost_host"]
+__all__ = ["TOYHOST_TEMPLATE_CHECKS", "toyhost_host"]

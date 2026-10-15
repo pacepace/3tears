@@ -21,10 +21,6 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND
 
 
-def _admit(_definition: object) -> None:
-    """A host check with nothing to refuse — the scope rule under test is the seeder's, not a host's."""
-
-
 def _corpus_dir(tmp_path: Path, template: dict[str, object]) -> Path:
     (tmp_path / "templates").mkdir()
     (tmp_path / "templates" / "probe.json").write_text(json.dumps(template), encoding="utf-8")
@@ -57,13 +53,7 @@ def test_seeding_writes_the_corpus_scope_and_asks_occupancy_there(tmp_path: Path
     host = toyhost_host(storage=storage)
 
     def seed(scope_id: str) -> SeedOutcome:
-        return seed_eval_definitions(
-            host,
-            load_seed_corpus(directory, scope_id),
-            require_known_tools_allowed=_admit,
-            refuse_undeclared_world_seed=_admit,
-            refuse_undeliverable_template=_admit,
-        )
+        return seed_eval_definitions(host, load_seed_corpus(directory, scope_id))
 
     first = seed("scope-a")
     again = seed("scope-a")

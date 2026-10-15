@@ -630,15 +630,6 @@ def test_a_kind_with_no_spec_model_refuses_any_spec_and_admits_none():
     assert KindContract("bare").validate_spec({}) is None
 
 
-def _authoring_checks() -> dict[str, Any]:
-    """The host checks ``create_template`` asks, each admitting — the spec is what is under test."""
-    return {
-        "require_known_tools_allowed": lambda _tools: None,
-        "refuse_undeclared_world_seed": lambda _template: None,
-        "refuse_undeliverable_template": lambda _template: None,
-    }
-
-
 def _definition(**kind_spec: Any) -> dict[str, Any]:
     return {
         "name": "grade two fields",
@@ -652,7 +643,7 @@ def test_authoring_refuses_a_spec_the_kinds_model_refuses_naming_the_template_an
     host = toyhost_host()
 
     with pytest.raises(ValidationFailedError) as refused:
-        create_template(host, _definition(graded_fields=[]), scope_id=TOYHOST_SCOPE, **_authoring_checks())
+        create_template(host, _definition(graded_fields=[]), scope_id=TOYHOST_SCOPE)
 
     assert "template 'grade two fields'" in refused.value.message and "graded_fields" in refused.value.message
     assert host.storage.query_templates(TOYHOST_SCOPE) == [], "a refused template is not stored"
@@ -661,12 +652,8 @@ def test_authoring_refuses_a_spec_the_kinds_model_refuses_naming_the_template_an
 def test_authoring_stores_the_spec_the_model_resolved_and_an_omitted_spec_resolves_to_the_defaults():
     host = toyhost_host()
 
-    stated = create_template(
-        host, _definition(graded_fields=["total_amount"]), scope_id=TOYHOST_SCOPE, **_authoring_checks()
-    )
-    silent = create_template(
-        host, {**_definition(), "name": "grade every field"}, scope_id=TOYHOST_SCOPE, **_authoring_checks()
-    )
+    stated = create_template(host, _definition(graded_fields=["total_amount"]), scope_id=TOYHOST_SCOPE)
+    silent = create_template(host, {**_definition(), "name": "grade every field"}, scope_id=TOYHOST_SCOPE)
 
     assert host.storage.load_template(stated.id, TOYHOST_SCOPE).kind_spec == {"graded_fields": ["total_amount"]}
     assert silent.kind_spec == {"graded_fields": list(ExtractorSpec().graded_fields)}
@@ -675,19 +662,15 @@ def test_authoring_stores_the_spec_the_model_resolved_and_an_omitted_spec_resolv
 def test_an_update_writing_the_spec_is_refused_and_one_writing_another_field_is_not():
     """Scoped to the writes that touch the spec, like every authoring guard over stored state."""
     host = toyhost_host()
-    template = create_template(host, _definition(), scope_id=TOYHOST_SCOPE, **_authoring_checks())
+    template = create_template(host, _definition(), scope_id=TOYHOST_SCOPE)
     # A stored spec the model has since outgrown — written past authoring, as a model change would leave it.
     host.storage.save_template(template.model_copy(update={"kind_spec": {"graded_fields": ["tip_amount"]}}))
 
     with pytest.raises(ValidationFailedError, match="graded_fields"):
-        update_template(host, template.id, TOYHOST_SCOPE, {"kind_spec": {"graded_fields": []}}, **_authoring_checks())
-    renamed = update_template(
-        host, template.id, TOYHOST_SCOPE, {"description": "still editable"}, **_authoring_checks()
-    )
+        update_template(host, template.id, TOYHOST_SCOPE, {"kind_spec": {"graded_fields": []}})
+    renamed = update_template(host, template.id, TOYHOST_SCOPE, {"description": "still editable"})
     assert renamed.description == "still editable"
-    repaired = update_template(
-        host, template.id, TOYHOST_SCOPE, {"kind_spec": {"graded_fields": ["vendor_name"]}}, **_authoring_checks()
-    )
+    repaired = update_template(host, template.id, TOYHOST_SCOPE, {"kind_spec": {"graded_fields": ["vendor_name"]}})
     assert repaired.kind_spec == {"graded_fields": ["vendor_name"]}
 
 

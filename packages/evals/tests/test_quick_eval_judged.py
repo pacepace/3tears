@@ -20,7 +20,7 @@ import pytest
 
 from threetears.evals import Eval, Example, Judge
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
-from threetears.evals.kernel.host import EvalHost, KindContract
+from threetears.evals.kernel.host import EvalHost, KindContract, TemplateChecks
 from threetears.evals.quick.one_call import (
     CALLABLE_KIND_CONTRACT,
     JUDGED_CALLABLE_KIND,
@@ -341,13 +341,17 @@ async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_rea
     run = await _summary(CASES, answer, [_judge(_FakeJudgeClient())], host=host)
     off_loop(
         update_template,
-        host,
+        dataclasses.replace(
+            host,
+            template_checks=TemplateChecks(
+                require_known_tools_allowed=lambda _tools: None,
+                refuse_undeclared_world_seed=lambda _template: None,
+                refuse_undeliverable_template=lambda _template: None,
+            ),
+        ),
         run.template_id or "",
         SCOPE,
         {"intent": "Edited after the run."},
-        require_known_tools_allowed=lambda _tools: None,
-        refuse_undeclared_world_seed=lambda _template: None,
-        refuse_undeliverable_template=lambda _template: None,
     )
     assert off_loop(summarize_run, host, run.run_id, SCOPE).intent is None
 

@@ -51,10 +51,6 @@ from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhos
 JUDGE_NAME = "Faithfulness judge"
 
 
-def _admit(_definition: object) -> None:
-    """A host check with nothing to refuse, so the rule under test is the engine's."""
-
-
 def _judge_template() -> EvalTemplate:
     return EvalTemplate(
         scope_id=TOYHOST_SCOPE,
@@ -79,13 +75,7 @@ def _case(**changes: Any) -> SeedJudgeCase:
 
 
 def _seed(storage: EvalStorage, corpus: SeedCorpus) -> SeedOutcome:
-    return seed_eval_definitions(
-        toyhost_host(storage=storage),
-        corpus,
-        require_known_tools_allowed=_admit,
-        refuse_undeclared_world_seed=_admit,
-        refuse_undeliverable_template=_admit,
-    )
+    return seed_eval_definitions(toyhost_host(storage=storage), corpus)
 
 
 def _stored_templates(storage: EvalStorage) -> tuple[EvalTemplate, EvalTemplate]:

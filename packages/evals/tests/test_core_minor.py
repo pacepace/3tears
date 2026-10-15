@@ -385,14 +385,6 @@ def test_a_rubric_dim_and_a_judge_config_a_newer_build_wrote_stay_editable_and_w
     assert reauthored.id != config.id
 
 
-def _authoring_checks() -> dict[str, Any]:
-    return {
-        "require_known_tools_allowed": lambda _tools: None,
-        "refuse_undeclared_world_seed": lambda _template: None,
-        "refuse_undeliverable_template": lambda _template: None,
-    }
-
-
 def test_a_template_a_newer_build_wrote_stays_editable_and_whole() -> None:
     from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 
@@ -401,7 +393,7 @@ def test_a_template_a_newer_build_wrote_stays_editable_and_whole() -> None:
     template = EvalTemplate.from_dict(stored_sample(EvalTemplate))
     store.upsert(_at_newer_minor(template.to_dict(), **NEWER_FIELD))
 
-    edited = update_template(host, template.id, template.scope_id, {"description": "reworded"}, **_authoring_checks())
+    edited = update_template(host, template.id, template.scope_id, {"description": "reworded"})
 
     stored = store.get(template.id, template.scope_id)
     assert stored is not None and stored["written_by_a_newer_build"] == NEWER_FIELD["written_by_a_newer_build"]

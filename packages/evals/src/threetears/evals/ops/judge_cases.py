@@ -336,6 +336,7 @@ def judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: 
     return TemplateLine(
         id=template.id,
         name=template.name,
+        revision=template.revision,
         candidate_kind=template.candidate_kind,
         intent=template.intent,
         archived=template.archived,

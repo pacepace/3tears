@@ -20,6 +20,12 @@ Pinned here:
 - **A pre-.30 row** reads ``unknown``, or ``stale`` when the host supplies the digest of what it seeded then. The
   supplied map is the whole of what the host seeded, so a judge case it does not name reads ``stale`` (never seeded,
   a reset writes it without discard) and one it names that nothing stored matches reads ``customized`` (removed).
+- **A template's own cases** (``SeedCorpus.template_cases``) seed with it and reset with it, under the battery's two
+  rules: the seed writes a case only into a revision holding no cases (else ``needs_reset``), and on a revision whose
+  cases no seed recorded (a host's own pre-.32 seed wrote them) the supplied map is the whole of what was seeded.
+- **The checks come from the host the call is handed** (``EvalHost.template_checks``), as ``create_template`` reads
+  them: the actions take only the corpus, and a host supplying none is refused.
+- **``templates_list`` shows each template's revision.**
 - **The drift read writes nothing.**
 """
 
@@ -28,6 +34,8 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Sequence
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,22 +43,27 @@ import pytest
 from threetears.evals.actions import Caller, definition_drift_actions, eval_catalogue, standard_tools
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.campaigns import add_runs_to_campaign, create_campaign
-from threetears.evals.kernel import JUDGE_KIND, ConflictError, EvalStorage, ValidationFailedError
+from threetears.evals.kernel import JUDGE_KIND, ConflictError, EvalStorage, RefusedInput, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.ops import OpsHost
+from threetears.evals.kernel.host import TemplateChecks
+from threetears.evals.ops import OpsHost, templates_list
 from threetears.evals.run import (
     DefinitionDrift,
     DefinitionReset,
     SeedCaseSet,
     SeedCorpus,
     SeedJudgeCase,
+    SeedOutcome,
+    SeedTemplateCase,
     corpus_digests,
+    create_template,
     definition_drift,
     freeze_judge_cases,
+    load_seed_corpus,
     reset_definitions,
     seed_eval_definitions,
 )
-from threetears.evals.schema import EvalTemplate, RubricDim
+from threetears.evals.schema import EvalTemplate, EvalTestCase, RubricDim
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
     make_eval_result,
@@ -64,20 +77,9 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND, toyhost_template
 
 TEMPLATE_KEY = f"eval_template/{toyhost_template().name}"
-
-
-def _admit(_definition: object) -> None:
-    """A host check with nothing to refuse, so the rule under test is the engine's."""
-
-
-CHECKS = {
-    "require_known_tools_allowed": _admit,
-    "refuse_undeclared_world_seed": _admit,
-    "refuse_undeliverable_template": _admit,
-}
 
 
 def _corpus(*templates: EvalTemplate) -> SeedCorpus:
@@ -89,11 +91,11 @@ def _template(description: str = "four cases") -> EvalTemplate:
 
 
 def _seed(storage: EvalStorage, corpus: SeedCorpus) -> None:
-    seed_eval_definitions(toyhost_host(storage=storage), corpus, **CHECKS)
+    seed_eval_definitions(toyhost_host(storage=storage), corpus)
 
 
 def _reset(storage: EvalStorage, corpus: SeedCorpus, keys: Sequence[str], **kwargs: object):  # type: ignore[no-untyped-def]
-    return reset_definitions(toyhost_host(storage=storage), corpus, keys, **CHECKS, **kwargs)  # type: ignore[arg-type]
+    return reset_definitions(toyhost_host(storage=storage), corpus, keys, **kwargs)  # type: ignore[arg-type]
 
 
 def _run_on(storage: EvalStorage, template: EvalTemplate, run_id: str, cases: int) -> None:
@@ -444,7 +446,7 @@ def test_a_case_the_corpus_adds_to_a_seeded_battery_is_withheld_by_the_seed_and_
     assert first is not None
     _run_on(storage, first, "run-two", 2)
 
-    boot = seed_eval_definitions(toyhost_host(storage=storage), grown, **CHECKS)
+    boot = seed_eval_definitions(toyhost_host(storage=storage), grown)
 
     assert boot.created["judge_case"] == 0 and boot.needs_reset == {"judge_case": [f"{JUDGE_NAME}/c"]}
     assert len(storage.query_test_cases(TOYHOST_SCOPE, template_id=first.id)) == 2, "the battery is as it was"
@@ -473,7 +475,7 @@ def test_a_case_set_listing_a_withheld_case_is_withheld_with_it() -> None:
         ),
     )
 
-    boot = seed_eval_definitions(toyhost_host(storage=storage), grown, **CHECKS)
+    boot = seed_eval_definitions(toyhost_host(storage=storage), grown)
 
     assert boot.needs_reset["case_set"] == ["smoke"] and not storage.query_case_sets(TOYHOST_SCOPE, name="smoke")
     assert _states(_drift(storage, grown))["case_set/smoke"] == "stale"
@@ -482,7 +484,7 @@ def test_a_case_set_listing_a_withheld_case_is_withheld_with_it() -> None:
 def test_a_first_boot_seeds_a_judge_template_and_its_cases_together() -> None:
     storage, _ = memory_storage()
 
-    boot = seed_eval_definitions(toyhost_host(storage=storage), _full_corpus(), **CHECKS)
+    boot = seed_eval_definitions(toyhost_host(storage=storage), _full_corpus())
 
     assert boot.created["judge_case"] == 2 and boot.created["case_set"] == 1 and not boot.needs_reset
     assert set(_states(_drift(storage, _full_corpus())).values()) == {"current"}
@@ -654,6 +656,253 @@ def test_a_key_the_corpus_does_not_carry_is_refused() -> None:
         _reset(storage, _full_corpus(), ["eval_template/nobody"])
 
 
+# --- a template's own cases ---------------------------------------------------------------------------------------
+
+SUBJECT = toyhost_template().name
+
+
+def _own(name: str, **changes: Any) -> SeedTemplateCase:
+    """One of the subject template's own cases: a buyer persona and the invoice it sends."""
+    fields: dict[str, Any] = {
+        "template": SUBJECT,
+        "name": name,
+        "variation_params": {"invoice": f"INV-{name}"},
+        "host_payload": {"persona": f"buyer {name}"},
+    }
+    return SeedTemplateCase(**{**fields, **changes})
+
+
+def _own_key(name: str) -> str:
+    return f"template_case/{SUBJECT}/{name}"
+
+
+def _own_corpus(*cases: SeedTemplateCase) -> SeedCorpus:
+    return SeedCorpus(scope_id=TOYHOST_SCOPE, templates=(_template(),), template_cases=cases)
+
+
+def _boot(storage: EvalStorage, corpus: SeedCorpus) -> SeedOutcome:
+    return seed_eval_definitions(toyhost_host(storage=storage), corpus)
+
+
+def _subject(storage: EvalStorage) -> EvalTemplate:
+    template = storage.load_template_by_name(SUBJECT, TOYHOST_SCOPE)
+    assert template is not None
+    return template
+
+
+def _cases_on(storage: EvalStorage, template: EvalTemplate) -> list[EvalTestCase]:
+    return sorted(storage.query_test_cases(TOYHOST_SCOPE, template_id=template.id), key=lambda c: c.name or "")
+
+
+def test_a_first_boot_seeds_a_template_with_its_own_cases_and_a_second_finds_them_present() -> None:
+    storage, _ = memory_storage()
+    corpus = _own_corpus(_own("a"), _own("b", stratum="lookalike"))
+
+    first = _boot(storage, corpus)
+    again = _boot(storage, corpus)
+
+    assert first.created_keys["template_case"] == [f"{SUBJECT}/a", f"{SUBJECT}/b"] and not first.needs_reset
+    assert (again.created["template_case"], again.skipped["template_case"]) == (0, 2) and not again.needs_reset
+    stored = _cases_on(storage, _subject(storage))
+    assert [(c.name, c.seed_name, c.stratum, c.host_payload) for c in stored] == [
+        ("a", "a", None, {"persona": "buyer a"}),
+        ("b", "b", "lookalike", {"persona": "buyer b"}),
+    ], "a case is stored as the corpus states it, named and recording the corpus name it was seeded as"
+    drift = _drift(storage, corpus)
+    assert _states(drift) == {TEMPLATE_KEY: "current", _own_key("a"): "current", _own_key("b"): "current"}
+    assert all(r.seeded_source == "recorded" for r in drift.readings)
+
+
+def test_a_case_the_corpus_adds_to_a_seeded_revision_is_withheld_and_a_reset_writes_the_next_with_every_case() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a")))
+    first = _subject(storage)
+    grown = _own_corpus(_own("a"), _own("b"))
+
+    boot = _boot(storage, grown)
+
+    assert boot.needs_reset == {"template_case": [f"{SUBJECT}/b"]} and len(_cases_on(storage, first)) == 1
+    drift = _drift(storage, grown)
+    assert drift.keys("stale") == [TEMPLATE_KEY, _own_key("b")], drift.render()
+    assert next(r for r in drift.readings if r.key == TEMPLATE_KEY).reason == (
+        "revision 1; its revision lacks 1 corpus case(s), which the seed never adds to a revision holding cases"
+    )
+
+    reset = _reset(storage, grown, [_own_key("b")])
+
+    assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
+    assert [(e.key, e.written) for e in reset.reset] == [
+        (TEMPLATE_KEY, "revision 2"),
+        (_own_key("a"), "a case of revision 2"),
+        (_own_key("b"), "a case of revision 2"),
+    ]
+    second = _subject(storage)
+    assert second.revision == 2 and [c.seed_name for c in _cases_on(storage, second)] == ["a", "b"]
+    assert [c.seed_name for c in _cases_on(storage, first)] == ["a"], "revision 1 keeps the cases it ran"
+
+
+def test_a_case_whose_content_changed_reads_stale_and_resets_with_its_template() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a")))
+    moved = _own_corpus(_own("a", host_payload={"persona": "a buyer in a hurry"}))
+
+    states = _states(_drift(storage, moved))
+    reset = _reset(storage, moved, [_own_key("a")])
+
+    assert (states[TEMPLATE_KEY], states[_own_key("a")]) == ("stale", "stale")
+    assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
+    (case,) = _cases_on(storage, _subject(storage))
+    assert case.host_payload == {"persona": "a buyer in a hurry"}
+
+
+def test_a_case_an_operator_relabelled_in_place_reads_customized_and_resets_only_with_discard() -> None:
+    storage, _ = memory_storage()
+    corpus = _own_corpus(_own("a"))
+    _boot(storage, corpus)
+    (case,) = _cases_on(storage, _subject(storage))
+    storage.save_test_case(case.model_copy(update={"stratum": "boundary"}))
+
+    reading = next(r for r in _drift(storage, corpus).readings if r.key == _own_key("a"))
+    with pytest.raises(ConflictError, match="customized"):
+        _reset(storage, corpus, [_own_key("a")])
+    reset = _reset(storage, corpus, [_own_key("a")], overwrite_customized=True)
+
+    assert (reading.state, reading.seeded_source) == ("customized", "recorded")
+    entry = next(e for e in reset.reset if e.key == _own_key("a"))
+    assert (entry.before, entry.discarded) == ("customized", True)
+    assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
+
+
+def _host_seeded_before_32() -> EvalStorage:
+    """A store whose template the engine seeded and whose cases the host's own seed wrote: ``a`` as the corpus has it
+    now, ``b`` as it was, neither recording a seed."""
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus())
+    template = _subject(storage)
+    for case in (_own("a"), _own("b", host_payload={"persona": "an old buyer b"})):
+        storage.save_test_case(
+            EvalTestCase(
+                scope_id=TOYHOST_SCOPE,
+                template_id=template.id,
+                name=case.name,
+                variation_params=case.variation_params,
+                host_payload=case.host_payload,
+            )
+        )
+    return storage
+
+
+def test_cases_a_host_seeded_itself_read_by_content_then_name_and_the_supplied_map_is_the_whole_of_what_it_seeded() -> (
+    None
+):
+    storage = _host_seeded_before_32()
+    now = _own_corpus(_own("a"), _own("b"), _own("c"))
+    then = corpus_digests(
+        toyhost_host(storage=storage), _own_corpus(_own("a"), _own("b", host_payload={"persona": "an old buyer b"}))
+    )
+
+    unrecorded = _states(_drift(storage, now))
+    supplied = _drift(storage, now, seeded_digests=then)
+    named_c = _states(_drift(storage, now, seeded_digests={**then, _own_key("c"): _own("c").digest()}))
+
+    assert [unrecorded[_own_key(n)] for n in "abc"] == ["current", "unknown", "unknown"]
+    assert [_states(supplied)[_own_key(n)] for n in "abc"] == ["current", "stale", "stale"], supplied.render()
+    assert named_c[_own_key("c")] == "customized", "named by the map and stored nowhere: removed since"
+    boot = _boot(storage, now)
+    assert (
+        boot.needs_reset == {"template_case": [f"{SUBJECT}/b", f"{SUBJECT}/c"]} and boot.skipped["template_case"] == 1
+    )
+    with pytest.raises(ConflictError, match="unknown"):
+        _reset(storage, now, supplied.keys("stale"))
+    reset = _reset(storage, now, supplied.keys("stale"), seeded_digests=then)
+    assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
+    assert [c.seed_name for c in _cases_on(storage, _subject(storage))] == ["a", "b", "c"]
+
+
+def test_a_corpus_refuses_a_template_case_it_cannot_write_naming_each() -> None:
+    same = {"variation_params": {}, "host_payload": {"persona": "the same buyer"}}
+
+    with pytest.raises(ValueError) as refused:
+        SeedCorpus(
+            scope_id=TOYHOST_SCOPE,
+            templates=(_template(), _judge_template()),
+            template_cases=(
+                _own("stray", template="nobody"),
+                _own("judged", template=JUDGE_NAME),
+                _own("twice"),
+                _own("twice", host_payload={"persona": "another"}),
+                _own("d", **same),
+                _own("e", **same),
+            ),
+        )
+
+    said = str(refused.value)
+    assert "'nobody', which the corpus does not carry" in said and f"judge template {JUDGE_NAME!r}" in said, said
+    assert f"two cases of template {SUBJECT!r} named 'twice'" in said and "two identical cases" in said, said
+
+
+def test_a_corpus_directory_loads_a_template_s_cases_named_by_their_files(tmp_path: Path) -> None:
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "template_cases").mkdir()
+    (tmp_path / "templates" / "probe.json").write_text(
+        json.dumps({"name": "probe", "intent": "i", "candidate_kind": TOY_EXTRACTOR_KIND}), encoding="utf-8"
+    )
+    (tmp_path / "template_cases" / "hurried-buyer.json").write_text(
+        json.dumps({"template": "probe", "host_payload": {"persona": "in a hurry"}}), encoding="utf-8"
+    )
+
+    corpus = load_seed_corpus(tmp_path, TOYHOST_SCOPE)
+
+    (case,) = corpus.template_cases
+    assert (case.name, case.template, case.host_payload) == ("hurried-buyer", "probe", {"persona": "in a hurry"})
+
+
+# --- the host's checks, and the listing ----------------------------------------------------------------------------
+
+
+def _refuse(template: EvalTemplate) -> None:
+    raise ValidationFailedError(f"no kind here delivers {template.name!r}", remedy="author it for a kind this host has")
+
+
+ANOTHER = {"name": "another", "intent": "i", "candidate_kind": TOY_EXTRACTOR_KIND}
+
+
+def test_a_reset_and_create_template_read_one_host_s_checks_and_a_host_with_none_is_refused() -> None:
+    storage, _ = _seeded()
+    moved = _full_corpus(templates=(_template_moved(), _judge_template()))
+    key = f"eval_template/{toyhost_judged_template().name}"
+    refusing = toyhost_host(
+        storage=storage,
+        template_checks=TemplateChecks(
+            require_known_tools_allowed=lambda _tools: None,
+            refuse_undeclared_world_seed=lambda _template: None,
+            refuse_undeliverable_template=_refuse,
+        ),
+    )
+    unchecked = toyhost_host(storage=storage, template_checks=None)
+
+    with pytest.raises(ValidationFailedError, match="no kind here delivers"):
+        reset_definitions(refusing, moved, [key])
+    with pytest.raises(ValidationFailedError, match="no kind here delivers"):
+        create_template(refusing, ANOTHER, scope_id=TOYHOST_SCOPE)
+    with pytest.raises(RefusedInput, match="supplies no template checks"):
+        reset_definitions(unchecked, moved, [key])
+    with pytest.raises(RefusedInput, match="supplies no template checks"):
+        create_template(unchecked, ANOTHER, scope_id=TOYHOST_SCOPE)
+    assert _states(definition_drift(unchecked, moved))[key] == "stale", "a drift read admits nothing, so needs none"
+
+
+def test_templates_list_shows_each_template_s_revision() -> None:
+    storage, first, second = _spanning_a_reset()
+    host = toyhost_host(storage=storage)
+
+    active = templates_list(host, TOYHOST_SCOPE).templates
+    archived = templates_list(host, TOYHOST_SCOPE, archived=True).templates
+
+    assert [(line.id, line.revision) for line in active] == [(second.id, 2)]
+    assert [(line.id, line.revision) for line in archived] == [(first.id, 1)]
+
+
 # --- the catalogue actions -----------------------------------------------------------------------------------------
 
 
@@ -668,18 +917,26 @@ def _customized() -> EvalStorage:
 async def test_the_actions_read_drift_refuse_a_customized_reset_and_reset_with_discard() -> None:
     storage = off_loop(_customized)
     moved = _full_corpus(templates=(_template_moved(), _judge_template()))
-    actions = definition_drift_actions(lambda scope_id: moved, **CHECKS)  # type: ignore[arg-type]
+    actions = definition_drift_actions(lambda scope_id: moved)
     (tool,) = eval_catalogue(actions).mount_all(standard_tools())[:1]
-    host, caller = OpsHost.reading(toyhost_host(storage=storage)), Caller(scope_id=TOYHOST_SCOPE, identity="operator")
+    eval_host = toyhost_host(storage=storage)
+    host, caller = OpsHost.reading(eval_host), Caller(scope_id=TOYHOST_SCOPE, identity="operator")
     key = f"eval_template/{toyhost_judged_template().name}"
+    overwrite = {"action": "definitions_reset", "definitions": [key], "overwrite_customized": True}
+    checks = replace(eval_host.template_checks, refuse_undeliverable_template=_refuse)  # type: ignore[type-var]
+    refusing = OpsHost.reading(replace(eval_host, template_checks=checks))
 
     drift = await tool.call({"action": "definitions_drift"}, host=host, caller=caller)
     refused = await tool.call({"action": "definitions_reset", "definitions": [key]}, host=host, caller=caller)
-    reset = await tool.call(
-        {"action": "definitions_reset", "definitions": [key], "overwrite_customized": True}, host=host, caller=caller
-    )
+    not_deliverable = await tool.call(overwrite, host=refusing, caller=caller)
+    reset = await tool.call(overwrite, host=host, caller=caller)
+    listed = await tool.call({"action": "templates_list"}, host=host, caller=caller)
 
     assert drift.text.splitlines()[0] == "drift: 0 stale, 1 customized, 0 unknown, 0 absent, 6 current", drift.text
     assert refused.is_error and key in refused.text and "overwrite_customized" in refused.text, refused.text
+    assert not_deliverable.is_error and "no kind here delivers" in not_deliverable.text, "the checks of the host called"
     assert not reset.is_error and f"{key}: customized -> revision 2" in reset.text, reset.text
+    assert listed.structured is not None
+    revisions = {line["name"]: line["revision"] for line in listed.structured["templates"]}
+    assert revisions == {toyhost_judged_template().name: 2, JUDGE_NAME: 1}, revisions
     assert reset.text.splitlines()[-1] == "drift: 0 stale, 0 customized, 0 unknown, 0 absent, 7 current"

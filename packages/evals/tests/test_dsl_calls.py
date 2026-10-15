@@ -162,9 +162,9 @@ class TestTheCallParameterGate:
 def _create_template(definition: dict) -> object:
     """Author through the engine's own gate, with every host-side check a no-op.
 
-    The refusals below are the engine's: the host hooks ``create_template`` takes are for
-    what only a host can know (its tool catalog, its world's seed walk, its kinds), and passing
-    none isolates the rule under test from any one host's answers.
+    The refusals below are the engine's: the host's template checks ``create_template`` reads are
+    for what only a host can know (its tool catalog, its world's seed walk, its kinds), and the toy
+    host's admit everything, which isolates the rule under test from any one host's answers.
     """
     storage = MagicMock()
     storage.load_template_by_name.return_value = None
@@ -172,9 +172,6 @@ def _create_template(definition: dict) -> object:
         toyhost_host(storage=storage),
         definition,
         scope_id="scope-a",
-        require_known_tools_allowed=lambda _tools: None,
-        refuse_undeclared_world_seed=lambda _template: None,
-        refuse_undeliverable_template=lambda _template: None,
     )
 
 

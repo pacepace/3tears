@@ -48,7 +48,7 @@ from threetears.evals.kernel.host.bars import (
     BarProposal,
     BarRegistrationError,
 )
-from threetears.evals.kernel.host.eval_host import CompletionClients, CompletionRole, EvalHost
+from threetears.evals.kernel.host.eval_host import CompletionClients, CompletionRole, EvalHost, TemplateChecks
 from threetears.evals.kernel.host.kinds import (
     ActsOn,
     Interval,
@@ -173,6 +173,7 @@ __all__ = [
     "SweepableReader",
     "SweepableRegistry",
     "SweepableRole",
+    "TemplateChecks",
     "ToneRegister",
     "ToolActionReader",
     "TriggerKind",

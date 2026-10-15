@@ -550,6 +550,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.EvalHost",
         "threetears.evals.kernel.host.HostProfile",
         "threetears.evals.kernel.host.CompletionClients",
+        # The host's checks on a template, which create_template, update_template, the seed and a reset read off it.
+        "threetears.evals.kernel.host.TemplateChecks",
         "threetears.evals.kernel.host.default_cell_timeout",
         "threetears.evals.kernel.EvalStorage",
         "threetears.evals.kernel.withhold_failure_detail",
@@ -611,6 +613,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # An authored judge case in a host's boot seed, which a production seed builds in memory
         # (`SeedCorpus(judge_cases=...)`) as well as reads from `judge_cases/*.json`.
         "threetears.evals.run.SeedJudgeCase",
+        # A template's own case in a host's boot seed (a persona, a bank input), built in memory
+        # (`SeedCorpus(template_cases=...)`) as well as read from `template_cases/*.json`.
+        "threetears.evals.run.SeedTemplateCase",
         # A named case set in a host's boot seed, which a production seed builds in memory
         # (`SeedCorpus(case_sets=...)`) as well as reads from `case_sets/*.json`.
         "threetears.evals.run.SeedCaseSet",
@@ -862,7 +867,6 @@ STABLE: frozenset[str] = frozenset(
         # How a report speaks: the prose lint every rendered sentence and a memo's are held to, the one seam an
         # identifier passes on its way to a reader, and the glossary of every term of art a page links.
         "threetears.evals.analysis.GLOSSARY",
-        "threetears.evals.analysis.StyleViolation",
         "threetears.evals.analysis.humanize",
         "threetears.evals.analysis.lint_prose",
         # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
@@ -922,7 +926,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.confusion_cell",
         "threetears.evals.run.get_run",
         "threetears.evals.run.list_runs",
-        "threetears.evals.schema.EvalCaseStratum",
         "threetears.evals.schema.LatencyMetrics",
         # Rung 4: a world, a log and a host of one's own. What a kind, a launcher and a world are built from beyond
         # the host contract, as the agent guide and the example hosts under `tests/fixtures/` build them.
