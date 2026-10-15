@@ -73,8 +73,13 @@ template whose results are compared across arms, whatever its declared reading.
 - **Decision**: a declared decision rule (`Decision rule: switch … only if … AND …; otherwise keep …`), one row per
   clause and reading, each arm's column headed by its name, `settled: keep`, `settled: switch` or `unsettled` with
   the reason. Keep settles on what the run observed: a drop past the margin, or a higher cost. Switch needs
-  sampling evidence: every arm at the case floor, and the contrast's interval bounding the drop within the margin
-  (for cost, wholly below zero). A run that shows neither is unsettled ("the cost difference did not separate").
+  sampling evidence: every arm at the case floor, and for every rate the clause reads (the pass rate and each
+  check's) the contrast's bounded interval keeping the drop within the margin; for cost, the interval wholly below
+  zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds its error rate on a
+  few coarse cases, where the t interval does not
+  ([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases only a sweep settles a
+  10-point clause. A run that shows neither is unsettled ("the cost difference did not separate"); a bundle shaped
+  before 55 reads "this bundle predates the interval a switch needs".
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
   readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
   sit in a closed `Evidence` fold. Where a declared rule settled every clause, its question has no answer line: the
