@@ -36,7 +36,7 @@ from threetears.evals.kernel.evidence_tiers import (
     TierCriterion,
 )
 from threetears.evals import Answer, Eval, Result
-from threetears.evals.kernel.declaration import Question
+from threetears.evals.kernel.declaration import CostLower, DecisionRule, Question, RateDrop
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.evals.schema import EvalResult, JudgeCutShort
 from packages.evals.tests.off_loop import off_loop
@@ -155,13 +155,15 @@ async def g2_report() -> Report:
 
 # --- the G2 numbers, replayed with arms named as a host names them, and its decision rule declared -------
 
-#: The G2 campaign's declared question, decision rule included, as its operator wrote it.
+#: The G2 campaign's declared question, as its operator wrote it.
 G2_QUESTION = (
     "On Kairo's queue-discipline regression set, does deepseek-v4-flash hold every pass/fail queue-discipline "
-    "dimension within 10 points of deepseek-v4.1-flash's pass rate, at lower cost per turn? Decision rule: switch "
-    "Kairo's model only if no dimension drops by more than 10 points AND the cost per turn is lower; otherwise keep "
-    "deepseek-v4.1-flash."
+    "dimension within 10 points of deepseek-v4.1-flash's pass rate, at lower cost per turn?"
 )
+
+#: The G2 campaign's decision rule, typed: switch only if no pass rate drops by more than 10 points and the cheaper
+#: model costs less per reply; otherwise keep production.
+G2_RULE = DecisionRule(clauses=(RateDrop(max_points=10), CostLower()))
 
 PRODUCTION = "deepseek-v4.1-flash (production)"
 CANDIDATE = "deepseek-v4-flash (cheaper candidate)"
@@ -185,11 +187,14 @@ async def g2_numbers() -> Result:
     return await Eval(CASES, arms, ["label"], k=3, name="Kairo queue discipline").run(store=":memory:")
 
 
-def declaring(bundle: AnalysisContextBundle, text: str) -> AnalysisContextBundle:
-    """The bundle with ``text`` declared before the run, as the campaign's one live question."""
+def declaring(
+    bundle: AnalysisContextBundle, text: str, decision: DecisionRule | None = G2_RULE
+) -> AnalysisContextBundle:
+    """The bundle with ``text`` and its ``decision`` rule declared before the run, as the campaign's one live
+    question."""
     design = bundle.declared_design
     assert design is not None, "a quick comparison declares its design"
-    asked = Question(id="q-g2", text=text, asked_at="2026-10-14T00:00:00+00:00")
+    asked = Question(id="q-g2", text=text, decision=decision, asked_at="2026-10-14T00:00:00+00:00")
     return bundle.model_copy(
         update={
             "declared_design": design.model_copy(update={"questions": [asked]}),

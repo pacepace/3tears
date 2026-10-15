@@ -643,8 +643,8 @@ def _multiple_comparisons(
     The guardrails are read over the same pairs and the same per-case values, and kept out of every
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
-    **The overall pass rate joins only the family of a question whose decision rule reads it** (a rate clause,
-    ``pass_rate_questions``): there it is a hypothesis the question asks, so its family grows by one and every adjusted
+    **The overall pass rate joins only the family of a question whose decision rule reads it** (a rate clause naming
+    no one reading, ``pass_rate_questions``): there it is a hypothesis the question asks, so its family grows by one and every adjusted
     p in it moves with it. No other family tests it, and with no such question it is compared nowhere: it is the
     scoreboard's count, exploratory. Each case's value is the share of its usable trials that passed
     (:func:`_trial_pass_values`), tested and bounded as a check's pass rate is, on its 0-1 range.

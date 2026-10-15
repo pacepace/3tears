@@ -20,7 +20,7 @@ Run an eval written as a file from the command line, or wire a host's own comman
 Cases, the code under test and what counts as right, run k times; the result, read whole or case by case.
 
 - `threetears.evals`: `Answer`, `Eval`, `grader`, `Model`, `Result`
-- `analysis`: `GLOSSARY`, `humanize`, `lint_prose`, `StyleViolation`, `Verdict`
+- `analysis`: `GLOSSARY`, `humanize`, `lint_prose`, `Verdict`
 - `quick`: `Grader`, `Measure`, `measure`
 
 ## Rung 2: a judge, examples and calibration
@@ -40,9 +40,9 @@ A model grading on a rubric, the examples it must grade a known way, and the rep
 Two or more arms as a campaign, its bundle, report and frontier, the classifier measures, and the gate a pipeline fails on.
 
 - `schema`: `EvalCaseStratum`, `LatencyMetrics`
-- `kernel`: `BarOverride`, `CampaignDesign`, `confusion_cell`, `CONFUSION_CELL_MEASURE`, `ControlDeclaration`, `EvalAnalysis`, `EvalInsight`, `MATCH_MEASURE`, `Question`, `SweptAxis`
+- `kernel`: `BarOverride`, `CampaignDesign`, `confusion_cell`, `CONFUSION_CELL_MEASURE`, `ControlDeclaration`, `CostLower`, `DecisionRule`, `EvalAnalysis`, `EvalInsight`, `MATCH_MEASURE`, `Question`, `RateDrop`, `SweptAxis`
 - `run`: `get_result_trace`, `get_run`, `list_results`, `list_runs`
-- `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateOutcome`, `GateResult`, `GateToken`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`
+- `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateResult`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`
 - `ops`: `scope_history`
 
 ## Rung 4: a world, a log, a host and serving

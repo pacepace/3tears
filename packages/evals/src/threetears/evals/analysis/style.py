@@ -186,7 +186,7 @@ GLOSSARY: dict[str, str] = {
     "bar": "A threshold a reading must clear on its own, without a control.",
     "exploratory": "No question was declared before the run, so the page offers leads, not decisions.",
     "settled": (
-        "Keep is settled when the run shows the candidate breaks the clause; switch only when its interval shows the "
+        "Keep is settled when the run shows an arm breaks the clause; switch only when its interval shows the "
         "clause holds, on at least 5 cases per arm."
     ),
     "judge": "The model that scores each trial's transcript against a rubric.",

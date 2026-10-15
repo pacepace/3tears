@@ -27,16 +27,11 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TextBlock
-from threetears.evals.analysis.report.decision import (
-    RateReading,
-    RuleReadings,
-    evaluate_rule,
-    parse_decision_rule,
-)
+from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.style import LABEL_CLAIMS, lint_page, lint_prose
-from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_QUESTION, PRODUCTION, answering, declaring
+from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_QUESTION, G2_RULE, PRODUCTION, answering, declaring
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 #: The G2 campaign's title.
@@ -127,9 +122,9 @@ async def test_a_clause_left_open_is_the_one_answer_line() -> None:
         comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Keep production."
     )
     (answer,) = _answers(report)
-    assert answer.body == "Still open: whether the cost per turn is lower."
+    assert answer.body == "Still open: whether cheaper candidate costs less per reply."
     markdown = report_markdown(report)
-    assert "**Partly answered.** Still open: whether the cost per turn is lower." in markdown
+    assert "**Partly answered.** Still open: whether cheaper candidate costs less per reply." in markdown
     assert "Keep production." not in markdown, "the memo's own answer is not printed"
     assert lint_page(markdown, question=G2_QUESTION) == []
 
@@ -235,13 +230,14 @@ def test_a_settled_difference_is_disputed_only_in_a_narrow_set_of_words(said: st
 
 
 def test_a_keep_settles_every_rate_observed_past_the_margin_and_no_other() -> None:
-    rule = parse_decision_rule(G2_QUESTION)
-    assert rule is not None
+    rule = G2_RULE
     verdict = evaluate_rule(
         rule,
         RuleReadings(
             rates=(RateReading("the pass rate", 10, 12, 2, 12),), control_cost=0.003092, candidate_cost=0.003301
         ),
+        control="production",
+        candidate="cheaper candidate",
     )
     check = 'goal_state:call_count("music.queue_track") >= 2'
     # A check the rule did not read, observed 42 points down: the clause it breaks has settled it.
@@ -252,7 +248,10 @@ def test_a_keep_settles_every_rate_observed_past_the_margin_and_no_other() -> No
     assert not verdict.settles(RateReading("check", 11, 12, 9, 12, candidate_remaining=6, measure=check))
     assert verdict.settles_cost()
     unsettled = evaluate_rule(
-        rule, RuleReadings(rates=(RateReading("the pass rate", 10, 12, 10, 12),), control_cases=4, candidate_cases=4)
+        rule,
+        RuleReadings(rates=(RateReading("the pass rate", 10, 12, 10, 12),), control_cases=4, candidate_cases=4),
+        control="production",
+        candidate="cheaper candidate",
     )
     assert unsettled.outcome == "unsettled"
     assert not unsettled.settles(RateReading("check", 11, 12, 6, 12, measure=check))

@@ -293,9 +293,9 @@ cases most verdicts are undecided, and that is the finding: the bank cannot tell
 ### A switch reads the bounded interval
 
 **"No worse by more than the margin" is a claim of safety, so it reads an interval that holds its error rate on
-coarse values.** A decision rule's `switch` on a rate (`no dimension drops by more than 10 points`) reads each rate's
-bounded interval (`bounded_interval` on the contrast, the bounded test's on the 0-1 range at the family's level), as a
-guardrail's `held` does. The t interval the Contrasts table prints overstates its confidence on a pass rate's few
+coarse values.** A decision rule's `switch` on a rate (`RateDrop(max_points=10)`: no pass rate drops by more than 10
+points) reads each rate's bounded interval (`bounded_interval` on the contrast, the bounded test's on the 0-1 range at
+the family's level), as a guardrail's `held` does. The t interval the Contrasts table prints overstates its confidence on a pass rate's few
 coarse per-case shares: a candidate that breaks one case in ten leaves most small samples agreeing with the control.
 The price is honest: on seven cases nothing short of a sweep settles a 10-point switch, and only keep can.
 *Evidence:* simulated at a true drop of exactly the 10-point margin, 3 repeats per case, 20,000 replicates per row,

@@ -38,7 +38,7 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
-from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
@@ -260,6 +260,82 @@ class GuardrailMargin(EvalDocumentModel, CoreShapeModel):
     )
 
 
+class RateDrop(EvalDocumentModel, CoreShapeModel):
+    """A clause of a decision rule: no pass rate may drop by more than ``max_points`` against the control.
+
+    ``reading`` None reads every pass/fail reading the arms share: the overall pass rate and each check's. A name
+    reads that one alone: a goal-state check by its verbatim text, or a measure or judged dimension by its key.
+    A switch on it needs every arm at the case floor and the bounded interval within the margin; an observed drop
+    past the margin settles keep on any number of cases.
+    """
+
+    kind: Literal["rate_drop"] = Field(
+        default="rate_drop", description="The clause's kind, which a stored rule is read back by. Never set by hand."
+    )
+    max_points: float = Field(
+        gt=0.0,
+        lt=100.0,
+        allow_inf_nan=False,
+        description="The most a pass rate may drop, in points of a 0-100 percent: positive, and narrower than the scale.",
+    )
+    reading: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The one pass/fail reading this clause reads: a goal-state check's verbatim text, or a measure or judged "
+            "dimension's key. None reads every pass/fail reading the arms share, the overall pass rate included."
+        ),
+    )
+
+
+class CostLower(EvalDocumentModel, CoreShapeModel):
+    """A clause of a decision rule: the arm must cost less per reply than the control.
+
+    A cost observed no lower settles keep on any number of cases; switch needs every arm at the case floor and the
+    cost contrast's interval wholly below zero.
+    """
+
+    kind: Literal["cost_lower"] = Field(
+        default="cost_lower", description="The clause's kind, which a stored rule is read back by. Never set by hand."
+    )
+
+
+#: One clause of a decision rule, read back by its ``kind``.
+DecisionClause = Annotated[RateDrop | CostLower, Field(discriminator="kind")]
+
+
+class DecisionRule(EvalDocumentModel, CoreShapeModel):
+    """When a question's answer switches from the control: typed clauses, never words the engine has to parse.
+
+    The logic is fixed: switch only if every clause settles switch, keep the moment one settles keep, otherwise
+    unsettled. The page states the rule in a sentence code writes from these clauses, with the arms' names.
+    """
+
+    clauses: tuple[DecisionClause, ...] = Field(
+        min_length=1,
+        description=(
+            "The conditions every one of which must hold to switch: `RateDrop` and `CostLower`. At least one: a rule "
+            "with none would switch on nothing."
+        ),
+    )
+
+
+#: What a question's text holds when its author wrote the rule as prose: the engine reads no rule from words.
+PROSE_RULE_MARK = "decision rule:"
+
+
+def states_a_prose_rule(question: Question) -> bool:
+    """Whether a question carries its decision rule in its words and none as :attr:`Question.decision`.
+
+    Args:
+        question: The declared question.
+
+    Returns:
+        True when its text says ``Decision rule:`` (any case) and it declares no typed rule.
+    """
+    return question.decision is None and PROSE_RULE_MARK in question.text.casefold()
+
+
 class Question(EvalDocumentModel, CoreShapeModel):
     """Something this campaign is trying to find out.
 
@@ -287,7 +363,19 @@ class Question(EvalDocumentModel, CoreShapeModel):
         ),
     )
     text: str = Field(
-        min_length=1, description="The question, in the operator's words. Immutable once any analysis has resolved it."
+        min_length=1,
+        description=(
+            "The question, in the operator's words. Immutable once any analysis has resolved it. A decision rule is "
+            "never written here: it is `decision`, and a text saying `Decision rule:` beside no `decision` is refused "
+            "when the design is declared."
+        ),
+    )
+    decision: DecisionRule | None = Field(
+        default=None,
+        description=(
+            "When the answer switches from the control, as typed clauses; None when the question states no rule. "
+            "Part of what was asked: changing it mints a new question, as changing the text does."
+        ),
     )
     merit_axes: list[MeritAxis] = Field(
         default_factory=list,
@@ -961,8 +1049,8 @@ def resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl:
 def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -> list[Question]:
     """Fold an authored question list onto the stored one without ever rewriting a question.
 
-    A question's text does not change. An analysis resolves a question BY ID, so editing the
-    text in place would leave that resolution pointing at a sentence nobody asked when it was
+    A question's text does not change, nor its decision rule, which is part of what was asked. An analysis
+    resolves a question BY ID, so editing either in place would leave that resolution pointing at a sentence nobody asked when it was
     written — the answer would silently re-attach to a different question. An edit therefore
     MINTS a replacement carrying ``supersedes``, the original stays exactly as asked, and
     :meth:`CampaignDesign.live_questions` drops the superseded one so nothing is answered twice.
@@ -1006,7 +1094,7 @@ def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -
         prior = by_id.get(question.id)
         if prior is None:
             reconciled.append(question)
-        elif question.text == prior.text:
+        elif question.text == prior.text and question.decision == prior.decision:
             # `asked_at` and `supersedes` are the question's history, not its content: taking
             # them from the author would let an edit re-date a question or rewrite its lineage.
             # Everything else on the row — merit_axes, retired_at — is theirs to change.
@@ -1018,7 +1106,11 @@ def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -
             # question already falls out of `live_questions`, so this changes no obligation — it
             # keeps the record saying what the author said.)
             reconciled.append(prior.model_copy(update={"retired_at": question.retired_at}))
-            minted.append(Question(text=question.text, merit_axes=question.merit_axes, supersedes=prior.id))
+            minted.append(
+                Question(
+                    text=question.text, decision=question.decision, merit_axes=question.merit_axes, supersedes=prior.id
+                )
+            )
     return reconciled + minted
 
 
@@ -1447,8 +1539,21 @@ def refuse_an_undeclarable_design(
             registered value; a bar contradicts the declared better-direction of what it names,
             naming it and which way its descriptor runs; or a bar, a live question or the merit priority
             asks about latency in a design that does not declare ``measure_latency``, naming each and the
-            setting to turn on.
+            setting to turn on; or a live question writes its decision rule as prose (``Decision rule:`` in its
+            text) and declares none as ``Question.decision``.
     """
+    # A rule in words is read by nothing: the engine settles only a typed rule. Refused here, where a design is
+    # declared, and never on a read, so a question stored before the rule was typed still loads and reads as having
+    # none.
+    if prose := [question.id for question in design.live_questions() if states_a_prose_rule(question)]:
+        raise DesignRefused(
+            f"question {', '.join(prose)} writes its decision rule as prose in its text, which the engine does not "
+            "read: a rule is declared as Question.decision",
+            remedy=(
+                "declare the rule as Question.decision, a DecisionRule of RateDrop and CostLower clauses, and keep "
+                "the text to the question itself"
+            ),
+        )
     # ASK the profile rather than re-deriving from its registry. `HostProfile.controllable` is
     # R10's evaluability map and the design names this gate as its one use — re-deriving
     # `{d.name for d in profile.sweepables.declarations}` here would make two implementations of
@@ -1720,8 +1825,13 @@ __all__ = [
     "CampaignDesign",
     "ControlDeclaration",
     "ControlSource",
+    "CostLower",
+    "DecisionClause",
+    "DecisionRule",
     "GuardrailMargin",
+    "PROSE_RULE_MARK",
     "Question",
+    "RateDrop",
     "ResolvedControl",
     "SweptAxis",
     "DesignRefused",
@@ -1736,4 +1846,5 @@ __all__ = [
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
     "resolve_declared_control",
+    "states_a_prose_rule",
 ]

@@ -163,6 +163,19 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 56/13: a question's decision rule is typed on the declared design where it was parsed from its words. A
+    # shape-only bump: the apparatus set and the cell model hold.
+    (
+        (56, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 

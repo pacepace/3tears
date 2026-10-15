@@ -1217,6 +1217,38 @@ launcher reads every one off `request.apparatus_settings` with no default of its
 the rig as set up (`EvalRun.apparatus_settings`), a component of its measurement context — a launch naming
 a default and one leaving it out are one condition.
 
+## Declaring what a campaign decides
+
+A campaign that compares arms to make a decision declares the question it asks and the rule that answers it, before
+its first run. The rule is typed clauses, never words: the engine settles a `DecisionRule`, and reads no rule out of
+a question's text.
+
+```python
+from threetears.evals.kernel import CostLower, DecisionRule, Question, RateDrop
+
+asked = Question(
+    text="Does v2 hold every pass rate within 2 points of v1, at a lower cost per reply?",
+    decision=DecisionRule(clauses=(RateDrop(max_points=2), CostLower())),
+)
+```
+
+It goes on the declared design's `questions`. The page quotes the question whole and opens its Decision section with
+the rule in a sentence it writes, the arms by name: `Switch to v2 only if no pass rate drops by more than 2 points
+and v2 costs less per reply. Otherwise stay on v1.`
+
+- **`RateDrop(max_points=2)`** reads every pass/fail reading the arms share, the overall pass rate included.
+  `RateDrop(max_points=2, reading="tone")` reads one: a goal-state check by its verbatim text, or a measure or judged
+  dimension by its key (`no tone rate drops by more than 2 points`).
+- **`CostLower()`** reads each arm's cost per reply.
+- **The logic is fixed**: switch only if every clause settles switch, keep the moment one settles keep, otherwise
+  unsettled. Keep settles on what the run observed; switch needs every arm at the case floor and an interval
+  ([Reading reports](reading-reports.md)).
+- **A rule written as prose is refused** when the design is declared: a question whose text says `Decision rule:`
+  and declares no `decision` names `Question.decision` in the refusal. A question stored that way before rules were
+  typed still loads; its page says the rule went unread, and its verdict is exploratory.
+- **The rule is part of what was asked**: changing it mints a new question that supersedes the old, as changing the
+  text does.
+
 ## The engine's prompts: shipped defaults, optional overrides
 
 The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`), the

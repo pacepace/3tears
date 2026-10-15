@@ -81,12 +81,15 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.decision import (
+    PROSE_RULE_LINE,
     RateReading,
+    RuleReadings,
     RuleVerdict,
     evaluate_rule,
-    parse_decision_rule,
+    prose_ruled,
     rule_readings,
-    split_decision_rule,
+    rule_statement,
+    ruled_question,
 )
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
@@ -141,6 +144,7 @@ from threetears.evals.kernel.campaign import (
 from threetears.evals.kernel.declaration import (
     JUDGED_MERIT_AXIS,
     CampaignDesign,
+    CostLower,
     Question,
     exploratory_reading,
     preregistered_questions,
@@ -238,11 +242,16 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
     questions = _preregistered(bundle)
     control = _control_key(bundle)
     candidates = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
-    ruled = next(((question, parsed) for question in questions if (parsed := parse_decision_rule(question.text))), None)
+    ruled = ruled_question(questions)
     verdict = sentence = None
-    if ruled is not None and control is not None and len(candidates) == 1:
-        verdict = evaluate_rule(ruled[1], rule_readings(bundle, control, candidates[0], question_id=ruled[0].id))
+    if ruled is not None and ruled.decision is not None and control is not None and len(candidates) == 1:
         namer = _namer(names)
+        verdict = evaluate_rule(
+            ruled.decision,
+            rule_readings(bundle, control, candidates[0], question_id=ruled.id),
+            control=namer(control),
+            candidate=namer(candidates[0]),
+        )
         sentence = rule_sentence(verdict, control=namer(control), candidate=namer(candidates[0]), bundle=bundle)
     return MemoStyle(
         bundle=bundle,
@@ -250,7 +259,7 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
         question=questions[0].text if questions else None,
         rule=verdict,
         rule_sentence=sentence,
-        rule_question=ruled[0].id if ruled is not None and verdict is not None else None,
+        rule_question=ruled.id if ruled is not None and verdict is not None else None,
     )
 
 
@@ -485,19 +494,15 @@ def _capitalized(title: str) -> str:
 
 
 def _question_line(bundle: AnalysisContextBundle) -> str | None:
-    """Under the arms: the question declared before the run, quoted — the contract the verdict reads, never
+    """Under the arms: the question declared before the run, quoted whole — the contract the verdict reads, never
     paraphrased, its first plain word capitalized as a sentence starts; None where none was declared. The first
-    question where several were.
-
-    Structured text the engine parses is laid out by its structure: where the question states a decision rule, only
-    the words before the rule are quoted here, and the rule is quoted at the head of the Decision section
-    (:func:`_decision_blocks`), split at the parser's own boundary. Where no rule parses the question is quoted whole.
+    question where several were. Its decision rule is typed, not words, so the Decision section states it in a
+    sentence code writes (:func:`_decision_blocks`).
     """
     questions = _preregistered(bundle)
     if not questions:
         return None
-    asked, _ = split_decision_rule(" ".join(questions[0].text.split()))
-    return f'Asked before the run: "{_capitalized(asked)}"'
+    return f'Asked before the run: "{_capitalized(" ".join(questions[0].text.split()))}"'
 
 
 def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource) -> str:
@@ -753,31 +758,34 @@ def _design_words(bundle: AnalysisContextBundle) -> str:
 
 
 def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
-    """A declared decision rule: its words quoted on the section's first line, then clause by clause on each arm
-    against the control as a table, never prose.
+    """A declared decision rule: the rule in one sentence code writes, the arms by name, on the section's first line,
+    then clause by clause on each arm against the control as a table, never prose.
 
-    The rule is the part of the declared question the first screen does not quote (:func:`_question_line`), as the
-    operator wrote it, so each part of the question sits where it is read. The control and the candidate head their
-    columns by name; with several candidates the candidate's column is ``Candidate`` and an ``Arm`` column names
-    each row's.
+    The rule is typed (``Question.decision``), so its sentence is code's (:func:`~.decision.rule_statement`), never
+    the operator's words parsed. Each clause's row opens with the clause as a sentence naming its arm. The control
+    heads its column by name, as does a lone other arm; with several, an ``Arm`` column names each row's and its
+    figures are under ``Value``. A question that wrote its rule as prose and declares none typed gets one line saying
+    so, and nothing is settled.
     """
     control = _control_key(bundle)
     questions = _preregistered(bundle)
-    ruled = next(((question, parsed) for question in questions if (parsed := parse_decision_rule(question.text))), None)
-    if ruled is None or control is None:
+    if prose_ruled(questions):
+        return [DisclosureBlock(section="decision", source="basis", text=PROSE_RULE_LINE)]
+    asked = ruled_question(questions)
+    if asked is None or asked.decision is None or control is None:
         return []
-    asked, rule = ruled
-    stated = DisclosureBlock(section="decision", source="basis", text=f'Decision rule: "{" ".join(rule.text.split())}"')
+    rule = asked.decision
     cost = _cost_ruler(bundle)
+    others = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
     rows: list[dict[str, CellValue]] = []
-    for board in bundle.scoreboard:
-        if board.variant_key == control:
-            continue
-        readings = rule_readings(bundle, control, board.variant_key, question_id=asked.id)
-        verdict = evaluate_rule(rule, readings)
+    first_readings: RuleReadings | None = None
+    for key in others:
+        readings = rule_readings(bundle, control, key, question_id=asked.id)
+        first_readings = first_readings or readings
+        verdict = evaluate_rule(rule, readings, control=arm(control), candidate=arm(key))
         for clause in verdict.clauses:
             shown: list[tuple[str, str | None, str | None]] = []
-            if clause.clause.kind == "cost_lower":
+            if isinstance(clause.clause, CostLower):
                 shown = [
                     (
                         f"cost {_per_reply(bundle)}",
@@ -785,20 +793,20 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                         _dollars(readings.candidate_cost, cost),
                     )
                 ]
-            elif clause.clause.kind == "rate_drop":
+            else:
                 shown = [
                     (
                         rate.name,
                         f"{rate.control_passed} of {rate.control_n}",
                         f"{rate.candidate_passed} of {rate.candidate_n}",
                     )
-                    for rate in readings.rates
+                    for rate in readings.read_by(clause.clause)
                 ]
             for index, (reading, ours, theirs) in enumerate(shown or [("—", None, None)]):
                 rows.append(
                     {
-                        "clause": clause.clause.text if index == 0 else None,
-                        "arm": arm(board.variant_key),
+                        "clause": clause.statement if index == 0 else None,
+                        "arm": arm(key),
                         "reading": reading,
                         "control": ours,
                         "candidate": theirs,
@@ -815,15 +823,21 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                 )
     if not rows:
         return []
-    # One candidate heads its own column by name; several share a "Candidate" column, each row naming its arm.
-    candidates = list(dict.fromkeys(str(row["arm"]) for row in rows))
-    single = len(candidates) == 1
+    stated = DisclosureBlock(
+        section="decision",
+        source="basis",
+        text=rule_statement(
+            rule, control=arm(control), candidates=[arm(key) for key in others], readings=first_readings
+        ),
+    )
+    # A lone other arm heads its own column by name; several share a "Value" column, each row naming its arm.
+    single = len(others) == 1
     columns = [
         TableColumn(key="clause", header="Clause", term="clause"),
         *([] if single else [TableColumn(key="arm", header="Arm")]),
         TableColumn(key="reading", header="Reading", term="reading"),
         TableColumn(key="control", header=arm(control)),
-        TableColumn(key="candidate", header=candidates[0] if single else "Candidate"),
+        TableColumn(key="candidate", header=arm(others[0]) if single else "Value"),
         TableColumn(key="outcome", header="Outcome", term="settled"),
     ]
     return [
@@ -1025,7 +1039,7 @@ def _memo_blocks(
 
 def _still_open(rule: RuleVerdict) -> str | None:
     """Each clause of a settled rule the run left open, in one line; None when the decision table settled them all."""
-    still = [verdict.clause.text for verdict in rule.clauses if verdict.outcome == "unsettled"]
+    still = [verdict.statement for verdict in rule.clauses if verdict.outcome == "unsettled"]
     if not still:
         return None
     return "Still open: " + ", and ".join(f"whether {clause}" for clause in still) + "."

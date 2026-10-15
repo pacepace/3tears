@@ -794,6 +794,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.ProviderError",
         # The words the client writes as a completion's `price_source`, which a host reading spend back compares with.
         "threetears.evals.providers.PriceSource",
+        # A declared question and its decision rule, typed: what a host writes to have the page settle keep or switch.
+        "threetears.evals.kernel.Question",
+        "threetears.evals.kernel.DecisionRule",
+        "threetears.evals.kernel.RateDrop",
+        "threetears.evals.kernel.CostLower",
     }
 )
 
@@ -831,7 +836,6 @@ STABLE: frozenset[str] = frozenset(
         # How a report speaks: the prose lint every rendered sentence and a memo's are held to, the one seam an
         # identifier passes on its way to a reader, and the glossary of every term of art a page links.
         "threetears.evals.analysis.GLOSSARY",
-        "threetears.evals.analysis.StyleViolation",
         "threetears.evals.analysis.humanize",
         "threetears.evals.analysis.lint_prose",
         # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
@@ -872,9 +876,7 @@ STABLE: frozenset[str] = frozenset(
         # Rung 3: comparing arms and reading the outcome. A campaign's design, its report bundle and frontier, the gate
         # a CI step reads, and the classifier measures `docs/building-an-inventory.md` builds on.
         "threetears.evals.analysis.GATE_TOKENS",
-        "threetears.evals.analysis.GateOutcome",
         "threetears.evals.analysis.GateResult",
-        "threetears.evals.analysis.GateToken",
         "threetears.evals.analysis.assemble_context_bundle",
         "threetears.evals.analysis.campaign_report",
         "threetears.evals.analysis.create_campaign",
@@ -886,7 +888,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.ControlDeclaration",
         "threetears.evals.kernel.EvalInsight",
         "threetears.evals.kernel.MATCH_MEASURE",
-        "threetears.evals.kernel.Question",
         "threetears.evals.kernel.SweptAxis",
         "threetears.evals.kernel.confusion_cell",
         "threetears.evals.run.get_run",

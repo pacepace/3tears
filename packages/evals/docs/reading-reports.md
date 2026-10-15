@@ -67,10 +67,8 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   design (`30 cases × 3 repeats`). After that an arm is its given label (`production`), the control marked `▸` in
   a table. Only line 2 and the verdict name a model.
 - **Line 3**, where a question was declared before the run: the question quoted, `Asked before the run: "…"`. It
-  is the contract the verdict reads, so it is never paraphrased. Structured text the engine parses is laid out by
-  its structure: where the question states a decision rule, line 3 quotes only the words before it, and the rule is
-  quoted at the head of the Decision section, split where the parser finds `Decision rule:`. A question stating no
-  rule the parser reads is quoted whole.
+  is the contract the verdict reads, so it is never paraphrased, and it is quoted whole. Its decision rule is not
+  words but typed clauses (`Question.decision`), so the Decision section states it in a sentence code writes.
 - **Verdict**, written by code and never by a memo, result first: one sentence for the decision, a second only for
   a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
   models.`, the arm, the cause, the fix); one arm (`emails: 25/30 cases passed; 5 misses: double-charge,
@@ -102,8 +100,10 @@ reading.
 
 ### The rest of the page
 
-- **Decision**: the declared decision rule quoted on its first line (`Decision rule: "switch … only if … AND …;
-  otherwise keep …"`), then one row per clause and reading, each arm's column headed by its name, `settled: keep`,
+- **Decision**: the declared decision rule in one sentence code writes from its clauses, the arms by name (`Switch to
+  v2 only if no pass rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on v1.`; a clause
+  naming one reading says `no tone rate drops by more than 2 points`), then one row per clause and reading, the
+  clause's own sentence first, each arm's column headed by its name, `settled: keep`,
   `settled: switch` or `unsettled` with the reason. Keep settles on what the run observed: a drop past the margin,
   or a higher cost. Switch needs
   sampling evidence: every arm at the case floor, and for every rate the clause reads (the pass rate and each
@@ -112,7 +112,9 @@ reading.
   few coarse cases, where the t interval does not
   ([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases only a sweep settles a
   10-point clause. A run that shows neither is unsettled ("the cost difference did not separate"); a bundle shaped
-  before 55 reads "this bundle predates the interval a switch needs".
+  before 55 reads "this bundle predates the interval a switch needs". A question stored with its rule written as
+  prose in its words, and none typed, opens the section with `This question's rule was written as prose, which is
+  no longer read; declare it as a rule.`, and its verdict is exploratory: no rule was applied.
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
   readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Where a

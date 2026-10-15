@@ -155,6 +155,8 @@ the document, so extending one is a major. Each, and why:
   method that a reader trusts or re-derives by.
 - ``DeclaredMeritAxis``, ``GuardrailDirection``, ``CampaignDesign.crossing``, ``ControlDeclaration.stimulus`` — the
   semantics of an analysis design.
+- The decision rule's clause ``kind`` tags (``rate_drop``, ``cost_lower``) — what a declared rule switches on; a new
+  clause is a new model, which an older build would have to settle without knowing what it asks.
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``OutOfRunOutcome`` — binary and complete.
@@ -254,7 +256,13 @@ CORE_SCHEMA_VERSION: int = 15
 #:   value stored before it holds; the ``judge_request_settings`` and ``judge_sent_settings`` levels leave it out
 #:   while it is None, so no stored level moves.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 2
+#: - **v15.3** — a declared question carries its decision rule typed: ``Question.decision`` (a ``DecisionRule`` of
+#:   ``RateDrop`` and ``CostLower`` clauses, each read back by its ``kind``; default None: the question states no rule,
+#:   or was stored before the field existed), on a campaign's declared design and an analysis's design snapshot. No
+#:   rule is read from a question's words any more: a stored question whose text says ``Decision rule:`` reads as
+#:   stating none, and its page says so.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 3
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
