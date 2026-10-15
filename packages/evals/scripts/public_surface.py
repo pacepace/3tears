@@ -628,6 +628,31 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.run.DefinitionReset",
         "threetears.evals.run.corpus_digests",
         "threetears.evals.actions.definition_drift_actions",
+        # The production host imports these (`tests/fixtures/host_imports/discodon.txt`), so they are its contract:
+        # the inner ceilings it derives its outer budgets from, the metering it folds, the template checks it runs and
+        # the schema keys and prompt markers its own code matches. `Ceilings` carries the six ceilings as one value;
+        # the six names stay beside it in `.32`.
+        "threetears.evals.run.Ceilings",
+        "threetears.evals.kernel.FIND_TEMPLATE",
+        "threetears.evals.kernel.SEED_REMEDY",
+        "threetears.evals.kernel.KIND_TEMPLATE",
+        "threetears.evals.kernel.KIND_TEXT",
+        "threetears.evals.schema.PROSE_SCHEMA_KEY",
+        "threetears.evals.schema.nested_schemas",
+        "threetears.evals.schema.RESERVED_DIM_IDS",
+        "threetears.evals.schema.NON_TERMINAL_RUN_STATUSES",
+        "threetears.evals.run.SCHEDULER_CALL_ATTEMPTS",
+        "threetears.evals.run.SIMULATOR_MAX_TOKENS",
+        "threetears.evals.run.SIMULATOR_ANSWER_BUDGET_TOKENS",
+        "threetears.evals.run.MeteredCallTally",
+        "threetears.evals.run.metered_cell_tally",
+        "threetears.evals.run.fold_metered_cell",
+        "threetears.evals.run.precondition_failure_text",
+        "threetears.evals.run.refuse_ignored_template_fields",
+        "threetears.evals.gen.PROPOSER_MAX_TOKENS",
+        "threetears.evals.analysis.generation_ceiling_s",
+        "threetears.evals.analysis.judge_phase_ceiling_s",
+        "threetears.evals.ops.run_label",
         # What the host guide tells a host to call, build, catch, type against or read in its prose: the cost-cap
         # wrapper and the error a refused reservation raises, the strict reply projection and the schema it refuses,
         # the reader of a boot seed directory, a measure's per-entry marker, the narrow store ports a function types
@@ -907,9 +932,7 @@ STABLE: frozenset[str] = frozenset(
         # Rung 3: comparing arms and reading the outcome. A campaign's design, its report bundle and frontier, the gate
         # a CI step reads, and the classifier measures `docs/building-an-inventory.md` builds on.
         "threetears.evals.analysis.GATE_TOKENS",
-        "threetears.evals.analysis.GateOutcome",
         "threetears.evals.analysis.GateResult",
-        "threetears.evals.analysis.GateToken",
         "threetears.evals.analysis.assemble_context_bundle",
         "threetears.evals.analysis.campaign_report",
         "threetears.evals.analysis.create_campaign",
@@ -1104,12 +1127,65 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.storage.MisplacedDocument",
         "threetears.evals.storage.ROUTING_RECORD_DOC_TYPE",
         "threetears.evals.storage.RouteChanged",
+        # The rest of what Discodon's production code imports (`tests/fixtures/host_imports/discodon.txt`, held by
+        # `tests/test_host_imports_are_declared.py`): nothing a host imports is provisional.
+        "threetears.evals.actions.ConformanceSample",
+        "threetears.evals.actions.Refusal",
+        "threetears.evals.analysis.ABSENT",
+        "threetears.evals.analysis.AS_RECORDED_MODEL",
+        "threetears.evals.analysis.ReporterLabel",
+        "threetears.evals.analysis.first_request",
+        "threetears.evals.analysis.freeze_reporter_case",
+        "threetears.evals.analysis.prompt_content_version",
+        "threetears.evals.analysis.serialize_report",
+        "threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",
+        "threetears.evals.gen.EVAL_PROPOSER_TEMPLATE_DEFAULT",
+        "threetears.evals.kernel.ACCURACY_MEASURE",
+        "threetears.evals.kernel.ENGINE_FAMILIES",
+        "threetears.evals.kernel.FIND_CAMPAIGN",
+        "threetears.evals.kernel.FIND_RUN",
+        "threetears.evals.kernel.INCOMPLETE_STOP_REASONS",
+        "threetears.evals.kernel.METRIC_DESCRIPTORS",
+        "threetears.evals.kernel.MeasureSummary",
+        "threetears.evals.kernel.TURN_BUDGET_ENDED_KEY",
+        "threetears.evals.kernel.WorldSessionError",
+        "threetears.evals.kernel.classifier_label_measure",
+        "threetears.evals.kernel.count_substituted",
+        "threetears.evals.kernel.count_substituted_deliveries",
+        "threetears.evals.kernel.host.BarRegistrationError",
+        "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER",
+        "threetears.evals.kernel.host.MeasureRegistrationError",
+        "threetears.evals.kernel.host.WorldConformanceReport",
+        "threetears.evals.kernel.judge_case_of",
+        "threetears.evals.kernel.production_replicating_cost",
+        "threetears.evals.kernel.resolve_variant_identity",
+        "threetears.evals.ops.CaseSetLine",
+        "threetears.evals.ops.CaseSetMint",
+        "threetears.evals.ops.JobHandle",
+        "threetears.evals.ops.JudgeCaseAuthor",
+        "threetears.evals.ops.await_job",
+        "threetears.evals.ops.case_set_mint",
+        "threetears.evals.ops.case_sets_list",
+        "threetears.evals.ops.judge_case_author",
+        "threetears.evals.ops.reporter_case_archive",
+        "threetears.evals.ops.run_job_id",
+        "threetears.evals.run.LaunchGroup",
+        "threetears.evals.run.callers_missing_the_constructor",
+        "threetears.evals.run.launch_as_group",
+        "threetears.evals.run.mint_case_set",
+        "threetears.evals.run.rejudge_result",
+        "threetears.evals.run.resolve_constructor",
+        "threetears.evals.schema.CORE_RESET_DOC_TYPES",
+        "threetears.evals.schema.CaseSetRef",
+        "threetears.evals.schema.utc_now_iso",
+        "threetears.evals.testing.JobsConformanceCase",
+        "threetears.evals.transports.fastmcp.CatalogueTool",
     }
 )
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 450
+DECLARED_CEILING = 520  # The host's imports set it on 2026-10-15: nothing a host imports is provisional.
 
 
 def tier_of(qualified: str) -> Tier:

@@ -924,7 +924,7 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 450 names, mapped by rung in [the surface](surface.md).
+The first two tiers are the declared surface, about 520 names, mapped by rung in [the surface](surface.md).
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
@@ -1188,6 +1188,19 @@ def build(guard: CompletionGuard) -> JobsConformanceHost:
 async def test_no_call_waits_on_a_model(case: JobsConformanceCase) -> None:
     await case.check(build)
 ```
+
+### Deriving your budgets from the engine's ceilings
+
+The engine holds some of its own work to inner ceilings, and every outer budget you set around that work (an action
+job's `budget_s`, the output cap of the client you build for the simulator or the proposer, a retry budget around a
+scheduling call, a deadline over a generation or a cell's judge phase) must sit at or above the ceiling inside it, or
+you cancel work the engine would still finish inside its own bound, after it was billed. `Ceilings` (host contract,
+in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `scheduler_call_attempts`,
+`simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the two functions
+`generation_ceiling_s` and `judge_phase_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
+generation or a judge phase. Derive each outer budget from a field, never from a number you copied: a release that
+raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The six names the
+fields stand for are still exported where they were in `.32` and leave in `.33`.
 
 ### Hearing about a regression when a run completes
 

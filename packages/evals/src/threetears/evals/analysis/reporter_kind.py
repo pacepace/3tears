@@ -44,7 +44,6 @@ from threetears.evals.analysis.generator import (
     build_user_message,
     first_request,
     generate_analysis,
-    generation_ceiling_s,
     refuse_an_undescribable_arm_table,
     user_message_digest,
 )
@@ -69,6 +68,7 @@ from threetears.evals.kernel.candidate_kind import (
 )
 from threetears.evals.kernel.capped_completion import CappedCompletion, call_ceiling
 from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel.inner_ceilings import generation_ceiling_s, judge_phase_ceiling_s
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.models import DimName, EvalTestCase, JudgedArtifact, JudgeEvidence, RubricDim
 from threetears.evals.schema.completion import CompletionGenerator, CompletionResult, RequestCeiling
@@ -87,37 +87,6 @@ AS_RECORDED_MODEL = "as-recorded"
 
 #: The key under which a reporter case lives inside ``EvalTestCase.host_payload``.
 REPORTER_CASE_KEY = "reporter_case"
-
-
-def judge_phase_ceiling_s(
-    *,
-    judge_dims: int,
-    judge_concurrency: int,
-    judge_call_attempts: int,
-    judge_max_tokens: int,
-    request_s: RequestCeiling,
-) -> float:
-    """The wall-clock ceiling of one cell's judge phase, derived from the ceilings of its requests.
-
-    The judge scores ``judge_dims`` dimensions in waves of ``judge_concurrency``, each dimension up to
-    ``judge_call_attempts`` requests capped at ``judge_max_tokens``, each bounded by the host's own answer
-    for one such request (``request_s``), which counts every provider call and retry wait the host's
-    client spends on it. Every kind whose cell ends in a judge phase adds this to its ceiling, since the
-    cell's deadline bounds the judging too, and a ceiling without it cuts a slow cell off while it is scored.
-
-    Args:
-        judge_dims: Dimensions the judge scores on each cell.
-        judge_concurrency: Judge requests in flight at once.
-        judge_call_attempts: Requests one judge dimension can make, its parse retries included.
-        judge_max_tokens: The judge's output cap, as its requests are built with.
-        request_s: The host's ceiling for one request on its client, by output cap.
-
-    Returns:
-        The judge phase's ceiling in seconds: ``waves * judge_call_attempts * request_s(judge_max_tokens)``,
-        with ``waves`` the dimensions over the concurrency, rounded up.
-    """
-    judge_waves = -(-max(judge_dims, 0) // max(judge_concurrency, 1))
-    return judge_waves * judge_call_attempts * request_s(judge_max_tokens)
 
 
 def reporter_cell_timeout_s(

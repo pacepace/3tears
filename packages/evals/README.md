@@ -70,7 +70,7 @@ cheap models through OpenRouter (`OPENROUTER_API_KEY`); `Model(id, provider="ant
 ([how](examples/README.md#running-them)).
 
 > **The public API is still changing.** From 0.69.0 only its host contract is promised: a name on it moves with a
-> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. About 450
+> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. About 520
 > names are declared, [mapped by rung](docs/surface.md); the rest a root exports are provisional
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 

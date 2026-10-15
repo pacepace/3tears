@@ -38,7 +38,8 @@ from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assembl
 from threetears.evals.analysis.bundle.insights import superseding_insights
 from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
-from threetears.evals.analysis.generator import MAX_GENERATION_CALLS, GenerationTally, build_user_message, first_request
+from threetears.evals.analysis.generator import GenerationTally, build_user_message, first_request
+from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
 from threetears.evals.analysis.generator import generate_analysis as _generate_analysis
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import case_limits, decidable_reporter_case_bank, read_calibration

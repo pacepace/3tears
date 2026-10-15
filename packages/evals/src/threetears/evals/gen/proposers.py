@@ -37,6 +37,7 @@ from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.out_of_run import AdmittedCall, PlannedCall
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.provider import extract_json
+from threetears.evals.kernel.inner_ceilings import PROPOSER_MAX_TOKENS
 from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
@@ -50,16 +51,6 @@ _REFUSAL_SUBJECT: dict[str, str] = {
     "capability": "proposer",
     "boundary": "boundary proposer",
 }
-
-#: Output-token ceiling for the capability/boundary proposer. It drafts a full
-#: rubric (template + several dims + variation axes + new-dim suggestions) in one
-#: shot — far larger than the judge's per-dim score — so a 4096 default truncates
-#: it mid-JSON (``finish_reason=length`` → unparseable object). This generous
-#: ceiling lets the draft complete; cost scales with actual output, not the
-#: ceiling. The host applies it when it builds the client it hands the proposer.
-#: The judge's cap is its own, derived in ``threetears.evals.run.judge`` from its
-#: reasoning budget plus its answer budget.
-PROPOSER_MAX_TOKENS = 16384
 
 #: Every level any scale answers: what a drafted dimension's scoring guide may describe.
 _GUIDE_LEVELS: tuple[str, ...] = tuple(dict.fromkeys(level for levels in SCALE_LEVELS.values() for level in levels))
