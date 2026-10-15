@@ -104,7 +104,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>values: `'max_turns'`, `'user_done'`, `'participants_ended'`, `'simulator_error'`, `'apparatus_error'`, `'candidate_error'`, `'budget_stopped'`
 - **`DocumentStore`** · *host contract* · protocol · A narrow document store over one `(scope_id, doc_type, id)`-keyed collection.
 - **`EvalBaseModel`** · model · Base model for the eval engine's own Pydantic models.
-- **`EvalCaseStratum`** · model · What the analysis reads off a test case: which case, and the stratum it declares.
+- **`EvalCaseStratum`** · model · What the analysis reads off a test case: which case, the stratum it declares and the name its author gave it.
 - **`EvalResult`** · *host contract* · model · One test case x one model x one k-iteration.
 - **`EvalRun`** · *host contract* · model · One execution of a template (or explicit test case set) against one candidate model.
 - **`EvalTemplate`** · *host contract* · model · Abstract scenario blueprint — subject-agnostic, domain-level.
@@ -191,7 +191,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 3`
+  <br>`= 4`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 15`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -975,7 +975,7 @@ A campaign's report: one page, the bundle it was computed from, and the typed ve
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `basis` | `ReportBasis` | required | `analysis` over a generated memo, `code_only` over the evidence alone. |
-| `title` | `str` | required | The title line: the question the campaign asks, in plain words. |
+| `title` | `str` | required | The title line, a name: the campaign's, with what it compares where no question was declared (`invoices: does v2 do better than v1?`). |
 | `finding_count` | `int` | required | How many findings the memo holds. |
 | `source` | `ReportSource` | required | What this is a report of. |
 | `blocks` | `list[ReportBlock]` | required | The report, in reading order. |
@@ -1070,6 +1070,7 @@ Something code must tell the reader that no author wrote — one idea.
 | `source` | `DisclosureSource` | required | What the disclosure speaks for. |
 | `text` | `str` | required | The disclosure, one sentence or a few. |
 | `term` | `str \| None` | `None` | The glossary term the line links to, where it uses one; None for none. |
+| `tone` | `Literal['decided', 'open', 'failed', 'summary'] \| None` | `None` | On the verdict line, what kind of verdict it is — decided, open, failed (the test setup) or summary (one arm) — which HTML sets the line apart by. |
 
 <a id="analysis-bundle"></a>
 ### `AnalysisContextBundle`
