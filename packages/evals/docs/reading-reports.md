@@ -21,8 +21,8 @@ files = report.write("eval-report")    # report.html (one page, no script), repo
 ```
 
 `report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
-page; its two charts are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each
-chart printed as the table of its values. `bundle.json` is the evidence bundle the page was computed from, with its
+page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
+printed as the text it draws. `bundle.json` is the evidence bundle the page was computed from, with its
 `schema_version`; the page names its fingerprint, and `AnalysisContextBundle.from_json(...).fingerprint()` over the
 file returns the same one. **The bundle is the machine form**: there is no published JSON of the report, and a host
 that wants its own pictures reads the bundle. `report_read(format="json")` and the command line's `--format json`
@@ -46,7 +46,7 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 | v2 | 90 | 90 | 89 | 0 | 0 | 1 | $0.07036 |
 ```
 
-A campaign with a question declared before the run (rung 5's G2) opens the same way, with the question quoted
+A campaign with a question declared before the run (a host's two-model campaign, G2) opens the same way, with the question quoted
 whole between the arms and the verdict:
 
 ```markdown
@@ -80,9 +80,9 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   a declared question's contrasts; `Exploratory:` (linked to the glossary) and what separated, or `no difference
   found between v2 and v1 on any reading`. A guardrail an arm is not shown safe on is the second sentence:
   `Not yet shown safe: v2 on no invented total.`
-- **Scoreboard**: a bare table of counts and the cost per reply; a failure cause beside checks and the judge heads
-  its own column (`Model failed`) where it is the only one, and the outcome bar names each where there are several.
-  Then the outcome bar (in Markdown, its table only where it splits a cause the scoreboard lumps together). Under
+- **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a
+  cent); a failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one,
+  and the outcome bar names each where there are several. Then the outcome bar (in Markdown, its table only where it splits a cause the scoreboard lumps together). Under
   it, in normal weight, never bold, never first, the facts that change how the verdict is read and nothing else, in
   this order: the case floor; an arm's label that its own row contradicts (`'cheaper candidate' is not cheaper: it
   cost more per reply than production.`, latency only where it was read serially); an arm whose every trial failed.
@@ -101,6 +101,9 @@ switch. So a host's seed gate covers every template whose results are compared a
 reading.
 
 ### The rest of the page
+
+The sections follow in this order, each reached from a sticky nav; Cases, Trials, Not tested, Methods and the
+Glossary start folded, and a nav link opens the one it lands on.
 
 - **Decision**: the declared decision rule quoted on its first line (`Decision rule: "switch … only if … AND …;
   otherwise keep …"`), then one row per clause and reading, each arm's column headed by its name, `settled: keep`,
@@ -123,9 +126,12 @@ reading.
   tested (`The analysis also noted: …`). Where a declared rule settled every clause, its question has no answer
   line: the verdict and the Decision table answer it; a clause left open is the one line (`Still open: whether …`).
   The memo's words are held to the page's style (below).
-- **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size
-  and the adjusted p folded; the guardrails; strata and per-label tables, folded. A one-arm page contrasts nothing,
-  so the section is headed **Readings** (its id stays `contrasts`).
+- **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
+  Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
+  ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
+  size, pairing and adjusted p in a closed `Statistics` fold, the `Guardrails` table, and the `By stratum` and
+  `Per label` tables, folded. A one-arm page contrasts nothing, so the section is headed **Readings** and lists
+  each reading over all cases (its id stays `contrasts`).
 - **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`), its trial ids last and muted, the
   failed and lost ones first. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
   name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
@@ -153,14 +159,20 @@ verdict line's sentence, and one saying the evidence cannot confirm a difference
 code's counts on that reading, the size of the difference left to more cases; both are disclosed in Methods. What
 is left is counted there (`style: N violations`) and listed.
 
-### The two charts
+### The marks
 
-Two shapes, drawn by the package as inline SVG with no dependency: the **outcome bar** on the scoreboard (a census,
-always drawn) and **interval rows** (a dot and its interval per row, value, interval and cases written at the right,
-a zero line for a difference and a band for a declared margin). A row is drawn only for an arm with `MIN_CASES`
-usable cases and an interval; a chart with no such row is not built at all — no figure, no stub. Colours come from
-the page's CSS variables, each defined for light and dark alike; no colour is the only encoding, every count is text, each chart has a `<title>` and a `<desc>` stating its
-values, and a visually hidden table beside it holds them for a screen reader.
+The page draws two marks, as inline SVG with no dependency. The **outcome bar**, under the scoreboard, is the page's
+one chart: a census, so it is always drawn, one bar per arm with its label above it, passed, failed and lost to the
+test setup cause by cause, each count written beside the bar, and a key naming only the states that occur. An
+**interval glyph** is drawn in the table row that states the figure (Tufte's table-graphic): the interval as a
+whisker, the point as a dot, a zero line for a change, and a declared margin as a quiet band. Every cell of a column
+in one unit shares one scale, written once under the table (`Change drawn from -7 to 36.7 pts`), so the rows compare
+at a glance. There are no standalone interval charts: the tables carry the intervals.
+
+No colour is the only encoding: a glyph is drawn in the page's ink and its verdict is the word in the next cell,
+every figure is text in the row, the bar has a `<title>` and a `<desc>` stating its values, and a visually hidden
+table beside it holds them for a screen reader. Colours come from the page's CSS variables, defined for light and
+dark alike.
 
 ### Embedding the page in a host
 
@@ -174,18 +186,19 @@ holds every verdict typed — each guardrail, each bar on each arm, each contras
 
 ## Reading a comparison
 
-The "Contrasts against the control" table (`multiple_comparisons` in the bundle) tests each arm against
-the control on each reading, under one rig.
+The Contrasts table (`multiple_comparisons` in the bundle) tests each arm against the control on each reading,
+under one rig. How its columns, and the `Statistics` fold under it, are computed:
 
 - **The test.** Per-case means (each case's repeats averaged first, because a case is the independent
   draw). When the arms share at least two cases, it is a paired t-test over the shared cases. Otherwise it is
   Welch's t statistic read on Hsu's `min(n_a, n_b) − 1` degrees of freedom. That is conservative at every
   size: on Welch–Satterthwaite's degrees of freedom, a 2-case side against 10 called false differences 10%
   of the time.
-- **Delta, the means, and "Cases tested"** are all over the cases the test read. A case only one arm ran is
-  left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
-- **The interval on delta** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
-  (Bonferroni). All of a family's intervals cover together at least 95% of the time. A separation needs both
+- **The change, the means, and `Cases`** (`30 paired`) are all over the cases the test read. A case only one arm
+  ran is left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
+- **The interval on the change** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
+  (Bonferroni), and the column's header states that level (`Interval (99%)` over five rows). All of a family's
+  intervals cover together at least 95% of the time. A separation needs both
   an adjusted p below 0.05 and an interval that excludes zero, so the two never disagree: a row Holm's later
   steps would separate while its interval still touches zero reads not separated, its p below 0.05 notwithstanding.
 - **Hedges' g** is the standardized difference, corrected for small samples. Cohen's d reads 0.88 for a
@@ -194,7 +207,7 @@ the control on each reading, under one rig.
   bought. Near 1, the cases' own differences cancelled and the paired test is far more sensitive than an
   unpaired one; near 0 pairing bought nothing; below 0 the paired test is less sensitive than an unpaired one
   would have been. Blank for an unpaired test, below three paired cases, and where an arm's values do not vary.
-- **p (Holm-adjusted)** is corrected within the family: one per declared question (the readings on its
+- **Adjusted p** is Holm-corrected within the family: one per declared question (the readings on its
   merit axes), or, with no question, one campaign-wide family over every reading on a merit axis. A measure
   on no axis is never tested. That keeps the rig's own readings out: the judge's time (`judge_ms`), the
   drain wait, and `cost_usd` and `program_cost`, which include what the judge spent. The candidate's spend
@@ -264,7 +277,7 @@ is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, 
 A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
 measure the host declared `guardrail`. On the quick path, `grader(fn, guard=margin)` declares one on a grader and
 `Judge(guard={dimension: margin})` one on a judged dimension, every grade higher-is-better
-([rung 3](ladder.md#rung-3-two-prompts-compared)). The "Guardrails against the control" table
+([rung 3](ladder.md#rung-3-two-prompts-compared)). The Guardrails table
 (`guardrails` in the bundle, under the contrasts on every report, `Result.guardrails()` in code) decides each one
 for each arm, on its own 95% interval on `arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
 cannot hide a loss here.
@@ -438,7 +451,7 @@ one table (Arm, Measure, Value, n, Spread), laid out like the report's evidence 
 ## How an arm is named
 
 Every block that names an arm — the title, the scoreboard, recommendations, evidence rows, the results by
-stratum, the contrasts, the guardrails and labels tables, the cases and every chart row — prints one name for it,
+stratum, the contrasts, the guardrails and labels tables, the cases and the outcome bar — prints one name for it,
 built once (`threetears.evals.analysis.arms.arm_names`).
 
 - An arm is named by the levers whose levels differ across the report's arms, each lever compared only
@@ -584,7 +597,7 @@ figure (`CellFacts.strata`, a list of `StratumFacts` on the decision surface). C
 such a cell are their own entry, so the strata add up to the cell. A cell none of whose cases declares a
 stratum is not broken down, and its report reads as if strata did not exist.
 
-**How it is shown.** Every report carries it as a `strata` table, folded under the contrasts: a row per arm and reading, the pooled
+**How it is shown.** Every report carries it as a `By stratum` table, folded under the contrasts: a row per arm and reading, the pooled
 figure under `All cases`, then a column per stratum. Each arm opens with a `cases` row giving the cases
 and observations behind each column. A stratum holding fewer than `STRATUM_MIN_CASES` (10) cases is still
 shown, marked too few to read alone, and named in a `strata` disclosure below the table. A rate is shown
