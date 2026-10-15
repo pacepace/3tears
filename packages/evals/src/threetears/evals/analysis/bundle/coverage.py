@@ -7,6 +7,7 @@ were run, and :func:`_factor_aliasing` groups the factors that moved in lockstep
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from itertools import chain, product
 from typing import TYPE_CHECKING, Literal
 
@@ -48,6 +49,7 @@ from threetears.evals.analysis.bundle.config import (
     _lever_value,
     _exercised,
     _resolve_config,
+    _declared_axes,
     _unexercised_levers,
     EffectiveLever,
 )
@@ -498,12 +500,11 @@ def _coverage_map(
     # coverage row, never two.
     if len({record.model for record in records}) > 1:
         resolved.add(_CANDIDATE_MODEL_LEVER)
-    lever_levels = _lever_levels(runs, results_by_run, profile=profile)
+    axes = _declared_axes(declared_design)
+    lever_levels = _lever_levels(runs, results_by_run, profile=profile, declared_axes=axes)
     all_run_ids = [run.id for run in runs]
     # A lever read off what ran that no comparison exercised is no lever, unless the campaign declared it as an axis.
-    unexercised = _unexercised_levers(runs, results_by_run, profile=profile) - {
-        axis.axis_id for axis in (declared_design.axes if declared_design else [])
-    }
+    unexercised = _unexercised_levers(runs, results_by_run, profile=profile, declared_axes=axes)
     levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged) - unexercised
 
     coverage: list[LeverCoverageInput] = []
@@ -707,14 +708,20 @@ def _factor_aliasing(
 
 
 def _unexercised_factors(
-    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], arms: _CampaignArms, *, profile: HostProfile
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    arms: _CampaignArms,
+    *,
+    profile: HostProfile,
+    declared_axes: Collection[str],
 ) -> list[UnexercisedFactor]:
     """The levers read off what ran that no comparison exercised, each with the call it saw and the arm it was on.
 
     The same set :func:`~threetears.evals.analysis.bundle.config._unexercised_levers` leaves out of the lever levels
-    and the coverage map, so the page can say once, under Not tested, why a lever the host declares is not there.
+    and the coverage map, so the page can say once, under Not tested, why a lever the host declares is not there; a
+    declared axis is never in it.
     """
-    unexercised = _unexercised_levers(runs, results_by_run, profile=profile)
+    unexercised = _unexercised_levers(runs, results_by_run, profile=profile, declared_axes=declared_axes)
     arm_of = {run.id: key for key, members in arms.groups().items() for run in members}
     return [
         UnexercisedFactor(

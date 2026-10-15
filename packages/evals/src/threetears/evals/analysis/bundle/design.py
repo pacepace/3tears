@@ -725,7 +725,11 @@ def _lever_cohort(lever: str, design: RealizedDesign, all_run_ids: list[str]) ->
 
 
 def _lever_levels(
-    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    *,
+    profile: HostProfile,
+    declared_axes: Collection[str],
 ) -> dict[str, dict[str, list[str]]]:
     """Map each swept lever to its levels, and each level to the runs that sat at it.
 
@@ -753,7 +757,8 @@ def _lever_levels(
     Levers observed at a single level are dropped: there is nothing to compare, so they can
     produce no divergence. So is a lever read off what ran that the campaign never exercised
     (:func:`~threetears.evals.analysis.bundle.config._unexercised_levers`): a run that never made the
-    call is not at a level of it, and one call on one arm does not make the arms differ in it.
+    call is not at a level of it, and one call on one arm does not make the arms differ in it. A declared axis is
+    never such a lever, whatever its calls.
 
     **The candidate model is binned on the run's DECLARED model, not on its effective value**,
     which is the one place this lens deliberately parts from the resolution above: a run whose
@@ -765,6 +770,7 @@ def _lever_levels(
         results_by_run: Each run's results, keyed by run id — the observation side of
             effective-config resolution.
         profile: The host whose vocabulary this reads.
+        declared_axes: The levers the campaign declared as axes, each a lever whatever its calls.
 
     Returns:
         ``{lever: {level: [run_id, ...]}}`` for every lever with at least two levels.
@@ -772,7 +778,7 @@ def _lever_levels(
     levels: dict[str, dict[str, list[str]]] = {}
     configs = {run.id: _effective_config(run, results_by_run.get(run.id, []), profile=profile) for run in runs}
     lever_names = {key for flat in configs.values() for key in flat} - _unexercised_levers(
-        runs, results_by_run, profile=profile
+        runs, results_by_run, profile=profile, declared_axes=declared_axes
     )
     # Observation is not the only way the model becomes a lever: a campaign whose results
     # carry no `candidate` usage row recovers nothing, yet the declared sets still differ.

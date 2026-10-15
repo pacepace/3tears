@@ -22,7 +22,7 @@ from threetears.evals.analysis.bundle.schema import INTERACTION_ALIASING_UNCHECK
 from threetears.evals.analysis.report import DisclosureBlock
 from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema.models import RoleUsage
-from packages.evals.tests.factories import memory_storage
+from packages.evals.tests.factories import memory_storage, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -169,9 +169,9 @@ class TestACoVaryingPairOutsideAnyGroupIsPivoted:
 _OBSERVED = "retrieval.rerank_depth"
 
 
-def _observed_bundle(calls: dict[int, dict[int, str]]) -> AnalysisContextBundle:
+def _observed_bundle(calls: dict[int, dict[int, str]], *, declared: bool = False) -> AnalysisContextBundle:
     """Two toy arms told apart by ``chunk_tokens``, each result making a call in the ``inner_agent`` role only where
-    ``calls`` (arm position → result position → model) says so."""
+    ``calls`` (arm position → result position → model) says so; ``declared`` declares the observed lever an axis."""
     profile = replace(toyhost_profile(tunable_retrieval=True), observed_model_levers={_OBSERVED: "inner_agent"})
     storage, _ = memory_storage()
     runs = []
@@ -194,6 +194,7 @@ def _observed_bundle(calls: dict[int, dict[int, str]]) -> AnalysisContextBundle:
         behavior="extract_invoice_fields",
         run_ids=[run.id for run in runs],
         created_by="test:fixture",
+        declared_design=minimal_declaration(axis_id=_OBSERVED) if declared else None,
     )
     storage.save_campaign(campaign)
     return assemble_context_bundle(campaign, storage=storage, profile=profile)
@@ -240,3 +241,17 @@ class TestALeverNoComparisonExercisedIsNoLevel:
         (group,) = [group for group in bundle.aliased_factors if _OBSERVED in group.factors]
         assert "chunk_tokens" in group.factors
         assert not [line for line in _not_tested(bundle) if line.startswith("rerank depth:")]
+
+    def test_a_declared_axis_with_one_call_is_a_lever_on_every_reader(self) -> None:
+        """A research model the campaign declared as an axis is a level by declaration: one call keeps its coverage
+        row, puts nothing under Not tested, and leaves a next step on it on the page (which drops only the steps on
+        a lever ``unexercised_factors`` names)."""
+        declared = _observed_bundle({1: {0: "research-model-1"}}, declared=True)
+        undeclared = _observed_bundle({1: {0: "research-model-1"}})
+
+        assert _OBSERVED in {row.name for row in declared.coverage}
+        assert declared.unexercised_factors == []
+        assert not [line for line in _not_tested(declared) if line.startswith("rerank depth:")]
+        assert _OBSERVED not in {row.name for row in undeclared.coverage}
+        assert [factor.factor for factor in undeclared.unexercised_factors] == [_OBSERVED]
+        assert [line for line in _not_tested(undeclared) if line.startswith("rerank depth:")]
