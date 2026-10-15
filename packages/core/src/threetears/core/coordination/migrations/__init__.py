@@ -17,6 +17,8 @@ version history:
 - v001 -- create the four coordination tables, rendered from their collections' declared schemas.
 - v002 -- add the compare-and-swap order columns (``l2_epoch``, ``l2_revision``) to the counters,
   claims and redemptions tables, and backfill existing rows to the order floor.
+- v003 -- create ``collection_write_marks`` and the trigger function that fills it, so a committed
+  write's generation advance cannot be lost (:mod:`threetears.core.collections.write_marks`).
 """
 
 from __future__ import annotations
@@ -25,6 +27,9 @@ from threetears.core.coordination.migrations.v001_create_coordination_tables imp
     create_coordination_tables,
 )
 from threetears.core.coordination.migrations.v002_add_l2_order_columns import add_l2_order_columns
+from threetears.core.coordination.migrations.v003_create_collection_write_marks import (
+    create_collection_write_marks,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -48,6 +53,7 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
     pkg = PackageMigrations(name=PACKAGE_NAME, scope=scope)
     pkg.version(1)(create_coordination_tables)
     pkg.version(2)(add_l2_order_columns)
+    pkg.version(3)(create_collection_write_marks)
     runner.register(pkg)
     return pkg
 
@@ -55,6 +61,7 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
 __all__ = [
     "PACKAGE_NAME",
     "add_l2_order_columns",
+    "create_collection_write_marks",
     "create_coordination_tables",
     "register",
 ]

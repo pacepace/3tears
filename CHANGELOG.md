@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a committed write cannot lose its generation advance
+
+- `threetears.core.collections.write_marks`: each switched-on table carries a statement-level
+  trigger (`threetears_collection_write_mark`) that inserts a mark into `collection_write_marks` in the
+  same transaction as the write, whoever wrote it: a broker, a direct pool, a write buffer, a
+  migration, or a release that predates this. `WriteMarkReconciler` advances each marked table's
+  generation once and deletes exactly the marks it read; several at once are safe, and an optional
+  `KVLease` keeps it to one. A table whose advance fails keeps its marks; a pass that leaves marks
+  queued logs it and counts `collection_write_marks_drain_behind_total`
+  (`collection_write_marks_pending`, `collection_write_marks_applied_total`,
+  `collection_write_marks_advance_failed_total`). `install_write_mark_triggers` and
+  `tables_missing_the_trigger` give every switched-on table, in every schema, its trigger.
+- Coordination migration v003 creates the queue and the trigger function in the platform schema.
+- Insert-only marks, not a per-table counter row: a row every write to a table updates is one row
+  every concurrent writer locks (they queue behind each other under read committed, and abort with
+  40001 under snapshot isolation). Checked on YugabyteDB 2026.1.1.1: two concurrent writers to one
+  marked table both commit.
+- The recorded-absence age (`negative_cache_max_age`) stays only as cover for writers that predate
+  the marks; `tests/enforcement/test_recorded_absence_age_is_contracted_by_its_date.py` fails the
+  build from 2027-01-05 while it remains.
+
 ### Core: the gateway's completion and embedding doors take a proof of possession
 
 - `door_request.GATEWAY_COMPLETION_DOOR` / `GATEWAY_COMPLETION_OP` (`gateway.completion`, `complete`)
