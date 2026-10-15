@@ -57,6 +57,14 @@ unbounded measure be adopted, so the t breach is kept and the gap recorded as a 
 
 ## Judging
 
+### An operator's new judge case joins the live revision
+
+Since `.30` the boot seed never adds a case to a judge template that already holds cases: the case waits for
+`reset_definitions`, which writes a new revision, and runs of two revisions never pool. An operator's own
+`judge_case_author` or `judge_cases_freeze` into such a template still adds to the revision in place, so runs of that
+judge template before and after the write share a revision id while their cases differ. Fix: an operator's write into
+a judge template that holds cases writes the next revision, as the reset does.
+
 ### A tier's bounds are conservative on a 1-5 scale
 
 A tier is decided on score bounds for kappa
