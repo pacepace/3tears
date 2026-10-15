@@ -335,6 +335,7 @@ def states_a_prose_rule(question: Question) -> bool:
     Returns:
         True when its text says ``Decision rule:`` (any case) and it declares no typed rule.
     """
+    # prose-canary: allow — Question.text is the question its author declared, not text a model wrote
     return question.decision is None and PROSE_RULE_MARK in question.text.casefold()
 
 
