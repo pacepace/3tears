@@ -4,7 +4,7 @@ Evals for LLM features, from a classifier to a tool-using agent: it runs each ve
 what moved, with the uncertainty that says whether the move is real. Python 3.14+.
 
 ```bash
-pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.31#subdirectory=packages/evals"
+pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.32#subdirectory=packages/evals"
 ```
 
 **Rung 0 is one TOML file and no Python.** [`examples/1-triage/triage.toml`](examples/1-triage/triage.toml) triages
@@ -58,7 +58,7 @@ install it from the repository at a tag. The line above is the one place the doc
 page's install line points here. The FastMCP transport, for serving evals to an agent, is the `[fastmcp]` extra:
 
 ```bash
-pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.31#subdirectory=packages/evals"
+pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.32#subdirectory=packages/evals"
 ```
 
 Once 0.69.0 is on PyPI these are `pip install 3tears-evals` and `pip install "3tears-evals[fastmcp]"`. In a checkout

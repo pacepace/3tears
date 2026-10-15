@@ -928,8 +928,10 @@ The first two tiers are the declared surface, about 520 names, mapped by rung in
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
-and marks each host-contract one *host contract*. If your host binds to a provisional name, ask for it to be
-promoted: promoting a name costs nothing, and demoting one is a break.
+and marks each host-contract one *host contract*. Nothing a host imports is provisional: each adopting host's import
+list sits in `packages/evals/tests/fixtures/host_imports/`, and a test fails while a name on one is provisional. If
+your host binds to a provisional name, send your list to be added: promoting a name costs nothing, and demoting one
+is a break.
 
 **The installed build ships its tiers**, so your suite can gate its own imports against the version it runs
 (`surface_tier` raises `KeyError` for a name no root exports, so a reach below a root fails too):
@@ -975,7 +977,8 @@ snapshot:
 - **A name added, or a kind, signature or tier changed.** The test fails until you regenerate the snapshot, so the
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
   callers, add it to the newest section's `notes`. A tier changes only by editing `HOST_CONTRACT`, and every name
-  the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`).
+  the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`); no name this
+  guide's prose teaches may be provisional (`tests/test_guide_names_are_declared.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
   prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
@@ -1500,30 +1503,30 @@ if stale := drift.keys("stale"):
     print(reset.render())
 ```
 
-A definition reads `current` (the corpus's), `stale` (what was seeded, and the corpus has moved), `customized`
-(changed since: edited, archived or deleted), `unknown` (no record: a row seeded before `.30`) or `absent` (the next
-boot seeds it). A reset never edits in place. A template's new content is its next **revision**: a new record under the
-same name (`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep
-the content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest
-revision, which `templates_list` shows beside each template (`revision`). A judge case resets with its judge template,
-whose new revision holds the corpus's whole battery, and the corpus's case sets over it are minted again; a template
-case resets with its template, whose new revision holds every corpus case of it. The reset refuses `customized` and
-`unknown`, and a judge template (or a template the corpus gives cases) holding live cases the corpus does not carry,
-unless `overwrite_customized=True`; it writes nothing when it refuses and names
-every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote and the stored record it replaced
-(`replaced_id`), and reads `discarded: true` only where that stored copy read `customized` or `unknown` and was
-written over under the flag; a row written fresh (nothing stored) or over a `stale` copy reads `discarded: false`. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
-bundle), since their results are two datasets; two templates that only share a name at one revision number are not
-revisions of each other and are not refused. For rows seeded before `.30`, compute `corpus_digests(host, corpus)`
-over the corpus you seeded then (from your history) and pass it as `seeded_digests`: they read `stale` rather than
-`unknown`. A template whose boot reported `needs_reset` reads `stale`, and its reset writes the next revision with
-every corpus case. Template cases your own seed wrote before `.32` carry no record of what was seeded: one whose
-content the corpus still has reads `current`, one under its corpus name with other content reads `unknown`, and a new
-one reads `unknown` too until you pass `seeded_digests` (`corpus_digests` over the corpus as it was), under which, as
-for a judge case, one the map names reads `stale` or, gone from the store, `customized`, and one it does not name reads
-`stale`. `definition_drift_actions(boot_seed_corpus)` (from `threetears.evals.actions`) adds `definitions_drift` and
-`definitions_reset` to your catalogue; the reset reads the template checks of the host each call is made in, so the
-factory needs only your corpus.
+A definition reads `current` (the corpus's), `stale` (what was seeded, and the corpus has moved; also a template
+whose boot reported `needs_reset`), `customized` (changed since: edited, archived or deleted), `unknown` (no record:
+a row seeded before `.30`) or `absent` (the next boot seeds it).
+
+A reset never edits in place. A template's new content is its next **revision**: a new record under the same name
+(`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep the
+content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest revision,
+which `templates_list` shows beside each template (`revision`). A judge template's new revision holds the corpus's
+whole battery, and the corpus's case sets over it are minted again; a template the corpus gives cases gets every one
+of them in its new revision. The reset refuses `customized` and `unknown`, and a judge template (or a template the
+corpus gives cases) holding live cases the corpus does not carry, unless `overwrite_customized=True`; it writes
+nothing when it refuses and names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote
+and the stored record it replaced (`replaced_id`), and reads `discarded: true` only where that stored copy read
+`customized` or `unknown` and was written over under the flag. A campaign holding runs of two revisions of one
+template is refused (at creation, adding a run, and its bundle), since their results are two datasets; two templates
+that only share a name at one revision number are not revisions of each other and are not refused.
+
+Rows seeded before the seed kept a record read `unknown`: judge cases and templates seeded before `.30`, and template
+cases your own seed wrote before `.32`, unless the corpus still has their content (`current`), and any new one.
+Compute `corpus_digests(host, corpus)` over the corpus as you seeded it (from your history) and pass it as
+`seeded_digests`: a row the map names then reads `stale`, or `customized` when gone from the store, and a case it
+does not name reads `stale`. `definition_drift_actions(boot_seed_corpus)` (from `threetears.evals.actions`) adds
+`definitions_drift` and `definitions_reset` to your catalogue; the reset reads the template checks of the host each
+call is made in, so the factory needs only your corpus.
 
 **A stored verdict is graded again through one door: `regrade`** (`threetears.evals.run`, and the `result_regrade`
 action). `await regrade(host, result_id, scope_id)` re-grades the result's check dims (its goal checks) from what its

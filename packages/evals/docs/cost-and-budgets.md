@@ -68,7 +68,8 @@ another part's, and a sibling cell sees all of it.
   shipped client answers `None` before its catalogue is read, for a model the catalogue does not price or lists a
   price for that it cannot bound, and once the rows are `Catalogue.ceiling_stale_after` old (six hours by default):
   an enforced cap never holds a call against old prices. The engine awaits the client's `refresh_prices()` before
-  pricing, so rows reach that age only when a refresh failed, never by the host sitting idle ([Adopting the engine](adopting-a-host.md#bringing-a-provider)).
+  pricing, and the call takes that read as its own (one catalogue read per request), so rows reach that age only
+  when a refresh failed, never by the host sitting idle ([Adopting the engine](adopting-a-host.md#bringing-a-provider)).
 - **Spend nothing reported** is counted only once the cell's result lands, so a kind that neither reserves its
   calls nor reports them (`CellSink.add_spend`) can pass the cap by up to one whole cell per running cell.
 

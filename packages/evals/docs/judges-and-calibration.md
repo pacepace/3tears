@@ -699,7 +699,8 @@ written, naming both. Through an agent, the `judge_case_author` action writes on
 template (`criterion_template_id`, `criterion`) and recording the caller as its author. A host that ships its hard
 negatives seeds them at boot instead: its definition seed corpus has a `judge_cases` slot (`SeedJudgeCase`, the
 templates named by name), which `seed_eval_definitions` builds through the same door as `judge_case_author` and
-writes only where the same case is not stored yet (the host guide, "What the judge reads, and conversations"). On the quick path, hand the
+writes only into a judge template holding no cases yet; a case added or changed later waits for a definition reset
+([Adopting the engine](adopting-a-host.md#what-the-judge-reads-and-conversations)). On the quick path, hand the
 `Judge` its examples, and every judged eval stores them as authored cases of the judge template
 `<template id>-judge`, listed by the case set of that name, calling no model:
 

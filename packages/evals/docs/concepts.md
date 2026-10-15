@@ -381,12 +381,13 @@ agreement, never its point estimate, and an undecided one says how many more res
 A curated set of runs under one subject and behaviour, the hub an analysis attaches to (`EvalCampaign`).
 Membership is chosen, not queried; a run may sit in several campaigns. Its declared design names a
 **control**, which is a variant key, not a run, kept beside the lever map and identity version it was computed
-from (`control_levers`, `control_identity_version`), and what it **held fixed** (`held_fixed`: the stimulus,
-controlled or not, and the apparatus, commissioned or witnessed). A campaign with no declared design is
-**exploratory**, and its creator says so (`exploratory=True`); that is read off the missing design, never stored,
-so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:* "triage v1 vs v2",
-control = the v1 variant, held fixed = one case battery on a commissioned rig. Which design to declare for a question:
-[Measuring soundly](measuring-soundly.md#declare-the-design-and-its-control).
+from (`control_levers`, `control_identity_version`); what it **held fixed** (`held_fixed`: the stimulus,
+controlled or not, and the apparatus, commissioned or witnessed); and its **questions**, each with the rule that
+settles it, if any (`Question.decision`: typed clauses the engine settles, never words it parses). A campaign with
+no declared design is **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing
+design, never stored, so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:*
+"triage v1 vs v2", control = the v1 variant, held fixed = one case battery on a commissioned rig. Which design to
+declare for a question: [Measuring soundly](measuring-soundly.md#declare-the-design-and-its-control).
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
