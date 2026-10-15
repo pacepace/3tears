@@ -20,8 +20,8 @@ writes and spends nothing:
 - ``absent``: nothing is stored (the seed fills it).
 
 What was seeded is the record the seed writes (``seed_digest``; a judge case's or template case's corpus name,
-``seed_name``, its ``content_hash`` being what was seeded: a template case's content, never its stratum, so one whose
-stratum is not the corpus's reads customized), or, for a row seeded before the record existed, the
+``seed_name``; a judge case's ``content_hash`` is what was seeded, a template case's ``seed_digest`` its content and
+stratum), or, for a row seeded before the record existed, the
 digest the host supplies (``seeded_digests``, keyed as a reading is: the host computes it from its own history with
 :func:`corpus_digests` over the corpus it seeded then). Every digest is of content only
 (:mod:`~threetears.evals.run.definition_digests`).
@@ -67,7 +67,6 @@ from threetears.evals.run.definition_digests import (
     current_revisions,
     judge_config_digest,
     rubric_dim_digest,
-    template_case_content_digest,
     template_digest,
 )
 from threetears.evals.run.definition_seed import (
@@ -493,22 +492,15 @@ class _Survey:
             # seeded unless the host supplies it.
             predecessor = next((c for c in live if c.seed_name is None and c.name == case.name), None)
         if predecessor is not None:
-            stored_digest = stored_template_case_digest(predecessor)
-            if predecessor.seed_name is None:
-                return self._reading(
-                    key, "template_case", digest, stored_digest, predecessor.id, None, f"stored on {where}"
-                )
-            # A seeded row records its content (`content_hash`), never its stratum, which is no part of a case's
-            # identity. Content as seeded under the corpus's stratum is the row as seeded; under another stratum it was
-            # relabelled, which no record says by whom, so it reads customized.
-            as_seeded = predecessor.content_hash == template_case_content_digest(predecessor)
-            if as_seeded and predecessor.stratum != case.stratum:
-                return self._reading(
-                    key, "template_case", digest, stored_digest, predecessor.id, predecessor.content_hash
-                ).model_copy(update={"state": "customized", "reason": f"seeded into {where}, its stratum relabelled"})
-            recorded = stored_digest if as_seeded else predecessor.content_hash
+            # What was seeded is the row's `seed_digest` (content and stratum); a row with none reads by the host's map.
             return self._reading(
-                key, "template_case", digest, stored_digest, predecessor.id, recorded, f"seeded into {where}"
+                key,
+                "template_case",
+                digest,
+                stored_template_case_digest(predecessor),
+                predecessor.id,
+                predecessor.seed_digest,
+                f"{'seeded into' if predecessor.seed_digest else 'stored on'} {where}",
             )
         if not stored:
             # An empty revision: the boot seed fills it.

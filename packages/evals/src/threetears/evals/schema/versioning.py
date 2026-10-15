@@ -447,7 +447,12 @@ DURABLE_SCHEMA_VERSION: int = 15
 #:   where it reads as a name. In no digest pre-image and in no identity key: a case renamed in place keeps its id
 #:   and its history. An older build that ignores this field reads the document correctly, and its writes leave it
 #:   true.
-DURABLE_SCHEMA_MINOR: int = 4
+#: - **v15.5** — a seeded template case records what was seeded: ``EvalTestCase.seed_digest`` (default None: written
+#:   by no seed, a judge case, or seeded before the field existed), the drift digest of the content and stratum the
+#:   seed or a definition reset wrote, so a case whose corpus relabelled its stratum reads stale and one an operator
+#:   relabelled reads customized. In no digest pre-image and in no identity key. An older build that ignores this
+#:   field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 5
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 #: The registered durable steps, oldest first: ``[s.from_version for s in DURABLE_UPGRADERS]`` is

@@ -288,6 +288,7 @@ class SeedTemplateCase(EvalBaseModel):
             name=self.name,
             content_hash=digest,
             seed_name=self.name,
+            seed_digest=self.digest(),
         )
 
 
