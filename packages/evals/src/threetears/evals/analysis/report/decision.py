@@ -86,6 +86,7 @@ class RateReading:
 
     ``interval`` is the contrast's bounded interval on the candidate minus the control (``bounded_interval``), as a
     share (0 to 1) with higher better: the interval a switch reads. None when the bundle computed none for this rate.
+    ``measure`` is the measure's key, None for the trials' own pass rate.
     """
 
     name: str
@@ -96,6 +97,7 @@ class RateReading:
     control_remaining: int = 0
     candidate_remaining: int = 0
     interval: tuple[float, float] | None = None
+    measure: str | None = None
 
     def drop_bounds(self) -> tuple[float, float]:
         """The candidate's drop from the control in points, at best and at worst for the candidate."""
@@ -155,6 +157,25 @@ class RuleVerdict:
     outcome: RuleOutcome
     clauses: tuple[ClauseVerdict, ...]
     readings: RuleReadings | None = None
+
+    def settles(self, rate: RateReading) -> bool:
+        """Whether a settled rate clause decided ``rate``: under ``keep`` any rate observed past the clause's margin
+        (the run shows it breaks the clause, whether or not the rule read it), under ``switch`` one of the rates it
+        read."""
+        read = {reading.measure for reading in self.readings.rates} if self.readings is not None else set()
+        for verdict in self.clauses:
+            margin = verdict.clause.margin_points
+            if verdict.clause.kind != "rate_drop" or margin is None:
+                continue
+            if verdict.outcome == "keep" and rate.drop_bounds()[0] > margin:
+                return True
+            if verdict.outcome == "switch" and rate.measure is not None and rate.measure in read:
+                return True
+        return False
+
+    def settles_cost(self) -> bool:
+        """Whether a cost clause settled, either way."""
+        return any(verdict.clause.kind == "cost_lower" and verdict.outcome != "unsettled" for verdict in self.clauses)
 
 
 def parse_decision_rule(text: str) -> DecisionRule | None:
@@ -369,6 +390,7 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
                     interval=_bounded_better_way(
                         _contrast(bundle, "measure", _compared_as(name), control, candidate, bounded=True)
                     ),
+                    measure=name,
                 )
             )
     cost = _contrast(bundle, "measure", _REPLY_COST, control, candidate, bounded=False)

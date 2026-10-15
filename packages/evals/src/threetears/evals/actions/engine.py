@@ -142,6 +142,7 @@ from threetears.evals.ops import (
     runs_bisected_text,
     runs_compared_text,
 )
+from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run import (
@@ -494,6 +495,12 @@ class JudgeCasesFreezeParams(JudgeCasesFreeze):
 
 class JudgeCaseAuthorParams(JudgeCaseAuthor):
     """``judge_case_author`` — the authoring's own arguments, declared once on :class:`~threetears.evals.ops.JudgeCaseAuthor`."""
+
+
+class JudgeCasesListParams(EvalBaseModel):
+    """``judge_cases_list``."""
+
+    template_id: TemplateId
 
 
 class JudgeProfilesRecordParams(JudgeProfilesRecord):
@@ -1010,6 +1017,13 @@ async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesF
     eval_host = host.eval_host
     freeze = JudgeCasesFreeze.model_validate(params.model_dump())
     return await run_blocking(eval_host.blocking_executor, judge_cases_freeze, eval_host, freeze, caller.scope_id)
+
+
+async def _judge_cases_list(host: OpsHost, caller: Caller, params: JudgeCasesListParams) -> JudgeCaseListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor, judge_cases_list, eval_host, params.template_id, caller.scope_id
+    )
 
 
 async def _judge_case_author(host: OpsHost, caller: Caller, params: JudgeCaseAuthorParams) -> JudgeCaseFreezeReport:
@@ -2031,6 +2045,24 @@ def engine_actions() -> tuple[Action, ...]:
                 "since, is skipped with why. With into_case_set, the next version of that set lists exactly these cases. "
                 "Then run_launch the judge template, one arm per judge (its model, and its overlays config_ids and "
                 "temperature); the trials call only the judge. Calls no model."
+            ),
+        ),
+        Action(
+            name="judge_cases_list",
+            summary="List a judge template's stored cases: each id, criterion, expected verdict and whether it is live.",
+            workflow=ANALYSE,
+            permission="read",
+            params=JudgeCasesListParams,
+            result=JudgeCaseListing,
+            handler=_judge_cases_list,
+            render=render.render_model,
+            example={"template_id": "tmpl-judge"},
+            detail=(
+                "Every case stored under the judge template, in stored order, retired ones included and marked: the "
+                "ids a case_set_mint over all of them lists. An authored case shows its author and expected verdict; "
+                "a case frozen from a result or a label shows how many labels it carries. A case this build cannot "
+                "read is listed apart, since this is where it is found. A seed corpus's case name is not stored, so "
+                "it is not shown. Calls no model and writes nothing."
             ),
         ),
         Action(
