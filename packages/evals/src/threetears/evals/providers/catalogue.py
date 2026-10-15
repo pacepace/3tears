@@ -15,6 +15,17 @@ refresh that fails keeps the last rows, logs the failure, and marks the catalogu
 (:attr:`Catalogue.stale_since`, :attr:`Catalogue.refresh_failure`), which every completion it then prices carries
 (``Completion.pricing_stale_since``): never silent, and never failing the call. The failed refresh is tried again on
 the first load :data:`RETRY_AFTER_FAILURE` later (sooner when ``refresh_after`` is shorter), not on every call.
+
+**A price ceiling is a true upper bound, or none.** :meth:`Catalogue.ceiling` bounds one call from every price the
+row lists, not only its base rates: a prompt token at the highest of the plain, cache-read and cache-write rates, an
+output token at the highest of the completion, reasoning and output-image or -audio rates (every output token is
+within the request's output cap), the per-request fee, and a long-context tier (``overrides``) wherever the prompt
+bound reaches its ``min_prompt_tokens``; a time-of-day tier is taken to apply, since a call's billing time is not
+known before it is made. Image and audio input prices apply to inputs the client never sends, and a web-search price
+to searches it never asks for. A price the client cannot bound (one it does not know the unit of, one that is not a
+number, a web search on a model that can search unasked) answers no ceiling and says why, never a lower one; so do
+rows read longer ago than ``ceiling_stale_after`` (``refresh_after`` unless the constructor says otherwise), so an
+enforced cap never holds a call against prices that old. A completion is still priced from them, marked stale.
 """
 
 from __future__ import annotations
@@ -50,17 +61,42 @@ OPENROUTER_MODELS_URL: Final = "https://openrouter.ai/api/v1/models"
 #: How long the catalogue fetch may take, in seconds, on a client the catalogue opens itself.
 _FETCH_TIMEOUT_S: Final = 30.0
 
+#: The per-token prices a prompt token can be billed at: the plain rate, and a cache read or write of it.
+_INPUT_PRICES: Final = frozenset({"prompt", "input_cache_read", "input_cache_write", "input_cache_write_1h"})
+
+#: The per-token prices an output token can be billed at. Every one is within the request's output cap: reasoning,
+#: and an image or audio the model writes, count as output tokens.
+_OUTPUT_PRICES: Final = frozenset({"completion", "internal_reasoning", "image_output", "audio_output"})
+
+#: A flat fee per request.
+_REQUEST_FEE: Final = "request"
+
+#: Prices of inputs the client never sends (it sends text): an image, audio, and a cache of audio.
+_UNSENT_INPUTS: Final = frozenset({"image", "audio", "input_audio_cache"})
+
+#: The price of one web search: billed only for a search, which the client never asks for (no ``plugins``, no
+#: ``web_search_options``). A model that takes ``web_search_options`` may search unasked, any number of times.
+_WEB_SEARCH: Final = "web_search"
+
+#: A price tier's conditions, not prices: the prompt size it starts at, and the hours and days it applies on.
+_TIER_CONDITIONS: Final = frozenset({"min_prompt_tokens", "utc_start", "utc_end", "utc_days"})
+
+#: The row's price tiers.
+_TIERS: Final = "overrides"
+
 #: A date suffix on a direct provider's model id (``claude-haiku-4-5-20251001``), which the catalogue's ids leave off.
 _DATE_SUFFIX: Final = re.compile(r"-\d{8}$")
 
 
 @dataclass(frozen=True, slots=True)
 class _Row:
-    """One catalogue row: the rates per token (``None`` when unpriced), the listed parameters, the output cap."""
+    """One catalogue row: the rates per token (``None`` when unpriced), the listed parameters, the output cap, and
+    every price as listed."""
 
     rates: tuple[Decimal, Decimal] | None
     parameters: frozenset[str] | None
     max_output_tokens: int | None
+    pricing: Mapping[str, object]
 
 
 def _rate(pricing: Mapping[str, object], key: str) -> Decimal | None:
@@ -87,7 +123,53 @@ def _row(entry: Mapping[str, object]) -> _Row:
         rates=(prompt, completion) if prompt is not None and completion is not None else None,
         parameters=frozenset(p for p in listed if isinstance(p, str)) if isinstance(listed, list) else None,
         max_output_tokens=cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else None,
+        pricing=dict(pricing) if isinstance(pricing, Mapping) else {},
     )
+
+
+def _tier_applies(tier: Mapping[str, object], prompt_tokens: int) -> bool:
+    """Whether a price tier can apply to a call of up to ``prompt_tokens``: always, unless the prompt bound is below a
+    ``min_prompt_tokens`` it can read. A time-of-day tier can apply, since when a call is billed is not known."""
+    threshold = tier.get("min_prompt_tokens")
+    if isinstance(threshold, bool) or not isinstance(threshold, int | float | str):
+        return True
+    try:
+        return prompt_tokens >= Decimal(str(threshold))
+    except InvalidOperation:
+        # NOSILENT: a threshold that is not a number is taken to apply, which can only raise the ceiling.
+        return True
+
+
+def _ceiling(row: _Row, *, prompt_tokens: int, output_tokens: int) -> tuple[Decimal | None, str | None]:
+    """The most one call can be billed under ``row``, or ``None`` and why when a price it lists cannot be bounded."""
+    tiers = row.pricing.get(_TIERS, [])
+    if not isinstance(tiers, list) or not all(isinstance(tier, Mapping) for tier in tiers):
+        return None, f"its price tiers (`{_TIERS}`) are not a list of objects"
+    input_rate = output_rate = fee = Decimal(0)
+    for tier in (row.pricing, *(tier for tier in tiers if _tier_applies(tier, prompt_tokens))):
+        for key, value in tier.items():
+            if key in _TIER_CONDITIONS or key == _TIERS:
+                continue
+            rate = _rate(tier, key)
+            if rate is None:
+                return None, f"its `{key}` price ({value!r}) is not a price (a number, 0 or more)"
+            if rate == 0 or key in _UNSENT_INPUTS:
+                continue
+            if key in _INPUT_PRICES:
+                input_rate = max(input_rate, rate)
+            elif key in _OUTPUT_PRICES:
+                output_rate = max(output_rate, rate)
+            elif key == _REQUEST_FEE:
+                fee = max(fee, rate)
+            elif key == _WEB_SEARCH:
+                if row.parameters is not None and "web_search_options" in row.parameters:
+                    return None, (
+                        f"it can search the web unasked (it takes web_search_options) at {value} a search, and "
+                        "nothing bounds how many searches one call makes"
+                    )
+            else:
+                return None, f"it lists a `{key}` price ({value}) the client does not know the unit of"
+    return prompt_tokens * input_rate + output_tokens * output_rate + fee, None
 
 
 def _plain(model_id: str) -> str:
@@ -102,11 +184,15 @@ class Catalogue:
     Hand one catalogue to several :class:`~threetears.evals.providers.Model`\\s (``Clients`` does) and they fetch it
     together and learn from each other's refusals. Await :meth:`load` at boot when a model's
     :meth:`~threetears.evals.providers.Model.price_ceiling` must answer before its first call; a live call loads it
-    otherwise, and refreshes it once its rows are older than ``refresh_after``.
+    otherwise, and refreshes it once its rows are older than ``refresh_after``. A price ceiling answers only from rows
+    younger than ``ceiling_stale_after``: a process that prices calls before making them, with no live call between,
+    awaits :meth:`load` on a timer, and sets ``refresh_after`` below ``ceiling_stale_after`` so a refresh is due
+    before the ceiling stops answering.
 
     Attributes:
         url: Where the catalogue is read from.
         refresh_after: How long the rows read are kept before the next load fetches them again.
+        ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them.
         learned: The request settings providers refused, per provider and model, for every model reading this
             catalogue (:class:`~threetears.evals.negotiation.LearnedSettings`).
     """
@@ -117,6 +203,7 @@ class Catalogue:
         url: str = OPENROUTER_MODELS_URL,
         http: httpx.AsyncClient | None = None,
         refresh_after: timedelta = DEFAULT_REFRESH_AFTER,
+        ceiling_stale_after: timedelta | None = None,
     ) -> None:
         """Know nothing yet: nothing is fetched until :meth:`load`.
 
@@ -125,20 +212,29 @@ class Catalogue:
             http: The client to fetch it with (not closed here), or ``None`` to open one for the fetch.
             refresh_after: How long the rows read are kept before the next load fetches them again; zero refreshes
                 on every load.
+            ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them; older, it answers
+                no ceiling. ``None`` is ``refresh_after``.
 
         Raises:
-            ValueError: ``refresh_after`` is negative.
+            ValueError: ``refresh_after`` or ``ceiling_stale_after`` is negative.
         """
         if refresh_after < timedelta(0):
             raise ValueError(
                 f"refresh_after {refresh_after} is negative: a catalogue keeps its rows for no time or more"
             )
+        if ceiling_stale_after is not None and ceiling_stale_after < timedelta(0):
+            raise ValueError(
+                f"ceiling_stale_after {ceiling_stale_after} is negative: a ceiling answers from rows of no age or more"
+            )
         self.url = url
         self.refresh_after = refresh_after
+        self.ceiling_stale_after = refresh_after if ceiling_stale_after is None else ceiling_stale_after
         self._http = http
         self._rows: dict[str, _Row] | None = None
-        #: When the kept rows were read, and the monotonic instant the next load fetches again.
+        #: When the kept rows were read (UTC, and as a monotonic instant), and the monotonic instant the next load
+        #: fetches again.
         self._read_at: datetime | None = None
+        self._read_monotonic = 0.0
         self._due = 0.0
         self._stale_since: datetime | None = None
         self._refresh_failure: str | None = None
@@ -203,7 +299,8 @@ class Catalogue:
                 return
             self._rows = rows
             self._read_at = datetime.now(UTC)
-            self._due = time.monotonic() + self.refresh_after.total_seconds()
+            self._read_monotonic = time.monotonic()
+            self._due = self._read_monotonic + self.refresh_after.total_seconds()
             self._stale_since = None
             self._refresh_failure = None
 
@@ -241,6 +338,36 @@ class Catalogue:
         """
         row = self._rows.get(model_id) if self._rows is not None else None
         return row.rates if row is not None else None
+
+    def ceiling(self, model_id: str, *, prompt_tokens: int, output_tokens: int) -> tuple[Decimal | None, str | None]:
+        """The most one call on the model can be billed, in dollars, or no ceiling and why.
+
+        Every price the row lists is bounded (the module docstring says how), or there is no ceiling: never a lower
+        one. Rows read ``ceiling_stale_after`` ago or longer bound nothing.
+
+        Args:
+            model_id: The catalogue's id for the model.
+            prompt_tokens: A bound on the call's prompt tokens, which also says which long-context tiers it can reach.
+            output_tokens: The call's output cap, reasoning included.
+
+        Returns:
+            ``(ceiling, None)``, or ``(None, why)``: not loaded, rows too old, no priced row, or a price that cannot
+            be bounded.
+        """
+        if self._rows is None or self._read_at is None:
+            return None, "the price catalogue has not been read (await Catalogue.load() or Clients.load_prices())"
+        if time.monotonic() - self._read_monotonic >= self.ceiling_stale_after.total_seconds():
+            return None, (
+                f"the catalogue's rates were read at {self._read_at.isoformat()}, ceiling_stale_after "
+                f"({self.ceiling_stale_after}) ago or more, so they bound no call until a load refreshes them"
+            )
+        row = self._rows.get(model_id)
+        if row is None or row.rates is None:
+            return None, f"no priced row of OpenRouter's catalogue is {model_id!r}"
+        ceiling, why = _ceiling(row, prompt_tokens=prompt_tokens, output_tokens=output_tokens)
+        if ceiling is None:
+            return None, f"{model_id!r} cannot be bounded: {why}"
+        return ceiling, None
 
     def supported_parameters(self, model_id: str) -> frozenset[str] | None:
         """The parameters some endpoint of the model takes, or ``None`` when the catalogue does not say.

@@ -32,6 +32,9 @@ What a completion carries, member by member:
   ``pricing_failure`` saying why, never ``0``. The catalogue refreshes every ``refresh_after`` (six hours by
   default); a catalogue-priced cost whose refresh failed carries ``pricing_stale_since``, when its rates expired.
 
+``Model.price_ceiling`` bounds a call before it is made from every price the catalogue lists for the model, or answers
+``None`` saying why (logged), never a lower figure; rows older than ``Catalogue.ceiling_stale_after`` bound nothing.
+
 **This module is the package's public root** for the client. A host imports from here and from no module below it,
 and only the names in ``__all__``.
 """

@@ -8,9 +8,11 @@ file and replays them offline through :class:`~threetears.evals.testing.Recorded
 
 from __future__ import annotations
 
+import json
 import os
 import string
 import time
+import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -63,8 +65,8 @@ _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
 #: The tokens a price ceiling allows for a prompt's framing beyond its text (role markers, a schema's re-encoding).
 _FRAMING_TOKENS: Final = 2048
 
-#: What a catalogue-priced cost's source gains when the prompt read or wrote a cache: the catalogue has no cache
-#: rates, so those tokens were priced at the plain input rate.
+#: What a catalogue-priced cost's source gains when the prompt read or wrote a cache: the cost prices every prompt
+#: token at the plain input rate, though a cache read or write bills at another.
 _CACHE_APPROXIMATE: Final = ";cache-approximate"
 
 #: When this module was imported. Under ``RECORD=1`` a recording last written before it is from an earlier run and
@@ -171,6 +173,26 @@ def _asked(
     )
 
 
+def _text_bytes(text: str) -> int:
+    """The most tokens a tokenizer can read ``text`` as: one per UTF-8 byte, as written or after NFKC normalisation,
+    whichever is more (a normalising tokenizer can expand a compatibility character: ``U+FDFA`` is 3 bytes, 33 after).
+    """
+    return max(
+        len(text.encode("utf-8", errors="surrogatepass")),
+        len(unicodedata.normalize("NFKC", text).encode("utf-8", errors="surrogatepass")),
+    )
+
+
+def _prompt_bound(system: str, user: str, response_format: Mapping[str, Any] | None) -> int:  # Any: a JSON directive
+    """A bound on the prompt tokens a call sends: no token is shorter than a byte, so one per byte of each text (and
+    of the directive, written out as JSON either way), and an allowance for the framing around them."""
+    bound = _text_bytes(system) + _text_bytes(user) + _FRAMING_TOKENS
+    if response_format is not None:
+        written = json.dumps(response_format, ensure_ascii=False, default=str)
+        bound += max(_text_bytes(written), len(json.dumps(response_format, default=str)))
+    return bound
+
+
 class _Live:
     """The model over HTTP: what :class:`Model` sends through when it is not replaying a recording."""
 
@@ -195,6 +217,7 @@ class _Live:
         self._http = http
         self._owned: httpx.AsyncClient | None = None
         self._logged: set[tuple[str, ...]] = set()
+        self._unbounded: set[str] = set()
         self._catalogue_failure: str | None = None
 
     def _client(self) -> httpx.AsyncClient:
@@ -353,13 +376,34 @@ class _Live:
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         matched = self._catalogue_id()
-        rates = self._catalogue.rates(matched) if matched is not None else None
-        if rates is None or self._asked.max_tokens is None:
-            return None
-        prompt = len(system.encode()) + len(user.encode()) + _FRAMING_TOKENS
-        if response_format is not None:
-            prompt += len(str(response_format).encode())
-        return float(prompt * rates[0] + self._asked.max_tokens * rates[1])
+        if self._asked.max_tokens is None:
+            return self._unbounded_because("the request has no output cap")
+        if matched is None:
+            if not self._catalogue.loaded:
+                return self._unbounded_because(
+                    "the price catalogue has not been read (await Catalogue.load() or Clients.load_prices())"
+                )
+            return self._unbounded_because(f"no single row of OpenRouter's catalogue matches {self.model_name!r}")
+        ceiling, why = self._catalogue.ceiling(
+            matched,
+            prompt_tokens=_prompt_bound(system, user, response_format),
+            output_tokens=self._asked.max_tokens,
+        )
+        if ceiling is None:
+            return self._unbounded_because(why or "the catalogue gave no reason")
+        return float(ceiling)
+
+    def _unbounded_because(self, why: str) -> None:
+        """No ceiling, logged at WARNING once per reason: an enforced cap holds such a call against nothing."""
+        if why not in self._unbounded:
+            self._unbounded.add(why)
+            log.warning(
+                "eval.providers price_ceiling cannot bound a call provider=%s model=%s: %s",
+                self.provider,
+                self.model_name,
+                why,
+            )
+        return None
 
     async def aclose(self) -> None:
         if self._owned is not None:
@@ -615,9 +659,13 @@ class Model:
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` with this prompt pair can cost, or ``None`` when the client cannot say.
 
-        The catalogue's rates times a bound on the prompt (its UTF-8 bytes and an allowance for framing) and the
-        output cap. ``None`` until the catalogue is loaded (await :meth:`Catalogue.load` on the one handed in, or
-        :meth:`Clients.load_prices`), and for a model it does not price; ``0.0`` while replaying.
+        A bound on the prompt (one token per UTF-8 byte of each text, as written or after NFKC normalisation,
+        whichever is more, and an allowance for framing) and the output cap, priced by every price the catalogue row
+        lists (:meth:`Catalogue.ceiling`): the highest rate a prompt or output token can bill at, a per-request fee, a
+        long-context tier the prompt bound reaches. ``None``, never a lower figure, until the catalogue is loaded
+        (await :meth:`Catalogue.load` on the one handed in, or :meth:`Clients.load_prices`), once its rows are
+        ``Catalogue.ceiling_stale_after`` old, for a model it does not price, and for a row listing a price the client
+        cannot bound; each reason is logged at WARNING once. ``0.0`` while replaying.
 
         Args:
             system: The system message the call would send.
