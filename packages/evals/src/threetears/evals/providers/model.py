@@ -395,20 +395,24 @@ class _Live:
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         matched = self._catalogue_id()
         if self._asked.max_tokens is None:
-            return self._unbounded_because("the request has no output cap")
+            self._unbounded_because("the request has no output cap")
+            return None
         if matched is None:
             if not self._catalogue.loaded:
-                return self._unbounded_because(
+                self._unbounded_because(
                     "the price catalogue has not been read (await Catalogue.load() or Clients.load_prices())"
                 )
-            return self._unbounded_because(f"no single row of OpenRouter's catalogue matches {self.model_name!r}")
+                return None
+            self._unbounded_because(f"no single row of OpenRouter's catalogue matches {self.model_name!r}")
+            return None
         ceiling, why = self._catalogue.ceiling(
             matched,
             prompt_tokens=_prompt_bound(system, user, response_format),
             output_tokens=self._asked.max_tokens,
         )
         if ceiling is None:
-            return self._unbounded_because(why or "the catalogue gave no reason")
+            self._unbounded_because(why or "the catalogue gave no reason")
+            return None
         return float(ceiling)
 
     def _unbounded_because(self, why: str) -> None:
