@@ -42,8 +42,8 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 
 | Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |
 |---|---|---|---|---|---|---|---|
-| ▸ v1 | 90 | 90 | 90 | 0 | 0 | 0 | $0.0459 |
-| v2 | 90 | 90 | 89 | 0 | 0 | 1 | $0.07036 |
+| ▸ v1 | 90 | 90 | 73 | 17 | 0 | 0 | $0.0459 |
+| v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.07036 |
 ```
 
 A campaign with a question declared before the run (a host's two-model campaign, G2) opens the same way, with the question quoted
@@ -78,18 +78,21 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   a declared question's contrasts; `Exploratory:` (linked to the glossary) and what separated, or `nothing
   separated v2 from v1 on any reading`, never "no difference". A guardrail an arm is not shown safe on is the second sentence:
   `Not yet shown safe: v2 on no invented total.`
-- **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a
-  cent); a failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one,
-  and the outcome bar names each where there are several. Then the outcome bar (in Markdown, its table only where it splits a cause the scoreboard lumps together). Under
-  it, in normal weight, never bold, never first, the facts that change how the verdict is read and nothing else, in
-  this order: the case floor; an arm's label that its own row contradicts (`'cheaper candidate' is not cheaper: it
-  cost more per reply than production.`, latency only where it was read serially); an arm whose every trial failed.
-  A "too few" line says what is withheld and why, in the reader's terms, never a bare count — and what is withheld
-  is only the interval, never the gap, which is measured and stated: `4 cases per arm: keep follows from the counts
-  above. Whether the gap holds on more cases is not estimated: an interval takes 5 independent cases.` where a
-  declared rule settled keep, `Usable cases: v4.1-flash 3, v4-flash 1. Under 5 independent cases a rate is shown as
-  a count, and whether the arms' gap holds on more cases is not estimated.` otherwise.
-  Everything else is a step down: what was not charted and where a cost is a floor are in the Methods.
+- **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a cent).
+  A trial passed when every check passed (a goal check, and on the quick path a `bool` grader or a field grader) and
+  every judged dimension cleared its bar, and a case passed when every trial of it did, on the console as on the
+  page. A failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one;
+  the outcome bar under the table names each where there are several (in Markdown, its table only where it splits a
+  cause the scoreboard lumps together). Under it, in normal weight, never bold, never first, the facts that change
+  how the verdict is read and nothing else, in this order: the case floor; an arm's label that its own row
+  contradicts (`'cheaper candidate' is not cheaper: it cost more per reply than production.`, latency only where it
+  was read serially); an arm whose every trial failed. A "too few" line says what is withheld and why, in the
+  reader's terms, never a bare count — and what is withheld is only the interval, never the gap, which is measured
+  and stated: `4 cases per arm: keep follows from the counts above. Whether the gap holds on more cases is not
+  estimated: an interval takes 5 independent cases.` where a declared rule settled keep, `Usable cases: v4.1-flash 3,
+  v4-flash 1. Under 5 independent cases a rate is shown as a count, and whether the arms' gap holds on more cases is
+  not estimated.` otherwise. Everything else is a step down: what was not charted and where a cost is a floor are in
+  the Methods.
 
 The floor counts independent cases, never trials or repeats. Below it no interval is estimated: no contrast is tested,
 the verdict says too few, a pass rate (and pass^k) reads as a count with no estimate of how far off it could be, and no
@@ -144,17 +147,23 @@ Glossary start folded, and a nav link opens the one it lands on.
   its usable trials on the case than the control (`✓ ✓ ✗` against `✓ ✓ ✓`); a tie or a gain never flags, and
   `no usable trial` marks a case an arm has none on. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
   name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
-  line (`180 trials ran. Of them 179 passed and 1 failed.`) and only what went wrong: one row per failed or lost
+  line (`180 trials ran. Of them 161 passed and 19 failed.`) and only what went wrong: one row per failed or lost
   trial, the failed first, and each one's record under `T4 · double-charge · cheaper candidate · failed` (never the
   start of what the case asked), the first twelve open. A failed check is named by its expression, as code
   (``check: `call_count("music.queue_track") >= 2` ``). The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
-- **Not tested**, then **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the
-  bundle); the coverage map in a closed `Coverage` fold (one row per lever: its status, how many findings name it,
-  the next steps that do), which restates no finding; and the engine's own disclosures in a closed fold. Then the
-  **Glossary**: every term of art the page links, in one plain sentence. Every column header that is a term of art
-  links its entry, and in HTML a hover reads it.
+- **Not tested**: what the campaign could not speak to, one line each. A lever that ran at one level
+  (`Lever model is unswept: one level ran.`) or that fewer than two results exercised
+  (`research model: no research call was made on either arm.`), a case an arm has no usable trial of, a goal check
+  not shown to beat doing nothing, the measures with no margin and how to declare one, each judge not yet calibrated,
+  a finding that names no reading, the readings no declared question asked about, and, folded, a cost not measured.
+  With none of these, `Nothing declared went untested.`
+- **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the bundle); the coverage map
+  in a closed `Coverage` fold (one row per lever: its status, how many findings name it, the next steps that do),
+  which restates no finding; and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of
+  art the page links, in one plain sentence. Every column header that is a term of art links its entry, and in HTML a
+  hover reads it.
 
 ### Style
 

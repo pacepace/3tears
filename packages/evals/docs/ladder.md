@@ -263,7 +263,7 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 **Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
 | Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-1.4, 34.7] pts | not separated from the control | 30 paired |
 | No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
-180 trials ran. Of them 179 passed and 1 failed.
+180 trials ran. Of them 161 passed and 19 failed.
 ```
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
