@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
@@ -26,6 +26,7 @@ from threetears.evals.analysis import (
     build_code_only_report,
     get_campaign,
 )
+from threetears.evals.analysis.bundle.schema import JudgedArm, JudgedMeasure
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis import report_html, report_markdown
 from threetears.evals.analysis.report.decision import (
@@ -43,6 +44,7 @@ from threetears.evals.kernel.declaration import (
     DesignRefused,
     Question,
     RateDrop,
+    decision_readings,
     reconcile_question_edits,
     refuse_an_undeclarable_design,
 )
@@ -597,3 +599,60 @@ async def test_the_decision_section_names_no_system_word_and_no_arm_by_its_role(
             for label in labels:
                 section = re.sub(rf"(?<![\w-]){re.escape(label)}(?![\w-])", "ARM", section)
             assert not _ROLE_WORDS.search(section), (door, _ROLE_WORDS.findall(section), section[:400])
+
+
+# --- a rule's reading is checked where the design is declared, against what the campaign measures -------------------
+
+#: The toy host's template's one goal-state check, verbatim.
+_TOY_CHECK = 'call_count("extractor.emit_field") == 4'
+
+
+def _declare(*readings: str | None) -> None:
+    """Declare one question whose rule has a rate clause per reading, through the declaration gate."""
+    rule = DecisionRule(clauses=tuple(RateDrop(max_points=10, reading=reading) for reading in readings))
+    design = minimal_declaration().model_copy(
+        update={"questions": [Question(id="q-scoped", text="Does v2 hold?", decision=rule)]}
+    )
+    refuse_an_undeclarable_design(design, behavior="b", template=toyhost_template(), profile=toyhost_profile())
+
+
+def test_a_reading_the_campaign_does_not_measure_is_refused_naming_what_it_does() -> None:
+    with pytest.raises(DesignRefused, match="question q-scoped names 'tone'") as refused:
+        _declare("tone")
+    # The remedy lists what the template and the host offer: the check verbatim and the host's pass/fail measures.
+    assert repr(_TOY_CHECK) in refused.value.remedy and "'match'" in refused.value.remedy
+    assert decision_readings(toyhost_template(), toyhost_profile()) == [_TOY_CHECK, "goal_state", "match"]
+
+
+def test_a_reading_the_campaign_measures_or_none_is_declared() -> None:
+    _declare(_TOY_CHECK, "match", None)
+
+
+async def test_a_pass_fail_judged_dimension_is_read_as_its_count() -> None:
+    """A judged dimension on the pass/fail scale is a pass rate a rule names: its mean times its scores, per arm."""
+    bundle, control, candidate = await _ruled([3] * 7, [3] * 7)
+
+    def arm(variant_key: str, passed: int) -> JudgedArm:
+        return JudgedArm(
+            variant_key=variant_key,
+            apparatus_class_id="rig",
+            run_ids=["run"],
+            n=21,
+            n_independent=7,
+            mean=passed / 21,
+            evidence_tier="undetermined",
+        )
+
+    def judged(name: str, axis: Literal["capability", "boundary"]) -> JudgedMeasure:
+        arms = [arm(control, 20), arm(candidate, 12)]
+        return JudgedMeasure(name=name, family="rubric", value_range=(0.0, 1.0), scale="ratio", axis=axis, arms=arms)
+
+    scored = bundle.model_copy(update={"judged_measures": [judged("tone", "capability"), judged("safe", "boundary")]})
+    readings = rule_readings(scored, control, candidate, question_id="q-g2")
+    (tone,) = [rate for rate in readings.rates if rate.measure == "tone"]
+    assert (tone.control_passed, tone.control_n, tone.candidate_passed, tone.candidate_n) == (20, 21, 12, 21)
+    assert not [rate for rate in readings.rates if rate.measure == "safe"], "a guardrail is never a rule's reading"
+    (clause,) = evaluate_rule(
+        DecisionRule(clauses=(RateDrop(max_points=10, reading="tone"),)), readings, **_ARMS
+    ).clauses
+    assert (clause.outcome, clause.statement) == ("keep", "no tone rate drops by more than 10 points")

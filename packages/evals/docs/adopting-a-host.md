@@ -1237,8 +1237,9 @@ the rule in a sentence it writes, the arms by name: `Switch to v2 only if no pas
 and v2 costs less per reply. Otherwise stay on v1.`
 
 - **`RateDrop(max_points=2)`** reads every pass/fail reading the arms share, the overall pass rate included.
-  `RateDrop(max_points=2, reading="tone")` reads one: a goal-state check by its verbatim text, or a measure or judged
-  dimension by its key (`no tone rate drops by more than 2 points`).
+  `RateDrop(max_points=2, reading="tone")` reads one: a goal-state check of the template by its verbatim text, a
+  pass/fail judged dimension by its name, or a pass/fail measure by its key (`no tone rate drops by more than 2
+  points`). A reading the campaign does not measure is refused when the design is declared, listing the ones it does.
 - **`CostLower()`** reads each arm's cost per reply.
 - **The logic is fixed**: switch only if every clause settles switch, keep the moment one settles keep, otherwise
   unsettled. Keep settles on what the run observed; switch needs every arm at the case floor and an interval

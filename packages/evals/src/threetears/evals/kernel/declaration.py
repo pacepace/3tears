@@ -264,7 +264,9 @@ class RateDrop(EvalDocumentModel, CoreShapeModel):
     """A clause of a decision rule: no pass rate may drop by more than ``max_points`` against the control.
 
     ``reading`` None reads every pass/fail reading the arms share: the overall pass rate and each check's. A name
-    reads that one alone: a goal-state check by its verbatim text, or a measure or judged dimension by its key.
+    reads that one alone: a goal-state check by its verbatim text, a pass/fail judged dimension by its name, or a
+    pass/fail measure by its key; a name the campaign does not measure is refused when the design is declared
+    (:func:`decision_readings`).
     A switch on it needs every arm at the case floor and the bounded interval within the margin; an observed drop
     past the margin settles keep on any number of cases.
     """
@@ -1461,6 +1463,68 @@ def _refuse_unreadable_guardrail_margins(design: CampaignDesign, template: EvalT
             )
 
 
+def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> list[str]:
+    """Every name a ``RateDrop.reading`` may carry on a campaign of ``template``: what the page reads as a pass rate.
+
+    A goal-state check of the template, by its verbatim text; a judged dimension of the template on the pass/fail
+    scale and the capability axis, by its name (a boundary dimension is a guardrail, held on its own); and a pass/fail
+    measure the host's catalogue describes with a better end, by its key. Exactly the rates
+    :func:`~threetears.evals.analysis.report.decision.rule_readings` gives a rule.
+
+    Args:
+        template: The campaign's template; None when it names none that could be read.
+        profile: The host whose measures are read.
+
+    Returns:
+        The names, checks first, then dimensions, then measures, each sorted.
+    """
+    checks = sorted(template.goal_state_checks) if template is not None else []
+    dims = (
+        sorted(dim.name for dim in template.rubric if dim.scale == "pass_fail" and dim.axis == "capability")
+        if template is not None
+        else []
+    )
+    measures = sorted(
+        descriptor.name
+        for descriptor in list_metrics(profile.measures)
+        if descriptor.data_type == "boolean" and descriptor.higher_is_better is True
+    )
+    return [*checks, *dims, *measures]
+
+
+def _refuse_unreadable_rule_readings(
+    design: CampaignDesign, template: EvalTemplate | None, profile: HostProfile
+) -> None:
+    """Refuse a live question's ``RateDrop`` naming a reading this campaign will not measure as a pass rate.
+
+    A misspelled reading would otherwise reach the page as a clause that never settles; refused here, it is fixed
+    before a run is paid for. A clause reading every pass rate (``reading`` None) names nothing to check.
+
+    Raises:
+        DesignRefused: A clause names a reading :func:`decision_readings` does not offer, naming it and listing what
+            is offered.
+    """
+    offered = decision_readings(template, profile)
+    unread = [
+        (question.id, clause.reading)
+        for question in design.live_questions()
+        if question.decision is not None
+        for clause in question.decision.clauses
+        if isinstance(clause, RateDrop) and clause.reading is not None and clause.reading not in offered
+    ]
+    if not unread:
+        return
+    named = "; ".join(f"question {qid} names {reading!r}" for qid, reading in unread)
+    where = f"campaign's template and host '{profile.host_id}'" if template is not None else f"host '{profile.host_id}'"
+    raise DesignRefused(
+        f"a decision rule's RateDrop must name a pass/fail reading this campaign measures — {named}, which it does not",
+        remedy=(
+            f"name one the {where} offer: {', '.join(repr(name) for name in offered) or 'none'}; or leave reading "
+            "unset to read every pass rate" + ("" if template is not None else f". {NO_TEMPLATE_REMEDY}")
+        ),
+    )
+
+
 def refuse_an_undeclarable_design(
     design: CampaignDesign,
     *,
@@ -1540,7 +1604,8 @@ def refuse_an_undeclarable_design(
             naming it and which way its descriptor runs; or a bar, a live question or the merit priority
             asks about latency in a design that does not declare ``measure_latency``, naming each and the
             setting to turn on; or a live question writes its decision rule as prose (``Decision rule:`` in its
-            text) and declares none as ``Question.decision``.
+            text) and declares none as ``Question.decision``; or a ``RateDrop`` names a reading
+            :func:`decision_readings` does not offer.
     """
     # A rule in words is read by nothing: the engine settles only a typed rule. Refused here, where a design is
     # declared, and never on a read, so a question stored before the rule was typed still loads and reads as having
@@ -1554,6 +1619,7 @@ def refuse_an_undeclarable_design(
                 "the text to the question itself"
             ),
         )
+    _refuse_unreadable_rule_readings(design, template, profile)
     # ASK the profile rather than re-deriving from its registry. `HostProfile.controllable` is
     # R10's evaluability map and the design names this gate as its one use — re-deriving
     # `{d.name for d in profile.sweepables.declarations}` here would make two implementations of
@@ -1839,6 +1905,7 @@ __all__ = [
     "UnreadableBarName",
     "JUDGED_MERIT_AXIS",
     "axis_in_question_scope",
+    "decision_readings",
     "exploratory_reading",
     "mechanism_measure_names",
     "preregistered_questions",

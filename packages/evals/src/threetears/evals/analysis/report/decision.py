@@ -412,7 +412,8 @@ def rule_readings(
     """The figures a rule is read against for one candidate arm, from the bundle alone.
 
     The pass rates are every trial's, then each check's pass rate the arms' cells carry (a goal check's as its mean
-    times its observations, the count it is: :func:`_held`); each arm's lost trials are
+    times its observations, the count it is: :func:`_held`), then each pass/fail judged dimension on the capability
+    axis, read the same way from its scores; each arm's lost trials are
     trials it could still add. Each rate carries its contrast's bounded interval, the one a switch reads, where the
     bundle computed one (the overall pass rate's is its ``trial`` contrast). Cost is each arm's cost per reply, with
     the cost contrast's interval. Each arm carries its usable cases.
@@ -477,6 +478,35 @@ def rule_readings(
                         )
                     ),
                     measure=name,
+                )
+            )
+    # A judged dimension on the pass/fail scale is a pass rate too: each score a 1 or a 0, its count the mean times
+    # its scores. A boundary dimension is a guardrail, held on its own, never a rule's reading.
+    for judged in sorted(bundle.judged_measures, key=lambda measure: measure.name):
+        read = any(rate.measure == judged.name for rate in rates)
+        if read or judged.value_range != (0.0, 1.0) or judged.axis != "capability":
+            continue
+        counts: dict[str, tuple[int, int]] = {}
+        for scored in judged.arms:
+            count = scored.mean * scored.n if scored.mean is not None else None
+            if count is None or abs(count - round(count)) > 1e-6:
+                continue
+            passed, n = counts.get(scored.variant_key, (0, 0))
+            counts[scored.variant_key] = (passed + round(count), n + scored.n)
+        if control in counts and candidate in counts:
+            rates.append(
+                RateReading(
+                    humanize("dimension", judged.name),
+                    *counts[control],
+                    *counts[candidate],
+                    lost_control,
+                    lost_candidate,
+                    interval=_bounded_better_way(
+                        _contrast(
+                            bundle, "judged", judged.name, control, candidate, bounded=True, question_id=question_id
+                        )
+                    ),
+                    measure=judged.name,
                 )
             )
     cost = _contrast(bundle, "measure", _REPLY_COST, control, candidate, bounded=False, question_id=question_id)
