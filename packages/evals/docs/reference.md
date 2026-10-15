@@ -355,7 +355,6 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`Triggered`** · dataclass · State that arrives on a condition rather than at t=0.
 - **`UnsupportedSchemaError`** · exception · A schema uses a construct outside `HONOURED_KEYWORDS` — a gap to extend, never a value to pass.
 - **`WorldConformanceError`** · exception · An ENGINE gap: a check the kit cannot run, or a record its own vocabulary forbids.
-- **`WorldConformanceReport`** · dataclass · Every verdict from one run of the kit over one registry.
 - **`WorldDimension`** · *host contract* · dataclass · One state dimension a run may set, may read back, or may only witness.
 - **`WorldRegistry`** · *host contract* · class · One host's world declarations, its resolution table, and the algebra over them.
 
@@ -471,6 +470,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`MeteredCallLedger`** · class · In-memory per-run ceiling on metered third-party calls.
 - **`MeteredCallTally`** · dataclass · What a run (or one cell's slice of it) metered, kept per provider.
 - **`RunnerOptions`** · *host contract* · dataclass · The run's own knobs that don't fit on the run document — per-run values, never host wiring.
+- **`SeedCaseSet`** · *host contract* · model · One named case set a seed corpus mints: a judge template's authored cases, listed by name, in order.
 - **`SeedCorpus`** · dataclass · A host's authored definitions for one scope, already constructed through their production models.
 - **`SeedJudgeCase`** · *host contract* · model · One authored judge case a seed corpus writes: `judge_case_author`'s arguments, its templates named by name.
 - **`SeedOutcome`** · dataclass · What one seeding pass did, per doc type.
@@ -1079,7 +1079,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `54` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `55` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -1447,6 +1447,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
 | `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
+| `judge_cases_list` | `read` | `template_id` | List a judge template's stored cases: each id, criterion, expected verdict and whether it is live. |
 | `judge_case_author` | `write` | `template_id`, `criterion_template_id`, `criterion`, `output`, `case_material`, `expected`, `note`, `scenario?`, `subject?`, `judged_artifact?` | Write a judge case by hand: an output, the rubric dimension it is judged on, and its verdict. |
 | `judge_profiles_record` | `write` | `judge_run_ids` | Store what a judge campaign measured each judge to be, per criterion, for other campaigns to read. |
 | `judge_profiles_list` | `read` | `criterion_dim?` | List the stored judge profiles: each judge and criterion measured, on what, when, and its tier. |
@@ -1582,7 +1583,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `subject_id` | `string` | The subject the runs measure, as the host names it. |
 | `supersedes` | array of `string` | The live case(s) of this campaign and memo the freeze replaces, by id — needed to revise a case's labels or re-freeze moved evidence; every live case of the pair when it holds several. |
 | `template_filter` | `string` or `null` | Only calls made for this template, by id. |
-| `template_id` (on `sweep_launch`, `case_set_mint`, `run_launch`, `launch_estimate`, `reporter_case_freeze`, `reporter_cases_list`, `judge_cases_freeze`, `judge_case_author`) | `string` | A template's id, as templates_list names it. |
+| `template_id` (on `sweep_launch`, `case_set_mint`, `run_launch`, `launch_estimate`, `reporter_case_freeze`, `reporter_cases_list`, `judge_cases_freeze`, `judge_cases_list`, `judge_case_author`) | `string` | A template's id, as templates_list names it. |
 | `template_id` (on `campaign_create`) | `string` or `null` | A template's id, as templates_list names it. |
 | `template_name` | `string` | The judge template's name, unique in the scope. |
 | `test_case_ids` | array of `string` | The cases, in order, each a stored case of the template; a list the latest version already holds is refused. |

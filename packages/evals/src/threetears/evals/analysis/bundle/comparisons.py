@@ -64,8 +64,10 @@ from threetears.evals.kernel.surface import (
     GuardrailReadings,
 )
 from threetears.evals.analysis.bundle.schema import (
+    TRIAL_PASS_NAME,
     ComparedCell,
     ComparisonFamily,
+    ComparisonReading,
     ComparisonVerdict,
     exploratory_disclosure,
     FamilyComparison,
@@ -85,6 +87,7 @@ from threetears.evals.analysis.bundle.mechanisms import (
     _served_model_confounds,
     _ServedModels,
 )
+from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.analysis.bundle.cell_reads import (
     _boundary_dimensions,
     _CellKey,
@@ -225,7 +228,7 @@ def planning_readings(
 
 def _family_readings(
     axes: list[MeritAxis], catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
-) -> dict[tuple[ReadingKind, str], bool]:
+) -> dict[tuple[ComparisonReading, str], bool]:
     """The readings a question with these axes could draw a verdict from, each with its better direction.
 
     A measure qualifies when it has a better end (a reading with none cannot improve or regress) and
@@ -249,7 +252,7 @@ def _family_readings(
     Returns:
         ``{(reading, name): higher_is_better}``.
     """
-    readings: dict[tuple[ReadingKind, str], bool] = {}
+    readings: dict[tuple[ComparisonReading, str], bool] = {}
     for name, descriptor in catalog.items():
         if descriptor.higher_is_better is None or classifier_label_of(name) is not None:
             continue
@@ -260,6 +263,42 @@ def _family_readings(
             if measure.axis == "capability":
                 readings[("judged", measure.name)] = measure.higher_is_better
     return readings
+
+
+#: The overall pass rate's range: a share of a case's usable trials.
+_TRIAL_PASS_RANGE = (0.0, 1.0)
+
+
+def _trial_pass_values(
+    members: list[EvalResult], *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
+) -> dict[str, float]:
+    """One cell's overall pass rate, one value per case: the share of the case's usable trials that passed.
+
+    Each trial ends as the scoreboard reads it (:func:`~threetears.evals.analysis.bundle.trials.read_trial`), so a
+    case's value and the census are one classification. A lost trial says nothing about the candidate and is in no
+    case's share, as it is in no arm's usable count; a case that lost every trial has no value. Repeats of a case are
+    averaged before any test sees them, as every other reading's are (:func:`_per_case_values`): the case is the
+    independent draw. A cell none of whose usable trials carried a pass criterion has no pass rate to compare: each
+    of its trials passed only because nothing could fail it.
+
+    Args:
+        members: One cell's results.
+        rubric_threshold: The 1–5 level a judged dimension must reach to pass.
+        catalog: The bundle's measure catalog, which says which checks a trial is graded on.
+
+    Returns:
+        ``{test_case_id: share passed}`` over the cases with a usable trial.
+    """
+    by_case: dict[str, list[bool]] = defaultdict(list)
+    graded = False
+    for result in members:
+        reading = read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog)
+        if reading.state != "lost":
+            by_case[result.test_case_id].append(reading.state == "passed")
+            graded = graded or not reading.no_criterion
+    if not graded:
+        return {}
+    return {case_id: sum(passed) / len(passed) for case_id, passed in sorted(by_case.items())}
 
 
 def _test_samples(
@@ -290,7 +329,7 @@ class _Tested(NamedTuple):
 
 
 def _compare(
-    reading: tuple[ReadingKind, str],
+    reading: tuple[ComparisonReading, str],
     higher_is_better: bool,
     control: tuple[_CellKey, dict[str, float]],
     contrast: tuple[_CellKey, dict[str, float]],
@@ -427,12 +466,12 @@ def _compare(
 
 
 def _margin_of(
-    reading: tuple[ReadingKind, str], catalog: Mapping[str, MetricDescriptor], run_margins: Mapping[str, float]
+    reading: tuple[ComparisonReading, str], catalog: Mapping[str, MetricDescriptor], run_margins: Mapping[str, float]
 ) -> tuple[float | None, Literal["measure", "run"] | None]:
     """A reading's margin and where it came from: the descriptor's threshold, else its runs' declared margin.
 
     A core rate measure's descriptor declares none (:data:`~threetears.evals.kernel.metrics.RUN_MARGIN_MEASURES`),
-    so the two never both exist for one measure. A judged dimension has neither.
+    so the two never both exist for one measure. A judged dimension and the overall pass rate have neither.
     """
     if reading[0] != "measure":
         return None, None
@@ -488,6 +527,12 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
     interval exists, and the interval is the bounded test's on the declared range, the test whose p was
     corrected (#597); with no range that comparison was never tested and is not in the family.
 
+    **A claim of no worse by more than a margin reads the bounded interval** (``bounded_interval``), the bounded
+    test's on the declared range at the same level, valid at every n; the t interval is not. Read for non-inferiority
+    on a pass rate's coarse per-case shares at the margin, it let a decision rule's ``switch`` through up to 12% of
+    the time against the 2.5% it states (``docs/measuring-soundly.md``), the failure a guardrail's ``held`` was moved
+    off it for. A reading with no declared range has none.
+
     Args:
         question_id: The question the family serves, or None for the campaign-wide family.
         axes: The question's merit axes.
@@ -532,11 +577,25 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
                 verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
             elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
                 verdict = "equivalent"
+            bounded = (
+                None
+                if one.value_range is None
+                else interval
+                if comparison.basis in ("bounded", "identical")
+                else bounded_difference_interval(
+                    control_sample,
+                    contrast_sample,
+                    paired=comparison.test == "paired",
+                    value_range=one.value_range,
+                    confidence=interval_level,
+                )
+            )
             comparison = comparison.model_copy(
                 update={
                     "p_adjusted": p_adjusted,
                     "equivalence_p_adjusted": equivalence_p_adjusted,
                     "interval": interval,
+                    "bounded_interval": bounded,
                     "verdict": verdict,
                 }
             )
@@ -570,6 +629,8 @@ def _multiple_comparisons(
     run_margins: Mapping[str, float] | None = None,
     contended: Collection[_CellKey] = frozenset(),
     first_run_at: str | None,
+    rubric_threshold: int,
+    pass_rate_questions: Collection[str] = frozenset(),
 ) -> tuple[MultipleComparisons, GuardrailReadings]:
     """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
 
@@ -581,6 +642,12 @@ def _multiple_comparisons(
 
     The guardrails are read over the same pairs and the same per-case values, and kept out of every
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
+
+    **The overall pass rate joins only the family of a question whose decision rule reads it** (a rate clause,
+    ``pass_rate_questions``): there it is a hypothesis the question asks, so its family grows by one and every adjusted
+    p in it moves with it. No other family tests it, and with no such question it is compared nowhere: it is the
+    scoreboard's count, exploratory. Each case's value is the share of its usable trials that passed
+    (:func:`_trial_pass_values`), tested and bounded as a check's pass rate is, on its 0-1 range.
 
     Args:
         declared: The campaign's declaration, for its live questions asked before its first run
@@ -599,6 +666,9 @@ def _multiple_comparisons(
         contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
             reason a comparison or a guardrail on elapsed time could not be read, where it could not.
         first_run_at: The earliest member run's ``created_at``, which a question must predate to scope a family.
+        rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
+            rate's per-case shares read (:func:`_trial_pass_values`), as the scoreboard does.
+        pass_rate_questions: The ids of the live questions whose decision rule reads the overall pass rate.
 
     Returns:
         One family per live question, in declaration order; one campaign-wide family over every reading when
@@ -626,7 +696,14 @@ def _multiple_comparisons(
     judged_rows: dict[str, list[ScoreRecord]] = {}
     for record in records:
         judged_rows.setdefault(record.result_id, []).append(record)
-    values = {key: _per_case_values(members, judged_rows, profile=profile) for key, members in results_by_cell.items()}
+    values: dict[_CellKey, dict[tuple[ComparisonReading, str], dict[str, float]]] = {}
+    for key, members in results_by_cell.items():
+        values[key] = {
+            reading: by_case for reading, by_case in _per_case_values(members, judged_rows, profile=profile).items()
+        }
+        values[key][("trial", TRIAL_PASS_NAME)] = _trial_pass_values(
+            members, rubric_threshold=rubric_threshold, catalog=catalog
+        )
     pairs = [
         (control_key, contrast_key)
         for control_key in sorted(values)
@@ -649,12 +726,17 @@ def _multiple_comparisons(
     families = []
     for question_id, axes in scopes:
         readings = _family_readings(axes, catalog, judged_measures)
+        if question_id in pass_rate_questions:
+            readings[("trial", TRIAL_PASS_NAME)] = True
         tested: list[_Tested] = []
         for reading in sorted(readings):
             for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0])):
                 control_values = values[control_key].get(reading, {})
                 contrast_values = values[contrast_key].get(reading, {})
                 if not control_values and not contrast_values:
+                    continue
+                if reading[0] == "trial" and not (control_values and contrast_values):
+                    # A side with no usable graded trial has no pass rate; the scoreboard says why, not a contrast.
                     continue
                 threshold, margin_source = _margin_of(reading, catalog, run_margins or {})
                 one = _compare(
@@ -665,7 +747,11 @@ def _multiple_comparisons(
                     threshold=threshold,
                     margin_source=margin_source,
                     value_range=(
-                        catalog[reading[1]].value_range if reading[0] == "measure" else judged_ranges.get(reading[1])
+                        catalog[reading[1]].value_range
+                        if reading[0] == "measure"
+                        else _TRIAL_PASS_RANGE
+                        if reading[0] == "trial"
+                        else judged_ranges.get(reading[1])
                     ),
                     no_turn=tuple(
                         side
@@ -781,7 +867,7 @@ def _guardrail_readings(
 
 
 def _contended_sides(
-    reading: tuple[ReadingKind, str],
+    reading: tuple[ComparisonReading, str],
     pair: tuple[_CellKey, _CellKey],
     catalog: Mapping[str, MetricDescriptor],
     contended: Collection[_CellKey],

@@ -184,7 +184,9 @@ class Verdict(EvalDocumentModel):
     reason_detail: str | None = Field(
         default=None, description="The reason in words where there is more to say: why no test ran, why undecided."
     )
-    reading: Literal["measure", "judged"] = Field(description="Whether `name` is a measure or a judged dimension.")
+    reading: Literal["measure", "judged", "trial"] = Field(
+        description="Whether `name` is a measure, a judged dimension, or `trial`: the overall pass rate (`passed`)."
+    )
     name: str = Field(min_length=1, description="The measure or judged dimension, by its key.")
     heading: str = Field(min_length=1, description="The reading as the report heads it.")
     arm: str = Field(min_length=1, description="The arm, as the report names it.")

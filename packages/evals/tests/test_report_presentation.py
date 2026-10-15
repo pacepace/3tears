@@ -361,9 +361,10 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     assert " usd" not in markdown
     assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
     assert "The candidate skipped the queue." in markdown
-    # The answer that contradicted the settled rule reads the rule's outcome, and the methods say so.
-    # The verdict line already says it, so the answer points at the rule rather than restating it.
-    assert "**Answered.** See the decision rule above." in markdown
+    # The rule settled every clause, so the verdict line and the decision table answer its question: the page prints
+    # no answer line for it, and the methods still say the memo's answer contradicted the rule.
+    assert "Answered." not in markdown and "See the decision rule above." not in markdown
+    assert "Unanswerable because" not in markdown.split("## Methods", 1)[0]
     assert markdown.count("Keep production: ") == 1
     assert any("“Unanswerable because" in b.text for b in report.blocks if isinstance(b, DisclosureBlock))
     # What code could not fix is kept, counted in the methods table and listed in a fold.

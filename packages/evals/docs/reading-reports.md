@@ -60,18 +60,31 @@ v1 (control) vs v2 · 14 Oct 2026
   where it splits a cause the scoreboard lumps together), then the caveats in normal weight (the case floor: five
   usable cases before a rate is estimated), never bold, never first. Where a declared rule settled keep under the
   floor, the caveat says the rule was read on the counts and only the size of the difference is not estimated.
+  Where an arm's label claims a cost or speed its own row contradicts, one line says so (`The label 'cheaper
+  candidate' says cheaper; it cost more per reply than production.`); latency only where it was read serially.
+
+The floor counts independent cases, never trials or repeats. Below it no contrast is tested, the verdict says too few,
+and no rate (a pass rate, pass^k) is estimated for an arm: a pass rate reads as a count, and pass^k states only the cases it rests on. A measure's mean is shown with its
+interval. A declared rule can still settle keep on what was observed, never switch. So a host's seed gate covers every
+template whose results are compared across arms, whatever its declared reading.
 
 ### The rest of the page
 
 - **Decision**: a declared decision rule (`Decision rule: switch … only if … AND …; otherwise keep …`), one row per
   clause and reading, each arm's column headed by its name, `settled: keep`, `settled: switch` or `unsettled` with
   the reason. Keep settles on what the run observed: a drop past the margin, or a higher cost. Switch needs
-  sampling evidence: every arm at the case floor, and the contrast's interval bounding the drop within the margin
-  (for cost, wholly below zero). A run that shows neither is unsettled ("the cost difference did not separate").
+  sampling evidence: every arm at the case floor, and for every rate the clause reads (the pass rate and each
+  check's) the contrast's bounded interval keeping the drop within the margin; for cost, the interval wholly below
+  zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds its error rate on a
+  few coarse cases, where the t interval does not
+  ([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases only a sweep settles a
+  10-point clause. A run that shows neither is unsettled ("the cost difference did not separate"); a bundle shaped
+  before 55 reads "this bundle predates the interval a switch needs".
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
   readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
-  sit in a closed `Evidence` fold. An answer the settled rule replaced points at the Decision table. The memo's words are held to the page's
-  style (below).
+  sit in a closed `Evidence` fold. Where a declared rule settled every clause, its question has no answer line: the
+  verdict and the Decision table answer it; a clause left open is the one line (`Still open: whether …`). The memo's
+  words are held to the page's style (below).
 - **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size and
   the adjusted p folded; the guardrails; strata and per-label tables, folded.
 - **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`); one row per trial, its record folded
@@ -89,7 +102,9 @@ no `key=value`, no chain of dashes, no sentence over 28 words or with more than 
 header over three words, and the declared question only in the title. `humanize` is the one seam an identifier
 passes on its way to a reader. A memo's sentence breaking a rule code can fix is dropped or replaced (a title
 restating a measured number becomes the table's own row); one contradicting a settled decision rule becomes the
-verdict line's sentence, disclosed in Methods; what is left is counted there (`style: N violations`) and listed.
+verdict line's sentence, and one saying the evidence cannot confirm a difference a settled clause decided becomes
+code's counts on that reading, the size of the difference left to more cases; both are disclosed in Methods. What
+is left is counted there (`style: N violations`) and listed.
 
 ### The two charts
 

@@ -105,7 +105,7 @@ RULES — what separates a real analysis from a plausible one.
 
 8. STATE EVERY FINDING IN THE DIRECTION THE EVIDENCE SUPPORTS. When a sweep refutes the hypothesis it tested, report what the evidence shows, at the tier it earns — never the original claim at a low tier, which a skimming reader takes as support. Flipping a refuted claim neither earns a high tier by itself nor turns an unresolved comparison into a null (rule 4). This holds for findings, proposals and durable claims alike.
 
-9. CONCLUSIONS ARE THE PRODUCT, WRITTEN FOR A PERSON. A reader acts on what you conclude, and code has already told them, above your memo, what each arm ran and lost and what the tests decided. Every finding's title and opening sentence say what the reader should believe or do: your best judgement, with the tier (rule 6) carrying the uncertainty. "Unresolved" is a fact about the evidence, never the conclusion: say what you judge most likely true and what you would do. Order findings by decision relevance, except that a finding undermining another's validity precedes it and names in `invalidates` the position of any finding it overturns outright.
+9. CONCLUSIONS ARE THE PRODUCT, WRITTEN FOR A PERSON. Code has already told your reader what each arm ran and lost and what the tests decided. Every finding's title and opening sentence say what the reader should believe or do: your best judgement, with the tier (rule 6) carrying the uncertainty. "Unresolved" is a fact about the evidence, never the conclusion: say what you judge most likely true and what you would do. Order findings by decision relevance, except that a finding undermining another's validity precedes it and names in `invalidates` the position of any finding it overturns outright.
    STYLE — code lints every sentence you write, drops what breaks a rule, and lists what it cannot fix:
    - A title or an answer is one sentence of at most 28 words; never restate the numbers of the table under it.
    - State a measured fact flatly ("cost per reply rose"), never as "no measurable" anything.
@@ -113,10 +113,11 @@ RULES — what separates a real analysis from a plausible one.
    - No `name=value`, setting or field names; name an arm by its label and a dimension in words.
    - One idea per sentence: no chains of dashes, and at most three numbers.
    - Keep, switch and unanswerable must agree with code's verdict line, or code replaces your sentence.
-   - Write for a smart person outside this system; if they would ask what a word means, use another.
+   - Never dispute a decision rule code settled; scope any doubt to how large the difference is.
+   - Write for a smart outsider; if they would ask what a word means, use another.
    - Be clear, not hedged: the tier carries the doubt; give only the caveat that changes what the reader does.
    - Say size in words ("much faster", "too close to call"); exact figures are the tables'.
-   A title claims no more than its evidence: an unresolved contrast is never "no change" (rule 4), and a shift between two bad states is not progress. Name in a finding's `trials` the trials it is drawn from, so a reader can open the failure it names. A finding resting only on readings `reading_scope` lists is exploratory: its title says so. Where `reading_scope.disclosure` is set every finding is.
+   A title claims no more than its evidence: an unresolved contrast is never "no change" (rule 4), and a shift between two bad states is not progress. Name in `trials` the trials a finding is drawn from, so a reader can open the failure it names. A finding resting only on readings `reading_scope` lists is exploratory: its title says so. Where `reading_scope.disclosure` is set every finding is.
    A finding's body may be technical, but still conclusion first, in at most two short paragraphs: the ranked measure for the arms compared, with rule 2's delivery rate. Say in English what bundle fields mean, never their names.
 
 10. A CAVEAT QUALIFIES THE FINDING IT HANGS ON, AND ITS ORDER IS A PRIORITY. Put first what someone acting on it must know, then what they should know; drop texture. Supporting evidence and mechanism belong in the body, not a caveat. A qualification that changes the diagnosis is not a caveat: it is the finding, and the first claim is withdrawn. Hang each caveat on the finding whose recommendation it would change.

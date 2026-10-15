@@ -690,7 +690,7 @@ written under another cassette version is refused, by name, and you re-capture i
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v15.1), durable documents (v15.1), regenerable documents
-(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 54), the cell model
+(v11), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 55), the cell model
 (`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions, each at its first
 public release's value. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
@@ -1364,7 +1364,7 @@ against under the same id. It is no longer written beside the old ones. It is wi
 
 **A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
 case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
-implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (in
+implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (host contract, from `threetears.evals.run`; in
 memory, `SeedCorpus(case_sets=...)`) with the set's `name`, its judge `template` by name and its `judge_cases` by
 their corpus names, in order. A judge case's corpus name is its file's name without `.json` (or its own `name`, which
 an in-memory case must set to be listed). A set naming a case twice, a case the corpus does not carry or a case of

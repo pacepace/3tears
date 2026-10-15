@@ -75,7 +75,13 @@ from threetears.evals.analysis.report.model import (
     VerdictReason,
     table_row,
 )
-from threetears.evals.analysis.report.decision import evaluate_rule, parse_decision_rule, rule_readings
+from threetears.evals.analysis.report.decision import (
+    RateReading,
+    RuleVerdict,
+    evaluate_rule,
+    parse_decision_rule,
+    rule_readings,
+)
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
@@ -98,8 +104,17 @@ from threetears.evals.analysis.report.words import (
     reading_name,
     stands_on_words,
 )
-from threetears.evals.analysis.reporting import self_judging_text
-from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, lint_prose, measure_name, sentences
+from threetears.evals.analysis.reporting import METRIC_TOTAL_MS, self_judging_text
+from threetears.evals.analysis.style import (
+    LABEL_CLAIMS,
+    ArmName,
+    arm_name,
+    code,
+    humanize,
+    lint_prose,
+    measure_name,
+    sentences,
+)
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.quantities import with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
@@ -205,10 +220,10 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
     questions = _preregistered(bundle)
     control = _control_key(bundle)
     candidates = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
-    rule = next((parsed for question in questions if (parsed := parse_decision_rule(question.text))), None)
+    ruled = next(((question, parsed) for question in questions if (parsed := parse_decision_rule(question.text))), None)
     verdict = sentence = None
-    if rule is not None and control is not None and len(candidates) == 1:
-        verdict = evaluate_rule(rule, rule_readings(bundle, control, candidates[0]))
+    if ruled is not None and control is not None and len(candidates) == 1:
+        verdict = evaluate_rule(ruled[1], rule_readings(bundle, control, candidates[0], question_id=ruled[0].id))
         namer = _namer(names)
         sentence = rule_sentence(verdict, control=namer(control), candidate=namer(candidates[0]), bundle=bundle)
     return MemoStyle(
@@ -217,6 +232,7 @@ def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoSt
         question=questions[0].text if questions else None,
         rule=verdict,
         rule_sentence=sentence,
+        rule_question=ruled[0].id if ruled is not None and verdict is not None else None,
     )
 
 
@@ -515,6 +531,7 @@ def _scoreboard_blocks(
         DisclosureBlock(section="scoreboard", source="caveat", text=line, term="case floor")
         for line in caveat_lines(bundle, arm)
     ]
+    blocks += [DisclosureBlock(section="scoreboard", source="arms", text=line) for line in _label_claims(bundle, arm)]
     if other_causes:
         blocks.append(
             DisclosureBlock(
@@ -550,6 +567,53 @@ def _scoreboard_blocks(
             )
         )
     return blocks
+
+
+def _label_claims(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
+    """One line for each arm whose label claims, in a word :data:`~threetears.evals.analysis.style.LABEL_CLAIMS`
+    lists, what its own row against the control contradicts: ``The label 'cheaper candidate' says cheaper; it cost
+    more per reply than production.``
+
+    Cost is read on the scoreboard's cost per reply. Latency is read on each arm's turn time, only where every cell of
+    both arms read it serially (the page compares no contended latency), and contradicts a label only when every cell
+    of the arm sits on the other side of every cell of the control.
+    """
+    control = _control_key(bundle)
+    boards = {board.variant_key: board for board in bundle.scoreboard}
+    if control is None:
+        return []
+    contended = {cell.variant_key for cell in bundle.latency_contended_cells}
+    latencies: dict[str, list[float | None]] = {}
+    for cell in bundle.cell_measures:
+        summary = next((m for m in cell.measures.measures if m.name == METRIC_TOTAL_MS), None)
+        latencies.setdefault(cell.variant_key, []).append(summary.mean if summary is not None else None)
+
+    def clean(key: str) -> list[float] | None:
+        read = latencies.get(key, [])
+        if key in contended or not read or any(value is None for value in read):
+            return None
+        return [value for value in read if value is not None]
+
+    lines: list[str] = []
+    for key, board in boards.items():
+        if key == control:
+            continue
+        label = arm(key)
+        for word, claims, way in LABEL_CLAIMS:
+            if not re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", label, re.I):
+                continue
+            contrary = None
+            if claims == "cost":
+                ours, theirs = boards[control].reply_cost_usd, board.reply_cost_usd
+                if ours is not None and theirs is not None and (theirs > ours if way == "lower" else theirs < ours):
+                    contrary = f"it cost {'more' if way == 'lower' else 'less'} per reply than {arm(control)}"
+            elif (ours_read := clean(control)) is not None and (theirs_read := clean(key)) is not None:
+                longer, shorter = min(theirs_read) > max(ours_read), max(theirs_read) < min(ours_read)
+                if longer if way == "lower" else shorter:
+                    contrary = f"its replies took {'longer' if way == 'lower' else 'less time'} than {arm(control)}'s"
+            if contrary is not None:
+                lines.append(f"The label '{label}' says {word}; {contrary}.")
+    return lines
 
 
 def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
@@ -596,14 +660,15 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     """
     control = _control_key(bundle)
     questions = _preregistered(bundle)
-    rule = next((parsed for question in questions if (parsed := parse_decision_rule(question.text))), None)
-    if rule is None or control is None:
+    ruled = next(((question, parsed) for question in questions if (parsed := parse_decision_rule(question.text))), None)
+    if ruled is None or control is None:
         return []
+    asked, rule = ruled
     rows: list[dict[str, CellValue]] = []
     for board in bundle.scoreboard:
         if board.variant_key == control:
             continue
-        readings = rule_readings(bundle, control, board.variant_key)
+        readings = rule_readings(bundle, control, board.variant_key, question_id=asked.id)
         verdict = evaluate_rule(rule, readings)
         for clause in verdict.clauses:
             shown: list[tuple[str, str | None, str | None]] = []
@@ -726,8 +791,9 @@ def _memo_blocks(
 
     A finding is one sentence its writer wrote and a table code built from the readings the writer chose; everything
     else it carries sits in a closed ``Evidence`` fold. Every word the memo contributes passes ``style`` first
-    (:mod:`~threetears.evals.analysis.report.memo_style`). An answer the settled rule replaced points at the decision
-    table rather than repeating the verdict line. A finding is cited by its headline, never by a number.
+    (:mod:`~threetears.evals.analysis.report.memo_style`). Where the declared rule settled, its question gets no answer
+    from the memo: the verdict line and the decision table have answered it, so the page prints nothing more, or one
+    line naming each clause still open. A finding is cited by its headline, never by a number.
     """
     document = analysis.document
     # The analysis's own variant index names the cells its memo cites, by the page's rule.
@@ -735,6 +801,20 @@ def _memo_blocks(
     questions = _preregistered(bundle)
     blocks: list[ReportBlock] = []
     for answer in document.questions:
+        if style.rule is not None and style.rule.outcome != "unsettled" and answer.question_id == style.rule_question:
+            # Still disclosed in the methods when it contradicted the rule, though never printed.
+            style.contradicts(answer.answer)
+            if (still_open := _still_open(style.rule)) is not None:
+                blocks.append(
+                    TextBlock(
+                        section="memo",
+                        role="answer",
+                        body=still_open,
+                        rests_on=list(answer.rests_on),
+                        facts=[Fact(name="Resolution", value="partial")],
+                    )
+                )
+            continue
         replaced = len(style.replaced)
         body = style.sentence(answer.answer)
         # An answer the rule's settled outcome replaced is code's answer now, not the memo's resolution: the verdict
@@ -814,6 +894,14 @@ def _memo_blocks(
         blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
     blocks.extend(_coverage_blocks(analysis, headlines, steps))
     return blocks
+
+
+def _still_open(rule: RuleVerdict) -> str | None:
+    """Each clause of a settled rule the run left open, in one line; None when the decision table settled them all."""
+    still = [verdict.clause.text for verdict in rule.clauses if verdict.outcome == "unsettled"]
+    if not still:
+        return None
+    return "Still open: " + ", and ".join(f"whether {clause}" for clause in still) + "."
 
 
 def _cited(headlines: Sequence[str], cited: Sequence[int]) -> str:
@@ -949,7 +1037,8 @@ def _finding_blocks(
     """One finding: its one sentence, the table code built from its readings, their charts, then a closed fold.
 
     A title restating a number the bundle measured is replaced by the table's own row in words: a measured fact is
-    stated by code, flatly.
+    stated by code, flatly. Where a clause the declared rule settled reads the finding's one reading, that row is
+    :func:`_settled_sentence`, which also replaces any of the finding's sentences disputing the settled difference.
     """
     facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[finding.confidence])]
     if exploratory:
@@ -963,20 +1052,24 @@ def _finding_blocks(
     if finding.invalidates:
         facts.append(Fact(name="Overturns", value=_cited(headlines, finding.invalidates)))
     table = _evidence_table(analysis, position, resolution, arm) if resolution and resolution.evidence else None
-    fallback = None
+    fallback = settled = None
     if table is not None and len(table.columns) > 2:
         reading = table.columns[1]
         values = [(str(row["arm"].value), row[reading.key].text) for row in table.rows]
-        fallback = _row_sentence(bundle, names or {}, resolution, reading.header, values) or row_words(
-            reading.header, values
+        settled = _settled_sentence(bundle, names or {}, resolution, values, style)
+        fallback = (
+            settled
+            or _row_sentence(bundle, names or {}, resolution, reading.header, values)
+            or row_words(reading.header, values)
         )
+    title = style.sentence(finding.title, fallback=fallback, settled=settled)
     blocks: list[ReportBlock] = [
         # The facts ride on the block for a program; the page prints them once, in the finding's fold.
         TextBlock(
             section="memo",
             role="finding_title",
             finding=position,
-            body=style.sentence(finding.title, fallback=fallback),
+            body=title,
             facts=facts,
             anchor=f"F{position + 1}",
         )
@@ -985,10 +1078,14 @@ def _finding_blocks(
         blocks.append(table)
         blocks.extend(_finding_charts(analysis, position, resolution, charts, arm))
     blocks.append(_facts_table(facts, name="finding_facts", finding=position))
-    if (body := style.prose(finding.body)).strip():
+    # Code's sentence on a settled difference is printed once: a later sentence disputing it is dropped.
+    printed = [title]
+    if (body := style.prose(finding.body, settled=settled, said=" ".join(printed))).strip():
+        printed.append(body)
         blocks.append(TextBlock(section="memo", role="finding_body", finding=position, body=body, fold="Evidence"))
     for caveat in finding.caveats:
-        if (said := style.prose(caveat.text)).strip():
+        if (said := style.prose(caveat.text, settled=settled, said=" ".join(printed))).strip():
+            printed.append(said)
             blocks.append(
                 TextBlock(
                     section="memo",
@@ -999,7 +1096,7 @@ def _finding_blocks(
                     fold="Evidence",
                 )
             )
-    if (durable := style.prose(finding.durable)).strip():
+    if (durable := style.prose(finding.durable, settled=settled, said=" ".join(printed))).strip():
         blocks.append(
             TextBlock(section="memo", role="carried_forward", finding=position, body=durable, fold="Evidence")
         )
@@ -1048,6 +1145,93 @@ def _row_sentence(
     elif verdicts and verdicts <= set(_SEPARATED):
         said += "; the difference separated"
     return f"{said[:1].upper()}{said[1:]}."
+
+
+def _settled_sentence(
+    bundle: AnalysisContextBundle | None,
+    names: dict[str, ArmName],
+    resolution: FindingResolution | None,
+    values: Sequence[tuple[str, str]],
+    style: MemoStyle,
+) -> str | None:
+    """A finding's one reading, which a clause of the declared rule settled, as code says it: the counts, candidate
+    first, and under the case floor that only the size of the difference is not estimated.
+
+    ``Cheaper candidate passed 6 of 12 on `call_count("music.queue_track") >= 2` to production's 11; too few cases to
+    estimate how large the difference is.`` The size is said as ``needs 5 cases`` where the sentence stays within the
+    page's numeral limit, in the case floor line's own words otherwise. None where no settled clause reads the
+    finding's one reading on the control and the candidate.
+    """
+    rule = style.rule
+    if rule is None or bundle is None or resolution is None or len(values) != 2:
+        return None
+    control = _control_key(bundle)
+    label = _namer(names)
+    measures = {row.measure_id for row in resolution.evidence}
+    if control is None or label(control) not in {arm for arm, _ in values} or len(measures) != 1:
+        return None
+    (measure,) = measures
+    (ours,) = [value for arm, value in values if arm == label(control)]
+    ((candidate, theirs),) = [(arm, value) for arm, value in values if arm != label(control)]
+    if measure == "production_replicating_cost" and rule.settles_cost():
+        said = f"{candidate} cost {theirs} per reply to {label(control)}'s {ours}"
+    elif (rate := _rate_of(bundle, rule, measure, control, candidate, label)) is not None and rule.settles(rate):
+        said = (
+            f"{candidate} passed {rate.candidate_passed} of {rate.candidate_n} on {rate.name} to {label(control)}'s "
+            f"{rate.control_passed}" + ("" if rate.control_n == rate.candidate_n else f" of {rate.control_n}")
+        )
+    else:
+        return None
+    said = said[:1].upper() + said[1:]
+    fewest = rule.readings.fewest_cases() if rule.readings is not None else None
+    if fewest is None or fewest >= MIN_CASES:
+        return f"{said}."
+    sized = [
+        f"{said}; how large the difference is needs {MIN_CASES} cases.",
+        f"{said}; too few cases to estimate how large the difference is.",
+    ]
+    return next((sentence for sentence in sized if not lint_prose(sentence)), sized[-1])
+
+
+def _rate_of(
+    bundle: AnalysisContextBundle,
+    rule: RuleVerdict,
+    measure: str,
+    control: str,
+    candidate: str,
+    label: Callable[[str], str],
+) -> RateReading | None:
+    """``measure``'s pass rate on the control and the arm named ``candidate``: the rule's own reading where it read
+    one, else a goal check's held count on each arm's one cell (its rate times its observations, as the finding's
+    table counts it), with the trials each arm lost as the rule counts them. None where neither is there."""
+    rates = rule.readings.rates if rule.readings is not None else ()
+    if (read := next((rate for rate in rates if rate.measure == measure), None)) is not None:
+        return read
+    keys = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
+    key = next((key for key in keys if label(key) == candidate), None)
+    if key is None or goal_check_of(measure) is None:
+        return None
+    held: dict[str, tuple[int, int]] = {}
+    for cell in bundle.cell_measures:
+        summary = next((m for m in cell.measures.measures if m.name == measure), None)
+        if cell.variant_key not in (control, key) or summary is None or summary.mean is None or summary.n <= 0:
+            continue
+        count = summary.n_true if summary.n_true is not None else summary.mean * summary.n
+        if cell.variant_key in held or abs(count - round(count)) > 1e-6:
+            return None  # an arm over several cells, or a count that is not whole, is not read here
+        held[cell.variant_key] = (round(count), summary.n)
+    if set(held) != {control, key}:
+        return None
+    lost = {board.variant_key: sum(board.lost.values()) for board in bundle.scoreboard}
+    descriptor = bundle.measure_catalog.get(measure)
+    return RateReading(
+        measure_name(measure, descriptor.reader_name if descriptor is not None else None),
+        *held[control],
+        *held[key],
+        lost.get(control, 0),
+        lost.get(key, 0),
+        measure=measure,
+    )
 
 
 #: The contrast verdicts that separated from the control.

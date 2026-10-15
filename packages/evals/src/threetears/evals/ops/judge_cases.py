@@ -17,16 +17,16 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredVerdict
+from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredVerdict, judge_case_of
 from threetears.evals.kernel.remedies import FIND_TEMPLATE
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.runs import LaunchArguments, TemplateLine
 from threetears.evals.run.authoring import get_template
 from threetears.evals.run.judge_kind import JudgeCaseFreezeReport, author_judge_case, freeze_judge_cases
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import EvalTemplate, JudgedArtifact
+from threetears.evals.schema.models import EvalTemplate, JudgedArtifact, RubricScale
 
 
 class JudgeCasesFreeze(EvalBaseModel):
@@ -186,6 +186,95 @@ def judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, a
     )
 
 
+class JudgeCaseEntry(EvalBaseModel):
+    """One stored case of a judge template, as a listing shows it."""
+
+    test_case_id: str = Field(description="The case's id: what a case set lists, and what case_set_mint takes.")
+    criterion: str = Field(description="The criterion it is judged on: a rubric dim's name, or a reserved axis id.")
+    scale: RubricScale = Field(description="The criterion's scale: 'pass_fail' or 'ordinal'.")
+    authored_by: str | None = Field(
+        description="Who wrote the case by hand; None for a case frozen from a stored result or a label."
+    )
+    expected: int | None = Field(
+        description=(
+            "An authored case's expected verdict as a stored score: 1 (pass) or 0 (fail), or 1 to 5. None for a case "
+            "frozen from a stored result, whose verdicts are its people's labels (see labels)."
+        )
+    )
+    labels: int = Field(description="How many person labels the case carries.")
+    live: bool = Field(description="Whether a launch with no case set runs it: not retired.")
+
+
+class UnreadableJudgeCase(EvalBaseModel):
+    """A stored case of a judge template this build cannot read as a judge case, and why."""
+
+    test_case_id: str
+    reason: str
+
+
+class JudgeCaseListing(EvalBaseModel):
+    """A judge template's stored cases, in storage order: every id a case set over all of them must list."""
+
+    template_id: str
+    template_name: str
+    cases: list[JudgeCaseEntry]
+    unreadable: list[UnreadableJudgeCase] = Field(
+        description="Cases that carry no readable judge case. A launch of the template refuses until they are re-frozen."
+    )
+
+
+def judge_cases_list(host: EvalHost, template_id: str, scope_id: str) -> JudgeCaseListing:
+    """List a judge template's stored cases, in storage order, retired ones included.
+
+    Reads only; spends and writes nothing. A case's seed-corpus name is not stored with it, so it is not listed.
+
+    Args:
+        host: The host whose store is read.
+        template_id: The judge template.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The listing.
+
+    Raises:
+        NotFoundError: No template with that id in the scope.
+        ValidationFailedError: The template is not of the judge kind.
+    """
+    template = host.storage.load_template(template_id, scope_id)
+    if template is None:
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
+    if template.candidate_kind != JUDGE_KIND:
+        raise ValidationFailedError(
+            f"template {template.id!r} is of kind {template.candidate_kind!r}, not {JUDGE_KIND!r}, so it holds no "
+            "judge cases",
+            remedy=f"name a template of the {JUDGE_KIND!r} kind ({FIND_TEMPLATE})",
+        )
+    entries: list[JudgeCaseEntry] = []
+    unreadable: list[UnreadableJudgeCase] = []
+    for stored in host.storage.query_test_cases(scope_id, template_id=template.id):
+        try:
+            case = judge_case_of(stored)
+        except ValueError as exc:
+            unreadable.append(UnreadableJudgeCase(test_case_id=stored.id, reason=str(exc)))
+            continue
+        if case is None:
+            unreadable.append(UnreadableJudgeCase(test_case_id=stored.id, reason="it carries no judge case"))
+            continue
+        authored = case.source.authored
+        entries.append(
+            JudgeCaseEntry(
+                test_case_id=stored.id,
+                criterion=case.dim,
+                scale=case.scale,
+                authored_by=authored.author if authored is not None else None,
+                expected=case.labels[0].score if authored is not None else None,
+                labels=len(case.labels),
+                live=not stored.archived,
+            )
+        )
+    return JudgeCaseListing(template_id=template.id, template_name=template.name, cases=entries, unreadable=unreadable)
+
+
 class JudgeTemplateCreate(EvalBaseModel):
     """What authoring a judge template names: what it is called and what its judge campaign sets out to measure.
 
@@ -255,9 +344,13 @@ def judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: 
 
 __all__ = [
     "JudgeCaseAuthor",
+    "JudgeCaseEntry",
+    "JudgeCaseListing",
     "JudgeCasesFreeze",
     "JudgeTemplateCreate",
+    "UnreadableJudgeCase",
     "judge_case_author",
     "judge_cases_freeze",
+    "judge_cases_list",
     "judge_template_create",
 ]
