@@ -81,12 +81,12 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.decision import (
-    KEEP_IS_THE_DEFAULT,
     PROSE_RULE_LINE,
     RateReading,
     RuleReadings,
     RuleVerdict,
     evaluate_rule,
+    keep_is_the_default,
     prose_ruled,
     rule_readings,
     rule_statement,
@@ -812,10 +812,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                         "reading": reading,
                         "control": ours,
                         "candidate": theirs,
-                        # Keep is the default, so a clause not shown either way reads keep, with why.
-                        "outcome": f"{'switch' if clause.outcome == 'switch' else 'keep'}: {clause.reason}"
-                        if index == 0
-                        else None,
+                        "outcome": f"{clause.outcome}: {clause.reason}" if index == 0 else None,
                     }
                 )
     if not rows:
@@ -848,7 +845,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             order="clause by clause, each arm against the control",
             total_rows=len(rows),
         ),
-        DisclosureBlock(section="decision", source="rule", text=KEEP_IS_THE_DEFAULT),
+        DisclosureBlock(section="decision", source="rule", text=keep_is_the_default(arm(control))),
     ]
 
 

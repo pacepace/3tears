@@ -30,11 +30,11 @@ from threetears.evals.analysis.bundle.schema import JudgedArm, JudgedMeasure
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis import report_html, report_markdown
 from threetears.evals.analysis.report.decision import (
-    KEEP_IS_THE_DEFAULT,
     PROSE_RULE_LINE,
     RateReading,
     RuleReadings,
     evaluate_rule,
+    keep_is_the_default,
     rule_readings,
     rule_statement,
 )
@@ -228,16 +228,18 @@ async def test_a_kept_clause_beside_a_contrast_not_separated_says_why_once_under
 ) -> None:
     """Prod, .30: a 10-point clause read keep while the contrasts read the same pass rate as not separated.
 
-    Both are right: keep is the default, and a clause reads the bounded interval a switch reads, which can be wider
-    than the t interval the contrasts table prints. The page says so once, under the clauses, and the clause's reason
-    says the counts and the margin in words, naming the arms.
+    Both are right: keep is the default, so an unsettled rule keeps the control for now, and a clause reads the
+    bounded interval a switch reads, which can be wider than the t interval the contrasts table prints. The page says
+    so once, under the clauses, and each clause's row carries its own outcome, its reason saying the counts and the
+    margin in words, naming the arms.
     """
     _, report = g2_ruled
+    # What unsettled means for the reader, the control by its label.
     sentence = (
-        "Keep is the default: a switch needs every clause shown, and a clause reads the interval a switch reads, which "
-        "can be wider than the contrasts table's."
+        "Keep is the default: a switch needs every clause shown, so an unsettled rule keeps production for now. A "
+        "clause reads the interval a switch reads, which can be wider than the contrasts table's."
     )
-    assert KEEP_IS_THE_DEFAULT == sentence
+    assert keep_is_the_default("production") == sentence
     (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "rule"]
     assert (said.section, said.text) == ("decision", sentence)
     markdown = report_markdown(report)
@@ -260,8 +262,10 @@ async def test_a_kept_clause_beside_a_contrast_not_separated_says_why_once_under
         control_cases=20,
         candidate_cases=20,
     )
-    assert evaluate_rule(rule, wide, **on).clauses[0].reason == (
-        "v2's drop is not shown to stay within 10 points (it could be as much as 53.6)"
+    (unshown,) = evaluate_rule(rule, wide, **on).clauses
+    assert (unshown.outcome, unshown.reason) == (
+        "unsettled",
+        "v2's drop is not shown to stay within 10 points (it could be as much as 53.6)",
     )
 
 
@@ -499,8 +503,8 @@ async def test_a_rule_reads_its_own_questions_family_and_never_another_at_anothe
     (outcome,) = [
         row["outcome"] for row in table.values() if row["outcome"] is not None and row["reading"] == "the pass rate"
     ]
-    # Keep is the default, so a clause not shown either way reads keep, with why.
-    assert outcome == ("keep: candidate's drop is not shown to stay within 10 points (it could be as much as 49)")
+    # The clause's own outcome: one shown neither way is unsettled, as the verdict line says, with why.
+    assert outcome == "unsettled: candidate's drop is not shown to stay within 10 points (it could be as much as 49)"
 
 
 # --- the rule is typed: built, stored and refused as data, never parsed from words ---------------------------------

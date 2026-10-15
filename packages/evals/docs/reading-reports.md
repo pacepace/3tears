@@ -106,13 +106,14 @@ Glossary start folded, and a nav link opens the one it lands on.
 - **Decision**: the declared decision rule in one sentence code writes from its clauses, the arms by name (`Switch to
   v2 only if no pass rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on v1.`; a clause
   naming one reading says `no tone rate drops by more than 2 points`), then one row per clause and reading, the
-  clause's own sentence first, each arm's column headed by its name, then `keep` or `switch` with the reason in
-  words, the counts and the margin naming the arms (`keep: v2 passed 14 of 60 to v1's 29, a drop of 25 points
-  against a margin of 10`; `keep: v2's drop is not shown to stay within 10 points (it could be as much as 53.6)`).
-  One line under the table says keep is the default, a switch needs every clause shown, and a clause reads the
-  interval a switch reads, which can be wider than the Contrasts table's: so a clause can read keep beside a
-  contrast that is not separated. Keep settles on what the run observed: a drop past the margin, or a higher cost;
-  a clause shown neither way reads keep too, and the verdict calls the rule unsettled. Switch needs
+  clause's own sentence first, each arm's column headed by its name, then the clause's own outcome, `keep`,
+  `switch` or `unsettled`, with the reason in words, the counts and the margin naming the arms (`keep: v2 passed 14
+  of 60 to v1's 29, a drop of 25 points against a margin of 10`; `unsettled: v2's drop is not shown to stay within
+  10 points (it could be as much as 53.6)`). One line under the table says what unsettled means: `Keep is the
+  default: a switch needs every clause shown, so an unsettled rule keeps v1 for now. A clause reads the interval a
+  switch reads, which can be wider than the contrasts table's.` So a clause can read keep or unsettled beside a
+  contrast that is not separated. Keep settles on what the run observed: a drop past the margin, or a higher cost.
+  Switch needs
   sampling evidence: every arm at the case floor, and for every rate the clause reads (the pass rate and each
   check's) the contrast's bounded interval keeping the drop within the margin; for cost, the interval wholly below
   zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds its error rate on a

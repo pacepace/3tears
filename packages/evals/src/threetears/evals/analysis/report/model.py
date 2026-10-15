@@ -96,8 +96,8 @@ TextRole = Literal[
 #: marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the scoreboard that changes how the
 #: verdict is read, in normal weight: the case floor, an arm's label that its own row contradicts. ``basis``: the
 #: question declared before the run, quoted whole under the arms line, and its decision rule in the sentence code
-#: writes, at the head of the Decision section. ``rule``: the line under the clauses table saying keep is the default
-#: and which interval a clause reads. ``verdict``: the verdict line. ``design``, ``charts`` and
+#: writes, at the head of the Decision section. ``rule``: the line under the clauses table saying keep is the default,
+#: so an unsettled rule keeps the control for now, and which interval a clause reads. ``verdict``: the verdict line. ``design``, ``charts`` and
 #: ``cost``: how the run was laid out, what was not charted and where a cost is a floor, in the methods. ``memo``: who wrote the memo,
 #: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge

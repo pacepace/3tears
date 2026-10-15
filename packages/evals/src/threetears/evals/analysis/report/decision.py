@@ -33,8 +33,9 @@ yet run, so it needs an interval:
 **Each reason says the counts and the margin in words, naming the arms.** A rate kept on the counts reads
 ``v2 passed 14 of 60 to v1's 29, a drop of 25 points against a margin of 10``; one whose interval reaches past the
 margin reads ``v2's drop is not shown to stay within 10 points (it could be as much as 53.6)``. The page's Decision
-section says once that keep is the default and that a clause reads the interval a switch reads
-(:data:`KEEP_IS_THE_DEFAULT`), so a clause kept beside a contrast that is not separated reads as the two rulers it is.
+section says once that keep is the default, so an unsettled rule keeps the control for now, and that a clause reads
+the interval a switch reads (:func:`keep_is_the_default`), so a clause unsettled or kept beside a contrast that is not
+separated reads as the two rulers it is.
 
 Nothing here estimates the size of a difference: under the case floor a settled ``keep`` is read on the counts alone.
 Every sentence here names the arms by the names the page gives them, never by their role in the comparison.
@@ -67,12 +68,22 @@ RuleOutcome = Literal["keep", "switch", "unsettled"]
 #: The line a page's Decision section opens with when a question wrote its rule as prose and declared none typed.
 PROSE_RULE_LINE = "This question's rule was written as prose, which is no longer read; declare it as a rule."
 
-#: The sentence the page's Decision section says once, under the clauses: why a clause can read keep beside a contrast
-#: the contrasts table calls not separated.
-KEEP_IS_THE_DEFAULT = (
-    "Keep is the default: a switch needs every clause shown, and a clause reads the interval a switch reads, which can "
-    "be wider than the contrasts table's."
-)
+
+def keep_is_the_default(control: str) -> str:
+    """What the page's Decision section says once, under the clauses: what an unsettled rule means for the reader,
+    and why a clause can read keep or unsettled beside a contrast the contrasts table calls not separated.
+
+    Args:
+        control: The control, by the name the page gives it.
+
+    Returns:
+        Two sentences.
+    """
+    return (
+        f"Keep is the default: a switch needs every clause shown, so an unsettled rule keeps {control} for now. A "
+        "clause reads the interval a switch reads, which can be wider than the contrasts table's."
+    )
+
 
 #: The fewest usable cases on every arm before a clause can settle ``switch``: the page's case floor.
 _FLOOR = SMALL_N_BAND_FLOOR
@@ -556,7 +567,6 @@ def rule_readings(
 
 
 __all__ = [
-    "KEEP_IS_THE_DEFAULT",
     "PROSE_RULE_LINE",
     "ClauseVerdict",
     "RateReading",
@@ -565,6 +575,7 @@ __all__ = [
     "RuleVerdict",
     "clause_statement",
     "evaluate_rule",
+    "keep_is_the_default",
     "prose_ruled",
     "rule_readings",
     "rule_statement",
