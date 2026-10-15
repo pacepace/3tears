@@ -60,7 +60,7 @@ from threetears.evals.kernel.declaration import (
     RateDrop,
     states_a_prose_rule,
 )
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, rule_rates
 
 #: Where a clause, or the rule, came out.
 RuleOutcome = Literal["keep", "switch", "unsettled"]
@@ -418,18 +418,28 @@ def _contrast(
     return None
 
 
-def _held(summary: MeasureSummary) -> int | None:
-    """How many of a pass/fail reading's observations passed: a rate's count, or a goal check's mean times its n.
+def _held(summary: MeasureSummary, passes_high: bool | None) -> int | None:
+    """How many of a pass/fail reading's observations passed, counted on its better end.
 
-    A goal check reaches the bundle as a mean of 0s and 1s, not a rate, and is the same proportion: its count is the
-    mean times the observations, read only where that is whole. None for any other reading.
+    ``passes_high`` is the measure's orientation (:func:`~threetears.evals.kernel.metrics.rule_rates`), None for a
+    measure a rule does not read. A boolean counts its true observations, a pass/fail scorer and a goal check (which
+    reaches the bundle as a mean of 0s and 1s, higher passing) the mean times the observations, read only where that
+    is whole; a lower-is-better measure passes on the rest. None for any other reading.
     """
-    if summary.rate is not None and summary.n_true is not None:
-        return summary.n_true
-    if goal_check_of(summary.name) is None or summary.mean is None or summary.n <= 0:
+    if goal_check_of(summary.name) is not None:
+        passes_high = True
+    if passes_high is None:
         return None
-    count = summary.mean * summary.n
-    return round(count) if abs(count - round(count)) <= 1e-6 else None
+    if summary.rate is not None and summary.n_true is not None:
+        ones: int | None = summary.n_true
+    elif summary.mean is None or summary.n <= 0:
+        return None
+    else:
+        count = summary.mean * summary.n
+        ones = round(count) if abs(count - round(count)) <= 1e-6 else None
+    if ones is None:
+        return None
+    return ones if passes_high else summary.n - ones
 
 
 def _compared_as(name: str) -> str:
@@ -456,11 +466,13 @@ def rule_readings(
 ) -> RuleReadings:
     """The figures a rule is read against for one candidate arm, from the bundle alone.
 
-    The pass rates are every trial's, then each check's pass rate the arms' cells carry (a goal check's as its mean
-    times its observations, the count it is: :func:`_held`), then each pass/fail judged dimension on the capability
-    axis, read the same way from its scores; each arm's lost trials are
-    trials it could still add. Each rate carries its contrast's bounded interval, the one a switch reads, where the
-    bundle computed one (the overall pass rate's is its ``trial`` contrast). Cost is each arm's cost per reply, with
+    The pass rates are every trial's, then each check's pass rate the arms' cells carry, counted on its better end (a
+    goal check's and a pass/fail scorer's as its mean times its observations, a lower-is-better boolean's as its false
+    count: :func:`_held` over :func:`~threetears.evals.kernel.metrics.rule_rates`, the list
+    :func:`~threetears.evals.kernel.declaration.decision_readings` offers), then each pass/fail judged dimension on
+    the capability axis, read the same way from its scores; each arm's lost trials are trials it could still add.
+    Each rate carries its contrast's bounded interval, the one a switch reads, where the bundle computed one (the
+    overall pass rate's is its ``trial`` contrast). Cost is each arm's cost per reply, with
     the cost contrast's interval. Each arm carries its usable cases.
 
     Args:
@@ -492,10 +504,11 @@ def rule_readings(
             ),
         )
     ]
+    oriented = rule_rates(bundle.measure_catalog.values())
     measures: dict[str, dict[str, tuple[int, int]]] = {}
     for cell in bundle.cell_measures:
         for summary in cell.measures.measures:
-            if (held := _held(summary)) is None or summary.name.startswith("classifier:"):
+            if (held := _held(summary, oriented.get(summary.name))) is None:
                 continue
             # An arm over several rigs is counted over all of them, as its trials are.
             passed, n = measures.setdefault(summary.name, {}).get(cell.variant_key, (0, 0))

@@ -801,6 +801,42 @@ def test_a_case_an_operator_relabelled_in_place_reads_customized_and_resets_only
     assert set(_states(reset.after).values()) == {"current"}, reset.after.render()
 
 
+def test_a_relabelled_stratum_keeps_the_case_s_id_and_content_hash() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a", stratum="plain")))
+    template = _subject(storage)
+    plain, boundary = (_own("a", stratum=stratum).test_case(template) for stratum in ("plain", "boundary"))
+    (case,) = _cases_on(storage, template)
+
+    assert (plain.id, plain.content_hash) == (boundary.id, boundary.content_hash) == (case.id, case.content_hash)
+    assert plain.content_hash == _own("a").test_case(template).content_hash, "a stratum is no part of the content"
+    assert case.seed_digest == _own("a", stratum="plain").digest() != _own("a", stratum="boundary").digest()
+
+
+def test_a_stratum_the_corpus_relabels_reads_stale_and_one_an_operator_relabels_reads_customized() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a", stratum="plain")))
+    relabelled = _own_corpus(_own("a", stratum="boundary"))
+
+    by_corpus = next(r for r in _drift(storage, relabelled).readings if r.key == _own_key("a"))
+    (case,) = _cases_on(storage, _subject(storage))
+    storage.save_test_case(case.model_copy(update={"stratum": "boundary"}))
+    by_operator = next(
+        r for r in _drift(storage, _own_corpus(_own("a", stratum="plain"))).readings if r.key == _own_key("a")
+    )
+
+    assert (by_corpus.state, by_corpus.seeded_source) == ("stale", "recorded")
+    assert (by_operator.state, by_operator.seeded_source) == ("customized", "recorded")
+
+
+def test_a_stratified_case_whose_content_changed_reads_stale() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a", stratum="lookalike")))
+    moved = _own_corpus(_own("a", stratum="lookalike", host_payload={"persona": "a buyer in a hurry"}))
+
+    assert _states(_drift(storage, moved))[_own_key("a")] == "stale"
+
+
 def _host_seeded_before_32() -> EvalStorage:
     """A store whose template the engine seeded and whose cases the host's own seed wrote: ``a`` as the corpus has it
     now, ``b`` as it was, neither recording a seed."""

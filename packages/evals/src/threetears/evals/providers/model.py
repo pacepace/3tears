@@ -8,6 +8,7 @@ file and replays them offline through :class:`~threetears.evals.testing.Recorded
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import string
@@ -138,6 +139,31 @@ class Completion:
 _NOTHING_READ: Final = PriceRefresh(refreshed=False, fetched_at=None, failure=None)
 
 
+@dataclass(slots=True, eq=False)
+class _MadeRead:
+    """A catalogue read ``refresh_prices`` made, belonging to the task that made it: that task's request.
+
+    Every pricing use in that task shares it (a price ceiling, then the call), and the call consumes it, ending the
+    request. A use from any other task, a child that inherited the context included, reads for itself, and so does
+    any use once the read is older than ``max_age_s`` (the catalogue's ``ceiling_stale_after``).
+    """
+
+    read: PriceRefresh
+    task: asyncio.Task[object] | None
+    taken_at: float
+    max_age_s: float
+    consumed: bool = False
+
+    def held(self) -> bool:
+        """Whether the current task may price from the read: its own, not consumed, and young enough."""
+        return (
+            not self.consumed
+            and self.task is not None
+            and self.task is asyncio.current_task()
+            and time.monotonic() - self.taken_at <= self.max_age_s
+        )
+
+
 def _provider_of(model_id: str, provider: Provider | None, base_url: str | None) -> Provider:
     """The provider a model id goes to: as named; else OpenRouter for a ``vendor/model`` id, an OpenAI-compatible
     endpoint for a ``base_url``; a bare id with neither is refused, never guessed."""
@@ -232,14 +258,15 @@ class _Live:
         self._unbounded: set[str] = set()
         #: What the last :meth:`refresh_prices` found, or ``None`` before the first.
         self.last_refresh: PriceRefresh | None = None
-        #: The catalogue read this model's last ``refresh_prices`` in this task made, which its next call in the task
-        #: takes as its own rather than reading again: one request, one catalogue fetch, even when that fetch failed.
-        #: The model's own, so no other model, and no other host, ever takes it.
-        self._made_read: ContextVar[PriceRefresh | None] = ContextVar(
+        #: The catalogue read this model's last ``refresh_prices`` made, belonging to the task that made it
+        #: (:class:`_MadeRead`): that task's ceiling and call share it and the call consumes it; any other task reads
+        #: for itself. The model's own, so no other model, and no other host, ever takes it.
+        self._made_read: ContextVar[_MadeRead | None] = ContextVar(
             f"threetears_evals_read_for_call_{id(self):x}", default=None
         )
 
-    def _client(self) -> httpx.AsyncClient:
+    def http_client(self) -> httpx.AsyncClient:
+        """The client it sends through: the one handed in, else the one it opens, once, and :meth:`aclose` closes."""
         if self._http is not None:
             return self._http
         if self._opened is None:
@@ -247,12 +274,12 @@ class _Live:
         return self._opened
 
     async def _read_for_call(self) -> PriceRefresh:
-        """The catalogue read this call makes: the one ``refresh_prices`` made for it in this task, taken once, or a
-        read of its own (:meth:`Catalogue.read`)."""
+        """The catalogue read this call makes: the one ``refresh_prices`` made in this task, which the call consumes,
+        or a read of its own (:meth:`Catalogue.read`)."""
         made = self._made_read.get()
-        if made is not None:
-            self._made_read.set(None)
-            return made
+        if made is not None and made.held():
+            made.consumed = True
+            return made.read
         return await self._catalogue.read()
 
     def _catalogue_id(self) -> str | None:
@@ -289,7 +316,7 @@ class _Live:
             path, headers = "/messages", {"x-api-key": self._key, "anthropic-version": "2023-06-01"}
         else:
             path, headers = "/chat/completions", {"authorization": f"Bearer {self._key}"}
-        response = await self._client().post(self._url + path, json=body, headers=headers)
+        response = await self.http_client().post(self._url + path, json=body, headers=headers)
         if not response.is_success:
             raise error_from_response(self.provider, response.status_code, response.content)
         try:
@@ -399,7 +426,14 @@ class _Live:
     async def refresh_prices(self) -> PriceRefresh:
         read = await self._catalogue.read()
         self.last_refresh = read
-        self._made_read.set(read)
+        self._made_read.set(
+            _MadeRead(
+                read,
+                task=asyncio.current_task(),
+                taken_at=time.monotonic(),
+                max_age_s=self._catalogue.ceiling_stale_after.total_seconds(),
+            )
+        )
         return read
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
@@ -617,9 +651,10 @@ class Model:
     def derive(self, id: str | None = None, *, temperature: float | None, catalogue: Catalogue | None = None) -> Model:
         """This model's settings for another model id or temperature: how :class:`Clients` builds a role's client.
 
-        The new model sends through this one's ``http`` client but never owns it: closing it leaves the client open,
-        and the model that owns it (this one, with ``own_http=True``) closes it. Given a ``transport``, it opens a
-        client of its own on that same transport, which closing it closes.
+        The new model sends through this one's client but never owns it: closing it leaves the client open. That is
+        the ``http`` client this one was handed, which its owner closes, or the one this one opens for itself (on its
+        ``transport``, ``timeout`` and ``headers``), which only this one's :meth:`aclose` closes, so closing every
+        derived model leaves this one on an open transport.
 
         Args:
             id: The model id, or ``None`` for this one.
@@ -629,7 +664,10 @@ class Model:
         Returns:
             A new model, built as this one was in every other setting.
         """
-        return Model(id or self.model_name, temperature=temperature, catalogue=catalogue, **self._options)
+        options = dict(self._options)
+        if self._live is not None and options["http"] is None:
+            options.update(http=self._live.http_client(), transport=None, timeout=None, headers=None)
+        return Model(id or self.model_name, temperature=temperature, catalogue=catalogue, **options)
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
@@ -762,9 +800,11 @@ class Model:
 
         What the engine awaits before it prices a call (:func:`~threetears.evals.kernel.capped_completion.refresh_prices`),
         so a model idle past ``Catalogue.ceiling_stale_after`` is priced from fresh rows rather than refused. Loads
-        made together share one fetch. The model's next :meth:`generate` in the same task takes this read as its own
-        rather than reading again, so one request makes at most one catalogue fetch: a read that failed is not tried
-        again by the call it was made for. Never raises: a first read that fails leaves :meth:`price_ceiling` ``None``
+        made together share one fetch. The read belongs to the task that awaited this: its :meth:`price_ceiling` and
+        its next :meth:`generate` price from it, and that call consumes it, so one request reads the catalogue once
+        and a read that failed is not tried again by the call it was made for. A call from any other task, a child
+        that inherited the context included, reads for itself, as does any call once the read is older than
+        ``Catalogue.ceiling_stale_after``. Never raises: a first read that fails leaves :meth:`price_ceiling` ``None``
         and the call unpriced, and a refresh that fails keeps the rows, stale, as a live call does; either is logged.
         Free while replaying.
 
@@ -847,9 +887,10 @@ class Clients:
 
     The engine closes what it is handed after each unit of work; that releases nothing here, and :meth:`aclose`
     closes every model once, at shutdown, and then the ``http`` client when the factory owns it (``own_http=True``).
-    A role given as a :class:`Model` stays the caller's: the models built from it send through its ``http`` client
-    without closing it (:meth:`Model.derive`), and open their own on its ``transport``. Await :meth:`load_prices` at
-    boot so every price ceiling can answer.
+    A role given as a :class:`Model` stays the caller's: the models built from it send through its client, the
+    ``http`` one it was handed or the one it opens on its ``transport``, without closing it (:meth:`Model.derive`),
+    so the caller's model works after :meth:`aclose`. Await :meth:`load_prices` at boot so every price ceiling can
+    answer.
     """
 
     def __init__(

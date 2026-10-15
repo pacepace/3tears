@@ -78,7 +78,7 @@ set of inputs to classify) as cases rather than variation axes, and a ``template
 ``host_payload``, ``stratum``). Each names a template the corpus carries, of a kind other than the judge's (a judge
 template's cases are its judge cases), and is written into that template's current revision after the templates,
 under an id derived from the revision and its content, carrying its corpus name as ``name`` and ``seed_name`` and the
-digest of its content as ``content_hash``. The judge battery's rule holds for it, for the same reason: a template's
+digest of its content as ``content_hash`` (its stratum in neither, as for a generated case). The judge battery's rule holds for it, for the same reason: a template's
 live cases are what a launch of it runs, so a case is written only into a revision that held no cases when the seed
 began, and one whose content the revision already holds is ``already present``. A new case, or one whose content
 changed, for a revision already holding cases is withheld under ``needs_reset`` until ``reset_definitions`` writes the
@@ -161,6 +161,7 @@ from threetears.evals.run.definition_digests import (
     current_revisions,
     judge_config_digest,
     rubric_dim_digest,
+    template_case_content_digest,
     template_case_digest,
     template_digest,
 )
@@ -239,10 +240,12 @@ class SeedTemplateCase(EvalBaseModel):
 
     A corpus file holds this shape (``template_cases/*.json``): the template by ``name`` (a corpus cannot know the id
     a seeded template is given) and what a stored :class:`~threetears.evals.schema.models.EvalTestCase` carries of the
-    case. The seed writes it into its template's current revision, and a reset into the revision it writes. Its
-    content is its ``variation_params``, ``host_payload`` and ``stratum``
-    (:func:`~threetears.evals.run.definition_digests.template_case_digest`); its name is the corpus's handle on it and
-    the name the report gives it, not part of it.
+    case. The seed writes it into its template's current revision, and a reset into the revision it writes. What
+    drift compares is its ``variation_params``, ``host_payload`` and ``stratum``
+    (:func:`~threetears.evals.run.definition_digests.template_case_digest`), so a relabelled stratum reads
+    ``customized``; its ``content_hash`` and id are its content alone, the stratum left out as a generated case's is
+    (:func:`~threetears.evals.run.definition_digests.template_case_content_digest`). Its name is the corpus's handle on
+    it and the name the report gives it, not part of it.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -274,8 +277,9 @@ class SeedTemplateCase(EvalBaseModel):
         return template_case_digest(self)
 
     def test_case(self, template: EvalTemplate) -> EvalTestCase:
-        """The case as a test case of ``template``'s revision, under an id derived from the revision and its content."""
-        digest = self.digest()
+        """The case as a test case of ``template``'s revision, under an id derived from the revision and its content,
+        never its stratum."""
+        digest = template_case_content_digest(self)
         return EvalTestCase(
             id=str(uuid.uuid5(_TEMPLATE_CASE_NAMESPACE, f"{template.id}|{digest}")),
             scope_id=template.scope_id,
@@ -284,6 +288,7 @@ class SeedTemplateCase(EvalBaseModel):
             name=self.name,
             content_hash=digest,
             seed_name=self.name,
+            seed_digest=self.digest(),
         )
 
 

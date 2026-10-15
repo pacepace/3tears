@@ -60,6 +60,7 @@ from threetears.evals.kernel.metrics import (
     is_code_graded,
     is_latency_measure,
     list_metrics,
+    rule_rates,
 )
 from threetears.evals.schema.models import (
     RESERVED_DIM_IDS,
@@ -1468,9 +1469,10 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     """Every name a ``RateDrop.reading`` may carry on a campaign of ``template``: what the page reads as a pass rate.
 
     A goal-state check of the template, by its verbatim text; a judged dimension of the template on the pass/fail
-    scale and the capability axis, by its name (a boundary dimension is a guardrail, held on its own); and a pass/fail
-    measure the host's catalogue describes with a better end, by its key. Exactly the rates
-    :func:`~threetears.evals.analysis.report.decision.rule_readings` gives a rule.
+    scale and the capability axis, by its name (a boundary dimension is a guardrail, held on its own); and each check
+    measure the host's catalogue describes (:func:`~threetears.evals.kernel.metrics.rule_rates`: a boolean with a
+    better end, either end, or a pass/fail scorer or grader), by its key. Exactly the rates
+    :func:`~threetears.evals.analysis.report.decision.rule_readings` gives a rule, which reads the same function.
 
     Args:
         template: The campaign's template; None when it names none that could be read.
@@ -1485,11 +1487,7 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
         if template is not None
         else []
     )
-    measures = sorted(
-        descriptor.name
-        for descriptor in list_metrics(profile.measures)
-        if descriptor.data_type == "boolean" and descriptor.higher_is_better is True
-    )
+    measures = sorted(rule_rates(list_metrics(profile.measures)))
     return [*checks, *dims, *measures]
 
 

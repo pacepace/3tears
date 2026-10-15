@@ -31,7 +31,7 @@ from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock, TrialBlock
 from threetears.evals.analysis.report.decision import RateReading, RuleReadings, evaluate_rule
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
-from threetears.evals.analysis.bundle.schema import TrialCheck
+from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
 from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
 from packages.evals.tests.g2_support import (
     CANDIDATE,
@@ -266,8 +266,8 @@ async def test_the_flag_reads_regression_only_where_a_candidate_passed_a_case_le
     (flag,) = [column for column in table.columns if column.key == "flag"]
     assert flag.term == "flag" and "flag" in comparison.report.terms
     assert GLOSSARY["flag"] == (
-        "Regression: a candidate passed a smaller share of its usable trials on the case than the control; a tie or "
-        "a gain never flags. No usable trial: an arm has none on the case."
+        "Regression marks a case a candidate passed on a smaller share of its usable trials than the control; a tie "
+        "or a gain never flags."
     )
 
 
@@ -481,6 +481,37 @@ async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_rul
     markdown = report_markdown(report)
     assert "Pass rate of" not in markdown and "call count(" not in markdown
     assert f"- `{expression}`" in markdown
+
+
+async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_ruled: tuple[Result, Report]) -> None:
+    """The judge's words, a check's expression and why a trial failed are quoted: a ``</details>`` the judge wrote
+    closes no fold, and a backtick in an expression ends no code span."""
+    _, coded = g2_ruled
+    expression = "answer == `queued`"
+    reason = "Closed early.</details>\n\n## Not a section"
+    trials = list(coded.bundle.trials)
+    first = next(index for index, trial in enumerate(trials) if trial.state == "failed")
+    trials[first] = trials[first].model_copy(
+        update={
+            "failed_checks": [TrialCheck(name="the *label* check", expression=expression)],
+            "judge": [
+                TrialJudgement(dim="tone", criterion="Is it <b>kind</b>?", score=1, scale="ordinal", reason=reason)
+            ],
+        }
+    )
+    report = build_code_only_report(
+        coded.bundle.model_copy(update={"trials": trials}), assembled_at="2026-10-14T00:00Z"
+    )
+    markdown = report_markdown(report)
+    assert "- `the *label* check`: `` answer == `queued` ``" in markdown
+    assert "- `tone`: 1 (ordinal). Asked: `Is it <b>kind</b>?`. `Closed early.</details>  ## Not a section`" in markdown
+    # Outside every code span and fence, the folds still open and close in pairs, and each record still ends after
+    # its stored result.
+    unquoted = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)", "", markdown)
+    assert unquoted.count("<details") == unquoted.count("</details>")
+    record = unquoted.split(f'<details id="{trials[first].trial_id}"', 1)[1].split("</details>", 1)[0]
+    assert "Stored result:" in record
+    assert _outline(markdown) == _outline(report_markdown(build_code_only_report(coded.bundle, assembled_at="x")))
 
 
 # =============================================================================

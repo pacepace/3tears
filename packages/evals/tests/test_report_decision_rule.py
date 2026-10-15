@@ -49,7 +49,7 @@ from threetears.evals.kernel.declaration import (
     reconcile_question_edits,
     refuse_an_undeclarable_design,
 )
-from threetears.evals.kernel.metrics import goal_check_measure
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MetricDescriptor, goal_check_measure
 import pytest
 from pydantic import ValidationError
 
@@ -719,3 +719,126 @@ async def test_a_pass_fail_judged_dimension_is_read_as_its_count() -> None:
         DecisionRule(clauses=(RateDrop(max_points=10, reading="tone"),)), readings, **_ARMS
     ).clauses
     assert (clause.outcome, clause.statement) == ("keep", "no tone rate drops by more than 10 points")
+
+
+# --- a rule reads every check, each on its better end, as the declaration offers it ------------------------------
+
+
+def _hallucinated(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+    """``bundle`` with a lower-is-better boolean ``hallucinated``, true on every trial whose label missed.
+
+    Its per-cell summaries are the label check's, counted the other way up, and its contrast is ``accuracy``'s on
+    the measure's own scale (the arm minus the control, so a fall in hallucinations is a negative difference).
+    """
+    name = "hallucinated"
+    descriptor = MetricDescriptor(
+        name=name,
+        data_type="boolean",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        description="The answer asserted something the case does not hold.",
+        higher_is_better=False,
+        merit_axis="quality",
+    )
+
+    def flipped(summary: Any) -> Any:
+        n_true = summary.n - round(summary.mean * summary.n)
+        return summary.model_copy(update={"name": name, "rate": n_true / summary.n, "n_true": n_true, "mean": None})
+
+    cells = [
+        cell.model_copy(
+            update={
+                "measures": cell.measures.model_copy(
+                    update={
+                        "measures": [
+                            *cell.measures.measures,
+                            *(flipped(s) for s in cell.measures.measures if s.name == ACCURACY_MEASURE),
+                        ]
+                    }
+                )
+            }
+        )
+        for cell in bundle.cell_measures
+    ]
+
+    def negated(interval: tuple[float, float] | None) -> tuple[float, float] | None:
+        return None if interval is None else (-interval[1], -interval[0])
+
+    families = [
+        family.model_copy(
+            update={
+                "comparisons": [
+                    *family.comparisons,
+                    *(
+                        c.model_copy(
+                            update={
+                                "name": name,
+                                "higher_is_better": False,
+                                "interval": negated(c.interval),
+                                "bounded_interval": negated(c.bounded_interval),
+                            }
+                        )
+                        for c in family.comparisons
+                        if c.name == ACCURACY_MEASURE
+                    ),
+                ]
+            }
+        )
+        for family in bundle.multiple_comparisons.families
+    ]
+    return bundle.model_copy(
+        update={
+            "cell_measures": cells,
+            "measure_catalog": {**bundle.measure_catalog, name: descriptor},
+            "multiple_comparisons": bundle.multiple_comparisons.model_copy(update={"families": families}),
+        }
+    )
+
+
+async def test_a_lower_is_better_check_reads_its_fall_as_a_gain_and_settles_switch() -> None:
+    """``hallucinated`` true on 20 of 60 trials for the control and 2 of 60 for v2 is a 30-point gain, not a drop."""
+    bundle, control, candidate = await _ruled([2] * 20, [3] * 18 + [2] * 2)
+    readings = rule_readings(_hallucinated(bundle), control, candidate, question_id="q-g2")
+    (fewer,) = [rate for rate in readings.rates if rate.measure == "hallucinated"]
+    assert (fewer.control_passed, fewer.control_n, fewer.candidate_passed, fewer.candidate_n) == (40, 60, 58, 60)
+    (clause,) = evaluate_rule(DecisionRule(clauses=(RateDrop(max_points=10),)), readings, **_ARMS).clauses
+    assert clause.outcome == "switch", clause.reason
+
+
+def exact_match(case: Mapping[str, Any], answer: Any) -> bool:
+    """The answer is the case's label."""
+    return bool(answer == case["label"])
+
+
+async def test_a_pass_fail_scorer_is_a_reading_the_rule_declares_and_reads() -> None:
+    cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(7)]
+    arms = {"production": _passing([3] * 7, 0.0031), "candidate": _passing([2] * 7, 0.0021)}
+    comparison = await Eval(cases, arms, [exact_match], k=3, name="scored").run(store=":memory:")
+    storage, profile = comparison.host.storage, comparison.host.profile
+    named = _G2_ASKED.model_copy(
+        update={"decision": DecisionRule(clauses=(RateDrop(max_points=10, reading="exact_match"),))}
+    )
+    design = minimal_declaration().model_copy(update={"questions": [named]})
+    refuse_an_undeclarable_design(design, behavior="b", template=None, profile=profile)
+
+    campaign = off_loop(get_campaign, storage, comparison.campaign_id, comparison.scope_id)
+    assert campaign.declared_design is not None
+    campaign = campaign.model_copy(
+        update={"declared_design": campaign.declared_design.model_copy(update={"questions": [_G2_ASKED]})}
+    )
+    bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=profile)
+    assert bundle.design.control_arm is not None
+    control = bundle.design.control_arm.variant_key
+    (candidate,) = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
+    readings = rule_readings(bundle, control, candidate, question_id="q-g2")
+    (scored,) = [rate for rate in readings.rates if rate.measure == "exact_match"]
+    assert (scored.control_passed, scored.control_n, scored.candidate_passed, scored.candidate_n) == (21, 21, 14, 21)
+    assert named.decision is not None
+    (alone,) = evaluate_rule(named.decision, readings, **_ARMS).clauses
+    assert alone.outcome == "keep" and alone.rate == scored
+    every = evaluate_rule(DecisionRule(clauses=(RateDrop(max_points=10),)), readings, **_ARMS).clauses[0]
+    assert every.outcome == "keep" and isinstance(every.clause, RateDrop) and scored in readings.read_by(every.clause)
+    # The declaration offers exactly the checks the page reads, wherever the run measured them.
+    offered = [name for name in decision_readings(None, profile) if name in bundle.measure_catalog]
+    assert offered == [rate.measure for rate in readings.rates if rate.measure is not None] == ["exact_match"]

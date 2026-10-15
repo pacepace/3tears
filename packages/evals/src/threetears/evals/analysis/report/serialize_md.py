@@ -10,7 +10,10 @@ open where the page shows it open. Deterministic: one report renders to one stri
 
 **Nothing quoted is structure.** What a trial carried (what the case asked, what the judge saw, a recorded error) is a
 fenced block whose fence is longer than any run of backticks inside it, so a transcript's own ``## heading`` or
-code fence is text, never a section of this document's outline. The author's words are laid out as the page lays
+code fence is text, never a section of this document's outline. Every other string a trial's record quotes (why it
+failed, a failed check's name and expression, the judge's criterion and reason) takes the same escape chosen by its
+content: a fence for text over several lines, else a code span whose backticks no run inside it can close, so a
+``</details>`` the judge wrote never closes the fold it sits in. The author's words are laid out as the page lays
 them out — paragraphs and bullet lists, bold and code — with any other block a line would open (a heading, a quote,
 a fence, raw HTML) escaped. A trial's summary line is escaped as the HTML it sits in. The trials are the page's:
 a record for each failed or lost trial, the passed ones one table of their stored results.
@@ -167,7 +170,7 @@ def _trial(block: TrialBlock) -> list[str]:
     summary = html.escape(_one_line(trial_summary(block)), quote=False)
     lines = [f'<details id="{html.escape(block.trial_id)}"{opened}><summary>{summary}</summary>', ""]
     if block.cause_words:
-        lines += [f"Why: {_one_line(block.cause_words)}", ""]
+        lines += [*_quoted("Why:", block.cause_words), ""]
     if block.first_input:
         lines += ["What the case asked:", "", *_fenced(block.first_input), ""]
     if block.excerpt:
@@ -177,7 +180,9 @@ def _trial(block: TrialBlock) -> list[str]:
         lines += [
             "Failed checks:",
             *(
-                f"- `{check.expression}`" if check.expression in check.name else f"- {check.name}: `{check.expression}`"
+                f"- {_code(check.expression)}"
+                if check.expression in check.name
+                else f"- {_code(check.name)}: {_code(check.expression)}"
                 for check in block.failed_checks
             ),
             "",
@@ -186,14 +191,32 @@ def _trial(block: TrialBlock) -> list[str]:
         lines += ["What the judge said:"]
         for entry in block.judge:
             score = "could not tell" if entry.score is None else f"{entry.score} ({entry.scale})"
-            # A criterion is written as a sentence of its own, so one that already ends is not ended twice.
-            asked = f" Asked: {_one_line(entry.criterion).rstrip('.')}." if entry.criterion else ""
-            lines.append(f"- **{entry.dim}**: {score}.{asked} {_one_line(entry.reason)}".rstrip())
+            asked = f" Asked: {_code(entry.criterion)}." if entry.criterion else ""
+            said = f" {_code(entry.reason)}" if entry.reason.strip() else ""
+            lines.append(f"- {_code(entry.dim)}: {score}.{asked}{said}")
         lines.append("")
     if block.error_words:
         lines += ["Recorded error:", "", *_fenced(block.error_words), ""]
     lines += [f"Stored result: `{block.result_id}` (read it with result_get).", "", "</details>"]
     return lines
+
+
+def _quoted(label: str, text: str) -> list[str]:
+    """``label`` and a string the trial carried, escaped by its content: fenced under it when it runs over several
+    lines (:func:`_fenced`), else a code span beside it (:func:`_code`)."""
+    if "\n" in text.strip():
+        return [label, "", *_fenced(text)]
+    return [f"{label} {_code(text)}"]
+
+
+def _code(text: str) -> str:
+    """One line of quoted text as a code span no run of backticks inside it can close: nothing in it is structure, a
+    tag or an emphasis. Padded with a space where it begins or ends with a backtick, which the span then strips."""
+    text = _one_line(text)
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    ticks = "`" * (longest + 1)
+    pad = " " if text[:1] == "`" or text[-1:] == "`" or (text[:1] == " " and text[-1:] == " ") else ""
+    return f"{ticks}{pad}{text}{pad}{ticks}"
 
 
 def _fenced(text: str) -> list[str]:

@@ -82,20 +82,41 @@ def case_set_digest(*, name: str, template: str, tracked: bool, cases: Sequence[
 #: stratum. Never its name or its template's id.
 TEMPLATE_CASE_FIELDS: frozenset[str] = frozenset({"variation_params", "host_payload", "stratum"})
 
+#: What of a template's own case is its content, so its ``content_hash`` and its id: :data:`TEMPLATE_CASE_FIELDS` but
+#: the stratum, which is metadata about the case and never part of its identity, as for a generated case.
+TEMPLATE_CASE_CONTENT_FIELDS: frozenset[str] = TEMPLATE_CASE_FIELDS - {"stratum"}
+
+
+def _case_digest(case: BaseModel, fields: frozenset[str]) -> str:
+    """The digest of ``fields`` of a template's own case, each left out empty."""
+    content = case.model_dump(include=set(fields))
+    return canonical_digest(
+        {"template_case": {field: value for field, value in content.items() if value not in (None, {})}}
+    )
+
 
 def template_case_digest(case: BaseModel) -> str:
-    """The digest of a template's own case: its :data:`TEMPLATE_CASE_FIELDS`, each left out empty.
+    """The digest of a template's own case as drift reads it: its :data:`TEMPLATE_CASE_FIELDS`, each left out empty.
 
     The host's stimulus is dumped whole with the other two and digested as written: the engine never reads a key
-    inside it.
+    inside it. A relabelled stratum moves it, so a case relabelled in the store reads ``customized``.
 
     Args:
         case: A corpus case or a stored test case, each of which carries the three fields.
     """
-    content = case.model_dump(include=set(TEMPLATE_CASE_FIELDS))
-    return canonical_digest(
-        {"template_case": {field: value for field, value in content.items() if value not in (None, {})}}
-    )
+    return _case_digest(case, TEMPLATE_CASE_FIELDS)
+
+
+def template_case_content_digest(case: BaseModel) -> str:
+    """The digest of a template's own case's content: its :data:`TEMPLATE_CASE_CONTENT_FIELDS`, each left out empty.
+
+    What a seeded case's ``content_hash`` and id are derived from; a case with no stratum digests as
+    :func:`template_case_digest` does.
+
+    Args:
+        case: A corpus case or a stored test case.
+    """
+    return _case_digest(case, TEMPLATE_CASE_CONTENT_FIELDS)
 
 
 def current_revisions(templates: Iterable[EvalTemplate]) -> dict[str, EvalTemplate]:
@@ -109,11 +130,13 @@ def current_revisions(templates: Iterable[EvalTemplate]) -> dict[str, EvalTempla
 
 __all__ = [
     "RECORD_FIELDS",
+    "TEMPLATE_CASE_CONTENT_FIELDS",
     "TEMPLATE_CASE_FIELDS",
     "case_set_digest",
     "current_revisions",
     "judge_config_digest",
     "rubric_dim_digest",
+    "template_case_content_digest",
     "template_case_digest",
     "template_digest",
 ]

@@ -125,6 +125,7 @@ from threetears.evals.analysis.bundle.mechanisms import (
     _mechanism_observations,
     _served_models,
 )
+from threetears.evals.analysis.bundle.config import _declared_axes
 from threetears.evals.analysis.bundle.divergence import _scope_divergences
 from threetears.evals.analysis.bundle.telemetry import _model_versions, _run_summary, _telemetry_rollup
 from threetears.evals.analysis.bundle.coverage import (
@@ -451,7 +452,10 @@ def assemble_context_bundle(
         profile=profile,
     )
     reportable = {entry.name for entry in coverage}
-    aliasing = _factor_aliasing(run_ids, _lever_levels(runs, results_by_run, profile=profile), apparatus_levels)
+    axes = _declared_axes(campaign.declared_design)
+    aliasing = _factor_aliasing(
+        run_ids, _lever_levels(runs, results_by_run, profile=profile, declared_axes=axes), apparatus_levels
+    )
 
     # The cell algebra, over observations rather than runs. Independent of `design`, which is
     # the point: a cell is what pools, and pooling must not depend on whether anyone designated
@@ -595,7 +599,7 @@ def assemble_context_bundle(
         # underneath it reports that fact nowhere at all.
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         aliased_factors=aliasing[0],
-        unexercised_factors=_unexercised_factors(runs, results_by_run, arms, profile=profile),
+        unexercised_factors=_unexercised_factors(runs, results_by_run, arms, profile=profile, declared_axes=axes),
         factor_pairs=aliasing[1],
         declared_crossing=_declared_crossing(campaign.declared_design, runs, results_by_run, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
@@ -785,6 +789,7 @@ def assemble_context_bundle(
         observations=mechanisms,
         served=served,
         profile=profile,
+        declared_axes=axes,
     )
     bundle.divergences_tested, bundle.divergences_untested = divergence_count
     # Last, because it reads what both confound-bearing lenses actually emitted rather than
