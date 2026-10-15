@@ -19,8 +19,7 @@ None) moves no digest of a record written before it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from collections.abc import Iterable, Sequence
 
 from pydantic import BaseModel
 
@@ -79,24 +78,22 @@ def case_set_digest(*, name: str, template: str, tracked: bool, cases: Sequence[
     )
 
 
-def template_case_digest(
-    *, variation_params: Mapping[str, str], host_payload: Mapping[str, Any], stratum: str | None
-) -> str:
-    """The digest of a template's own case: what varies, the host's stimulus and the stratum, each left out empty.
+#: What a template's own case is, on a corpus case and a stored one alike: what varies, the host's stimulus and the
+#: stratum. Never its name or its template's id.
+TEMPLATE_CASE_FIELDS: frozenset[str] = frozenset({"variation_params", "host_payload", "stratum"})
+
+
+def template_case_digest(case: BaseModel) -> str:
+    """The digest of a template's own case: its :data:`TEMPLATE_CASE_FIELDS`, each left out empty.
+
+    The host's stimulus is dumped whole with the other two and digested as written: the engine never reads a key
+    inside it.
 
     Args:
-        variation_params: The case's axis values.
-        host_payload: Its stimulus in the host's vocabulary, digested as written and never read.
-        stratum: The kind of case it is, or ``None``.
+        case: A corpus case or a stored test case, each of which carries the three fields.
     """
-    content: dict[str, object] = {}
-    if variation_params:
-        content["variation_params"] = dict(variation_params)
-    if host_payload:
-        content["host_payload"] = dict(host_payload)
-    if stratum is not None:
-        content["stratum"] = stratum
-    return canonical_digest({"template_case": content})
+    content = case.model_dump(include=TEMPLATE_CASE_FIELDS)
+    return canonical_digest({"template_case": {field: value for field, value in content.items() if value not in (None, {})}})
 
 
 def current_revisions(templates: Iterable[EvalTemplate]) -> dict[str, EvalTemplate]:
@@ -110,6 +107,7 @@ def current_revisions(templates: Iterable[EvalTemplate]) -> dict[str, EvalTempla
 
 __all__ = [
     "RECORD_FIELDS",
+    "TEMPLATE_CASE_FIELDS",
     "case_set_digest",
     "current_revisions",
     "judge_config_digest",

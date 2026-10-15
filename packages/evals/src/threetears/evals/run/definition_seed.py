@@ -156,6 +156,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.run.authoring import active_judge_config_in, admit_template
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.definition_digests import (
+    TEMPLATE_CASE_FIELDS,
     case_set_digest,
     current_revisions,
     judge_config_digest,
@@ -270,9 +271,7 @@ class SeedTemplateCase(EvalBaseModel):
 
     def digest(self) -> str:
         """The digest of the case's content, as a stored case of it digests (:func:`stored_template_case_digest`)."""
-        return template_case_digest(
-            variation_params=self.variation_params, host_payload=self.host_payload, stratum=self.stratum
-        )
+        return template_case_digest(self)
 
     def test_case(self, template: EvalTemplate) -> EvalTestCase:
         """The case as a test case of ``template``'s revision, under an id derived from the revision and its content."""
@@ -281,9 +280,7 @@ class SeedTemplateCase(EvalBaseModel):
             id=str(uuid.uuid5(_TEMPLATE_CASE_NAMESPACE, f"{template.id}|{digest}")),
             scope_id=template.scope_id,
             template_id=template.id,
-            variation_params=dict(self.variation_params),
-            host_payload=dict(self.host_payload),
-            stratum=self.stratum,
+            **self.model_dump(include=TEMPLATE_CASE_FIELDS),
             name=self.name,
             content_hash=digest,
             seed_name=self.name,
@@ -292,9 +289,7 @@ class SeedTemplateCase(EvalBaseModel):
 
 def stored_template_case_digest(case: EvalTestCase) -> str:
     """The digest of a stored test case's content as a template's own case: what a corpus case of it digests to."""
-    return template_case_digest(
-        variation_params=case.variation_params, host_payload=case.host_payload, stratum=case.stratum
-    )
+    return template_case_digest(case)
 
 
 class SeedCaseSet(EvalBaseModel):
