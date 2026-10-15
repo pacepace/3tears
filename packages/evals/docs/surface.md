@@ -13,7 +13,7 @@ to `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py`.
 
 Run an eval written as a file from the command line, or wire a host's own commands into the same entry; the exit codes are what a CI step reads.
 
-- `quick`: `DEFAULT_PROG`, `EXIT_FAILED`, `EXIT_GATE_FAILED`, `EXIT_OK`, `EXIT_REFUSED`, `EXIT_RUN_DID_NOT_COMPLETE`, `HostCommand`, `HostFactory`, `run_cli`
+- `quick`: `EXIT_FAILED`, `EXIT_GATE_FAILED`, `EXIT_OK`, `EXIT_REFUSED`, `EXIT_RUN_DID_NOT_COMPLETE`, `HostCommand`, `HostFactory`, `run_cli`
 
 ## Rung 1: an eval and a grader
 
@@ -68,7 +68,7 @@ What a host writes against beyond the rungs: the host and profile, registries, t
 - `kernel`: `AdmissionRefusedError`, `CandidateKind`, `CandidateKindDefect`, `CandidateOutput`, `CandidatePreparationFailed`, `CandidateTelemetry`, `CellCassettes`, `CellSink`, `CellSpanWindow`, `ConflictError`, `default_job_timeout`, `EvalCampaign`, `EvalServiceError`, `EvalStorage`, `IDENTITY_VERSION`, `MetricDescriptor`, `NotFoundError`, `ProviderRefusedError`, `StorageError`, `UnreadableRunError`, `ValidationFailedError`, `VariantConfig`, `withhold_failure_detail`, `WorldSession`
 - `kernel.host`: `Bar`, `BarRegistry`, `CompletionClients`, `CompletionRole`, `default_cell_timeout`, `EvalHost`, `HostProfile`, `KindContract`, `load_bar_registry`, `MeasureRegistry`, `PassThreshold`, `SeedRefused`, `SHARED_CORE`, `Sweepable`, `SweepableRegistry`, `WorldDimension`, `WorldRegistry`
 - `run`: `execute_run`, `JUDGE_REQUEST_SETTINGS`, `KindFactory`, `KindLauncher`, `KindWiring`, `launch_run`, `LaunchableKind`, `LaunchHost`, `LaunchRequest`, `LaunchSettings`, `price_subject_call_floor`, `run_blocking`, `RunnerOptions`, `SeedJudgeCase`, `SIMULATOR_REQUEST_SETTINGS`, `start_run`, `SubjectResolver`, `UnknownSubject`
-- `analysis`: `analysis_gen_request_settings_for`
+- `analysis`: `analysis_gen_request_settings_for`, `MIN_CASES`
 - `storage`: `bridge_async_store`, `DocTypeRoute`, `InMemoryDocumentStore`, `RoutedDocumentStore`, `SqliteDocumentStore`
 - `testing`: `check_completion_conformance`, `check_refusal_negotiation`, `CompletionGuard`, `jobs_conformance_cases`, `JobsConformanceHost`, `NegotiationConformanceFailure`, `RecordedCompletions`, `RecordedPrompt`, `RecordingRefused`, `RouterTransport`, `STORE_CONFORMANCE_CASES`, `StoreConformanceCase`
 - `negotiation`: `ANTHROPIC_MIN_THINKING_BUDGET`, `anthropic_thinking`, `closest_settings`, `facts_from_router_catalogue`, `LearnedSettings`, `MAX_RESENDS`, `negotiate`, `Negotiated`, `ProviderFamily`, `read_anthropic_refusal`, `read_openai_refusal`, `read_router_refusal`, `RefusedSetting`, `SettingFacts`, `SettingRefusal`, `wire_settings_for`, `WireSettings`

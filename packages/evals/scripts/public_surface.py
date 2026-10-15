@@ -647,6 +647,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # is asked for, so a host's client sends what the run records as asked.
         "threetears.evals.run.SIMULATOR_REQUEST_SETTINGS",
         "threetears.evals.analysis.analysis_gen_request_settings_for",
+        # The case floor below which no rate or difference is estimated, which a host's seed gate holds its templates to.
+        "threetears.evals.analysis.MIN_CASES",
         "threetears.evals.testing.CompletionGuard",
         "threetears.evals.testing.JobsConformanceHost",
         "threetears.evals.testing.jobs_conformance_cases",
@@ -803,7 +805,6 @@ STABLE: frozenset[str] = frozenset(
     {
         # Rungs 0 and 1: the command line a TOML file or a host's own entry runs through, its exit codes, and the
         # quick path's seams beside the root's names: a grader, a measure, a world's runner and outcome, a calibration.
-        "threetears.evals.quick.DEFAULT_PROG",
         "threetears.evals.quick.EXIT_FAILED",
         "threetears.evals.quick.EXIT_GATE_FAILED",
         "threetears.evals.quick.EXIT_OK",

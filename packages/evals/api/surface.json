@@ -5274,7 +5274,7 @@
     "threetears.evals.analysis.MIN_CASES": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.multi_rig_variants": {
       "kind": "function",
@@ -6214,7 +6214,7 @@
     "threetears.evals.quick.DEFAULT_PROG": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.quick.ENGINE_COMMANDS": {
       "kind": "constant (tuple)",
