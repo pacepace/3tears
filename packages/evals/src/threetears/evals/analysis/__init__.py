@@ -245,6 +245,7 @@ from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_N
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
+    UnexercisedFactor,
     ComparisonReading,
     ArmExclusions,
     ArmMechanismReading,
@@ -480,6 +481,7 @@ __all__ = [
     "SERVED_MODEL_UNRECORDED",
     "WEIGHTING_EQUAL_PER_SCENARIO",
     "AliasedFactors",
+    "UnexercisedFactor",
     "ArmExclusions",
     "ArmScoreboard",
     "FailCause",

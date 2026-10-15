@@ -1191,6 +1191,7 @@
 "threetears.evals.analysis.TrialRow": "provisional",
 "threetears.evals.analysis.TrialState": "provisional",
 "threetears.evals.analysis.UnconfirmedModelIdentity": "provisional",
+"threetears.evals.analysis.UnexercisedFactor": "provisional",
 "threetears.evals.analysis.UnpairedRating": "provisional",
 "threetears.evals.analysis.UnpairedReason": "provisional",
 "threetears.evals.analysis.UnpairedSecondReason": "provisional",
