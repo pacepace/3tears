@@ -280,7 +280,7 @@ class SeedTemplateCase(EvalBaseModel):
             id=str(uuid.uuid5(_TEMPLATE_CASE_NAMESPACE, f"{template.id}|{digest}")),
             scope_id=template.scope_id,
             template_id=template.id,
-            **self.model_dump(include=TEMPLATE_CASE_FIELDS),
+            **self.model_dump(include=set(TEMPLATE_CASE_FIELDS)),
             name=self.name,
             content_hash=digest,
             seed_name=self.name,

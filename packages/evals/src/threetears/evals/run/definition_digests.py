@@ -92,8 +92,10 @@ def template_case_digest(case: BaseModel) -> str:
     Args:
         case: A corpus case or a stored test case, each of which carries the three fields.
     """
-    content = case.model_dump(include=TEMPLATE_CASE_FIELDS)
-    return canonical_digest({"template_case": {field: value for field, value in content.items() if value not in (None, {})}})
+    content = case.model_dump(include=set(TEMPLATE_CASE_FIELDS))
+    return canonical_digest(
+        {"template_case": {field: value for field, value in content.items() if value not in (None, {})}}
+    )
 
 
 def current_revisions(templates: Iterable[EvalTemplate]) -> dict[str, EvalTemplate]:
