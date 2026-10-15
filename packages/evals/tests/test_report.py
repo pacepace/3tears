@@ -76,7 +76,8 @@ class TestTheToyAnalysisSerializesTwoWays:
 
         # The declared question is the title; the arms are line 2; who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
-        assert report.title == "is the wider chunk worth what it costs to retrieve?"
+        # The question as declared, its first letter capitalized: a title starts with a capital.
+        assert report.title == "Is the wider chunk worth what it costs to retrieve?"
         assert lines[0] == f"# {report.title}"
         assert lines[1].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
         assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown

@@ -24,6 +24,7 @@ The page, screen by screen:
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -396,13 +397,13 @@ def _model_namer(names: dict[str, ArmName]) -> Callable[[str], str]:
 
 
 def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) -> str:
-    """The title: the question the campaign asks, in plain words, on one line."""
+    """The title: the question the campaign asks, in plain words, on one line, starting with a capital."""
     if name.rstrip().endswith("?"):
-        return name
+        return _capitalized(name)
     if questions := _preregistered(bundle):
         asked = sentences(questions[0].text)[0]
         if not lint_prose(asked):
-            return asked
+            return _capitalized(asked)
     control = _control_key(bundle)
     others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != control]
     if control is None or not others:
@@ -412,6 +413,15 @@ def _title(bundle: AnalysisContextBundle, name: str, arm: Callable[[str], str]) 
     if all(part.strip() in {arm(control), *others} for part in name.split(" vs ")):
         return asked[:1].upper() + asked[1:]
     return f"{name}: {asked}"
+
+
+#: A first word that is a plain word, which a title may capitalize; an identifier (``dj_queue``, ``v4-flash``) is not.
+_PLAIN_WORD = re.compile(r"[a-z]+(?:['-][a-z]+)*(?=[\s,;:?!.]|$)")
+
+
+def _capitalized(title: str) -> str:
+    """A title starting with a capital where its first word is a plain word; an identifier is left as written."""
+    return title[:1].upper() + title[1:] if _PLAIN_WORD.match(title) else title
 
 
 def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source: ReportSource) -> str:
