@@ -81,6 +81,7 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.decision import (
+    KEEP_IS_THE_DEFAULT,
     PROSE_RULE_LINE,
     RateReading,
     RuleReadings,
@@ -161,6 +162,7 @@ from threetears.evals.kernel.surface import (
     STRATUM_MIN_CASES,
     CellFacts,
     DecisionSurface,
+    GuardrailCheck,
     GuardrailReadings,
     JudgedReading,
     PredictionPoweredReading,
@@ -340,7 +342,7 @@ def _page(
     arm = _namer(names)
     cell_name = _cell_namer(surface, names)
     charts = _ChartLedger(bundle, arm)
-    guardrails_read = guardrail_verdicts(surface, bundle.guardrails, cell_name)
+    guardrails_read = guardrail_verdicts(surface, bundle.guardrails, cell_name, rulers)
     bars_read = bar_verdicts(surface, cell_name)
     contrasts_read = contrast_verdicts(bundle, surface)
     written = memo(charts, names)
@@ -810,13 +812,8 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
                         "reading": reading,
                         "control": ours,
                         "candidate": theirs,
-                        "outcome": (
-                            "settled: keep"
-                            if clause.outcome == "keep"
-                            else "settled: switch"
-                            if clause.outcome == "switch"
-                            else f"unsettled: {clause.reason}"
-                        )
+                        # Keep is the default, so a clause not shown either way reads keep, with why.
+                        "outcome": f"{'switch' if clause.outcome == 'switch' else 'keep'}: {clause.reason}"
                         if index == 0
                         else None,
                     }
@@ -851,6 +848,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
             order="clause by clause, each arm against the control",
             total_rows=len(rows),
         ),
+        DisclosureBlock(section="decision", source="rule", text=KEEP_IS_THE_DEFAULT),
     ]
 
 
@@ -2164,12 +2162,33 @@ def _cell_namer(surface: DecisionSurface, names: dict[str, ArmName]) -> Callable
     return name
 
 
+def _straddled(check: GuardrailCheck, ruler: MeasureRuler) -> str:
+    """Why a guardrail whose interval straddles its line is undecided, on the page's ruler for its reading: the line
+    in points for a rate, beside the interval and margin columns that state it so. The interval itself is its own
+    column's, with the level in that column's header, so the reason does not say it twice."""
+    line = -check.margin if check.higher_is_better else check.margin
+    said = (
+        f"{with_unit(line * ruler.factor, delta_unit(ruler.unit))}, the declared margin"
+        if check.margin_declared
+        else "zero, as no margin is declared"
+    )
+    return f"the interval reaches both sides of {said}, so the arm is shown neither within it nor beyond it"
+
+
 def guardrail_verdicts(
-    surface: DecisionSurface, guardrails: GuardrailReadings | None, arm: Callable[[str, str], str]
+    surface: DecisionSurface,
+    guardrails: GuardrailReadings | None,
+    arm: Callable[[str, str], str],
+    rulers: Rulers | None = None,
 ) -> list[Verdict]:
-    """Each guardrail check as a typed verdict, in the guardrails table's row order; the table prints their words."""
+    """Each guardrail check as a typed verdict, in the guardrails table's row order; the table prints their words.
+
+    An undecided check whose interval straddles its line says why on ``rulers`` (the surface's own where None), the
+    ruler the guardrails table states that reading on.
+    """
     if guardrails is None or guardrails.withheld is not None:
         return []
+    rulers = rulers or report_rulers(surface)
     verdicts = []
     for check in guardrails.checks:
         reason: VerdictReason = (
@@ -2203,7 +2222,13 @@ def guardrail_verdicts(
                 ),
                 guardrail=True,
                 words=GUARDRAIL_DECISION_WORDS[check.decision]
-                + (f" ({check.undecided_reason})" if check.undecided_reason else ""),
+                + (
+                    f" ({_straddled(check, rulers.of(check.name, check.reading))})"
+                    if reason == "interval_straddles"
+                    else f" ({check.undecided_reason})"
+                    if check.undecided_reason
+                    else ""
+                ),
             )
         )
     return verdicts
@@ -2809,12 +2834,21 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
         by_case.setdefault(trial.case_id, []).append(trial)
     strata = any(trial.stratum for trial in bundle.trials)
 
+    def counts(case: str, key: str) -> tuple[int, int]:
+        """How many of ``key``'s usable trials on ``case`` passed, of how many."""
+        usable = [t for t in by_case[case] if t.arm == key and t.state != "lost"]
+        return sum(t.state == "passed" for t in usable), len(usable)
+
     def group(case: str) -> int:
-        trials = by_case[case]
-        control_passed = control is not None and any(t.arm == control and t.state == "passed" for t in trials)
-        if control_passed and any(t.arm != control and t.state == "failed" for t in trials):
-            return 0
-        if any(not any(t.arm == key and t.state != "lost" for t in trials) for key in arms):
+        """0 a regression, 1 an arm with no usable trial, 2 the rest."""
+        # A case-level flag: a candidate's share of its usable trials passed below the control's. A tie or a gain
+        # never flags.
+        ours, of = counts(case, control) if control is not None else (0, 0)
+        for key in arms:
+            theirs, n = counts(case, key)
+            if key != control and n and of and theirs * of < ours * n:
+                return 0
+        if any(counts(case, key)[1] == 0 for key in arms):
             return 1
         return 2
 

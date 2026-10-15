@@ -383,7 +383,7 @@ class Result:
             label = "" if len(self.arms) == 1 else f"{arm}{' (control)' if arm == self.control else ''}: "
             lines.append(f"{label}{summary.results_text}")
             lines += [f"  {line}" for line in (summary.stopped_text,) if line is not None]
-            lines += [f"  {line}" for line in self._measure_texts(summary)]
+            lines += [f"  {line}" for line in self._measure_texts(summary, arm)]
             if summary.confusion:
                 lines.append("  per label:")
                 lines += [f"    {line}" for line in summary.label_lines]
@@ -407,10 +407,27 @@ class Result:
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
         return "\n".join(lines)
 
-    def _measure_texts(self, summary: EvalSummary) -> list[str]:
-        """Each measure's line, the classifier's ``match`` under its field's name and its matrix's count left out."""
+    def _guardrail_said(self, arm: str) -> dict[str, str]:
+        """What this comparison came to on each guardrail for ``arm``, by measure name, as its measure line says it:
+        ``guardrail undecided against v1``; the control's, that the other arms are decided against it."""
+        if arm == self.control:
+            return {
+                check.name: "the guardrail the other arms are decided against"
+                for check in self.guardrail_readings.checks
+            }
+        return {row["measure_id"]: f"guardrail {row['outcome']} against {self.control}" for row in self.guardrails(arm)}
+
+    def _measure_texts(self, summary: EvalSummary, arm: str) -> list[str]:
+        """Each measure's line, the classifier's ``match`` under its field's name and its matrix's count left out.
+
+        In a comparison a guardrail's line says what the comparison decided on it for ``arm``; alone, that a guardrail
+        is decided only in one.
+        """
         texts: list[str] = []
-        for measure in summary.measure_lines:
+        lines = (
+            summary.measure_lines if len(self.arms) == 1 else summary.compared_measure_lines(self._guardrail_said(arm))
+        )
+        for measure in lines:
             if measure.name == CONFUSION_CELL_MEASURE or measure.state == "not_carried":
                 continue
             text = measure.text

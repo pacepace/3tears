@@ -169,6 +169,16 @@ class GateResult:
         lines.extend(f"  undecided: {_line(verdict)}" for verdict in self.undecided)
         return "\n".join(lines)
 
+    def why(self) -> str | None:
+        """Why the gate failed, in one line and the report's words: each failing verdict, ``; `` between them.
+
+        Returns:
+            ``failed on guardrail No invented total score, v2 vs v1: undecided: ...``; None when it did not fail.
+        """
+        if not self.failures:
+            return None
+        return "failed on " + "; ".join(_line(verdict) for verdict in self.failures)
+
 
 def _line(verdict: Verdict) -> str:
     """One verdict as a gate prints it: what, whose, against what, and the report's words."""

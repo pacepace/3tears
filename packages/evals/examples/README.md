@@ -101,17 +101,19 @@ expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail d
 fails the run in CI on a regression or a guardrail not shown held. Its docstring points on to a grid of factors: arms named
 as `k=v` pairs, read against another control with `result.against()`.
 
-What the recorded run said: no arm separated, and it exits 4. The report's first screen reads
+What the recorded run said: no arm separated, and it exits 4, its last line saying why in the report's words
+(`exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
+screen reads
 
 ```text
 # invoices: does v2 do better than v1?
 v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
-**Exploratory: no difference found between v2 and v1 on any reading. Not yet shown safe: v2 on no invented total.**
+**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
 ```
 
-with the guardrail's row saying why: `undecided: not shown held, so not known to be safe (the interval on the
-difference, [-0.1343, 0.1343], reaches both sides of -0.02 (the declared margin), so the arm is shown neither within
-it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
+with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: not
+shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is
+shown neither within it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
 answer, and what would answer it is more hard-negative cases, invoices that print no amount due (7 of the 30). One
 v2 trial failed (`a model the candidate runs failed or refused`), its recorded error `the candidate raised
 ValidationError: 1 validation error for Invoice` on `Invalid JSON`: malformed JSON from the model, counted against v2.

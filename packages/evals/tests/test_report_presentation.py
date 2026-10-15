@@ -11,10 +11,13 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections import Counter
+from collections.abc import Mapping
+from typing import Any
 
 import pytest
 
-from threetears.evals import Eval, Result
+from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     Report,
@@ -236,6 +239,36 @@ async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_other
         store=":memory:"
     )
     assert '<tr id="case-1">' in report_html(comparison.report)
+
+
+def _passing(passes: list[int]) -> Any:
+    """A runner that answers case ``i`` right on ``passes[i]`` of its repeats, the first ones."""
+    calls: Counter[str] = Counter()
+
+    async def run(case: Mapping[str, Any]) -> Answer:
+        calls[case["text"]] += 1
+        right = calls[case["text"]] <= passes[int(case["text"].rsplit(" ", 1)[1])]
+        return Answer(case["label"] if right else "skipped", model="m", input_tokens=1, output_tokens=1, cost_usd=0.001)
+
+    return run
+
+
+async def test_the_flag_reads_regression_only_where_a_candidate_passed_a_case_less_often_than_the_control() -> None:
+    # Prod, .30: production ✓✗✗ against the candidate's ✓✓✗ (the candidate did better), and 2 of 3 each (a tie),
+    # both read "regression". Neither is one; a candidate passing 1 of 3 to the control's 3 of 3 is.
+    cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(3)]
+    arms = {"production": _passing([1, 2, 3]), "candidate": _passing([2, 2, 1])}
+    comparison = await Eval(cases, arms, ["label"], k=3, name="flags").run(store=":memory:")
+    (table,) = [b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
+    flags = {str(row["case"]): row["flag"] for row in table.values()}
+    assert flags == {"case 3": "regression", "case 1": None, "case 2": None}
+    assert next(iter(flags)) == "case 3", "regressions first"
+    (flag,) = [column for column in table.columns if column.key == "flag"]
+    assert flag.term == "flag" and "flag" in comparison.report.terms
+    assert GLOSSARY["flag"] == (
+        "Regression: a candidate passed a smaller share of its usable trials on the case than the control; a tie or "
+        "a gain never flags. No usable trial: an arm has none on the case."
+    )
 
 
 # =============================================================================

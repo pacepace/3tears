@@ -30,6 +30,7 @@ from threetears.evals.analysis.bundle.schema import JudgedArm, JudgedMeasure
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis import report_html, report_markdown
 from threetears.evals.analysis.report.decision import (
+    KEEP_IS_THE_DEFAULT,
     PROSE_RULE_LINE,
     RateReading,
     RuleReadings,
@@ -82,8 +83,11 @@ def test_the_g2_rule_keeps_production_on_both_clauses() -> None:
     assert [clause.outcome for clause in verdict.clauses] == ["keep", "keep"]
     assert verdict.outcome == "keep"
     # Four cases is under the floor for estimating a magnitude, never for keeping on what the run observed. Nothing
-    # remains to run, so the drop is stated as observed, without "at least".
-    assert verdict.clauses[0].reason == "the pass rate drops 67 points"
+    # remains to run, so the drop is stated as observed, without "at least": the counts and the margin in words, the
+    # arms by name, the change in points to one decimal.
+    assert verdict.clauses[0].reason == (
+        "cheaper candidate passed 2 of 12 to production's 10, a drop of 66.7 points against a margin of 10"
+    )
     assert verdict.clauses[0].rate is readings.rates[0]
 
 
@@ -100,7 +104,9 @@ def test_a_rate_clause_the_remaining_trials_could_still_decide_is_unsettled() ->
     verdict = evaluate_rule(rule, close, **_ARMS)
     assert [clause.outcome for clause in verdict.clauses] == ["unsettled", "switch"]
     assert verdict.outcome == "unsettled"
-    assert verdict.clauses[0].reason == "the lost trials could still take the pass rate past the margin"
+    assert verdict.clauses[0].reason == (
+        "cheaper candidate's drop is not shown to stay within 10 points (the lost trials could still take it past)"
+    )
     # Equal rates switch only on an interval over enough cases. The bare counts (no case count, no interval) once
     # settled switch here: that was the defect.
     settled = RuleReadings(
@@ -131,8 +137,8 @@ def test_equal_rates_on_too_few_cases_are_unsettled_not_switch() -> None:
     assert verdict.outcome == "unsettled"
     # What is withheld and why, in the reader's terms: never a bare "needs 5".
     assert verdict.clauses[0].reason == (
-        "4 cases cannot show the drop stays within 10 points, which takes an interval estimated only from 5 "
-        "independent cases"
+        "cheaper candidate's drop is not shown to stay within 10 points (4 cases are too few for the interval that "
+        "would show it, which is estimated only from 5 independent cases)"
     )
     assert verdict.clauses[1].reason == (
         "4 cases cannot show the cost is lower, which takes an interval estimated only from 5 independent cases"
@@ -152,6 +158,7 @@ def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
     verdict = evaluate_rule(rule, tight, **_ARMS)
     assert [clause.outcome for clause in verdict.clauses] == ["switch", "switch"]
     assert verdict.outcome == "switch"
+    assert verdict.clauses[0].reason == "cheaper candidate's drop is shown to stay within 10 points (it is at most 8)"
     # The same run with an interval reaching past the margin is unsettled, and says how far it reaches.
     wide = RuleReadings(
         rates=(RateReading("the pass rate", 50, 60, 49, 60, interval=(-0.23, 0.2)),),
@@ -163,7 +170,9 @@ def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
     )
     wide_verdict = evaluate_rule(rule, wide, **_ARMS)
     assert wide_verdict.outcome == "unsettled"
-    assert wide_verdict.clauses[0].reason == "the interval a switch reads allows the pass rate to drop up to 23 points"
+    assert wide_verdict.clauses[0].reason == (
+        "cheaper candidate's drop is not shown to stay within 10 points (it could be as much as 23)"
+    )
 
 
 def test_a_cost_lower_by_a_point_estimate_only_is_unsettled() -> None:
@@ -204,11 +213,56 @@ async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled:
         "Outcome",
     ]
     outcomes = [row["outcome"] for row in table.values() if row["outcome"] is not None]
-    assert outcomes == ["settled: keep", "settled: keep"]
+    assert outcomes == [
+        "keep: cheaper candidate passed 2 of 12 to production's 10, a drop of 66.7 points against a margin of 10",
+        "keep: cheaper candidate costs more per reply than production",
+    ]
     # Under a cent per reply on every arm, the cost row reads per 1,000 replies, as the scoreboard does.
     assert {"reading": "cost per 1,000 replies", "control": "$3.092", "candidate": "$3.301"}.items() <= next(
         row for row in table.values() if row["reading"] == "cost per 1,000 replies"
     ).items()
+
+
+async def test_a_kept_clause_beside_a_contrast_not_separated_says_why_once_under_the_clauses(
+    g2_ruled: tuple[Result, Report],
+) -> None:
+    """Prod, .30: a 10-point clause read keep while the contrasts read the same pass rate as not separated.
+
+    Both are right: keep is the default, and a clause reads the bounded interval a switch reads, which can be wider
+    than the t interval the contrasts table prints. The page says so once, under the clauses, and the clause's reason
+    says the counts and the margin in words, naming the arms.
+    """
+    _, report = g2_ruled
+    sentence = (
+        "Keep is the default: a switch needs every clause shown, and a clause reads the interval a switch reads, which "
+        "can be wider than the contrasts table's."
+    )
+    assert KEEP_IS_THE_DEFAULT == sentence
+    (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "rule"]
+    assert (said.section, said.text) == ("decision", sentence)
+    markdown = report_markdown(report)
+    assert markdown.count(sentence) == 1
+    decision = markdown.split("\n## Decision\n", 1)[1].split("\n## ", 1)[0]
+    assert decision.index("**Clauses**") < decision.index(sentence), "under the clauses table"
+    assert (
+        "keep: cheaper candidate passed 2 of 12 to production's 10, a drop of 66.7 points against a margin of 10"
+        in (decision)
+    )
+    # The prod numbers: v2 passed 14 of 60 trials to v1's 29, and on a small sample the interval reaches 53.6 points.
+    on = {"control": "v1", "candidate": "v2"}
+    rule = DecisionRule(clauses=(RateDrop(max_points=10),))
+    dropped = RuleReadings(rates=(RateReading("the pass rate", 29, 60, 14, 60),), control_cases=20, candidate_cases=20)
+    assert evaluate_rule(rule, dropped, **on).clauses[0].reason == (
+        "v2 passed 14 of 60 to v1's 29, a drop of 25 points against a margin of 10"
+    )
+    wide = RuleReadings(
+        rates=(RateReading("the pass rate", 29, 60, 28, 60, interval=(-0.536, 0.036)),),
+        control_cases=20,
+        candidate_cases=20,
+    )
+    assert evaluate_rule(rule, wide, **on).clauses[0].reason == (
+        "v2's drop is not shown to stay within 10 points (it could be as much as 53.6)"
+    )
 
 
 # --- switch reads the bounded interval, on every rate the rule reads -----------------------------------------------
@@ -293,7 +347,10 @@ async def test_seven_cases_with_the_bounded_interval_inside_the_margin_switch_on
     readings = rule_readings(bundle, control, candidate, question_id="q-g2")
     assert [rate.name for rate in readings.rates] == ["the pass rate", "Label matched"]
     assert all(rate.interval is not None and rate.interval[0] > -0.10 for rate in readings.rates)
-    assert _rate_clause(bundle, control, candidate) == ("switch", "the interval keeps every pass rate within 10 points")
+    assert _rate_clause(bundle, control, candidate) == (
+        "switch",
+        "cheaper candidate's drop is shown to stay within 10 points",
+    )
 
 
 async def test_seven_cases_with_the_bounded_interval_too_wide_are_unsettled_and_say_how_far_it_reaches() -> None:
@@ -301,7 +358,7 @@ async def test_seven_cases_with_the_bounded_interval_too_wide_are_unsettled_and_
     bundle, control, candidate = await _ruled([3, 3, 3, 3, 3, 3, 2], [3] * 7)
     assert _rate_clause(bundle, control, candidate) == (
         "unsettled",
-        "the interval a switch reads allows the pass rate to drop up to 49 points",
+        "cheaper candidate's drop is not shown to stay within 10 points (it could be as much as 49)",
     )
 
 
@@ -309,8 +366,8 @@ async def test_four_cases_are_unsettled_on_the_case_floor() -> None:
     bundle, control, candidate = await _ruled([3] * 4, [3] * 4)
     assert _rate_clause(bundle, control, candidate) == (
         "unsettled",
-        "4 cases cannot show the drop stays within 10 points, which takes an interval estimated only from 5 "
-        "independent cases",
+        "cheaper candidate's drop is not shown to stay within 10 points (4 cases are too few for the interval that "
+        "would show it, which is estimated only from 5 independent cases)",
     )
 
 
@@ -325,7 +382,8 @@ def test_a_bundle_stored_before_the_bounded_interval_never_settles_switch() -> N
     assert [family.question_id for family in bundle.multiple_comparisons.families] == [None]
     assert _rate_clause(bundle, control, candidate, question_id=None) == (
         "unsettled",
-        "this bundle predates the interval a switch needs",
+        "cheaper candidate's drop is not shown to stay within 10 points (this bundle predates the interval a switch "
+        "needs)",
     )
 
 
@@ -441,7 +499,8 @@ async def test_a_rule_reads_its_own_questions_family_and_never_another_at_anothe
     (outcome,) = [
         row["outcome"] for row in table.values() if row["outcome"] is not None and row["reading"] == "the pass rate"
     ]
-    assert outcome == "unsettled: the interval a switch reads allows the pass rate to drop up to 49 points"
+    # Keep is the default, so a clause not shown either way reads keep, with why.
+    assert outcome == ("keep: candidate's drop is not shown to stay within 10 points (it could be as much as 49)")
 
 
 # --- the rule is typed: built, stored and refused as data, never parsed from words ---------------------------------

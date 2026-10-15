@@ -36,7 +36,7 @@ The invoices example (rung 3) renders this, verbatim:
 # invoices: does v2 do better than v1?
 v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 
-**Exploratory: no difference found between v2 and v1 on any reading. Not yet shown safe: v2 on no invented total.**
+**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
 
 **Scoreboard**
 
@@ -75,8 +75,8 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   refund-after-cancel, …`, each case by the name its author gave it, else `case N`); a declared decision rule, in
   plain counts with each arm by its model (`Keep production: deepseek-v4-flash passed 2 of 12 trials to
   deepseek-v4.1-flash's 10, and cost more per reply.`); which arm passed more, when an arm is under the case floor;
-  a declared question's contrasts; `Exploratory:` (linked to the glossary) and what separated, or `no difference
-  found between v2 and v1 on any reading`. A guardrail an arm is not shown safe on is the second sentence:
+  a declared question's contrasts; `Exploratory:` (linked to the glossary) and what separated, or `nothing
+  separated v2 from v1 on any reading`, never "no difference". A guardrail an arm is not shown safe on is the second sentence:
   `Not yet shown safe: v2 on no invented total.`
 - **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a
   cent); a failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one,
@@ -106,16 +106,20 @@ Glossary start folded, and a nav link opens the one it lands on.
 - **Decision**: the declared decision rule in one sentence code writes from its clauses, the arms by name (`Switch to
   v2 only if no pass rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on v1.`; a clause
   naming one reading says `no tone rate drops by more than 2 points`), then one row per clause and reading, the
-  clause's own sentence first, each arm's column headed by its name, `settled: keep`,
-  `settled: switch` or `unsettled` with the reason. Keep settles on what the run observed: a drop past the margin,
-  or a higher cost. Switch needs
+  clause's own sentence first, each arm's column headed by its name, then `keep` or `switch` with the reason in
+  words, the counts and the margin naming the arms (`keep: v2 passed 14 of 60 to v1's 29, a drop of 25 points
+  against a margin of 10`; `keep: v2's drop is not shown to stay within 10 points (it could be as much as 53.6)`).
+  One line under the table says keep is the default, a switch needs every clause shown, and a clause reads the
+  interval a switch reads, which can be wider than the Contrasts table's: so a clause can read keep beside a
+  contrast that is not separated. Keep settles on what the run observed: a drop past the margin, or a higher cost;
+  a clause shown neither way reads keep too, and the verdict calls the rule unsettled. Switch needs
   sampling evidence: every arm at the case floor, and for every rate the clause reads (the pass rate and each
   check's) the contrast's bounded interval keeping the drop within the margin; for cost, the interval wholly below
   zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds its error rate on a
   few coarse cases, where the t interval does not
   ([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases only a sweep settles a
   10-point clause. A run that shows neither is unsettled ("the cost difference did not separate"); a bundle shaped
-  before 55 reads "this bundle predates the interval a switch needs". A question stored with its rule written as
+  before 55 reads "(this bundle predates the interval a switch needs)". A question stored with its rule written as
   prose in its words, and none typed, opens the section with `This question's rule was written as prose, which is
   no longer read; declare it as a rule.`, and its verdict is exploratory: no rule was applied.
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
@@ -135,7 +139,9 @@ Glossary start folded, and a nav link opens the one it lands on.
   `Per label` tables, folded. A one-arm page contrasts nothing, so the section is headed **Readings** and lists
   each reading over all cases (its id stays `contrasts`).
 - **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`), its trial ids last and muted, the
-  failed and lost ones first. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
+  failed and lost ones first. The Flag column reads `regression` only where a candidate passed a smaller share of
+  its usable trials on the case than the control (`✓ ✓ ✗` against `✓ ✓ ✓`); a tie or a gain never flags, and
+  `no usable trial` marks a case an arm has none on. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
   name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
   line (`180 trials ran. Of them 179 passed and 1 failed.`) and only what went wrong: one row per failed or lost
   trial, the failed first, and each one's record under `T4 · double-charge · cheaper candidate · failed` (never the

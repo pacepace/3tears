@@ -121,7 +121,8 @@ class TestAScorerGuardrail:
         assert leaky[0]["delta"] == pytest.approx(-40.0) and leaky[0]["decision"].startswith("breached")
         (slip,) = comparison.guardrails("slip")
         assert slip["decision"].startswith("undecided: not shown held, so not known to be safe")
-        assert "reaches both sides of -0.1 (the declared margin)" in slip["decision"]
+        # On the row's ruler, points for a pass/fail, as the margin column states it.
+        assert "the interval reaches both sides of -10 pts, the declared margin" in slip["decision"]
         (same,) = comparison.guardrails("same")
         # The level sits once in the table's header; a pass/fail reads in points.
         assert same["interval"] == "[-8.1, 8.1] pts", "a pass/fail is on 0 to 1: the bounded test's"
