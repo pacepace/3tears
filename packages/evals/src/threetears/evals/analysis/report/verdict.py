@@ -7,7 +7,10 @@
    and the line names the arm, how many it lost, the cause most of them share in words, and the remedy.
 2. **One arm.** ``<eval>: n/N cases passed; k misses: …`` — how its cases came out.
 3. **A declared decision rule.** Each clause settled or not (:mod:`~threetears.evals.analysis.report.decision`),
-   and the rule's outcome in plain words: keep, switch, or unsettled with the fix and its cost.
+   and the rule's outcome in plain words: keep, switch, or unsettled with the fix and its cost. A keep names the
+   counts that settled it, the arms by their models where they have one: ``Keep production: v4-flash passed 2 of 12
+   trials to v4.1-flash's 10, and cost more per reply.`` The line is one sentence held to the page's numeral limit;
+   the decision table directly below carries every figure and every clause's reason.
 4. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
    difference is called; the case floor itself is a caveat line under the scoreboard (:func:`caveat_lines`).
 5. **A declared question.** What its contrasts and guardrails came to, in their own verdict words.
@@ -32,9 +35,15 @@ from threetears.evals.analysis.bundle.schema import (
     FailCause,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.report.decision import RuleVerdict, evaluate_rule, parse_decision_rule, rule_readings
+from threetears.evals.analysis.report.decision import (
+    RateReading,
+    RuleVerdict,
+    evaluate_rule,
+    parse_decision_rule,
+    rule_readings,
+)
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import humanize, lint_prose, measure_name
 from threetears.evals.kernel.declaration import Question, preregistered_questions
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 
@@ -225,6 +234,7 @@ def verdict_line(
     *,
     name: str = "",
     case_name: Callable[[str], str] | None = None,
+    model: Callable[[str], str] | None = None,
 ) -> VerdictLine:
     """The verdict line, by the first rule that fires (the module docstring's order).
 
@@ -233,6 +243,7 @@ def verdict_line(
         arm: Names an arm by its variant key, as every table of the report does.
         name: The eval's name, which a one-arm line leads with.
         case_name: Names a case by its id, as the cases table does; its id where None.
+        model: Names an arm by its model, where it has one, for the counts a settled rule states; ``arm`` where None.
 
     Returns:
         The rule and its sentences.
@@ -244,7 +255,7 @@ def verdict_line(
         return VerdictLine(rule="setup", text=setup)
     if len(boards) == 1:
         return VerdictLine(rule="one_arm", text=_one_arm(bundle, name, case_name or (lambda case: case)))
-    if (ruled := _rule_line(bundle, arm)) is not None:
+    if (ruled := _rule_line(bundle, arm, model or arm)) is not None:
         return VerdictLine(rule="rule", text=ruled)
     if any(board.usable_cases < MIN_CASES for board in boards):
         lead = "" if bundle.question_declared else "Exploratory: "
@@ -273,13 +284,40 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
         arm: Names an arm by its variant key.
 
     Returns:
-        The lines: today, that an arm is under the case floor a rate is estimated on.
+        The lines: today, that an arm is under the case floor a rate is estimated on. Where a declared rule settled
+        keep on every candidate, the line says the rule is read on the counts and only the size is not estimated.
     """
     small = [board for board in bundle.scoreboard if board.usable_cases < MIN_CASES]
     if not small:
         return []
+    verdicts = _rule_verdicts(bundle)
+    if verdicts and all(verdict.outcome == "keep" for verdict in verdicts):
+        counts = {board.usable_cases for board in bundle.scoreboard}
+        if len(counts) == 1 and len(small) == len(bundle.scoreboard):
+            cases = f"{small[0].usable_cases} cases per arm"
+        else:
+            cases = "Usable cases " + ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
+        return [
+            f"{cases}: enough to apply the rule, too few to estimate how large the difference is "
+            f"(that needs {MIN_CASES})."
+        ]
     named = ", ".join(f"{arm(board.variant_key)} {board.usable_cases}" for board in small)
     return [f"Too few cases to estimate a rate. Usable cases: {named}; a rate needs {MIN_CASES}."]
+
+
+def _rule_verdicts(bundle: AnalysisContextBundle) -> list[RuleVerdict]:
+    """The declared rule read on each candidate against the control; empty when no live question states one."""
+    control = _control_key(bundle)
+    if not bundle.question_declared or control is None:
+        return []
+    rules = [rule for question in _declared_questions(bundle) if (rule := parse_decision_rule(question.text))]
+    if not rules:
+        return []
+    return [
+        evaluate_rule(rules[0], rule_readings(bundle, control, board.variant_key))
+        for board in bundle.scoreboard
+        if board.variant_key != control
+    ]
 
 
 def _control_key(bundle: AnalysisContextBundle) -> str | None:
@@ -339,49 +377,111 @@ def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     return "; ".join(said) + "; too few cases to call a difference."
 
 
-def _rule_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
+def _rule_line(bundle: AnalysisContextBundle, arm: Callable[[str], str], model: Callable[[str], str]) -> str | None:
     """The declared decision rule's outcome in plain words, or None when no live question states one."""
     control = _control_key(bundle)
-    if not bundle.question_declared or control is None:
+    verdicts = _rule_verdicts(bundle)
+    if control is None or not verdicts:
         return None
-    rules = [rule for question in _declared_questions(bundle) if (rule := parse_decision_rule(question.text))]
-    if not rules:
-        return None
-    lines = []
-    for board in bundle.scoreboard:
-        if board.variant_key == control:
-            continue
-        verdict = evaluate_rule(rules[0], rule_readings(bundle, control, board.variant_key))
-        lines.append(rule_sentence(verdict, control=arm(control), candidate=arm(board.variant_key), bundle=bundle))
-    return " ".join(lines)
+    candidates = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
+    return " ".join(
+        rule_sentence(
+            verdict,
+            control=arm(control),
+            candidate=arm(candidate),
+            bundle=bundle,
+            control_model=model(control),
+            candidate_model=model(candidate),
+        )
+        for verdict, candidate in zip(verdicts, candidates, strict=True)
+    )
 
 
-def rule_sentence(verdict: RuleVerdict, *, control: str, candidate: str, bundle: AnalysisContextBundle) -> str:
-    """A rule's outcome as the verdict line says it: the decision, its cause, and the fix with its cost.
+def rule_sentence(
+    verdict: RuleVerdict,
+    *,
+    control: str,
+    candidate: str,
+    bundle: AnalysisContextBundle,
+    control_model: str | None = None,
+    candidate_model: str | None = None,
+) -> str:
+    """A rule's outcome as the verdict line says it: the decision, then what settled it or the fix with its cost.
+
+    A keep states the counts that settled it (``v4-flash passed 2 of 12 trials to v4.1-flash's 10, and cost more per
+    reply``). Each sentence keeps its clauses only while it stays within the page's numeral and length limits
+    (:func:`~threetears.evals.analysis.style.lint_prose`): the decision table below carries every clause.
 
     Args:
         verdict: The rule read on one candidate.
         control: The control, by name.
         candidate: The candidate, by name.
         bundle: The campaign's evidence, for the cost of more cases.
+        control_model: The control by its model, which a keep's counts name it by; ``control`` where None.
+        candidate_model: The candidate by its model, likewise; ``candidate`` where None.
 
     Returns:
         The sentence.
     """
 
-    def reasons(outcome: str) -> str:
-        said = [
-            clause.reason.replace("the candidate", candidate) for clause in verdict.clauses if clause.outcome == outcome
-        ]
-        return ", and ".join(said)
-
     if verdict.outcome == "keep":
-        return f"Keep {control}: {reasons('keep')}."
+        said = _kept(verdict, control_model or control, candidate_model or candidate)
+        return _within_limits(f"Keep {control}: ", said)
     if verdict.outcome == "switch":
         return f"Switch to {candidate}: every clause of the decision rule holds."
+    reasons = [
+        clause.reason.replace("the candidate", candidate) for clause in verdict.clauses if clause.outcome == "unsettled"
+    ]
     cost = _cost_per_case(bundle)
     fix = f" Each more case costs about {cost} over every arm." if cost else ""
-    return f"Unsettled between {control} and {candidate}: {reasons('unsettled')}.{fix}"
+    return _within_limits(f"Unsettled between {control} and {candidate}: ", reasons) + fix
+
+
+def _within_limits(lead: str, parts: list[str]) -> str:
+    """``lead`` and as many of ``parts`` as one sentence holds within the page's limits, joined by ", and ".
+
+    The first part is always said; each later one only while the sentence stays within the numeral and length
+    limits, the decision table carrying the rest.
+    """
+    kept = parts[:1]
+    for part in parts[1:]:
+        if lint_prose(f"{lead}{', and '.join([*kept, part])}."):
+            break
+        kept.append(part)
+    return f"{lead}{', and '.join(kept)}."
+
+
+def _kept(verdict: RuleVerdict, control: str, candidate: str) -> list[str]:
+    """What settled a keep, clause by clause, as counts with the candidate as their one subject."""
+    said: list[str] = []
+    readings = verdict.readings
+    for clause in verdict.clauses:
+        if clause.outcome != "keep":
+            continue
+        subject = "" if said else f"{candidate} "
+        if clause.rate is not None:
+            said.append(subject + _counts(clause.rate, control))
+        elif clause.clause.kind == "cost_lower" and readings is not None:
+            ours, theirs = readings.control_cost, readings.candidate_cost
+            more = "more" if ours is not None and theirs is not None and theirs > ours else "no less"
+            said.append(f"{subject}cost {more} per reply")
+        else:
+            said.append(subject + clause.reason.replace("the candidate ", ""))
+    return said
+
+
+def _counts(rate: RateReading, control: str) -> str:
+    """A rate that settled keep, as plain counts: ``passed 2 of 12 trials to production's 10``.
+
+    The control's total is said only where it differs from the candidate's, so the counts stay three figures.
+    """
+    theirs = f"{rate.candidate_passed} of {rate.candidate_n}"
+    ours = (
+        str(rate.control_passed) if rate.control_n == rate.candidate_n else f"{rate.control_passed} of {rate.control_n}"
+    )
+    if rate.name == "the pass rate":
+        return f"passed {theirs} trials to {control}'s {ours}"
+    return f"passed {rate.name} on {theirs} to {control}'s {ours}"
 
 
 def _cost_per_case(bundle: AnalysisContextBundle) -> str | None:
@@ -471,7 +571,7 @@ def _separated(
         for comparison in family.comparisons:
             if comparison.verdict in _SEPARATED_WORDS:
                 heading = bundle.measure_catalog.get(comparison.name)
-                reading = (heading.reader_name if heading is not None else None) or comparison.name
+                reading = measure_name(comparison.name, heading.reader_name if heading is not None else None)
                 if comparison.reading == "judged":
                     reading = f"{humanize('dimension', comparison.name)} (judged)"
                 line = f"{arm(comparison.contrast.variant_key)} {_SEPARATED_WORDS[comparison.verdict]} {reading}"

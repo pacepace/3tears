@@ -130,6 +130,20 @@ class TestTheSignedFormWithAUnit:
     def test_a_change_in_a_unit_reads_as_format_signed_joined_to_it(self, value, unit, text):
         assert quantities.signed_with_unit(value, unit) == text
 
+    @pytest.mark.parametrize(
+        ("value", "signed", "text"),
+        [
+            (0.003092, False, "$0.003092"),
+            (-0.0038, True, "-$0.0038"),
+            (0.0002, True, "+$0.0002"),
+            (-3.6e-7, True, "> -$0.000001"),
+            (None, False, "—"),
+        ],
+    )
+    def test_money_is_written_with_its_currency_sign_as_the_scoreboard_writes_it(self, value, signed, text):
+        said = quantities.signed_with_unit(value, "usd") if signed else quantities.with_unit(value, "usd")
+        assert said == text and "usd" not in said
+
     def test_no_signed_spelling_signs_a_bound(self):
         """``+< 0.000001 ms`` is no spelling: a bound already says which side of zero it is on."""
         for value in (3.6e-7, -3.6e-7):

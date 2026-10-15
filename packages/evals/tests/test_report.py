@@ -76,12 +76,14 @@ class TestTheToyAnalysisSerializesTwoWays:
 
         # The declared question is the title; the arms are line 2; who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
-        assert report.title == "is the wider chunk worth what it costs to retrieve?"
+        # The question as declared, its first letter capitalized: a title starts with a capital.
+        assert report.title == "Is the wider chunk worth what it costs to retrieve?"
         assert lines[0] == f"# {report.title}"
         assert lines[1].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
         assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown
-        assert f"**F1.** {finding.title}" in markdown
-        assert "**F1 readings**" in markdown and "| Arm | Turn time | Cases |" in markdown
+        # A finding leads with its headline, unnumbered: nothing on the page cites a finding by number.
+        assert f"**{finding.title}**" in markdown and "**F1." not in markdown
+        assert "**Readings**" in markdown and "| Arm | Turn time | Cases |" in markdown
         (chart,) = _finding_charts(report)
         assert f"**{chart.title}**" in markdown
         assert "| " + " | ".join(chart.values_table()[0]) + " |" in markdown
@@ -189,7 +191,9 @@ class TestTheToyReportsContent:
     async def test_the_coverage_map_is_joined_to_the_findings_and_counted(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
         (coverage,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "coverage"]
-        assert coverage.section == "memo" and coverage.values()[0]["findings"] == "F1"
+        (headline,) = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
+        # A finding is cited by the headline the page prints for it, never by a number.
+        assert coverage.section == "memo" and coverage.values()[0]["findings"] == headline.rstrip(".")
         unnamed = [row for row in coverage.values() if row["findings"] == "no finding"]
         said = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.text.startswith("Levers no finding")]
         assert len(said) == (1 if unnamed else 0)

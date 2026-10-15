@@ -4,7 +4,8 @@ The renderer (:mod:`threetears.evals.analysis.report`) and the memo path both re
 memo on it cannot drift into two styles.
 
 - :func:`humanize` is the one seam an identifier passes through on its way to a reader: a model id, an arm, a judged
-  dimension or check, a case, a provider. :data:`HUMANIZE_OVERRIDES` names exceptions by hand.
+  dimension, a case, a provider. :data:`HUMANIZE_OVERRIDES` names exceptions by hand. A check expression is code and
+  never passes through it: :func:`measure_name` names a check's measure by its expression, verbatim.
 - :class:`ArmName` names an arm twice: in full on its first mention (``deepseek-v4.1-flash (production, control)``)
   and by its given label after that (``production``).
 - :data:`GLOSSARY` defines every term of art a page uses, once, in one plain sentence.
@@ -19,6 +20,8 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
 
+from threetears.evals.kernel.metrics import goal_check_of
+
 #: What :func:`humanize` names.
 HumanizeKind = Literal["model", "arm", "dimension", "case", "provider"]
 
@@ -32,6 +35,8 @@ HUMANIZE_OVERRIDES: dict[tuple[str, str], str] = {
 CASE_LABEL_CHARS = 40
 
 _LABELLED = re.compile(r"^(?P<model>\S+) \((?P<label>[^()]+)\)$")
+#: What marks a name as code (a check expression) rather than an identifier: a call, a comparison or a quote.
+_EXPRESSION = re.compile(r"[()<>=\"']")
 _PAIR = re.compile(r"^(?P<axis>[\w.-]+)=(?P<level>.+)$")
 
 
@@ -44,8 +49,9 @@ def humanize(kind: HumanizeKind, identifier: str) -> str:
 
     Returns:
         A model id without its vendor prefix; an arm by its given label (else its model id, vendor dropped), its
-        ``axis=level`` pairs read as words; a dimension or check with its underscores as spaces; a case label on one
-        line (empty when it is a dump, so the caller names the case by number); a provider as given.
+        ``axis=level`` pairs read as words; a dimension with its underscores as spaces, but a check expression (a
+        call, a comparison, a quote) as written, since it is code; a case label on one line (empty when it is a
+        dump, so the caller names the case by number); a provider as given.
     """
     if (kind, identifier) in HUMANIZE_OVERRIDES:
         return HUMANIZE_OVERRIDES[(kind, identifier)]
@@ -55,10 +61,35 @@ def humanize(kind: HumanizeKind, identifier: str) -> str:
     if kind == "arm":
         return arm_name(text).label
     if kind == "dimension":
+        if _EXPRESSION.search(text):
+            return text
         return re.sub(r"[_.]+", " ", text).strip() or text
     if kind == "case":
         return "" if is_dump(text) else text
     return text
+
+
+def code(text: str) -> str:
+    """``text`` as a code span: what a reader copies, never reworded."""
+    return f"`{text}`" if "`" not in text else text
+
+
+def measure_name(name: str, reader_name: str | None = None) -> str:
+    """A measure as a page names it.
+
+    A goal check's measure is named by its expression, verbatim, as a code span: never humanized and never "Pass rate
+    of", since a single trial's failure has no rate. Any other measure by its reader name, else its key humanized.
+
+    Args:
+        name: The measure's key.
+        reader_name: Its reader-facing name, when the catalog carries one.
+
+    Returns:
+        The name.
+    """
+    if (check := goal_check_of(name)) is not None:
+        return code(check)
+    return reader_name or humanize("dimension", name)
 
 
 def is_dump(label: str) -> bool:
@@ -111,7 +142,9 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
 
 #: Every term of art a page may use, in one plain sentence each.
 GLOSSARY: dict[str, str] = {
-    "control": "The arm every other arm is compared against, usually what runs in production today.",
+    "control": (
+        "The arm every other arm is compared against, usually what runs in production today; ▸ marks it in a table."
+    ),
     "trial": "One case run once on one arm.",
     "case": "One input the eval feeds every arm; repeats of a case are not independent.",
     "usable": "A trial the test setup did not spoil; only usable trials count for or against an arm.",
@@ -126,7 +159,10 @@ GLOSSARY: dict[str, str] = {
     "guardrail": "A reading an arm must not get worse on, whatever it gains elsewhere.",
     "bar": "A threshold a reading must clear on its own, without a control.",
     "exploratory": "No question was declared before the run, so the page offers leads, not decisions.",
-    "settled": "The rule's outcome cannot change, however the remaining cases turn out.",
+    "settled": (
+        "Keep is settled when the run shows the candidate breaks the clause; switch only when its interval shows the "
+        "clause holds, on at least 5 cases per arm."
+    ),
     "judge": "The model that scores each trial's transcript against a rubric.",
     "calibrated": "A judge whose scores have been shown to agree with people's.",
     "marks": "✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.",
@@ -290,10 +326,12 @@ __all__ = [
     "HumanizeKind",
     "StyleViolation",
     "arm_name",
+    "code",
     "fix_prose",
     "humanize",
     "is_dump",
     "lint_page",
     "lint_prose",
+    "measure_name",
     "sentences",
 ]

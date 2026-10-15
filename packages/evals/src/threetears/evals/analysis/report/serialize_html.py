@@ -176,7 +176,7 @@ def _text(block: TextBlock) -> str:
     body = _inline(_one_line(block.body))
     if block.role == "finding_title":
         anchor = f' id="{_escape(block.anchor)}"' if block.anchor else ""
-        return f'<p class="finding"{anchor}><strong>F{block.finding_number}.</strong> {body}</p>'
+        return f'<p class="finding"{anchor}><strong>{body}</strong></p>'
     if block.role == "answer":
         lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
         return '<p data-role="answer">' + (f"<strong>{_escape(lead)}.</strong> " if lead else "") + f"{body}</p>"
@@ -212,8 +212,14 @@ def _table(block: TableBlock) -> str:
 
 
 def _header(text: str, term: str | None) -> str:
-    """A column header, linked to its glossary entry where it is a term of art."""
-    return f'<a href="#g-{_slug(term)}">{_escape(text)}</a>' if term else _escape(text)
+    """A column header, linked to its glossary entry where it is a term of art; a code span (a check) as code."""
+    shown = _code(text)
+    return f'<a href="#g-{_slug(term)}">{shown}</a>' if term else shown
+
+
+def _code(text: str) -> str:
+    """Text escaped, its code spans (a check's expression, a call to copy) set as code."""
+    return _CODE.sub(r"<code>\1</code>", _escape(text))
 
 
 def _grid(block: TableBlock) -> str:
@@ -223,7 +229,7 @@ def _grid(block: TableBlock) -> str:
     for row in block.rows:
         cells = []
         for column in block.columns:
-            text = _escape(row[column.key].text)
+            text = _code(row[column.key].text)
             if (block.name == "cases" and column.key == "trials") or (block.name == "trials" and column.key == "trial"):
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
             cells.append(f"<td>{text}</td>")
@@ -260,7 +266,10 @@ def _trial(block: TrialBlock) -> str:
         parts.append(f"<dt>What the judge saw (its last part)</dt><dd><pre>{_escape(block.excerpt)}</pre></dd>")
     if block.failed_checks:
         checks = "".join(
-            f"<li>{_escape(check.name)}: <code>{_escape(check.expression)}</code></li>" for check in block.failed_checks
+            f"<li><code>{_escape(check.expression)}</code></li>"
+            if check.expression in check.name
+            else f"<li>{_escape(check.name)}: <code>{_escape(check.expression)}</code></li>"
+            for check in block.failed_checks
         )
         parts.append(f"<dt>Failed checks</dt><dd><ul>{checks}</ul></dd>")
     if block.judge:
@@ -285,7 +294,7 @@ def _trial(block: TrialBlock) -> str:
 
 def _disclosure(block: DisclosureBlock) -> str:
     """Something code had to say: the first screen's lines as lines, every other one set apart from the author's."""
-    text = _escape(block.text)
+    text = _code(block.text)
     if block.term is not None:
         text += f' <a class="term" href="#g-{_slug(block.term)}">({_escape(block.term)})</a>'
     if block.source == "arms":

@@ -21,6 +21,7 @@ import pytest
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     DisclosureBlock,
+    TableBlock,
     campaign_report,
     report_html,
     report_markdown,
@@ -123,6 +124,8 @@ async def test_the_command_line_writes_the_directory(
 async def test_compare_s_disclosures_are_the_builder_s(comparison: Result) -> None:
     """A measure with no margin is said on the page whichever door built it: the builder says it, not the quick path."""
     by_service = off_loop(campaign_report, comparison.host, comparison.campaign_id, comparison.scope_id)
-    said = [text for text in _disclosures(by_service.blocks) if text.startswith("No margin is declared on Accuracy")]
+    said = [text for text in _disclosures(by_service.blocks) if text.startswith("No margin is declared")]
     assert len(said) == 1
-    assert "Not separated never means the arms are alike" in said[0]
+    assert "not separated never means the arms are alike" in said[0]
+    (table,) = [b for b in by_service.blocks if isinstance(b, TableBlock) and b.name == "no_margin"]
+    assert [row["reading"] for row in table.values()].count("Accuracy") == 1

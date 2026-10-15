@@ -68,10 +68,11 @@ async def test_a_comparison_s_first_two_screens_use_none_of_the_engine_s_nouns()
 
 
 async def test_an_analysis_report_s_first_two_screens_use_none_of_the_engine_s_nouns() -> None:
-    _, _, report = await toy_report()
+    _, analysis, report = await toy_report()
     text = _screens_one_and_two(report)
     assert _banned(text) == []
-    assert "Written by" not in text and "F1." in text
+    # The memo's findings are on screen two, each by its headline, unnumbered.
+    assert "Written by" not in text and analysis.document.findings[0].title in text and "F1." not in text
 
 
 async def test_no_page_calls_any_arm_a_winner(g2: Report) -> None:

@@ -15,6 +15,7 @@ from threetears.evals.analysis.style import (
     humanize,
     lint_page,
     lint_prose,
+    measure_name,
 )
 
 
@@ -107,6 +108,19 @@ def test_a_page_lints_its_prose_and_headers_not_its_data() -> None:
         ]
     )
     assert [violation.rule for violation in lint_page(page)] == ["header"]
+
+
+def test_a_check_expression_is_code_and_never_humanized() -> None:
+    expression = 'call_count("music.queue_track") >= 2'
+    # Underscores and dots are part of the code a reader copies: humanize leaves an expression as written.
+    assert humanize("dimension", expression) == expression
+    nested = 'all(it.segue_text.length > 0 for it in calls("music.queue_track"))'
+    assert humanize("dimension", nested) == nested
+    # A check's measure is named by its expression, as code, never "Pass rate of"; any other by its reader name.
+    measure = f"goal_state:{expression}"
+    assert measure_name(measure, f"Pass rate of {expression}") == f"`{expression}`"
+    assert measure_name("failed_reply_notices", "Failed-reply notices") == "Failed-reply notices"
+    assert measure_name("turn_time") == "turn time"
 
 
 def test_every_glossary_entry_is_one_short_plain_sentence() -> None:

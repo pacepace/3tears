@@ -99,7 +99,7 @@ def test_a_lever_no_finding_names_reads_no_finding_and_is_counted_beside_the_tab
     rows = _coverage(report)
     memo = [block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.section == "memo"]
 
-    assert rows["chunk_tokens"]["findings"] == "F1"
+    assert rows["chunk_tokens"]["findings"] == "wider chunks extract more"
     assert {lever for lever, row in rows.items() if row["findings"] == "no finding"} == {
         "retriever_top_k",
         "extraction_schema",

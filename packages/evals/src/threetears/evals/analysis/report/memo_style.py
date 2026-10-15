@@ -4,7 +4,8 @@ A memo is model-written prose, and the page around it is code's. :class:`MemoSty
 contributes through four steps, in order:
 
 1. **Names.** Every raw model id an arm carries becomes the arm's label (``deepseek-v4.1-flash`` → ``production``):
-   the arms line named each in full once (:func:`~threetears.evals.analysis.style.humanize`).
+   the arms line named each in full once (:func:`~threetears.evals.analysis.style.humanize`). A label already beside
+   the id (``production deepseek-v4.1-flash``) is kept once, not doubled.
 2. **Rules code can fix.** A sentence carrying a banned phrase (meta-prose, a hedge on a measured fact) or repeating
    the declared question is dropped (:func:`~threetears.evals.analysis.style.fix_prose`).
 3. **Measured numbers.** A sentence restating a number the bundle measured (a count ``6 of 12``, a cost, a rate) is
@@ -66,8 +67,16 @@ class MemoStyle:
             for spelled in (name.model, humanize("model", name.model)):
                 if spelled != name.label:
                     found.setdefault(spelled, name.label)
+        # A role word already naming the arm ("production deepseek-v4.1-flash", "deepseek-v4.1-flash (production)")
+        # collapses with the id into the label once, never "production production".
         return [
-            (re.compile(rf"(?<![\w./-]){re.escape(spelled)}(?![\w/-]|\.\d)"), label)
+            (
+                re.compile(
+                    rf"(?:(?<![\w-]){re.escape(label)}\s+)?(?<![\w./-]){re.escape(spelled)}(?![\w/-]|\.\d)"
+                    rf"(?:\s*\({re.escape(label)}(?:,[^()]*)?\))?"
+                ),
+                label,
+            )
             for spelled, label in sorted(found.items(), key=lambda item: -len(item[0]))
         ]
 

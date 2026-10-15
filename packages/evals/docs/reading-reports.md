@@ -48,27 +48,35 @@ v1 (control) vs v2 · 14 Oct 2026
 
 - **Title**: the declared question in plain words, or the campaign's name and what it compares.
 - **Line 2**: each arm named in full once (`deepseek-v4.1-flash (production, control)`), then the date. After that
-  an arm is its given label (`production`), the control marked `▸` in a table.
+  an arm is its given label (`production`), the control marked `▸` in a table. Only line 2 and the verdict name a
+  model.
 - **Verdict**, written by code and never by a memo, result first. The first rule that fires: the test setup lost too
   much (`No verdict: the test setup failed, not the models.`, the arm, the cause, the fix); one arm
-  (`emails: 27/30 cases passed; 3 misses: …`); a declared decision rule, read clause by clause (`Keep production: …`);
+  (`emails: 27/30 cases passed; 3 misses: …`); a declared decision rule, in plain counts with each arm by its model
+  (`Keep production: deepseek-v4-flash passed 2 of 12 trials to deepseek-v4.1-flash's 10, and cost more per reply.`);
   which arm passed more, when an arm is under the case floor; a declared question's contrasts; `Exploratory:` and
   what separated.
-- **Scoreboard**: a bare table of counts and the cost per reply. Then the outcome bar, then the caveats in normal
-  weight (the case floor: five usable cases before a rate is estimated), never bold, never first.
+- **Scoreboard**: a bare table of counts and the cost per reply. Then the outcome bar (in Markdown, its table only
+  where it splits a cause the scoreboard lumps together), then the caveats in normal weight (the case floor: five
+  usable cases before a rate is estimated), never bold, never first. Where a declared rule settled keep under the
+  floor, the caveat says the rule was read on the counts and only the size of the difference is not estimated.
 
 ### The rest of the page
 
 - **Decision**: a declared decision rule (`Decision rule: switch … only if … AND …; otherwise keep …`), one row per
-  clause and reading, `settled: keep`, `settled: switch` or `unsettled` with the reason. A measured cost needs no case
-  floor; a pass rate is settled once the losing arm cannot close the gap with the trials still to run.
-- **What it means**: each finding as one sentence its writer wrote and a table code built from the readings it
-  chose; its confidence, trials and caveats sit in a closed `Evidence` fold. The memo's words are held to the page's
+  clause and reading, each arm's column headed by its name, `settled: keep`, `settled: switch` or `unsettled` with
+  the reason. Keep settles on what the run observed: a drop past the margin, or a higher cost. Switch needs
+  sampling evidence: every arm at the case floor, and the contrast's interval bounding the drop within the margin
+  (for cost, wholly below zero). A run that shows neither is unsettled ("the cost difference did not separate").
+- **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
+  readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
+  sit in a closed `Evidence` fold. An answer the settled rule replaced points at the Decision table. The memo's words are held to the page's
   style (below).
 - **Contrasts**: the contrasts that can resolve, one line when none can under the case floor, with the effect size and
   the adjusted p folded; the guardrails; strata and per-label tables, folded.
 - **Cases** and **Trials**: one row per case with each arm's marks (`✓ ✓ ✗`); one row per trial, its record folded
-  under `T4 · case 1 · cheaper candidate · failed`, never the start of what the case asked.
+  under `T4 · case 1 · cheaper candidate · failed`, never the start of what the case asked. A failed check is named
+  by its expression, as code (``check: `call_count("music.queue_track") >= 2` ``).
 - **Not tested**, then **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the
   bundle) and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of art the page links,
   in one plain sentence.
@@ -141,10 +149,10 @@ Latency read while other cells or runs executed beside it is never in this table
 before anything reads it, a latency row whose arm has no other latency reads `untested` and says why, and
 one line (`latency_contended`) names the arms. Launch with `measure_latency=True` to read latency clean.
 
-Every report lists, under Not tested, each tested measure that declares no margin: "No margin is declared on …, so
-no contrast on it can read equivalent", with how to declare one for each kind of measure: a scorer's by its name
-(`grader(correct, margin=0.05)`), accuracy's on the label's field grader (`grader("label", margin=0.05)`), and for an
-engine measure such as cost, that none can be declared.
+Every report lists, under Not tested, each tested measure that declares no margin: one sentence, then a table
+naming each once with how it takes one: a scorer's by its name (`grader(correct, margin=0.05)`), accuracy's on the
+label's field grader (`grader("label", margin=0.05)`), and for an engine measure such as cost, that none can be
+declared.
 
 Every verdict here is also a typed value (`report.verdicts`, `Result.verdicts()`, the `outcome` key of
 `Result.contrasts()`): its outcome, a reason code, the margin it read and where that came from

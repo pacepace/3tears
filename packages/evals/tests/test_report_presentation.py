@@ -33,6 +33,7 @@ from threetears.evals.analysis.report.decision import (
     parse_decision_rule,
 )
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
+from threetears.evals.analysis.bundle.schema import TrialCheck
 from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
 from packages.evals.tests.g2_support import (
     CANDIDATE,
@@ -74,9 +75,21 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     ]
     assert lines[9] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $0.003092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
-    caveat = "Too few cases to estimate a rate. Usable cases: production 4, cheaper candidate 4; a rate needs 5."
+    # The rule settled keep on the counts, so the floor caveat says what four cases can and cannot do.
+    caveat = (
+        "4 cases per arm: enough to apply the rule, too few to estimate how large the difference is (that needs 5)."
+    )
     assert caveat in first.splitlines(), "the case floor, in normal weight"
+    assert "Too few cases to estimate a rate" not in first
     assert first.index("**Keep production") < first.index("**Scoreboard**") < first.index(caveat)
+
+
+async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2_ruled: tuple[Result, Report]) -> None:
+    _, report = g2_ruled
+    # Passed, failed by check and failed by judge are the scoreboard's own columns: the bar's table would repeat it.
+    assert "**Outcomes**" not in report_markdown(report)
+    # The page still draws the bar.
+    assert report_html(report).count('data-chart="outcome_bar"') == 1
 
 
 async def test_the_question_is_the_title_and_never_repeated_in_the_body(g2_ruled: tuple[Result, Report]) -> None:
@@ -88,9 +101,12 @@ async def test_the_question_is_the_title_and_never_repeated_in_the_body(g2_ruled
 
 async def test_a_raw_model_id_is_named_at_most_once_per_section(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
-    sections = re.split(r"\n## ", report_markdown(report)) + [
-        _visible_text(part) for part in report_html(report).split("<h2>")
+    # The verdict sentence aside: it names each arm by its model, since a label beside "cost more" can contradict it.
+    (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
+    sections = re.split(r"\n## ", report_markdown(report).replace(verdict, "")) + [
+        _visible_text(part).replace(verdict, "") for part in report_html(report).split("<h2>")
     ]
+    assert "deepseek-v4-flash passed" in verdict
     for section in sections:
         for model in ("deepseek-v4.1-flash", "deepseek-v4-flash"):
             assert len(re.findall(rf"(?<![\w.-]){re.escape(model)}(?![\w.-])", section)) <= 1, (model, section[:80])
@@ -135,6 +151,18 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
         assert page.index('id="glossary"') > page.index('id="methods"'), "the glossary folds last"
 
 
+async def test_the_glossary_lists_only_what_the_page_uses_and_explains_the_control_mark(
+    g2_ruled: tuple[Result, Report],
+) -> None:
+    _, report = g2_ruled
+    # The question was declared, so the page offers no "exploratory" leads, and the glossary does not define it.
+    assert "exploratory" not in report.terms
+    # The ▸ in the scoreboard and the cases table is defined with the control.
+    assert "control" in report.terms and "▸" in GLOSSARY["control"]
+    # Settled says what settles each way, never that the outcome cannot change.
+    assert "cannot change" not in GLOSSARY["settled"] and "interval" in GLOSSARY["settled"]
+
+
 async def test_one_arm_reads_n_of_n_cases_passed_first() -> None:
     one = await Eval(CASES, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
     (verdict,) = [b for b in one.report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
@@ -168,6 +196,28 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
     assert len(table.rows) == len(trials)
     assert all("{" not in str(value) for row in table.values() for value in row.values())
+
+
+async def test_a_failed_check_reads_as_its_expression_in_the_trials_table(g2_ruled: tuple[Result, Report]) -> None:
+    _, coded = g2_ruled
+    expression = 'call_count("music.queue_track") >= 2'
+    trials = list(coded.bundle.trials)
+    first = next(index for index, trial in enumerate(trials) if trial.state == "failed")
+    trials[first] = trials[first].model_copy(
+        update={
+            "cause": "check",
+            "failed_checks": [TrialCheck(name=f"Pass rate of {expression}", expression=expression)],
+        }
+    )
+    bundle = coded.bundle.model_copy(update={"trials": trials})
+    report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")
+    (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
+    whys = [row["why"] for row in table.values()]
+    # Code, as written: no underscores or dots stripped, and no "Pass rate of" on one trial's failure.
+    assert f"check: `{expression}`" in whys
+    markdown = report_markdown(report)
+    assert "Pass rate of" not in markdown and "call count(" not in markdown
+    assert f"- `{expression}`" in markdown
 
 
 # =============================================================================
@@ -226,6 +276,17 @@ def test_a_memo_sentence_contradicting_the_settled_rule_is_replaced_and_disclose
     assert style.names_arms("deepseek-v4-flash queued fewer tracks than deepseek-v4.1-flash.") == (
         "cheaper candidate queued fewer tracks than production."
     )
+    # A role word already beside the id collapses with it into the label once: never "production production".
+    assert style.names_arms(
+        "On the proven check requiring at least two queued tracks, deepseek-v4-flash passed 6 of 12 of runs "
+        "compared to 11 of 12 for production deepseek-v4.1-flash."
+    ) == (
+        "On the proven check requiring at least two queued tracks, cheaper candidate passed 6 of 12 of runs "
+        "compared to 11 of 12 for production."
+    )
+    assert (
+        style.names_arms("deepseek-v4.1-flash (production) kept the queue full.") == "production kept the queue full."
+    )
 
 
 async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_ruled: tuple[Result, Report]) -> None:
@@ -252,7 +313,21 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
                 "caveats": [{"kind": "sampling", "text": long_caveat}],
                 "invalidates": [],
                 "durable": "",
-            }
+            },
+            {
+                "title": "Candidate model showed no measurable cost reduction over production",
+                "body": "The candidate searched the catalog more.",
+                "confidence": "low",
+                "axes": [],
+                "evidence": [
+                    {"cell": aliases[production], "measure_id": "production_replicating_cost", "reading": "measure"},
+                    {"cell": aliases[candidate], "measure_id": "production_replicating_cost", "reading": "measure"},
+                ],
+                "trials": [],
+                "caveats": [],
+                "invalidates": [],
+                "durable": "",
+            },
         ],
         "decisions": [],
         "questions": [
@@ -279,11 +354,17 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     markdown = report_markdown(report)
 
     # The hedge on a measured fact is code's row instead; the meta-prose and the restated count are gone.
-    assert "no measurable" not in markdown and "**F1.** Accuracy: production " in markdown
+    assert "no measurable" not in markdown and "**Accuracy: cheaper candidate " in markdown
+    assert "**F1." not in markdown
+    # A title restating its one reading is code's plain sentence, the candidate first, money in dollars.
+    assert "**Cheaper candidate cost $0.003301 per reply to production's $0.003092" in markdown
+    assert " usd" not in markdown
     assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
     assert "The candidate skipped the queue." in markdown
     # The answer that contradicted the settled rule reads the rule's outcome, and the methods say so.
-    assert "**Answered.** Keep production: " in markdown
+    # The verdict line already says it, so the answer points at the rule rather than restating it.
+    assert "**Answered.** See the decision rule above." in markdown
+    assert markdown.count("Keep production: ") == 1
     assert any("“Unanswerable because" in b.text for b in report.blocks if isinstance(b, DisclosureBlock))
     # What code could not fix is kept, counted in the methods table and listed in a fold.
     assert "| Memo style | style: 1 violations |" in markdown

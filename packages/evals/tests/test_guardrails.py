@@ -306,5 +306,8 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), questions=[cost])
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
-        assert said.section == "not_tested" and f"{CAPABILITY} (judged)" in said.text
-        assert BOUNDARY not in said.text
+        # One sentence, then the readings listed once each in a table beside it.
+        (listed,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "unasked"]
+        named = [str(row["reading"]) for row in listed.values()]
+        assert said.section == listed.section == "not_tested" and f"{CAPABILITY} (judged)" in named
+        assert not any(BOUNDARY in name for name in named) and BOUNDARY not in said.text
