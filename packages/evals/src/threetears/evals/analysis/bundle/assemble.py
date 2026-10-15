@@ -127,7 +127,12 @@ from threetears.evals.analysis.bundle.mechanisms import (
 )
 from threetears.evals.analysis.bundle.divergence import _scope_divergences
 from threetears.evals.analysis.bundle.telemetry import _model_versions, _run_summary, _telemetry_rollup
-from threetears.evals.analysis.bundle.coverage import _coverage_map, _declared_crossing, _factor_aliasing
+from threetears.evals.analysis.bundle.coverage import (
+    _coverage_map,
+    _declared_crossing,
+    _factor_aliasing,
+    _unexercised_factors,
+)
 from threetears.evals.analysis.bundle.cell_reads import (
     _cell_measures,
     _cell_strata,
@@ -590,6 +595,7 @@ def assemble_context_bundle(
         # underneath it reports that fact nowhere at all.
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         aliased_factors=aliasing[0],
+        unexercised_factors=_unexercised_factors(runs, results_by_run, arms, profile=profile),
         factor_pairs=aliasing[1],
         declared_crossing=_declared_crossing(campaign.declared_design, runs, results_by_run, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),

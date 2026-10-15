@@ -33,6 +33,7 @@ from threetears.evals.analysis.bundle.caps import (
 )
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
+    UnexercisedFactor,
     DeclaredCellCoverage,
     DeclaredCrossing,
     DeclaredLevelCoverage,
@@ -45,7 +46,9 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.bundle.config import (
     _CANDIDATE_MODEL_LEVER,
     _lever_value,
+    _exercised,
     _resolve_config,
+    _unexercised_levers,
     EffectiveLever,
 )
 from threetears.evals.analysis.bundle.design import (
@@ -497,7 +500,11 @@ def _coverage_map(
         resolved.add(_CANDIDATE_MODEL_LEVER)
     lever_levels = _lever_levels(runs, results_by_run, profile=profile)
     all_run_ids = [run.id for run in runs]
-    levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged)
+    # A lever read off what ran that no comparison exercised is no lever, unless the campaign declared it as an axis.
+    unexercised = _unexercised_levers(runs, results_by_run, profile=profile) - {
+        axis.axis_id for axis in (declared_design.axes if declared_design else [])
+    }
+    levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged) - unexercised
 
     coverage: list[LeverCoverageInput] = []
     declared_axes = {axis.axis_id: axis for axis in declared_design.axes} if declared_design else {}
@@ -697,6 +704,28 @@ def _factor_aliasing(
         pivots_omitted=omitted,
         completeness=completeness,
     )
+
+
+def _unexercised_factors(
+    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], arms: _CampaignArms, *, profile: HostProfile
+) -> list[UnexercisedFactor]:
+    """The levers read off what ran that no comparison exercised, each with the call it saw and the arm it was on.
+
+    The same set :func:`~threetears.evals.analysis.bundle.config._unexercised_levers` leaves out of the lever levels
+    and the coverage map, so the page can say once, under Not tested, why a lever the host declares is not there.
+    """
+    unexercised = _unexercised_levers(runs, results_by_run, profile=profile)
+    arm_of = {run.id: key for key, members in arms.groups().items() for run in members}
+    return [
+        UnexercisedFactor(
+            factor=lever,
+            role=profile.observed_model_levers[lever],
+            results=sum(by_run.values()),
+            arms=sorted({arm_of[run_id] for run_id, count in by_run.items() if count and run_id in arm_of}),
+        )
+        for lever, by_run in _exercised(runs, results_by_run, profile=profile).items()
+        if lever in unexercised
+    ]
 
 
 def _factor_pair_pivot(

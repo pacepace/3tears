@@ -14,12 +14,14 @@ nothing could separate them. The bundle now:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
 from threetears.evals.analysis.bundle.schema import INTERACTION_ALIASING_UNCHECKED
 from threetears.evals.analysis.report import DisclosureBlock
 from threetears.evals.kernel import EvalCampaign
+from threetears.evals.schema.models import RoleUsage
 from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -157,3 +159,84 @@ class TestACoVaryingPairOutsideAnyGroupIsPivoted:
             text.startswith("chunk_tokens and retriever_top_k co-vary; 3 of their 6 combinations never ran")
             for text in texts
         )
+
+
+# =============================================================================
+# A lever read off what ran is a level only where a comparison exercised it
+# =============================================================================
+
+#: A lever read off the calls a role made, as a host's research model is: the level is the model the role ran on.
+_OBSERVED = "retrieval.rerank_depth"
+
+
+def _observed_bundle(calls: dict[int, dict[int, str]]) -> AnalysisContextBundle:
+    """Two toy arms told apart by ``chunk_tokens``, each result making a call in the ``inner_agent`` role only where
+    ``calls`` (arm position → result position → model) says so."""
+    profile = replace(toyhost_profile(tunable_retrieval=True), observed_model_levers={_OBSERVED: "inner_agent"})
+    storage, _ = memory_storage()
+    runs = []
+    for position, tokens in enumerate((256, 512)):
+        run = toyhost_batch(grader_version="grade-2.1.0", **{**LOW, "chunk_tokens": tokens, "reviewer_pool": "pool-a"})
+        storage.save_eval_run(run)
+        measured = toyhost_measurements(run, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8)
+        for index, result in enumerate(measured):
+            if (model := calls.get(position, {}).get(index)) is not None:
+                usage = RoleUsage(role="inner_agent", model=model, cost_usd=0.0, call_count=1)
+                result = result.model_copy(update={"usage": [*result.usage, usage]})
+            storage.save_eval_result(result)
+        runs.append(run)
+    campaign = EvalCampaign(
+        id="observed",
+        scope_id=TOYHOST_SCOPE,
+        name="observed",
+        subject_id=runs[0].subject_snapshot.subject_id,
+        subject_kind="extractor_config",
+        behavior="extract_invoice_fields",
+        run_ids=[run.id for run in runs],
+        created_by="test:fixture",
+    )
+    storage.save_campaign(campaign)
+    return assemble_context_bundle(campaign, storage=storage, profile=profile)
+
+
+def _not_tested(bundle: AnalysisContextBundle) -> list[str]:
+    report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00Z")
+    return [
+        block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.section == "not_tested"
+    ]
+
+
+class TestALeverNoComparisonExercisedIsNoLevel:
+    """Production's research model, "inherited" because it never called research, against the candidate's one call in
+    sixty: no level, so neither aliased with the model nor a lever, and said once under Not tested."""
+
+    def test_one_call_on_one_arm_is_no_level_no_alias_and_no_lever(self) -> None:
+        bundle = _observed_bundle({1: {0: "research-model-1"}})
+
+        assert not [group for group in bundle.aliased_factors if _OBSERVED in group.factors]
+        assert bundle.factor_pairs is None or _OBSERVED not in bundle.factor_pairs.factors
+        assert _OBSERVED not in {row.name for row in bundle.coverage}
+        assert _OBSERVED not in {divergence.lever for divergence in bundle.scope_divergences}
+        (factor,) = bundle.unexercised_factors
+        assert (factor.factor, factor.role, factor.results) == (_OBSERVED, "inner_agent", 1)
+        (candidate,) = factor.arms
+        lines = [line for line in _not_tested(bundle) if line.startswith("rerank depth:")]
+        assert lines == [lines[0]] and lines[0].startswith("rerank depth: one inner agent call was made, on ")
+        assert lines[0].endswith(", and none on the other arm, so it is not a level.")
+
+    def test_no_call_on_either_arm_is_said_in_one_line(self) -> None:
+        bundle = _observed_bundle({})
+
+        (factor,) = bundle.unexercised_factors
+        assert (factor.results, factor.arms) == (0, [])
+        assert "rerank depth: no inner agent call was made on either arm." in _not_tested(bundle)
+
+    def test_a_lever_both_arms_exercised_still_aliases_with_what_tells_them_apart(self) -> None:
+        bundle = _observed_bundle(
+            {0: dict.fromkeys(range(3), "research-model-1"), 1: dict.fromkeys(range(3), "research-model-2")}
+        )
+
+        assert bundle.unexercised_factors == []
+        (group,) = [group for group in bundle.aliased_factors if _OBSERVED in group.factors]
+        assert "chunk_tokens" in group.factors
+        assert not [line for line in _not_tested(bundle) if line.startswith("rerank depth:")]
