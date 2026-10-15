@@ -18,6 +18,11 @@ whose service sends it).
 the engine knows neither a model's rates nor the output cap the client was built with. A client with no
 ``price_ceiling``, or one answering ``None``, is unpriced: its calls hold nothing and are admitted only
 while the cap is not yet reached.
+
+**A client may refresh its prices before they are read.** ``price_ceiling`` is synchronous, so a client whose rates
+come from somewhere that goes stale (the shipped client's catalogue) offers ``async refresh_prices()``, and the engine
+awaits it through :func:`refresh_prices` before it prices a call: a client idle for hours is priced from fresh rates,
+not refused for old ones. A client without one is priced from what it holds.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ from threetears.evals.kernel.candidate_kind import CellPending, CellSink
 from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.evals.schema.completion import CompletionGenerator
 
-__all__ = ["CappedCompletion", "call_ceiling"]
+__all__ = ["CappedCompletion", "call_ceiling", "refresh_prices"]
 
 
 @runtime_checkable
@@ -39,6 +44,17 @@ class _PricesItsCalls(Protocol):
     def price_ceiling(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
     ) -> float | None: ...  # pragma: no cover — protocol
+
+
+async def refresh_prices(client: object) -> None:
+    """Bring ``client``'s prices up to date before its calls are priced: await its ``refresh_prices()``, if it has one.
+
+    Args:
+        client: The client whose calls are about to be priced.
+    """
+    refresh = getattr(client, "refresh_prices", None)
+    if callable(refresh):
+        await refresh()
 
 
 def call_ceiling(
@@ -115,6 +131,7 @@ class CappedCompletion:
         Raises:
             CostCapReached: The cap has no room for the call, which is not made.
         """
+        await refresh_prices(self._inner)
         held = self._sink.reserve(
             self._source, call_ceiling(self._inner, system=system, user=user, response_format=response_format)
         )

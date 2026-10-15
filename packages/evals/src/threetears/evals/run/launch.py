@@ -64,6 +64,7 @@ from threetears.evals.schema.models import (
     resolve_effective_judges,
     scored_dim_ids,
 )
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedGeneration, OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import refuse_undeclared_judges, validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
@@ -2361,6 +2362,7 @@ async def _with_admitted_generation(
     planned = plan_variation_calls(template, n_variations, existing)
     writer = host.eval_host.completion_clients("a launch's generation")("variation", variation_model)
     try:
+        await refresh_prices(writer)
         admitted = budget.admit(writer, "variation", list(planned.values()))
     except BaseException:
         async with writer:

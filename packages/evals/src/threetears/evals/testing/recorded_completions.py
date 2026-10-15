@@ -67,6 +67,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Literal, NamedTuple, Self, get_args
 
+from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.schema.completion import (
     COMPLETION_RESULT_ATTRIBUTES,
@@ -513,6 +514,12 @@ class RecordedCompletions:
                 recording.write(json.dumps(line, ensure_ascii=False, allow_nan=False) + "\n")
             calls.append(_completion_of(members, sent, extra))
             self._size = _file_size(self.path)
+
+    async def refresh_prices(self) -> None:
+        """Bring the prices :meth:`price_ceiling` reads up to date: recording, the inner client's; replaying, none
+        are read."""
+        if self._inner is not None:
+            await refresh_prices(self._inner)
 
     async def aclose(self) -> None:
         """Recording, close the inner client, which this client owns; replaying, nothing: it owns no transport."""
