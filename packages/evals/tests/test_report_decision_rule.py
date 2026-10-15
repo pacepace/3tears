@@ -49,7 +49,7 @@ from threetears.evals.kernel.declaration import (
     reconcile_question_edits,
     refuse_an_undeclarable_design,
 )
-from threetears.evals.kernel.metrics import goal_check_measure
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MetricDescriptor, goal_check_measure
 import pytest
 from pydantic import ValidationError
 
@@ -719,3 +719,88 @@ async def test_a_pass_fail_judged_dimension_is_read_as_its_count() -> None:
         DecisionRule(clauses=(RateDrop(max_points=10, reading="tone"),)), readings, **_ARMS
     ).clauses
     assert (clause.outcome, clause.statement) == ("keep", "no tone rate drops by more than 10 points")
+
+
+# --- a rule reads every check, each on its better end, as the declaration offers it ------------------------------
+
+
+def _hallucinated(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+    """``bundle`` with a lower-is-better boolean ``hallucinated``, true on every trial whose label missed.
+
+    Its per-cell summaries are the label check's, counted the other way up, and its contrast is ``accuracy``'s on
+    the measure's own scale (the arm minus the control, so a fall in hallucinations is a negative difference).
+    """
+    name = "hallucinated"
+    descriptor = MetricDescriptor(
+        name=name,
+        data_type="boolean",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        description="The answer asserted something the case does not hold.",
+        higher_is_better=False,
+        merit_axis="quality",
+    )
+
+    def flipped(summary: Any) -> Any:
+        n_true = summary.n - round(summary.mean * summary.n)
+        return summary.model_copy(update={"name": name, "rate": n_true / summary.n, "n_true": n_true, "mean": None})
+
+    cells = [
+        cell.model_copy(
+            update={
+                "measures": cell.measures.model_copy(
+                    update={
+                        "measures": [
+                            *cell.measures.measures,
+                            *(flipped(s) for s in cell.measures.measures if s.name == ACCURACY_MEASURE),
+                        ]
+                    }
+                )
+            }
+        )
+        for cell in bundle.cell_measures
+    ]
+
+    def negated(interval: tuple[float, float] | None) -> tuple[float, float] | None:
+        return None if interval is None else (-interval[1], -interval[0])
+
+    families = [
+        family.model_copy(
+            update={
+                "comparisons": [
+                    *family.comparisons,
+                    *(
+                        c.model_copy(
+                            update={
+                                "name": name,
+                                "higher_is_better": False,
+                                "interval": negated(c.interval),
+                                "bounded_interval": negated(c.bounded_interval),
+                            }
+                        )
+                        for c in family.comparisons
+                        if c.name == ACCURACY_MEASURE
+                    ),
+                ]
+            }
+        )
+        for family in bundle.multiple_comparisons.families
+    ]
+    return bundle.model_copy(
+        update={
+            "cell_measures": cells,
+            "measure_catalog": {**bundle.measure_catalog, name: descriptor},
+            "multiple_comparisons": bundle.multiple_comparisons.model_copy(update={"families": families}),
+        }
+    )
+
+
+async def test_a_lower_is_better_check_reads_its_fall_as_a_gain_and_settles_switch() -> None:
+    """``hallucinated`` true on 20 of 60 trials for the control and 2 of 60 for v2 is a 30-point gain, not a drop."""
+    bundle, control, candidate = await _ruled([2] * 20, [3] * 18 + [2] * 2)
+    readings = rule_readings(_hallucinated(bundle), control, candidate, question_id="q-g2")
+    (fewer,) = [rate for rate in readings.rates if rate.measure == "hallucinated"]
+    assert (fewer.control_passed, fewer.control_n, fewer.candidate_passed, fewer.candidate_n) == (40, 60, 58, 60)
+    (clause,) = evaluate_rule(DecisionRule(clauses=(RateDrop(max_points=10),)), readings, **_ARMS).clauses
+    assert clause.outcome == "switch", clause.reason

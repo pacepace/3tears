@@ -182,6 +182,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "containment_defects",
     "describe_rubric_dim",
     "list_metrics",
+    "rule_rates",
     "strictest_class",
 ]
 
@@ -3039,6 +3040,26 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
             "described, so it is never pooled on an assumption nobody made."
         ),
     )
+
+
+def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
+    """Every measure a decision rule may read as a pass rate, oriented: its name -> whether its higher end passes.
+
+    A boolean with a better end. A rate on it counts the observations on its better end as passes, so a
+    lower-is-better boolean's passes are its false count. The one list
+    a rule's declared readings are checked against and the page's readings are drawn from, so the two never disagree.
+
+    Args:
+        descriptors: The measures, as their catalogue describes them.
+
+    Returns:
+        Measure name -> ``True`` where a pass is its higher end, ``False`` where it is its lower.
+    """
+    return {
+        descriptor.name: bool(descriptor.higher_is_better)
+        for descriptor in descriptors
+        if descriptor.data_type == "boolean" and descriptor.higher_is_better is not None
+    }
 
 
 def list_metrics(
