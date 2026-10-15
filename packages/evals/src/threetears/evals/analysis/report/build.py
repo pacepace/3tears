@@ -327,12 +327,11 @@ def _page(
             DisclosureBlock(section="methods", source="memo", text=text, fold="Style") for text in style.offending()
         ]
     name = source.campaign_name or f"Campaign {source.campaign_id}"
+    verdict = verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle), model=_model_namer(names))
     blocks: list[ReportBlock] = [
         DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source)),
         DisclosureBlock(
-            section="header",
-            source="verdict",
-            text=verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle), model=_model_namer(names)).text,
+            section="header", source="verdict", text=verdict.text, tone=DisclosureBlock.verdict_tone(verdict.rule)
         ),
         *_scoreboard_blocks(bundle, arm, charts),
         *_decision_blocks(bundle, arm),

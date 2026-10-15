@@ -561,6 +561,23 @@ class TrialBlock(_Block):
     )
 
 
+#: What kind of verdict the first screen's line is, for a page that sets each kind apart: ``decided`` (a declared
+#: rule or question settled it), ``open`` (too few cases, or no question was declared, so the line offers leads),
+#: ``failed`` (the test setup failed, so there is no verdict) and ``summary`` (one arm: a count, nothing to decide).
+_VerdictTone = Literal["decided", "open", "failed", "summary"]
+
+#: Each verdict rule's tone, keyed by :data:`~threetears.evals.analysis.report.verdict.VerdictRule` — by name, so the
+#: model imports nothing from the builder that applies the rules.
+_VERDICT_TONES: dict[str, _VerdictTone] = {
+    "setup": "failed",
+    "one_arm": "summary",
+    "rule": "decided",
+    "declared": "decided",
+    "too_small": "open",
+    "exploratory": "open",
+}
+
+
 class DisclosureBlock(_Block):
     """Something code must tell the reader that no author wrote — one idea."""
 
@@ -570,6 +587,25 @@ class DisclosureBlock(_Block):
     term: str | None = Field(
         default=None, description="The glossary term the line links to, where it uses one; None for none."
     )
+    tone: _VerdictTone | None = Field(
+        default=None,
+        description=(
+            "On the verdict line, what kind of verdict it is — decided, open, failed (the test setup) or summary (one "
+            "arm) — which HTML sets the line apart by. None on every other disclosure."
+        ),
+    )
+
+    @staticmethod
+    def verdict_tone(rule: str) -> _VerdictTone:
+        """The tone a verdict line is set in, by the rule that wrote it.
+
+        Args:
+            rule: The rule, as :func:`~threetears.evals.analysis.report.verdict.verdict_line` names it.
+
+        Returns:
+            The tone.
+        """
+        return _VERDICT_TONES[rule]
 
     @model_validator(mode="after")
     def _the_term_is_defined(self) -> Self:
@@ -580,6 +616,17 @@ class DisclosureBlock(_Block):
         """
         if self.term is not None and self.term not in GLOSSARY:
             raise ValueError(f"a disclosure links the term {self.term!r}, which the glossary does not define")
+        return self
+
+    @model_validator(mode="after")
+    def _the_tone_is_the_verdicts(self) -> Self:
+        """Refuse a tone on any line but the verdict's.
+
+        Raises:
+            ValueError: ``tone`` is set and ``source`` is not ``verdict``.
+        """
+        if self.tone is not None and self.source != "verdict":
+            raise ValueError(f"a tone sets the verdict line apart, and this disclosure speaks for {self.source!r}")
         return self
 
 

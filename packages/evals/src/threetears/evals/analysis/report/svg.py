@@ -3,8 +3,8 @@
 **What earns a chart.** Two shapes and no more. The *outcome bar* is a census, so it is always drawn: one horizontal
 stacked bar per arm — passed, failed, and lost to the test setup cause by cause — every segment's count written as
 text beside the bar. *Interval rows* are estimates: a dot and its interval per row, a zero line where the rows are
-differences, a margin band where one was declared, and the value, the interval and the cases written as text at the
-right. Which rows are drawn at all is the report builder's rule (an arm needs
+differences, a margin band where one was declared, the value written at the right, and the value, the interval and
+the cases written as words under the marks. Which rows are drawn at all is the report builder's rule (an arm needs
 :data:`~threetears.evals.analysis.report.verdict.MIN_CASES` usable cases and an interval); this module draws what it
 is handed.
 
@@ -25,7 +25,8 @@ from collections.abc import Sequence
 from threetears.evals.analysis.report.model import ChartBlock, IntervalRow, OutcomeBar, interval_text
 from threetears.evals.analysis.quantities import render_cell
 
-#: The chart's own coordinate width; the SVG scales to the page's width from it.
+#: The chart's own coordinate width; the SVG scales to the page's width from it. A line of words that would run past
+#: it is wrapped onto more lines (:func:`_wrapped`), its row drawn taller, never cut.
 _WIDTH = 720
 
 #: Where the plot ends and the value text begins. The label column before the plot is as wide as the longest label
@@ -44,15 +45,21 @@ _COUNT_INSIDE = 22
 _BAR_ROW = 46
 _BAR_HEIGHT = 16
 
-#: One interval row.
-_INTERVAL_ROW = 30
+#: One interval row: the marks and the value, then a line of words under them.
+_INTERVAL_ROW = 44
+_INTERVAL_MARK = 11
+
+#: Each further line a row's words wrap onto, in either chart.
+_LINE = 17
 
 #: The gap between two stacked segments, so each reads as its own mark.
 _SEGMENT_GAP = 2
 
 #: The page's chart stylesheet: each mark's class, from CSS variables stepped for light and for dark. The categorical
 #: steps are the validated default palette's first two slots (blue, orange); a lost segment is a neutral grey with a
-#: dashed outline, the convention for "not measured", so it never reads as a third series.
+#: dashed outline, the convention for "not measured", so it never reads as a third series. The chart scales to the
+#: page's width down to a floor that keeps its 13px text at 11px or more on a phone; past the floor its figure
+#: scrolls, as a table does, rather than shrinking the words.
 SVG_STYLE = """
 :root { --viz-passed: #2a78d6; --viz-failed: #eb6834; --viz-lost: #b9b8b3; --viz-lost-edge: #6f6e69;
   --viz-ink: #0b0b0b; --viz-muted: #52514e; --viz-rule: #c9c8c2; --viz-band: #e9e8e3; --viz-on-fill: #ffffff; }
@@ -64,7 +71,8 @@ SVG_STYLE = """
 :root[data-theme="dark"] { --viz-passed: #3987e5; --viz-failed: #d95926; --viz-lost: #4a4a46;
   --viz-lost-edge: #a8a7a0; --viz-ink: #f0efec; --viz-muted: #c3c2b7; --viz-rule: #4a4a46; --viz-band: #2c2c29;
   --viz-on-fill: #ffffff; }
-svg.viz { width: 100%; height: auto; display: block; font: 13px/1.3 var(--font-sans, system-ui, sans-serif); }
+svg.viz { width: 100%; min-width: 610px; height: auto; display: block;
+  font: 13px/1.3 var(--font-sans, system-ui, sans-serif); }
 svg.viz text { fill: var(--viz-ink); }
 svg.viz text.viz-muted { fill: var(--viz-muted); }
 svg.viz .viz-passed { fill: var(--viz-passed); }
@@ -109,7 +117,7 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
 
     Each segment's count is written inside it where it fits, and every arm's whole census is written under its bar,
     so no count is read off a length or a colour. A lost segment is grey with a dashed edge, the next lost cause
-    dotted, so two causes side by side read as two.
+    dotted, so two causes side by side read as two. A census too long for one line wraps, and its row is taller.
 
     Args:
         title: What the chart shows.
@@ -120,13 +128,14 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
         The ``<svg>`` element.
     """
     legend_height = 26
-    height = legend_height + _BAR_ROW * len(bars) + 6
     longest = max((bar.total for bar in bars), default=0) or 1
     start, labels = _label_column([bar.arm for bar in bars])
     span = _PLOT_END - start
+    censuses = [_wrapped(segment_words(bar), start) for bar in bars]
+    height = legend_height + sum(_BAR_ROW + _LINE * (len(lines) - 1) for lines in censuses) + 6
     marks = [_legend(start, legend_height)]
-    for index, (bar, label) in enumerate(zip(bars, labels, strict=True)):
-        top = legend_height + index * _BAR_ROW
+    top = legend_height
+    for bar, label, lines in zip(bars, labels, censuses, strict=True):
         marks.append(_text(8, top + _BAR_HEIGHT - 3, label, title=bar.arm if label != bar.arm else None))
         x = float(start)
         lost = 0
@@ -147,7 +156,9 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
                 )
             x += width + _SEGMENT_GAP
         marks.append(_text(x + 6, top + _BAR_HEIGHT - 3, f"{bar.total} trials"))
-        marks.append(_text(start, top + _BAR_HEIGHT + 17, segment_words(bar), muted=True))
+        for offset, line in enumerate(lines):
+            marks.append(_text(start, top + _BAR_HEIGHT + 17 + _LINE * offset, line, muted=True))
+        top += _BAR_ROW + _LINE * (len(lines) - 1)
     desc = "; ".join(f"{bar.arm} ran {bar.total} trials: {segment_words(bar)}" for bar in bars)
     return _svg(chart_id, title, desc, height, marks)
 
@@ -188,7 +199,11 @@ def interval_rows_svg(
     margin: float | None,
     chart_id: str,
 ) -> str:
-    """Interval rows: a dot and its interval per row, the value, interval and cases written at the right.
+    """Interval rows: a dot and its interval per row, its value at the right, and under the marks its value, interval,
+    cases and verdict in words.
+
+    The words go under the marks, not beside them, wrapped where they are long, so a verdict never runs past the
+    chart's edge; the value alone sits at the right of its row, where a reader scanning the dots finds it.
 
     Args:
         title: What the chart shows.
@@ -215,9 +230,11 @@ def interval_rows_svg(
         return start + (value - low) / (high - low) * (_PLOT_END - start)
 
     axis = 18
-    height = _INTERVAL_ROW * len(rows) + axis + 8
+    sayings = [_wrapped(row_words(row, unit), start) for row in rows]
+    heights = [_INTERVAL_ROW + _LINE * (len(lines) - 1) for lines in sayings]
+    plot_bottom = sum(heights)
+    height = plot_bottom + axis + 8
     marks = []
-    plot_bottom = _INTERVAL_ROW * len(rows)
     if margin is not None:
         left, right = x_of(-margin), x_of(margin)
         marks.append(
@@ -227,8 +244,9 @@ def interval_rows_svg(
     if zero_line:
         zero = x_of(0.0)
         marks.append(f'<line class="viz-zero" x1="{zero:.1f}" y1="0" x2="{zero:.1f}" y2="{plot_bottom}"></line>')
-    for index, (row, label) in enumerate(zip(rows, labels, strict=True)):
-        middle = index * _INTERVAL_ROW + _INTERVAL_ROW / 2
+    top = 0
+    for row, label, lines, row_height in zip(rows, labels, sayings, heights, strict=True):
+        middle = top + _INTERVAL_MARK
         said = row_words(row, unit)
         marks.append(_text(8, middle + 4, label, title=row.label if label != row.label else None))
         marks.append(
@@ -239,7 +257,10 @@ def interval_rows_svg(
             f'<circle class="viz-dot" cx="{x_of(row.value):.1f}" cy="{middle:.1f}" r="4.5">'
             f"<title>{_escape(f'{row.label}: {said}')}</title></circle>"
         )
-        marks.append(_text(_PLOT_END + 10, middle + 4, said))
+        marks.append(_text(_PLOT_END + 10, middle + 4, f"{render_cell(row.value)}{_unit(unit)}"))
+        for offset, line in enumerate(lines):
+            marks.append(_text(start, middle + 23 + _LINE * offset, line, muted=True))
+        top += row_height
     marks.append(f'<line class="viz-rule" x1="{start}" y1="{plot_bottom}" x2="{_PLOT_END}" y2="{plot_bottom}"></line>')
     marks.append(_text(start, plot_bottom + 14, render_cell(low), muted=True))
     marks.append(_text(_PLOT_END, plot_bottom + 14, render_cell(high), muted=True, anchor="end"))
@@ -261,6 +282,28 @@ def _unit(unit: str) -> str:
     if not unit:
         return ""
     return unit if unit == "%" else f" {unit}"
+
+
+def _wrapped(words: str, start: int) -> list[str]:
+    """``words`` as the lines they fit on from ``start`` to the chart's edge, broken at spaces.
+
+    Args:
+        words: A row's line of words.
+        start: Where the line begins; it may run to the chart's edge less a small margin.
+
+    Returns:
+        At least one line; a single word longer than the room is a line of its own.
+    """
+    room = int((_WIDTH - start - 8) / _CHAR_WIDTH)
+    lines: list[str] = []
+    line = ""
+    for word in words.split(" "):
+        if line and len(line) + 1 + len(word) > room:
+            lines.append(line)
+            line = word
+        else:
+            line = f"{line} {word}" if line else word
+    return [*lines, line]
 
 
 def _svg(chart_id: str, title: str, desc: str, height: int, marks: Sequence[str]) -> str:
