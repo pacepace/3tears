@@ -11,8 +11,9 @@ every host, so it is declared here once:
   seats its runs fill. A host whose profile declares apparatus of its own that a reporter run records builds
   its contract with :func:`reporter_kind_contract` instead, seating those too.
 - :func:`refuse_undeliverable_reporter_template` — a reporter template asking for apparatus a memo writer
-  cannot honour, or giving its judge nothing to score. For a host's ``refuse_undeliverable_template`` hook
-  (:func:`~threetears.evals.run.create_template`) on a reporter template, and asked again at every launch.
+  cannot honour, or giving its judge nothing to score. For a host's ``refuse_undeliverable_template`` check
+  (``TemplateChecks``, which :func:`~threetears.evals.run.create_template` reads off the host) on a reporter template,
+  and asked again at every launch.
 - :func:`live_reporter_cases` — the cases a launch over the template's own bank runs, refused when there are
   none (a reporter case is frozen from a campaign, never generated) and when a (campaign, recorded memo) pair
   holds more than one live case, which would judge one memo twice and count it twice in every denominator.

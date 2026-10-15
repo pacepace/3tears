@@ -125,7 +125,15 @@ pass it to every entrypoint. It holds:
   was refused for the calling account, which stops a run rather than excluding its cells;
   `withhold_failure_detail` is the honest one for an app with no error types of its own;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
-  where the host is built.
+  where the host is built;
+- your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the three
+  questions about a template only you can answer. `require_known_tools_allowed` asks whether each tool it allows is in
+  your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your world can seed, and
+  `refuse_undeliverable_template` whether its kind can honour what it declares. Each raises `ValidationFailedError` to
+  refuse and returns `None` to admit. `create_template`, `update_template`, the boot seed, a definition reset and the
+  `definitions_reset` action read them off the host they are handed, so every path admits a template under the same
+  checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it admitted
+  would go unchecked; a check with nothing to refuse is a function that returns `None`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -1385,6 +1393,19 @@ whose words or verdict changed, for a template that already holds cases would ch
 against under the same id. It is no longer written beside the old ones. It is withheld and reported under
 `needs_reset` on every boot, with any case set listing it, until you reset the template (below).
 
+**A template's own cases seed with it.** A template whose stimuli you author as cases rather than variation axes (a
+scenario to play out, a set of inputs to classify) carries them in the corpus too: `load_seed_corpus` reads
+`template_cases/*.json`, each a `SeedTemplateCase` (host contract, from `threetears.evals.run`; in memory,
+`SeedCorpus(template_cases=...)`) naming its `template` and carrying the case's `variation_params`, its `host_payload`
+(your stimulus, stored as written and never read by the engine) and its `stratum`. Its name is its file's name without
+`.json` (or its own `name`), unique within its template, and is stored as the case's `name`, which the report calls it
+by. The template must be one the corpus carries, and not a judge template, whose cases are its judge cases. The seed
+writes the cases into the template's current revision after the templates and reports them under `template_case`. As
+for a judge case, it writes them only into a revision holding no cases yet, so a case you add, or one whose content
+changed, for a template already holding cases is withheld under `needs_reset` until you reset the template (below).
+A case whose content the revision already holds is `already present`, so cases your own seed wrote before `.32` with
+the same content are kept as they are.
+
 **A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
 case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither
 implied by a template nor writable as ids: `load_seed_corpus` reads `case_sets/*.json`, each a `SeedCaseSet` (host contract, from `threetears.evals.run`; in
@@ -1408,8 +1429,7 @@ corpus = boot_seed_corpus(scope_id)  # the SeedCorpus your boot seed loads for t
 drift = definition_drift(host, corpus, seeded_digests=PRE_30_DIGESTS)  # writes nothing
 print(drift.render())  # "drift: 1 stale, 0 customized, 1 unknown, 0 absent, 40 current", then each line not current
 if stale := drift.keys("stale"):
-    reset = reset_definitions(host, corpus, stale, require_known_tools_allowed=..., refuse_undeclared_world_seed=...,
-                              refuse_undeliverable_template=...)  # the same three checks the seed takes
+    reset = reset_definitions(host, corpus, stale)  # admits each template under the host's template_checks
     print(reset.render())
 ```
 
@@ -1418,16 +1438,23 @@ A definition reads `current` (the corpus's), `stale` (what was seeded, and the c
 boot seeds it). A reset never edits in place. A template's new content is its next **revision**: a new record under the
 same name (`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep
 the content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest
-revision. A judge case resets with its judge template, whose new revision holds the corpus's whole battery, and the
-corpus's case sets over it are minted again. The reset refuses `customized` and `unknown`, and a judge template holding
-live cases the corpus does not carry, unless `discard_customization=True`; it writes nothing when it refuses and names
+revision, which `templates_list` shows beside each template (`revision`). A judge case resets with its judge template,
+whose new revision holds the corpus's whole battery, and the corpus's case sets over it are minted again; a template
+case resets with its template, whose new revision holds every corpus case of it. The reset refuses `customized` and
+`unknown`, and a judge template (or a template the corpus gives cases) holding live cases the corpus does not carry,
+unless `discard_customization=True`; it writes nothing when it refuses and names
 every refusal. A campaign holding runs of two revisions of one template is refused (at creation, adding a run, and its
 bundle), since their results are two datasets; two templates that only share a name at one revision number are not
 revisions of each other and are not refused. For rows seeded before `.30`, compute `corpus_digests(host, corpus)`
 over the corpus you seeded then (from your history) and pass it as `seeded_digests`: they read `stale` rather than
-`unknown`. A judge template whose boot reported `needs_reset` reads `stale`, and its reset writes the next revision
-with every corpus case. `definition_drift_actions(boot_seed_corpus, ...)` (from
-`threetears.evals.actions`) adds `definitions_drift` and `definitions_reset` to your catalogue.
+`unknown`. A template whose boot reported `needs_reset` reads `stale`, and its reset writes the next revision with
+every corpus case. Template cases your own seed wrote before `.32` carry no record of what was seeded: one whose
+content the corpus still has reads `current`, one under its corpus name with other content reads `unknown`, and a new
+one reads `unknown` too until you pass `seeded_digests` (`corpus_digests` over the corpus as it was), under which, as
+for a judge case, one the map names reads `stale` or, gone from the store, `customized`, and one it does not name reads
+`stale`. `definition_drift_actions(boot_seed_corpus)` (from `threetears.evals.actions`) adds `definitions_drift` and
+`definitions_reset` to your catalogue; the reset reads the template checks of the host each call is made in, so the
+factory needs only your corpus.
 
 **A stored verdict is graded again through one door: `regrade`** (`threetears.evals.run`, and the `result_regrade`
 action). `await regrade(host, result_id, scope_id)` re-grades the result's check dims (its goal checks) from what its

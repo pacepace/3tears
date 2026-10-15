@@ -13,8 +13,9 @@ document body's.
 **The refusals here are the engine's: rules over engine models.** A rubric dim's name carries its
 scoring context; a template's preconditions and goal-state checks are ``EvalTemplate`` fields any
 world-bearing kind evaluates, so whether a host's world can supply what they name is asked against
-the host's profile's registries. What only a host can answer arrives as a callable the caller
-passes in:
+the host's profile's registries. What only a host can answer is one of the host's own
+:class:`~threetears.evals.kernel.host.TemplateChecks` (``EvalHost.template_checks``), which every path that admits a
+template reads from the host it is handed:
 
 * ``require_known_tools_allowed`` — whether each name in ``tools_allowed`` is a tool type the
   host's catalog has;
@@ -25,9 +26,10 @@ passes in:
   ignores, it calls :func:`~threetears.evals.run.launch.refuse_ignored_template_fields`, the dispatch's own refusal,
   rather than restate the list.
 
-Each hook raises :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse and
-returns ``None`` to admit. They are required rather than defaulted: a host with nothing to check
-passes a function that checks nothing, which is a decision its code states.
+Each check raises :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse and
+returns ``None`` to admit. None is defaulted: a host with nothing to check passes a function that
+checks nothing, which is a decision its code states, and a host supplying no checks at all is
+refused by every path that admits a template (``EvalHost.checks_for``).
 
 The world reads go through the host's profile, handed in: a template function that reads both
 the store and the world takes the :class:`~threetears.evals.kernel.host.eval_host.EvalHost`, and
@@ -36,7 +38,7 @@ the two gates that read the world alone take its profile.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Container, Mapping, Sequence
+from collections.abc import Callable, Container, Mapping
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
@@ -50,7 +52,7 @@ from threetears.evals.kernel.dsl import (
     world_prose_matches,
 )
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.host.eval_host import EvalHost, TemplateChecks
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.host.world import resolve_preconditions
@@ -126,9 +128,6 @@ def create_template(
     definition: dict[str, Any],
     *,
     scope_id: str,
-    require_known_tools_allowed: Callable[[Sequence[str] | None], None],
-    refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
-    refuse_undeliverable_template: Callable[[EvalTemplate], None],
 ) -> EvalTemplate:
     """Create and persist a template from an authoring definition.
 
@@ -147,17 +146,12 @@ def create_template(
     ``kind_spec`` as the spec model resolved it — every field, defaults included.
 
     Args:
-        host: The host: where templates are read and written, and the world the template's
-            expressions are held to.
+        host: The host: where templates are read and written, the world the template's
+            expressions are held to, and its template checks (``template_checks``): its tool
+            catalog, its seed walk and its kind capabilities.
         definition: Template fields (``name`` + ``intent`` required; the
             rest optional per :class:`~threetears.evals.schema.models.EvalTemplate`).
         scope_id: The scope the template lives in.
-        require_known_tools_allowed: The host's check that each name in ``tools_allowed`` is a
-            tool type its catalog has; raises ``ValidationFailedError`` to refuse.
-        refuse_undeclared_world_seed: The host's check that the template's ``world_seed``
-            names only paths its world can seed; raises ``ValidationFailedError`` to refuse.
-        refuse_undeliverable_template: The host's check that the template declares only
-            apparatus its candidate kind can honour; raises ``ValidationFailedError`` to refuse.
 
     Returns:
         The persisted :class:`~threetears.evals.schema.models.EvalTemplate`.
@@ -174,6 +168,7 @@ def create_template(
             it declares apparatus its candidate kind cannot honour, or a judged dimension declares no
             judge, or one the scope contradicts (:func:`refuse_undeclared_judges`).
         ConflictError: a template with the same name already exists.
+        RefusedInput: The host supplies no template checks.
     """
     reject_unknown_authoring_fields("create_template", definition, EvalTemplate, TEMPLATE_SERVER_FIELDS)
     clean = {k: v for k, v in definition.items() if k not in TEMPLATE_SERVER_FIELDS}
@@ -185,9 +180,7 @@ def create_template(
     template = admit_template(
         template,
         profile=host.profile,
-        require_known_tools_allowed=require_known_tools_allowed,
-        refuse_undeclared_world_seed=refuse_undeclared_world_seed,
-        refuse_undeliverable_template=refuse_undeliverable_template,
+        checks=host.checks_for("create_template"),
         active_judge_config=active_judge_config_in(host.storage, scope_id),
     )
 
@@ -205,9 +198,7 @@ def admit_template(
     template: EvalTemplate,
     *,
     profile: HostProfile,
-    require_known_tools_allowed: Callable[[Sequence[str] | None], None],
-    refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
-    refuse_undeliverable_template: Callable[[EvalTemplate], None],
+    checks: TemplateChecks,
     active_judge_config: Callable[[str], str | None],
 ) -> EvalTemplate:
     """Every refusal a template meets before it is first written, in :func:`create_template`'s order.
@@ -222,9 +213,7 @@ def admit_template(
     Args:
         template: The constructed template, in its scope.
         profile: The host whose kinds, world, tools and action schemas the template is held to.
-        require_known_tools_allowed: The host's tool-catalog check, as for :func:`create_template`.
-        refuse_undeclared_world_seed: The host's seed walk, as for :func:`create_template`.
-        refuse_undeliverable_template: The host's kind-capability check, as for :func:`create_template`.
+        checks: The host's template checks (``EvalHost.template_checks``).
         active_judge_config: The id of the judge config that would score a dimension, by its name, or ``None``
             when none would: the store's active one for authoring (:func:`active_judge_config_in`), and for a
             seed the corpus's own beside the store's, since a seed writes both.
@@ -237,11 +226,11 @@ def admit_template(
         ValidationFailedError: Any refusal :func:`create_template` documents other than the name's.
     """
     template = template.model_copy(update={"kind_spec": freeze(validated_kind_spec(template, profile=profile))})
-    require_known_tools_allowed(template.tools_allowed)
+    checks.require_known_tools_allowed(template.tools_allowed)
     refuse_unsupplied_world(template, profile=profile)
     refuse_non_discriminating_checks(template, profile=profile)
-    refuse_undeclared_world_seed(template)
-    refuse_undeliverable_template(template)
+    checks.refuse_undeclared_world_seed(template)
+    checks.refuse_undeliverable_template(template)
     refuse_undeclared_judges(template, active_judge_config)
     return template
 
@@ -598,10 +587,6 @@ def update_template(
     template_id: str,
     scope_id: str,
     fields: dict[str, Any],
-    *,
-    require_known_tools_allowed: Callable[[Sequence[str] | None], None],
-    refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
-    refuse_undeliverable_template: Callable[[EvalTemplate], None],
 ) -> EvalTemplate:
     """Apply a partial update to a template and persist it.
 
@@ -610,18 +595,14 @@ def update_template(
     fields in ``fields`` are ignored.
 
     Args:
-        host: The host: where templates are read and written, and the world an authored
-            expression is held to.
+        host: The host: where templates are read and written, the world an authored
+            expression is held to, and its template checks (``template_checks``): the tool
+            catalog asked only when this update writes ``tools_allowed``, the seed walk only when
+            it writes ``world_seed``, and the kind capabilities of the merged template unless the
+            update only sets ``archived``.
         template_id: Template to update.
         scope_id: The scope it lives in.
         fields: Partial field map to overlay onto the existing template.
-        require_known_tools_allowed: The host's tool-catalog check, as for
-            :func:`create_template`; asked only when this update writes ``tools_allowed``.
-        refuse_undeclared_world_seed: The host's seed walk, as for :func:`create_template`;
-            asked only when this update writes ``world_seed``.
-        refuse_undeliverable_template: The host's kind-capability check, as for
-            :func:`create_template`; asked of the merged template unless the update only sets
-            ``archived``.
 
     Returns:
         The persisted, updated :class:`~threetears.evals.schema.models.EvalTemplate`.
@@ -635,7 +616,9 @@ def update_template(
             ``world_seed`` fails the authoring guard that field carries — an authored ``rubric``'s
             being that every judged dimension declares its judge as the scope can honour
             (:func:`refuse_undeclared_judges`).
+        RefusedInput: The host supplies no template checks.
     """
+    checks = host.checks_for("update_template")
     existing = host.storage.load_template(template_id, scope_id)
     if existing is None:
         raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
@@ -664,7 +647,7 @@ def update_template(
     # update WRITES, so a stored template whose allow-list names a tool type
     # since removed from the catalog stays editable in its other fields.
     if "tools_allowed" in fields:
-        require_known_tools_allowed(template.tools_allowed)
+        checks.require_known_tools_allowed(template.tools_allowed)
     # Same authoring-scoped rule again, one field pair over — checked against the merged
     # template so an update that authors a precondition is resolved as it will be stored,
     # but only for the halves this write actually authors.
@@ -677,7 +660,7 @@ def update_template(
     # whose seed the registry refuses — a shape some stored templates carry — stays editable
     # in its other fields and, through this field, into one that resolves.
     if "world_seed" in fields:
-        refuse_undeclared_world_seed(template)
+        checks.refuse_undeclared_world_seed(template)
     # Scoped like the world seed, to an update that WRITES the rubric: a stored template whose dimensions predate the
     # judge declaration stays archivable and editable in its other fields (its launch refuses it), and the write that
     # declares its dimensions is the one held to the rule.
@@ -708,7 +691,7 @@ def update_template(
     # the un-archive instead would only move the trap one step, to a template that can be
     # retired and never brought back.
     if set(fields) != {"archived"}:
-        refuse_undeliverable_template(template)
+        checks.refuse_undeliverable_template(template)
 
     host.storage.save_template(template)
     return template

@@ -60,6 +60,10 @@ class TemplateLine(EvalBaseModel):
 
     id: str
     name: str
+    revision: int = Field(
+        description="Which record of its name this is: 1 when first written, one more for each definition reset, "
+        "whose new content is a new record. A launch by name runs the newest non-archived one."
+    )
     candidate_kind: str
     intent: str
     archived: bool
@@ -342,12 +346,14 @@ def _line(run: EvalRun) -> RunLine:
 
 
 def templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> TemplateListing:
-    """The scope's templates.
+    """The scope's templates, each with its revision: a reset template's older revisions are archived, so the active
+    listing shows each name once, at the revision a launch by name runs.
 
     Args:
         host: The host whose store is read.
         scope_id: The scope.
-        archived: List the archived templates instead of the active ones.
+        archived: List the archived templates instead of the active ones (a reset template's older revisions among
+            them).
 
     Returns:
         The listing.
@@ -357,6 +363,7 @@ def templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> 
             TemplateLine(
                 id=template.id,
                 name=template.name,
+                revision=template.revision,
                 candidate_kind=template.candidate_kind,
                 intent=template.intent,
                 archived=template.archived,

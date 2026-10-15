@@ -39,17 +39,6 @@ PACE = "dj.pace"
 _FIXTURE = Path(__file__).parent / "fixtures" / "durable_documents" / "v15" / "eval_template.json"
 
 
-def _admit(_definition: object) -> None:
-    """A host check with nothing to refuse: the rule under test is the engine's."""
-
-
-_HOOKS: dict[str, Any] = {
-    "require_known_tools_allowed": _admit,
-    "refuse_undeclared_world_seed": _admit,
-    "refuse_undeliverable_template": _admit,
-}
-
-
 def _dim(name: str = TONE, judge: Any = None) -> RubricDim:
     return RubricDim(name=name, description="Sounds like the station's voice.", scale="ordinal", judge=judge)
 
@@ -104,7 +93,7 @@ def test_create_names_every_undeclared_dimension_in_one_refusal() -> None:
     host = toyhost_host(storage=memory_storage()[0])
 
     with pytest.raises(ValidationFailedError) as refused:
-        create_template(host, _definition(_dim(TONE), _dim(WARMTH), _dim(PACE)), scope_id=TOYHOST_SCOPE, **_HOOKS)
+        create_template(host, _definition(_dim(TONE), _dim(WARMTH), _dim(PACE)), scope_id=TOYHOST_SCOPE)
 
     for name in (TONE, WARMTH, PACE):
         assert f"'{name}' is judged but declares no judge" in str(refused.value)
@@ -117,7 +106,7 @@ def test_the_seed_refuses_an_undeclared_dimension_and_writes_nothing() -> None:
     template = EvalTemplate(**_definition(_dim()), scope_id=TOYHOST_SCOPE)
 
     with pytest.raises(ValidationFailedError, match=r"'dj\.tone' is judged but declares no judge"):
-        seed_eval_definitions(host, SeedCorpus(scope_id=TOYHOST_SCOPE, templates=(template,)), **_HOOKS)
+        seed_eval_definitions(host, SeedCorpus(scope_id=TOYHOST_SCOPE, templates=(template,)))
     assert storage.query_templates(TOYHOST_SCOPE) == []
 
 
@@ -128,7 +117,7 @@ def test_the_seed_honours_a_configured_dimension_by_the_config_it_seeds() -> Non
     config = make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=TONE)
 
     outcome = seed_eval_definitions(
-        host, SeedCorpus(scope_id=TOYHOST_SCOPE, templates=(template,), judge_configs=(config,)), **_HOOKS
+        host, SeedCorpus(scope_id=TOYHOST_SCOPE, templates=(template,), judge_configs=(config,))
     )
 
     assert outcome.created["eval_template"] == 1 and outcome.created["judge_config"] == 1
@@ -138,12 +127,12 @@ def test_an_update_writing_the_rubric_is_held_to_the_declaration_and_one_that_do
     host, template = _stored(_dim())
 
     with pytest.raises(ValidationFailedError, match="declares no judge"):
-        update_template(host, template.id, TOYHOST_SCOPE, {"rubric": [_dim().model_dump(mode="json")]}, **_HOOKS)
-    renamed = update_template(host, template.id, TOYHOST_SCOPE, {"description": "still undeclared"}, **_HOOKS)
+        update_template(host, template.id, TOYHOST_SCOPE, {"rubric": [_dim().model_dump(mode="json")]})
+    renamed = update_template(host, template.id, TOYHOST_SCOPE, {"description": "still undeclared"})
     assert renamed.rubric[0].judge is None, "a write that does not author the rubric leaves it editable"
 
     declared_now = update_template(
-        host, template.id, TOYHOST_SCOPE, {"rubric": [_dim(judge="builtin").model_dump(mode="json")]}, **_HOOKS
+        host, template.id, TOYHOST_SCOPE, {"rubric": [_dim(judge="builtin").model_dump(mode="json")]}
     )
     assert declared_now.rubric[0].judge == "builtin"
     assert _plan(host, declared_now).config_ids == {}
@@ -156,14 +145,14 @@ def test_configured_with_no_config_is_refused_at_create() -> None:
     host = toyhost_host(storage=memory_storage()[0])
 
     with pytest.raises(ValidationFailedError, match=r"declares judge: \"configured\", and scope .* holds no active"):
-        create_template(host, _definition(_dim(judge="configured")), scope_id=TOYHOST_SCOPE, **_HOOKS)
+        create_template(host, _definition(_dim(judge="configured")), scope_id=TOYHOST_SCOPE)
 
 
 def test_configured_whose_config_was_archived_after_create_is_refused_at_launch() -> None:
     host = toyhost_host(storage=memory_storage()[0])
     config = make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=TONE)
     host.storage.save_judge_config(config)
-    template = create_template(host, _definition(_dim(judge="configured")), scope_id=TOYHOST_SCOPE, **_HOOKS)
+    template = create_template(host, _definition(_dim(judge="configured")), scope_id=TOYHOST_SCOPE)
     assert _plan(host, template).config_ids == {TONE: config.id}
 
     host.storage.save_judge_config(config.model_copy(update={"archived": True}))

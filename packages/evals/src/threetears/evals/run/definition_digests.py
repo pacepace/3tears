@@ -10,13 +10,17 @@ None) moves no digest of a record written before it.
 - A template, a rubric dim and a judge config digest their declared fields less the record's own (:data:`RECORD_FIELDS`).
 - A judge case digests as the frozen case it is (``JudgeCase.content_digest``), which a stored case already carries
   as its ``content_hash``.
+- A template's own case digests what its corpus file states of it: its ``variation_params``, its ``host_payload`` and
+  its ``stratum``, read alike off a corpus case and a stored one (so a stratum relabelled in place moves it), and
+  never its name or its template's id, so the same case on a newer revision digests alike.
 - A case set digests its name, its template's name, ``tracked`` and the content digests of its cases in order, so
   the same cases frozen into a newer revision of the template digest alike, and a case whose words changed moves it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -75,6 +79,26 @@ def case_set_digest(*, name: str, template: str, tracked: bool, cases: Sequence[
     )
 
 
+def template_case_digest(
+    *, variation_params: Mapping[str, str], host_payload: Mapping[str, Any], stratum: str | None
+) -> str:
+    """The digest of a template's own case: what varies, the host's stimulus and the stratum, each left out empty.
+
+    Args:
+        variation_params: The case's axis values.
+        host_payload: Its stimulus in the host's vocabulary, digested as written and never read.
+        stratum: The kind of case it is, or ``None``.
+    """
+    content: dict[str, object] = {}
+    if variation_params:
+        content["variation_params"] = dict(variation_params)
+    if host_payload:
+        content["host_payload"] = dict(host_payload)
+    if stratum is not None:
+        content["stratum"] = stratum
+    return canonical_digest({"template_case": content})
+
+
 def current_revisions(templates: Iterable[EvalTemplate]) -> dict[str, EvalTemplate]:
     """Each template name's current revision (:func:`~threetears.evals.schema.models.current_revision`), by name."""
     by_name: dict[str, list[EvalTemplate]] = {}
@@ -90,5 +114,6 @@ __all__ = [
     "current_revisions",
     "judge_config_digest",
     "rubric_dim_digest",
+    "template_case_digest",
     "template_digest",
 ]

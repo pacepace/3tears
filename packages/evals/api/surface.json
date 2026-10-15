@@ -418,8 +418,8 @@
     },
     "threetears.evals.schema.EvalCaseStratum": {
       "kind": "model",
-      "signature": "EvalCaseStratum(id: str, stratum: str | None = None, name: str | None = None)",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.EvalCassette": {
       "kind": "model",
@@ -2993,7 +2993,7 @@
     },
     "threetears.evals.kernel.host.EvalHost": {
       "kind": "dataclass",
-      "signature": "EvalHost(profile: HostProfile, storage: EvalStorage, failure_describer: ProviderFailureDescriber, trace_sink: TraceSink | None, blocking_executor: Executor | None, cell_timeout: CellTimeoutFactory, clients: CompletionClients | None = None)",
+      "signature": "EvalHost(profile: HostProfile, storage: EvalStorage, failure_describer: ProviderFailureDescriber, trace_sink: TraceSink | None, blocking_executor: Executor | None, cell_timeout: CellTimeoutFactory, clients: CompletionClients | None = None, template_checks: TemplateChecks | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.Evidence": {
@@ -3190,6 +3190,11 @@
       "kind": "literal",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.kernel.host.TemplateChecks": {
+      "kind": "dataclass",
+      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None])",
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ToneRegister": {
       "kind": "literal",
@@ -3418,7 +3423,7 @@
     },
     "threetears.evals.run.create_template": {
       "kind": "function",
-      "signature": "create_template(host: EvalHost, definition: dict[str, Any], *, scope_id: str, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> EvalTemplate",
+      "signature": "create_template(host: EvalHost, definition: dict[str, Any], *, scope_id: str) -> EvalTemplate",
       "tier": "stable"
     },
     "threetears.evals.run.CurationStore": {
@@ -4048,7 +4053,7 @@
     },
     "threetears.evals.run.reset_definitions": {
       "kind": "function",
-      "signature": "reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], discard_customization: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset",
+      "signature": "reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, discard_customization: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset",
       "tier": "host-contract"
     },
     "threetears.evals.run.ResetDefinition": {
@@ -4163,7 +4168,7 @@
     },
     "threetears.evals.run.seed_eval_definitions": {
       "kind": "function",
-      "signature": "seed_eval_definitions(host: EvalHost, corpus: SeedCorpus, *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> SeedOutcome",
+      "signature": "seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome",
       "tier": "stable"
     },
     "threetears.evals.run.SeedCaseSet": {
@@ -4173,7 +4178,7 @@
     },
     "threetears.evals.run.SeedCorpus": {
       "kind": "dataclass",
-      "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = (), case_sets: tuple[SeedCaseSet, ...] = ())",
+      "signature": "SeedCorpus(scope_id: str, templates: tuple[EvalTemplate, ...] = (), rubric_dims: tuple[CatalogRubricDim, ...] = (), judge_configs: tuple[JudgeConfig, ...] = (), judge_cases: tuple[SeedJudgeCase, ...] = (), case_sets: tuple[SeedCaseSet, ...] = (), template_cases: tuple[SeedTemplateCase, ...] = ())",
       "tier": "stable"
     },
     "threetears.evals.run.SeedJudgeCase": {
@@ -4185,6 +4190,11 @@
       "kind": "dataclass",
       "signature": "SeedOutcome(created: dict[str, int] = dict(), skipped: dict[str, int] = dict(), failed: dict[str, int] = dict(), created_keys: dict[str, list[str]] = dict(), conflicted: dict[str, list[str]] = dict(), deleted: dict[str, list[str]] = dict(), needs_reset: dict[str, list[str]] = dict())",
       "tier": "stable"
+    },
+    "threetears.evals.run.SeedTemplateCase": {
+      "kind": "model",
+      "signature": "SeedTemplateCase(template: str, name: str, variation_params: dict[str, str] = dict(), host_payload: VerbatimObject = dict(), stratum: str | None = None)",
+      "tier": "host-contract"
     },
     "threetears.evals.run.set_analysis_archived": {
       "kind": "function",
@@ -5798,8 +5808,8 @@
     },
     "threetears.evals.analysis.StyleViolation": {
       "kind": "dataclass",
-      "signature": "StyleViolation(rule: Literal['banned', 'long_sentence', 'numerals', 'question', 'header', 'dash_chain', 'key_value', 'facts'], text: str, detail: str)",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.analysis.SubjectFrontier": {
       "kind": "model",
@@ -7283,7 +7293,7 @@
     },
     "threetears.evals.actions.definition_drift_actions": {
       "kind": "function",
-      "signature": "definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]",
+      "signature": "definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]",
       "tier": "host-contract"
     },
     "threetears.evals.actions.engine_actions": {
