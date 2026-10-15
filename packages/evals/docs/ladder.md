@@ -74,7 +74,7 @@ triage_eval = Eval("emails.jsonl", runner=triage, grader=["category", "urgent", 
 What it printed:
 
 ```text
-emails: 18/30 cases passed; 12 misses: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more
+emails: 18/30 cases passed; 12 misses: double-charge, gdpr-delete, book-demo, phish-suspend, phish-invoice, and 7 more
 90 result(s): 90 scored
   urgent: mean 0.8333 (n=90, min 0, max 1)
   escalates: mean 0.9889 (n=90, min 0, max 1)
@@ -84,12 +84,14 @@ emails: 18/30 cases passed; 12 misses: double-charge, refund-after-cancel, gdpr-
     ...
   total spend: $0.00192, the results' cost
 top misses (5 of 20):
-  case double-charge (repeat 2): urgent gave 0
-  case refund-after-cancel (repeat 1): urgent gave 0
+  case double-charge (repeat 1): urgent gave 0
+  case gdpr-delete (repeat 1): urgent gave 0
   ...
 stored in .evals/evals.sqlite, scope 'emails'
 report: .evals/reports/emails/report.html
 ```
+
+The misses print in the report's order, the order its Trials table lists the failed trials in.
 
 **The lesson: the rule you write decides what you measured, so read the misses before the means.** Rung 0 graded
 `needs_human` both ways and read 0.81; 16 of its 17 misses were emails escalated that did not need a person, a minute
