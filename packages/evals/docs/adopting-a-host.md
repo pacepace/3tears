@@ -127,12 +127,15 @@ pass it to every entrypoint. It holds:
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the three
-  questions about a template only you can answer. `require_known_tools_allowed` asks whether each tool it allows is in
-  your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your world can seed, and
-  `refuse_undeliverable_template` whether its kind can honour what it declares. Each raises `ValidationFailedError` to
-  refuse and returns `None` to admit. `create_template`, `update_template`, the boot seed, a definition reset and the
-  `definitions_reset` action read them off the host they are handed, so every path admits a template under the same
-  checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it admitted
+  questions about a template only you can answer, and the kinds you launch. `require_known_tools_allowed` asks whether
+  each tool it allows is in your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your
+  world can seed, and `refuse_undeliverable_template` whether its kind can honour what it declares. Each raises
+  `ValidationFailedError` to refuse and returns `None` to admit. `kinds` is the registry your `LaunchHost` is built
+  with (the same mapping): every path that admits a template refuses one stating a field its kind's entry declares it
+  never acts on (`LaunchableKind.ignored_template_fields`), through the launch dispatch's own refusal, so your
+  `refuse_undeliverable_template` no longer calls `refuse_ignored_template_fields`. `create_template`,
+  `update_template`, the boot seed, a definition reset and the `definitions_reset` action read them off the host they
+  are handed, so every path admits a template under the same checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it admitted
   would go unchecked; a check with nothing to refuse is a function that returns `None`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.

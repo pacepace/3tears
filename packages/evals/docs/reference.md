@@ -400,7 +400,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`StyleProfile`** · dataclass · One host's bounded presentation contract.
 - **`Sweepable`** · *host contract* · dataclass · One score-determining input: what it is called, who owns it, how to read it.
 - **`SweepableRegistry`** · *host contract* · class · The declared inputs for one host, validated at construction.
-- **`TemplateChecks`** · *host contract* · dataclass · The three questions about a template that only the host can answer, asked wherever a template is admitted.
+- **`TemplateChecks`** · *host contract* · dataclass · The three questions about a template that only the host can answer, and the kinds it launches, read wherever a template is admitted.
 - **`Triggered`** · dataclass · State that arrives on a condition rather than at t=0.
 - **`UnsupportedSchemaError`** · exception · A schema uses a construct outside `HONOURED_KEYWORDS` — a gap to extend, never a value to pass.
 - **`WorldConformanceError`** · exception · An ENGINE gap: a check the kit cannot run, or a record its own vocabulary forbids.
@@ -485,7 +485,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str) -> CalibrationRating`
 - **`refuse_ignored_template_fields`** · *host contract* · function · Refuse a template stating a field its kind never acts on (`LaunchableKind.ignored_template_fields`).
-  <br>`refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None`
+  <br>`refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTemplateFields) -> None`
 - **`regrade`** · async function · Grade one stored result again from what its cell stored, and report every verdict that moved.
   <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade`
 - **`rejudge_result`** · async function · Re-score a finished result's failed judge dimensions from the evidence its judge read.

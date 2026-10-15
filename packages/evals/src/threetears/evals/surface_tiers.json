@@ -608,6 +608,7 @@
 "threetears.evals.kernel.host.FamilyMemberTest": "provisional",
 "threetears.evals.kernel.host.freeze": "provisional",
 "threetears.evals.kernel.host.HostProfile": "host-contract",
+"threetears.evals.kernel.host.IgnoresTemplateFields": "provisional",
 "threetears.evals.kernel.host.Interval": "stable",
 "threetears.evals.kernel.host.KindContract": "host-contract",
 "threetears.evals.kernel.host.KindContractError": "provisional",

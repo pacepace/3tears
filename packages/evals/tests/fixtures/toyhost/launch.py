@@ -19,6 +19,7 @@ the launch host's own, built over the host's storage, so a run's status and its 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import DEFAULT_JOB_LEASE_S
@@ -225,24 +226,28 @@ def toyhost_launch_host(
             return None
         return UnknownSubject(remedy=f"the toy host holds subjects {', '.join(sorted(TOYHOST_SUBJECTS))}")
 
+    # The extractor honours no simulated user, no judge and no cassette, so a launch naming one
+    # is refused at the dispatch rather than handed to this launcher to ignore.
+    kinds = {
+        TOY_EXTRACTOR_KIND: LaunchableKind(
+            launch=launch,
+            resolve_subject=resolve_subject,
+            unhonoured_launch_arguments=frozenset(
+                {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
+            ),
+            # What each arm will run, asked before the launcher is, so the engine prices every arm.
+            plan_arm=plan_toyhost_arm,
+            # The one apparatus value a launch sets: who reviews the extractions, the host's standing
+            # pool when a launch sets none.
+            apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
+        )
+    }
+    # Admitting a template reads the same registry the launch does, for the fields each kind never acts on.
+    if eval_host.template_checks is not None:
+        eval_host = replace(eval_host, template_checks=replace(eval_host.template_checks, kinds=kinds))
     launch_host = LaunchHost(
         eval_host=eval_host,
-        # The extractor honours no simulated user, no judge and no cassette, so a launch naming one
-        # is refused at the dispatch rather than handed to this launcher to ignore.
-        kinds={
-            TOY_EXTRACTOR_KIND: LaunchableKind(
-                launch=launch,
-                resolve_subject=resolve_subject,
-                unhonoured_launch_arguments=frozenset(
-                    {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
-                ),
-                # What each arm will run, asked before the launcher is, so the engine prices every arm.
-                plan_arm=plan_toyhost_arm,
-                # The one apparatus value a launch sets: who reviews the extractions, the host's standing
-                # pool when a launch sets none.
-                apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
-            )
-        },
+        kinds=kinds,
         # Every arm is priced by the engine before its launcher runs; the toy prices from its rate card.
         launch_pricer=price_toyhost_arm,
         settings=settings,
