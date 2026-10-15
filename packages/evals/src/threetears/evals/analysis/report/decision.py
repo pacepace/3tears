@@ -245,7 +245,7 @@ def clause_statement(clause: DecisionClause, *, candidate: str, readings: RuleRe
 def rule_statement(
     rule: DecisionRule, *, control: str, candidates: Sequence[str], readings: RuleReadings | None = None
 ) -> str:
-    """The rule in the sentence the page opens its Decision section with, the arms by name.
+    """The rule in the sentence the first screen's subhead states it in, the arms by name.
 
     ``Switch to v2 only if no pass rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on
     v1.`` With several arms the switch names each, and a cost clause says ``it``.

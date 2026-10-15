@@ -240,8 +240,8 @@ async def test_a_kept_clause_beside_a_contrast_not_separated_says_why_once_under
         "clause reads the interval a switch reads, which can be wider than the contrasts table's."
     )
     assert keep_is_the_default("production") == sentence
-    (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "rule"]
-    assert (said.section, said.text) == ("decision", sentence)
+    (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.section == "decision"]
+    assert (said.source, said.text) == ("rule", sentence)
     markdown = report_markdown(report)
     assert markdown.count(sentence) == 1
     decision = markdown.split("\n## Decision\n", 1)[1].split("\n## ", 1)[0]
@@ -656,7 +656,10 @@ async def test_the_decision_section_names_no_system_word_and_no_arm_by_its_role(
     for report, labels in ((one, ("cheaper candidate", "production")), (two, ("candidate", "production"))):
         for door, page in (("markdown", report_markdown(report)), ("html", report_html(report))):
             section = _decision_section(page, html_page=door == "html")
-            assert "Switch to " in section, (door, section[:200])
+            # The rule's sentence is the first screen's subhead, said once: the section links up to it.
+            first = page.split("## Decision", 1)[0] if door == "markdown" else page.split("<h2>", 1)[0]
+            assert "Switch to " not in section and "Switch to " in first, (door, section[:200])
+            assert door == "markdown" or '<h3><a href="#rule">Clauses</a></h3>' in page
             assert not _SYSTEM_NAMES.search(section), (door, _SYSTEM_NAMES.findall(section))
             # An arm's own name may hold a role word (an arm a host called "cheaper candidate"); nothing else may.
             for label in labels:

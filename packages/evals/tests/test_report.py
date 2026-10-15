@@ -77,13 +77,13 @@ class TestTheToyAnalysisSerializesTwoWays:
         finding = analysis.document.findings[0]
         lines = markdown.splitlines()
 
-        # The campaign's name is the title; the arms are line 2; the declared question is quoted whole under them;
+        # The campaign's name is the title; the declared question is quoted whole under it, then the arms;
         # who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
         assert report.title == "chunk width sweep"
         assert lines[0] == f"# {report.title}"
-        assert lines[1].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
-        assert lines[3] == 'Asked before the run: "Is the wider chunk worth what it costs to retrieve?"'
+        assert lines[1] == '"Is the wider chunk worth what it costs to retrieve?"', "the question, under the title"
+        assert lines[3].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
         assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown
         # A finding leads with its headline, unnumbered: nothing on the page cites a finding by number.
         assert f"**{finding.title}**" in markdown and "**F1." not in markdown

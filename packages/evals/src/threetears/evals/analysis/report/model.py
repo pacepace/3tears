@@ -1,7 +1,8 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the arms line, the question declared before the run quoted, the verdict line, the
+campaign's name —, the question declared before the run quoted and the subhead under it, the arms line and the
+rule's sentence, the verdict line, the
 scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the decision rule clause by clause where one is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
@@ -79,6 +80,9 @@ SECTION_TITLES: dict[str, str] = {
 #: The sections the first screen is made of.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
 
+#: The anchor of the first screen's subhead stating a declared decision rule, which the Decision section links up to.
+RULE_ANCHOR = "rule"
+
 #: What a text block's author wrote it as.
 TextRole = Literal[
     "answer",
@@ -92,12 +96,14 @@ TextRole = Literal[
     "next_step_why",
 ]
 
-#: Who a disclosure speaks for. ``arms``: the first screen's second line, each arm named in full once, the control
-#: marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the scoreboard that changes how the
-#: verdict is read, in normal weight: the case floor, an arm's label that its own row contradicts. ``basis``: the
-#: question declared before the run, quoted whole under the arms line, and its decision rule in the sentence code
-#: writes, at the head of the Decision section. ``rule``: the line under the clauses table saying keep is the default,
-#: so an unsettled rule keeps the control for now, and which interval a clause reads. ``verdict``: the verdict line. ``design``, ``charts`` and
+#: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
+#: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
+#: scoreboard that changes how the verdict is read, in normal weight: the case floor, an arm's label that its own row
+#: contradicts. ``basis``: the question declared before the run, quoted whole under the title, and in the Decision
+#: section the line saying a rule written as prose is not read. ``rule``: on the first
+#: screen, the subhead's decision rule in the sentence code writes, under the arms line; in the Decision section, the
+#: line under the clauses table saying keep is the default, so an unsettled rule keeps the control for now, and which
+#: interval a clause reads. ``verdict``: the verdict line. ``design``, ``charts`` and
 #: ``cost``: how the run was laid out, what was not charted and where a cost is a floor, in the methods. ``memo``: who wrote the memo,
 #: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
@@ -456,6 +462,13 @@ class TableBlock(_Block):
     total_rows: int = Field(ge=0, description="How many rows the table has; more than are shown when it is truncated.")
     details: bool = Field(
         default=False, description="Whether the table is drill-down: HTML folds it in a `<details>`, closed."
+    )
+    title_ref: str | None = Field(
+        default=None,
+        description=(
+            "An anchor on the page the title links to, where the table reads a sentence said there "
+            "(`rule`: the subhead stating the decision rule); None for none."
+        ),
     )
 
     @model_validator(mode="after")
@@ -854,6 +867,7 @@ class Report(EvalDocumentModel):
 __all__ = [
     "FINDING_ROLES",
     "FIRST_SCREEN",
+    "RULE_ANCHOR",
     "SECTION_TITLES",
     "VERDICT_OUTCOMES",
     "BarOutcome",
