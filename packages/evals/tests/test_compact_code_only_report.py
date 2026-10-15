@@ -21,7 +21,7 @@ from threetears.evals.analysis import (
     inspect_campaign_bundle,
     report_markdown,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.quantities import with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.metrics import classifier_label_of
 from threetears.evals import Eval, Result
@@ -66,11 +66,17 @@ def _figure(summary: MeasureSummary) -> str:
     n = f"(n={summary.n} over {cases} case{'' if cases == 1 else 's'})" if 0 < cases < summary.n else f"(n={summary.n})"
     if summary.rate is not None and cases < MIN_CASES:
         return f"{round(summary.rate * summary.n)} of {summary.n} {n}"
+    # A rate, and F1 on 0–1, read as percents on the one percent ruler.
     if summary.rate is not None:
         assert summary.ci_low is not None and summary.ci_high is not None
-        return f"{format_number(summary.rate)} [{format_number(summary.ci_low)}, {format_number(summary.ci_high)}] {n}"
+        return f"{_percent(summary.rate)} [{_percent(summary.ci_low)}, {_percent(summary.ci_high)}] {n}"
     assert summary.mean is not None
-    return f"{format_number(summary.mean)} {n}"
+    return f"{_percent(summary.mean)} {n}"
+
+
+def _percent(share: float) -> str:
+    """A share as the table states it: a percent to one decimal."""
+    return with_unit(100 * share, "%")
 
 
 class TestPerLabelStatisticsAreOneTable:

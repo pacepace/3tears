@@ -95,7 +95,8 @@ class TestADeclaredMargin:
         test can meet it, so the arms here agree throughout rather than test where the miss falls."""
         comparison = await _compare([grader(correct, margin=0.1)], cheaper_misses=0)
         row = _row(comparison, "correct")
-        assert row["verdict"].startswith("equivalent to the control") and "(margin ±0.1)" in row["verdict"]
+        # A margin on a pass rate is stated in points, as the change it bounds is.
+        assert row["verdict"].startswith("equivalent to the control") and "(margin ±10 pts)" in row["verdict"]
         assert row["delta"] == 0.0
         assert _no_margin_lines(comparison) == [], "every tested measure declares a margin"
         assert _no_margin_advice(comparison) == {}
@@ -158,8 +159,9 @@ class TestAPassFailInterval:
 
         comparison = await _run(six, {"current": never, "fixed": half}, [correct], "pass-fail-bounds", 2)
         row = _row(comparison, "correct")
-        assert row["delta"] == pytest.approx(0.5)
-        assert row["interval"] == "[-0.0748, 1] at 95%", (
+        # A pass rate is a share, so its change reads in points on the percent ruler.
+        assert row["delta"] == pytest.approx(50.0)
+        assert row["interval"] == "[-7.5, 100] pts at 95%", (
             "the t interval's lower end; its upper clipped where a pass-rate difference ends"
         )
 
@@ -204,7 +206,7 @@ class TestAMarginOnAccuracy:
         comparison = await _classify(0.1)
         row = _row(comparison, "accuracy")
         assert row["verdict"] == (
-            "equivalent to the control, within the measure's margin (margin ±0.1, declared on the runs)"
+            "equivalent to the control, within the measure's margin (margin ±10 pts, declared on the runs)"
         )
         (verdict,) = comparison.verdicts("accuracy")
         assert (verdict.outcome, verdict.reason, verdict.margin, verdict.margin_source) == (

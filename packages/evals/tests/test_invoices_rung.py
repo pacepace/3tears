@@ -82,9 +82,10 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
         "**Exploratory: no difference found between v2 and v1 on any reading. "
         "Not yet shown safe: v2 on no invented total.**"
     )
-    # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it.
+    # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
+    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies.
     assert lines[7] == (
-        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per reply |"
+        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |"
     )
     assert page_violations(result.report) == []
 

@@ -182,8 +182,9 @@ async def test_the_verdict_line_reads_the_rules_outcome_in_plain_words(g2_ruled:
     ]
     outcomes = [row["outcome"] for row in table.values() if row["outcome"] is not None]
     assert outcomes == ["settled: keep", "settled: keep"]
-    assert {"reading": "cost per reply", "control": "$0.003092", "candidate": "$0.003301"}.items() <= next(
-        row for row in table.values() if row["reading"] == "cost per reply"
+    # Under a cent per reply on every arm, the cost row reads per 1,000 replies, as the scoreboard does.
+    assert {"reading": "cost per 1,000 replies", "control": "$3.092", "candidate": "$3.301"}.items() <= next(
+        row for row in table.values() if row["reading"] == "cost per 1,000 replies"
     ).items()
 
 

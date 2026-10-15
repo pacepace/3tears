@@ -117,10 +117,11 @@ class TestUnobservedCost:
 
     async def test_reported_spend_is_charted_and_tested_as_the_candidates_spend(self) -> None:
         comparison = await _compare(right_priced, guess_priced)
-        assert "Production cost" in _chart_titles(comparison)
+        # Priced well under a cent per reply, so the cost is headed per 1,000 replies wherever it is stated.
+        assert "Production cost ($/1,000 replies)" in _chart_titles(comparison)
         # Tested as the candidate's spend: cost_usd also sums what a judge spent measuring the arm.
         readings = {row["reading"] for row in comparison.contrasts()}
-        assert "Production cost" in readings and "Measuring spend, all roles" not in readings
+        assert "Production cost ($/1,000 replies)" in readings and not {r for r in readings if "Measuring" in r}
         assert _cost_disclosures(comparison) == []
 
     async def test_a_measured_zero_is_a_reading_not_an_unmeasured_cost(self) -> None:

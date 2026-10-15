@@ -23,7 +23,7 @@ import html
 from collections.abc import Sequence
 
 from threetears.evals.analysis.report.model import ChartBlock, IntervalRow, OutcomeBar, interval_text
-from threetears.evals.analysis.quantities import render_cell
+from threetears.evals.analysis.quantities import number_in, with_unit
 
 #: The chart's own coordinate width; the SVG scales to the page's width from it. A line of words that would run past
 #: it is wrapped onto more lines (:func:`_wrapped`), its row drawn taller, never cut.
@@ -239,7 +239,7 @@ def interval_rows_svg(
         left, right = x_of(-margin), x_of(margin)
         marks.append(
             f'<rect class="viz-band" x="{left:.1f}" y="0" width="{right - left:.1f}" height="{plot_bottom}">'
-            f"<title>{_escape(f'margin ±{render_cell(margin)}{_unit(unit)}')}</title></rect>"
+            f"<title>{_escape(f'margin ±{with_unit(margin, unit)}')}</title></rect>"
         )
     if zero_line:
         zero = x_of(0.0)
@@ -257,31 +257,28 @@ def interval_rows_svg(
             f'<circle class="viz-dot" cx="{x_of(row.value):.1f}" cy="{middle:.1f}" r="4.5">'
             f"<title>{_escape(f'{row.label}: {said}')}</title></circle>"
         )
-        marks.append(_text(_PLOT_END + 10, middle + 4, f"{render_cell(row.value)}{_unit(unit)}"))
+        marks.append(_text(_PLOT_END + 10, middle + 4, with_unit(row.value, unit)))
         for offset, line in enumerate(lines):
             marks.append(_text(start, middle + 23 + _LINE * offset, line, muted=True))
         top += row_height
     marks.append(f'<line class="viz-rule" x1="{start}" y1="{plot_bottom}" x2="{_PLOT_END}" y2="{plot_bottom}"></line>')
-    marks.append(_text(start, plot_bottom + 14, render_cell(low), muted=True))
-    marks.append(_text(_PLOT_END, plot_bottom + 14, render_cell(high), muted=True, anchor="end"))
+    marks.append(_text(start, plot_bottom + 14, number_in(low, unit), muted=True))
+    marks.append(_text(_PLOT_END, plot_bottom + 14, number_in(high, unit), muted=True, anchor="end"))
     desc = "; ".join(f"{row.label}: {row_words(row, unit)}" for row in rows)
     return _svg(chart_id, title, desc, height, marks)
 
 
 def row_words(row: IntervalRow, unit: str) -> str:
-    """One interval row in words: its value and unit, its interval, its cases, and its verdict where it has one."""
+    """One interval row in words: its value and unit, its interval, its cases, and its verdict where it has one.
+
+    The value is joined to its unit as every surface joins one (``98.9%``, ``-1.1 pts``, ``$0.025``, ``0.5 s``), and
+    the interval's ends are spelled at the same precision, the unit said once on the value.
+    """
     verdict = f", {row.verdict}" if row.verdict else ""
     return (
-        f"{render_cell(row.value)}{_unit(unit)} {interval_text(row.low, row.high)}, "
+        f"{with_unit(row.value, unit)} {interval_text(row.low, row.high, unit)}, "
         f"n={row.n_cases} case{'' if row.n_cases == 1 else 's'}{verdict}"
     )
-
-
-def _unit(unit: str) -> str:
-    """A unit after a number: ``%`` against it, any other unit after a space, none at all for no unit."""
-    if not unit:
-        return ""
-    return unit if unit == "%" else f" {unit}"
 
 
 def _wrapped(words: str, start: int) -> list[str]:

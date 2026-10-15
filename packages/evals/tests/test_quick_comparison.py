@@ -116,7 +116,7 @@ async def test_every_other_arm_is_tested_against_the_control_and_the_better_one_
     accuracy = by_reading["Accuracy"]
     assert (accuracy["contrast"], accuracy["control"]) == ("careful", "hasty")
     assert accuracy["verdict"] == "improved on the control"
-    assert accuracy["delta"] == pytest.approx(0.5)
+    assert accuracy["delta"] == pytest.approx(50.0), "a rate's change, in points"
     assert {row["control"] for row in rows} == {"hasty"}
     assert [row["reading"] for row in _comparisons(comparison).values()] == [row["reading"] for row in rows]
     markdown = report_markdown(comparison.report)

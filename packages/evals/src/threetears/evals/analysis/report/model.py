@@ -36,7 +36,7 @@ from typing import Annotated, Literal, Self, get_args
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialCheck, TrialJudgement, TrialState
-from threetears.evals.analysis.quantities import render_cell, with_unit
+from threetears.evals.analysis.quantities import number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
@@ -512,7 +512,7 @@ class ChartBlock(_Block):
                 counts = {segment.label: segment.count for segment in bar.segments}
                 body.append([bar.arm, str(bar.total), *(str(counts.get(label, 0)) for label in labels)])
             return headers, body
-        unit = f" ({self.unit})" if self.unit else ""
+        unit = f" ({unit_label(self.unit)})" if self.unit else ""
         headers = [
             "Row",
             f"Value{unit}",
@@ -522,21 +522,27 @@ class ChartBlock(_Block):
         ]
         body = []
         for row in self.rows:
-            cells = [row.label, interval_value_text(row.value), interval_text(row.low, row.high), str(row.n_cases)]
+            cells = [
+                row.label,
+                interval_value_text(row.value, self.unit),
+                interval_text(row.low, row.high, self.unit),
+                str(row.n_cases),
+            ]
             if len(headers) == 5:
                 cells.append(row.verdict or "—")
             body.append(cells)
         return headers, body
 
 
-def interval_value_text(value: float) -> str:
-    """A charted value as text, by the one number rule."""
-    return render_cell(value)
+def interval_value_text(value: float, unit: str = "") -> str:
+    """A charted value as text, by the one number rule, at the precision its unit is read to; the unit itself is
+    the header's."""
+    return number_in(value, unit)
 
 
-def interval_text(low: float, high: float) -> str:
-    """A charted interval as text: ``[low, high]``."""
-    return f"[{render_cell(low)}, {render_cell(high)}]"
+def interval_text(low: float, high: float, unit: str = "") -> str:
+    """A charted interval as text: ``[low, high]``, each end at the precision its unit is read to."""
+    return f"[{number_in(low, unit)}, {number_in(high, unit)}]"
 
 
 class TrialBlock(_Block):

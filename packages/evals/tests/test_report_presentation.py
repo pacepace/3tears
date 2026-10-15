@@ -71,12 +71,13 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     # The question declared before the run is quoted whole, as the contract the verdict reads, then the verdict.
     assert lines[3] == f'Asked before the run: "{G2_QUESTION}"'
     assert lines[5].startswith("**Keep production: ")
+    # Every arm's cost per reply is under a cent, so the cost is stated per 1,000 replies, and the header says so.
     assert lines[7:10] == [
         "**Scoreboard**",
         "",
-        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per reply |",
+        "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $0.003092 |"
+    assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
     # The rule settled keep on the counts, so the floor caveat says what four cases can and cannot do — and it is
     # the one line under the scoreboard: the design is on line 2, the label's claim is in the contrasts.
@@ -492,8 +493,9 @@ async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_
     # The hedge on a measured fact is code's row instead; the meta-prose and the restated count are gone.
     assert "no measurable" not in markdown and "**Accuracy: cheaper candidate " in markdown
     assert "**F1." not in markdown
-    # A title restating its one reading is code's plain sentence, the candidate first, money in dollars.
-    assert "**Cheaper candidate cost $0.003301 per reply to production's $0.003092" in markdown
+    # A title restating its one reading is code's plain sentence, the candidate first, money in dollars on the
+    # scale the scoreboard states it.
+    assert "**Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092" in markdown
     assert " usd" not in markdown
     assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
     assert "The candidate skipped the queue." in markdown

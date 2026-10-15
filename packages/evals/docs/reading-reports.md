@@ -40,10 +40,10 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 
 **Scoreboard**
 
-| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per reply |
+| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |
 |---|---|---|---|---|---|---|---|
-| ▸ v1 | 90 | 90 | 90 | 0 | 0 | 0 | $0.0000459 |
-| v2 | 90 | 90 | 89 | 0 | 0 | 1 | $0.00007036 |
+| ▸ v1 | 90 | 90 | 90 | 0 | 0 | 0 | $0.0459 |
+| v2 | 90 | 90 | 89 | 0 | 0 | 1 | $0.07036 |
 ```
 
 A campaign with a question declared before the run (rung 5's G2) opens the same way, with the question quoted
@@ -236,7 +236,11 @@ when the eval is built. The p is corrected in the same Holm family as the separa
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
 
-No report states a change as a percent of the control: a Δ is in the reading's own unit.
+No report states a change as a percent of the control: a Δ is in the reading's own unit. A reading that is a share
+on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged dimension) is stated as a percent to one
+decimal, `98.9%`, and a change in it in points, `-1.1 pts`, with its interval `[-4.2, 2] pts`; the level every
+interval holds at is said once, in the column's header (`Interval (99%)`). A cost per reply under a cent on every arm
+is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, `Production cost ($/1,000 replies)`).
 
 ## Reading the guardrails
 

@@ -116,14 +116,15 @@ class TestAScorerGuardrail:
         assert outcomes == {"same": "held", "leaky": "breached", "slip": "undecided"}
         leaky = comparison.guardrails("leaky")
         assert [(row["measure_id"], row["guardrail"], row["margin"]) for row in leaky] == [
-            ("no_leak", "No leak score", "0.1")
+            ("no_leak", "No leak score", "10 pts")
         ]
-        assert leaky[0]["delta"] == pytest.approx(-0.4) and leaky[0]["decision"].startswith("breached")
+        assert leaky[0]["delta"] == pytest.approx(-40.0) and leaky[0]["decision"].startswith("breached")
         (slip,) = comparison.guardrails("slip")
         assert slip["decision"].startswith("undecided: not shown held, so not known to be safe")
         assert "reaches both sides of -0.1 (the declared margin)" in slip["decision"]
         (same,) = comparison.guardrails("same")
-        assert same["interval"] == "[-0.08106, 0.08106] at 95%", "a pass/fail is on 0 to 1: the bounded test's"
+        # The level sits once in the table's header; a pass/fail reads in points.
+        assert same["interval"] == "[-8.1, 8.1] pts", "a pass/fail is on 0 to 1: the bounded test's"
         assert comparison.guardrail_readings.checks[0].interval_basis == "bounded"
 
     async def test_the_standing_of_each_arm_and_none_for_the_control(self) -> None:
@@ -429,7 +430,11 @@ class TestAJudgedGuardrail:
         arms = {"current": ARMS["current"], "same": ARMS["same"], "leaky": ARMS["leaky"]}
         comparison = await _compare(arms, [correct, _judge(guard={"private": NO_LEAK})])
         outcomes = {row["arm"]: (row["measure_id"], row["outcome"], row["margin"]) for row in comparison.guardrails()}
-        assert outcomes == {"same": ("answer.private", "held", "0.1"), "leaky": ("answer.private", "breached", "0.1")}
+        # A pass/fail dimension's margin reads in points, as its change does.
+        assert outcomes == {
+            "same": ("answer.private", "held", "10 pts"),
+            "leaky": ("answer.private", "breached", "10 pts"),
+        }
         assert {row["measure_id"] for row in comparison.contrasts()} == {"correct", "answer.clear"}
 
         design = off_loop(
