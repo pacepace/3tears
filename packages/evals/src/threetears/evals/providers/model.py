@@ -258,7 +258,8 @@ class _Live:
             f"threetears_evals_read_for_call_{id(self):x}", default=None
         )
 
-    def _client(self) -> httpx.AsyncClient:
+    def http_client(self) -> httpx.AsyncClient:
+        """The client it sends through: the one handed in, else the one it opens, once, and :meth:`aclose` closes."""
         if self._http is not None:
             return self._http
         if self._opened is None:
@@ -312,7 +313,7 @@ class _Live:
             path, headers = "/messages", {"x-api-key": self._key, "anthropic-version": "2023-06-01"}
         else:
             path, headers = "/chat/completions", {"authorization": f"Bearer {self._key}"}
-        response = await self._client().post(self._url + path, json=body, headers=headers)
+        response = await self.http_client().post(self._url + path, json=body, headers=headers)
         if not response.is_success:
             raise error_from_response(self.provider, response.status_code, response.content)
         try:
@@ -641,9 +642,10 @@ class Model:
     def derive(self, id: str | None = None, *, temperature: float | None, catalogue: Catalogue | None = None) -> Model:
         """This model's settings for another model id or temperature: how :class:`Clients` builds a role's client.
 
-        The new model sends through this one's ``http`` client but never owns it: closing it leaves the client open,
-        and the model that owns it (this one, with ``own_http=True``) closes it. Given a ``transport``, it opens a
-        client of its own on that same transport, which closing it closes.
+        The new model sends through this one's client but never owns it: closing it leaves the client open. That is
+        the ``http`` client this one was handed, which its owner closes, or the one this one opens for itself (on its
+        ``transport``, ``timeout`` and ``headers``), which only this one's :meth:`aclose` closes, so closing every
+        derived model leaves this one on an open transport.
 
         Args:
             id: The model id, or ``None`` for this one.
@@ -653,7 +655,10 @@ class Model:
         Returns:
             A new model, built as this one was in every other setting.
         """
-        return Model(id or self.model_name, temperature=temperature, catalogue=catalogue, **self._options)
+        options = dict(self._options)
+        if self._live is not None and options["http"] is None:
+            options.update(http=self._live.http_client(), transport=None, timeout=None, headers=None)
+        return Model(id or self.model_name, temperature=temperature, catalogue=catalogue, **options)
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
@@ -873,9 +878,10 @@ class Clients:
 
     The engine closes what it is handed after each unit of work; that releases nothing here, and :meth:`aclose`
     closes every model once, at shutdown, and then the ``http`` client when the factory owns it (``own_http=True``).
-    A role given as a :class:`Model` stays the caller's: the models built from it send through its ``http`` client
-    without closing it (:meth:`Model.derive`), and open their own on its ``transport``. Await :meth:`load_prices` at
-    boot so every price ceiling can answer.
+    A role given as a :class:`Model` stays the caller's: the models built from it send through its client, the
+    ``http`` one it was handed or the one it opens on its ``transport``, without closing it (:meth:`Model.derive`),
+    so the caller's model works after :meth:`aclose`. Await :meth:`load_prices` at boot so every price ceiling can
+    answer.
     """
 
     def __init__(

@@ -712,12 +712,27 @@ async def test_a_derived_model_sends_through_the_templates_client_and_never_clos
     assert http.is_closed
 
 
-async def test_a_derived_model_opens_its_own_client_on_the_templates_transport() -> None:
+async def test_a_derived_model_sends_through_the_client_the_template_opened_and_never_closes_it() -> None:
     transport = CountingTransport(ANTHROPIC_REPLY)
-    derived = _haiku(transport=transport).derive(temperature=None, catalogue=catalogue())
+    template = _haiku(transport=transport)
+    derived = template.derive(temperature=None, catalogue=catalogue())
     await derived.generate(system="", user="x")
     await derived.aclose()
-    assert transport.requests == 1 and transport.closes == 1
+    assert transport.requests == 1 and transport.closes == 0, "the template owns its transport"
+    await template.aclose()
+    assert transport.closes == 1
+
+
+async def test_clients_closing_leaves_a_role_template_given_a_transport_working() -> None:
+    transport = CountingTransport(ANTHROPIC_REPLY)
+    template = _haiku(transport=transport)
+    clients = Clients(default=template, judge=template, catalogue=catalogue())
+    for role in ("judge", "analysis"):
+        await clients(role, None, temperature=0.5).generate(system="", user="x")
+    await clients.aclose()
+    assert transport.closes == 0, "two derived models closed, the caller's transport left open"
+    await template.generate(system="", user="x")
+    assert transport.requests == 3
 
 
 @pytest.mark.parametrize("own_http", [False, True])
