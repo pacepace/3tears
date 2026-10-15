@@ -42,7 +42,7 @@ and only the names in ``__all__``.
 
 from __future__ import annotations
 
-from threetears.evals.providers.catalogue import CATALOGUE_FETCH_TIMEOUT_S, Catalogue
+from threetears.evals.providers.catalogue import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, PriceRefresh
 from threetears.evals.providers.failures import Provider, ProviderError, describe_failure
 from threetears.evals.providers.model import Clients, Completion, Model
 from threetears.evals.providers.wire import PriceSource
@@ -53,6 +53,7 @@ __all__ = [
     "Clients",
     "Completion",
     "Model",
+    "PriceRefresh",
     "PriceSource",
     "Provider",
     "ProviderError",

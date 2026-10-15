@@ -890,14 +890,10 @@ The completion client: a model id in, the engine's completion port out, over eac
 - **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, refreshed every `refresh_after`, and what providers refused, for every model that reads it.
 - **`Clients`** · *host contract* · class · A host's role factory (`EvalHost.clients`): one `Model` per role, model id and temperature.
 - **`Completion`** · dataclass · One reply: the completion port's ten members, and five of the client's own.
+- **`PriceRefresh`** · *host contract* · dataclass · What one read of the price catalogue found: what `Model.refresh_prices()` and `Clients.refresh_prices()` return, and `Model.last_price_refresh` keeps.
 - **`PriceSource`** · *host contract* · enum · The words the shipped client writes as a completion's `price_source`: who priced the call.
   <br>values: `'openrouter:reported'`, `'openrouter:reported+upstream'`, `'openrouter-catalogue'`
 - **`ProviderError`** · *host contract* · exception · A request the provider refused or failed: who, the HTTP status, and the provider's own message.
-
-**Types**
-
-- **`Provider`** · literal · The providers the client speaks to: OpenRouter, Anthropic's Messages API, and any OpenAI-compatible chat endpoint.
-  <br>`'openrouter'` | `'anthropic'` | `'openai'`
 
 **Constants**
 
