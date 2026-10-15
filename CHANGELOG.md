@@ -8,10 +8,12 @@ packages (bumped in lock-step).
 
 ### Door requests and grants, made consistent with 0.66.0 to 0.68.0 when develop was merged in
 
-- **A request without a proof carries no `identity_proof` key.** `door_request.omit_absent_proof`,
-  called by the serializer of every request model with a proof field (`DatasourceQueryRequest`,
-  `AuditAnonymizeRequest`, `EngagementScopeRequestModel`, `NamespaceDiscoveryRequest`,
-  `ObjectResolveRequestModel`). A 0.66.0 to 0.68.0 hub reads the datasource and anonymization requests
+- **A request without a proof carries no `identity_proof` key.** `door_request.ProvenDoorRequest`
+  holds the field and a serializer that leaves it off when absent (`omit_absent_proof`); every
+  request model with a proof field subclasses it (`DatasourceQueryRequest`, `AuditAnonymizeRequest`,
+  `EngagementScopeRequestModel`, `NamespaceDiscoveryRequest`, `ObjectResolveRequestModel`), and
+  `tests/enforcement/test_proof_carrying_requests_omit_an_absent_proof.py` fails a model that declares
+  the field by hand or puts a null proof on the wire. A 0.66.0 to 0.68.0 hub reads the datasource and anonymization requests
   with `extra="forbid"`, so a body carrying `"identity_proof": null` was refused there; a caller with
   no key now sends exactly what that hub reads, and the two upgrade in either order. The proof is left
   out of what it signs, so no hash changes.

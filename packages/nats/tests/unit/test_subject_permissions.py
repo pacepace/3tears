@@ -1010,6 +1010,9 @@ class TestDeadletterGrant:
         # nothing publishes a retired subject, so there is no message to fail
         perm = _build(principal)
         held = [s for s in perm.subscribe if s in retired_subscriptions()]
+        if principal is Principal.AGENT_POD:
+            # the one principal that still holds them; empty here would mean the list stopped matching
+            assert held, "the agent pod holds no retired subscription; retired_subscriptions() matches nothing"
         assert not [s for s in held if f"{_NS}.deadletter.{s}" in perm.publish], principal
 
     @pytest.mark.parametrize("principal", list(Principal))

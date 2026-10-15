@@ -65,13 +65,12 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, Final, TYPE_CHECKING
+from typing import Annotated, ClassVar, Final, TYPE_CHECKING
 from uuid import UUID, uuid7
 
-from threetears.core.security.door_request import omit_absent_proof
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
+from pydantic import BaseModel, Field
 from threetears.core.security.delegated_token import AUDIT_ANONYMIZE_DOOR
-from threetears.core.security.door_request import AUDIT_ANONYMIZE_OP, DoorCredential
+from threetears.core.security.door_request import AUDIT_ANONYMIZE_OP, DoorCredential, ProvenDoorRequest
 from threetears.core.wire import TolerantWireModel
 from threetears.nats import Subjects
 from threetears.nats.hub_requests import ask_hub
@@ -170,7 +169,7 @@ class AuditAnonymizeUnavailableError(AuditAnonymizeError):
     """
 
 
-class AuditAnonymizeRequest(TolerantWireModel):
+class AuditAnonymizeRequest(ProvenDoorRequest, TolerantWireModel):
     """an agent's request to anonymize the audit rows it published about some actors.
 
     :param identity_token: the agent's CURRENT hub-minted identity token; the hub verifies
@@ -193,21 +192,9 @@ class AuditAnonymizeRequest(TolerantWireModel):
     refused_fields: ClassVar[frozenset[str]] = frozenset({"customer_id"})
 
     identity_token: Annotated[str, Field(min_length=1)]
-    identity_proof: str | None = None
     correlation_id: UUID
     agent_id: UUID
     actor_user_ids: Annotated[list[UUID], Field(min_length=1, max_length=MAX_ANONYMIZE_ACTORS)]
-
-    @model_serializer(mode="wrap")
-    def _omit_absent_proof(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """leave ``identity_proof`` off the wire when there is none, for a hub that predates it.
-
-        :param handler: pydantic's serializer for the fields
-        :ptype handler: SerializerFunctionWrapHandler
-        :return: the serialized request
-        :rtype: dict[str, Any]
-        """
-        return omit_absent_proof(handler(self))
 
 
 class AuditAnonymizeReply(BaseModel):

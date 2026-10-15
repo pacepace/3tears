@@ -38,7 +38,7 @@ from typing import Any, Final, Protocol, TypeVar
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
 
 from threetears.nats.errors import KvError
 from threetears.nats.subjects import Subject
@@ -66,6 +66,7 @@ from threetears.core.security.pop import access_token_hash, make_pop_proof
 from threetears.core.security.service_envelope import EnvelopeJwksSource
 
 __all__ = [
+    "ProvenDoorRequest",
     "omit_absent_proof",
     "APPROVAL_RECORD_DOOR",
     "APPROVAL_RECORD_OP",
@@ -166,7 +167,8 @@ def omit_absent_proof(data: dict[str, Any]) -> dict[str, Any]:
     proofs (0.66.0 to 0.68.0) reads some of these requests with ``extra="forbid"``, so a body
     carrying ``"identity_proof": null`` would be refused there: the two must upgrade in either
     order. The proof is left out of what it signs (:func:`door_request_hash`), so omitting a null
-    one changes no hash. Each request model with a proof field calls this from its serializer.
+    one changes no hash. :class:`ProvenDoorRequest` calls it from its serializer, and a subclass that
+    replaces that serializer calls it from its own.
 
     :param data: the serialized request
     :ptype data: dict[str, Any]
@@ -176,6 +178,34 @@ def omit_absent_proof(data: dict[str, Any]) -> dict[str, Any]:
     if data.get(DOOR_PROOF_FIELD, "") is None:
         del data[DOOR_PROOF_FIELD]
     return data
+
+
+class ProvenDoorRequest(BaseModel):
+    """a request a hub door takes with its caller's proof of possession: the one place the proof field lives.
+
+    Every request model that carries ``identity_proof`` subclasses this, so the field and the rule
+    that a request without a proof carries no proof key (:func:`omit_absent_proof`) come together and
+    cannot be copied apart. A subclass that needs a serializer of its own replaces this one and must
+    end it with :func:`omit_absent_proof`; ``tests/enforcement/test_proof_carrying_requests_omit_an_absent_proof.py``
+    fails a model that declares the field by hand or puts a null proof on the wire.
+
+    :param identity_proof: the presenter's proof of possession of its token's key over this request
+        (:class:`DoorCredential`); ``None`` sends the token alone, and the key is then left off the wire
+    :ptype identity_proof: str | None
+    """
+
+    identity_proof: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_proof(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``identity_proof`` off the wire when there is none, for a hub that predates it.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        return omit_absent_proof(handler(self))
 
 
 def door_request_hash(body: Mapping[str, Any], *, door: str, op: str) -> str:

@@ -38,14 +38,13 @@ cross-tenant key.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID, uuid7
 
-from threetears.core.security.door_request import omit_absent_proof
-from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
+from pydantic import BaseModel
 from threetears.media.contracts import ObjectHandle
 from threetears.core.security.delegated_token import OBJECT_RESOLVE_DOOR
-from threetears.core.security.door_request import OBJECT_RESOLVE_OP, DoorCredential
+from threetears.core.security.door_request import OBJECT_RESOLVE_OP, DoorCredential, ProvenDoorRequest
 from threetears.nats import NatsClient, RequestError, Subjects
 from threetears.observe import get_logger
 
@@ -71,7 +70,7 @@ class ResolveObjectError(RuntimeError):
     """
 
 
-class ObjectResolveRequestModel(BaseModel):
+class ObjectResolveRequestModel(ProvenDoorRequest):
     """outbound object-resolve request to the hub.
 
     carries the invoking agent's ``identity_token`` as the caller proof. the
@@ -96,20 +95,8 @@ class ObjectResolveRequestModel(BaseModel):
     """
 
     identity_token: str
-    identity_proof: str | None = None
     correlation_id: UUID
     object_id: UUID
-
-    @model_serializer(mode="wrap")
-    def _omit_absent_proof(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """leave ``identity_proof`` off the wire when there is none, for a hub that predates it.
-
-        :param handler: pydantic's serializer for the fields
-        :ptype handler: SerializerFunctionWrapHandler
-        :return: the serialized request
-        :rtype: dict[str, Any]
-        """
-        return omit_absent_proof(handler(self))
 
 
 class ObjectResolveResponseModel(BaseModel):

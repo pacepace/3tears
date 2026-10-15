@@ -67,7 +67,12 @@ from pydantic import (
     model_validator,
 )
 from threetears.core.security.delegated_token import DATASOURCE_DOOR
-from threetears.core.security.door_request import DoorCredential, datasource_query_op, omit_absent_proof
+from threetears.core.security.door_request import (
+    DoorCredential,
+    ProvenDoorRequest,
+    datasource_query_op,
+    omit_absent_proof,
+)
 from threetears.core.sql_fragments import as_written, equality_conditions
 from threetears.core.wire import TolerantWireModel
 from threetears.datasources.export import ExportResult, check_destination
@@ -525,7 +530,7 @@ class DatasourceExportListResult(BaseModel):
     next_cursor: str | None = None
 
 
-class DatasourceQueryRequest(TolerantWireModel):
+class DatasourceQueryRequest(ProvenDoorRequest, TolerantWireModel):
     """one datasource query, carrying the caller's identity as a forwarded token.
 
     ``agent_id`` and ``user_id`` are RETIRED, and refusing them is a security
@@ -573,7 +578,6 @@ class DatasourceQueryRequest(TolerantWireModel):
 
     correlation_id: UUID
     identity_token: SecretStr
-    identity_proof: str | None = None
     user_identity_token: SecretStr | None = None
     query: str | None = None
     params: list[Any] = Field(default_factory=list)
