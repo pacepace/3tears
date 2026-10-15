@@ -393,7 +393,15 @@ def _page(
         *_trial_blocks(bundle, arm),
         *_not_tested_blocks(bundle, surface, arm, also=noted),
         *_method_blocks(
-            bundle, surface, arm, names, source=source, writer=writer, tables=folded, notes=notes, style=style
+            bundle,
+            surface,
+            arm,
+            names,
+            source=source,
+            writer=writer,
+            tables=folded,
+            memo_disclosures=notes,
+            style=style,
         ),
     ]
     # In reading order, each section's blocks in the order laid out (a code-only page's unasked readings are said
@@ -3231,11 +3239,11 @@ def _method_blocks(
     source: ReportSource,
     writer: str | None,
     tables: Sequence[ReportBlock] = (),
-    notes: Sequence[ReportBlock] = (),
+    memo_disclosures: Sequence[ReportBlock] = (),
     style: MemoStyle | None = None,
 ) -> list[ReportBlock]:
     """How everything on the page was measured and made: a table, the memo's folded tables (its coverage map,
-    ``tables``), then the engine's disclosures in one closed fold."""
+    ``tables``), then the engine's disclosures and the memo's (``memo_disclosures``) in one closed fold."""
     blocks: list[ReportBlock] = [_methods_table(bundle, names, source=source, writer=writer, style=style), *tables]
 
     def say(source_of: DisclosureSource, text: str | None) -> None:
@@ -3284,7 +3292,7 @@ def _method_blocks(
         say("measurement", footing)
     _design_disclosures(bundle, say, arm)
     _time_axis_disclosures(surface.time_axis, bundle.time_axis_withheld, say)
-    blocks.extend(notes)
+    blocks.extend(memo_disclosures)
     return blocks
 
 
