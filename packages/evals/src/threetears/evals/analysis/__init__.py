@@ -245,6 +245,7 @@ from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_N
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
+    ComparisonReading,
     ArmExclusions,
     ArmMechanismReading,
     ArmScoreboard,
@@ -525,6 +526,7 @@ __all__ = [
     "FactorPairCell",
     "FactorPairPivot",
     "FactorPairScan",
+    "ComparisonReading",
     "FamilyComparison",
     "PairingCorrelation",
     "FrontierCostDecision",

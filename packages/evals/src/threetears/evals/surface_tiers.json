@@ -917,6 +917,7 @@
 "threetears.evals.analysis.ComparedCell": "provisional",
 "threetears.evals.analysis.comparison_sets": "provisional",
 "threetears.evals.analysis.ComparisonFamily": "provisional",
+"threetears.evals.analysis.ComparisonReading": "provisional",
 "threetears.evals.analysis.ComparisonSet": "provisional",
 "threetears.evals.analysis.ComparisonSetsResult": "provisional",
 "threetears.evals.analysis.ComparisonVerdict": "provisional",

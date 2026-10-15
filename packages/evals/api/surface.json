@@ -4581,6 +4581,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.ComparisonReading": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.ComparisonSet": {
       "kind": "model",
       "signature": "",
