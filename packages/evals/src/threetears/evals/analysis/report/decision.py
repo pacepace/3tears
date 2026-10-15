@@ -20,6 +20,7 @@ yet run, so it needs an interval:
   non-inferiority claim, and on a rate's coarse per-case shares the t interval makes it too often: simulated at the
   margin, it let switch through up to 12% of the time against the 2.5% it states, where the bounded interval holds its
   rate at every n (``docs/measuring-soundly.md``). A guardrail's ``held`` reads the same interval for the same reason.
+  Its reason names it "the interval a switch reads", since the page's contrasts print the narrower t interval.
   A bundle before shape 55 carries no bounded interval, so its rate clause cannot settle switch; it never falls back
   to the t interval.
 - **Cost, keep.** A candidate observed to cost no less per reply settles ``keep``.
@@ -266,7 +267,7 @@ def _rate_clause(clause: RuleClause, margin: float, readings: RuleReadings) -> C
             return ClauseVerdict(
                 clause,
                 "unsettled",
-                f"the interval allows {rate.name} to drop up to {format_number(round(worst))} points",
+                f"the interval a switch reads allows {rate.name} to drop up to {format_number(round(worst))} points",
             )
         if rate.drop_bounds()[1] > margin:
             return ClauseVerdict(clause, "unsettled", f"the lost trials could still take {rate.name} past the margin")

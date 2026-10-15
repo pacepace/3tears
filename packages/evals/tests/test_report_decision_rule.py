@@ -133,7 +133,7 @@ def test_a_floor_met_run_with_a_tight_interval_switches() -> None:
     )
     wide_verdict = evaluate_rule(rule, wide)
     assert wide_verdict.outcome == "unsettled"
-    assert wide_verdict.clauses[0].reason == "the interval allows the pass rate to drop up to 23 points"
+    assert wide_verdict.clauses[0].reason == "the interval a switch reads allows the pass rate to drop up to 23 points"
 
 
 def test_a_cost_lower_by_a_point_estimate_only_is_unsettled() -> None:
@@ -266,7 +266,7 @@ async def test_seven_cases_with_the_bounded_interval_too_wide_are_unsettled_and_
     bundle, control, candidate = await _ruled([3, 3, 3, 3, 3, 3, 2], [3] * 7)
     assert _rate_clause(bundle, control, candidate) == (
         "unsettled",
-        "the interval allows the pass rate to drop up to 49 points",
+        "the interval a switch reads allows the pass rate to drop up to 49 points",
     )
 
 
