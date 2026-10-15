@@ -11,9 +11,17 @@ yet run, so it needs an interval:
 - **A pass rate, keep.** The candidate's drop from the control is bounded by giving every lost trial its best and its
   worst outcome. A drop past the margin even at best settles ``keep``.
 - **A pass rate, switch.** Every arm has at least the case floor of usable cases
-  (:data:`~threetears.evals.analysis.report.verdict.MIN_CASES`), and for every rate the bundle's contrast interval
-  (the candidate minus the control, the interval the page's contrasts print) bounds the drop at or below the margin,
-  as does the bound over lost trials. Anything else is ``unsettled``, with the reason in plain words.
+  (:data:`~threetears.evals.analysis.report.verdict.MIN_CASES`), and for every rate (the overall pass rate and each
+  check's) the contrast's bounded interval (the candidate minus the control, ``bounded_interval``: the bounded test's
+  on the rate's 0-1 range at its family's level) bounds the drop at or below the margin, as does the bound over lost
+  trials. Anything else is ``unsettled``, with the reason in plain words.
+
+  **Switch never reads the t interval the page's contrasts print.** "No worse by more than the margin" is a
+  non-inferiority claim, and on a rate's coarse per-case shares the t interval makes it too often: simulated at the
+  margin, it let switch through up to 12% of the time against the 2.5% it states, where the bounded interval holds its
+  rate at every n (``docs/measuring-soundly.md``). A guardrail's ``held`` reads the same interval for the same reason.
+  A bundle before shape 55 carries no bounded interval, so its rate clause cannot settle switch; it never falls back
+  to the t interval.
 - **Cost, keep.** A candidate observed to cost no less per reply settles ``keep``.
 - **Cost, switch.** Every arm is at the case floor and the cost contrast's interval lies wholly below zero.
   Otherwise ``unsettled``: the cost difference did not separate.
@@ -29,10 +37,11 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import measure_name
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE
 
 #: What a clause reads: a pass rate that must not drop by more than a margin, or a cost that must be lower.
 ClauseKind = Literal["rate_drop", "cost_lower", "unread"]
@@ -75,8 +84,8 @@ class DecisionRule:
 class RateReading:
     """One pass rate on both arms: passed of measured, how many trials each could still add, and its interval.
 
-    ``interval`` is the bundle's contrast interval on the candidate minus the control, as a share (0 to 1) with
-    higher better; None when the bundle computed none for this rate.
+    ``interval`` is the contrast's bounded interval on the candidate minus the control (``bounded_interval``), as a
+    share (0 to 1) with higher better: the interval a switch reads. None when the bundle computed none for this rate.
     """
 
     name: str
@@ -110,7 +119,8 @@ class RuleReadings:
 
     ``control_cases`` and ``candidate_cases`` are each arm's usable cases, None when not counted; ``cost_interval``
     is the bundle's contrast interval on the candidate's cost per reply minus the control's, None when none was
-    computed.
+    computed. ``predates_bounded`` is True for a bundle shaped before any contrast carried a bounded interval (55), so a
+    rate clause says that, not that no interval was computed.
     """
 
     rates: tuple[RateReading, ...]
@@ -119,6 +129,7 @@ class RuleReadings:
     control_cases: int | None = None
     candidate_cases: int | None = None
     cost_interval: tuple[float, float] | None = None
+    predates_bounded: bool = False
 
     def fewest_cases(self) -> int | None:
         """The fewer usable cases of the two arms; None when either was not counted."""
@@ -225,6 +236,8 @@ def _rate_clause(clause: RuleClause, margin: float, readings: RuleReadings) -> C
         )
     for rate in readings.rates:
         worst = rate.worst_drop()
+        if worst is None and readings.predates_bounded:
+            return ClauseVerdict(clause, "unsettled", "this bundle predates the interval a switch needs")
         if worst is None:
             return ClauseVerdict(clause, "unsettled", f"no interval was computed on {rate.name}")
         if worst > margin:
@@ -259,26 +272,47 @@ def _cost_clause(clause: RuleClause, readings: RuleReadings) -> ClauseVerdict:
     return ClauseVerdict(clause, "switch", "the candidate costs less per reply")
 
 
-def _contrast(bundle: AnalysisContextBundle, name: str, control: str, candidate: str) -> FamilyComparison | None:
-    """The bundle's contrast of ``candidate`` against ``control`` on the measure ``name``; None when it tested none."""
+#: The bundle shape from which a family comparison carries ``bounded_interval``.
+_BOUNDED_SHAPE = 55
+
+
+def _contrast(
+    bundle: AnalysisContextBundle, reading: str, name: str, control: str, candidate: str, *, bounded: bool
+) -> FamilyComparison | None:
+    """The bundle's contrast of ``candidate`` against ``control`` on one reading with the interval asked for.
+
+    ``bounded`` asks for the bounded interval a non-inferiority claim reads, else the family's interval. None when the
+    bundle tested none, or none carrying that interval.
+    """
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             if (
-                comparison.reading == "measure"
+                comparison.reading == reading
                 and comparison.name == name
                 and comparison.control.variant_key == control
                 and comparison.contrast.variant_key == candidate
-                and comparison.interval is not None
+                and (comparison.bounded_interval if bounded else comparison.interval) is not None
             ):
                 return comparison
     return None
 
 
-def _better_way(comparison: FamilyComparison | None) -> tuple[float, float] | None:
-    """A contrast's interval with higher better: as stored, or negated where lower is better."""
-    if comparison is None or comparison.interval is None:
+def _compared_as(name: str) -> str:
+    """The measure a check's pass rate is compared on: a label's ``match`` as ``accuracy``, its mean, else itself.
+
+    ``match`` has no merit axis, so no family compares it: ``accuracy``, which the engine derives from it one for one,
+    carries the axis (:data:`~threetears.evals.kernel.metrics.ACCURACY_MEASURE`). A label check's rate therefore reads
+    the ``accuracy`` contrast, over the same per-case values. Until ``.30`` it looked for a ``match`` contrast, found
+    none, and could never settle switch.
+    """
+    return ACCURACY_MEASURE if name == MATCH_MEASURE else name
+
+
+def _bounded_better_way(comparison: FamilyComparison | None) -> tuple[float, float] | None:
+    """A contrast's bounded interval with higher better: as stored, or negated where lower is better."""
+    if comparison is None or comparison.bounded_interval is None:
         return None
-    low, high = comparison.interval
+    low, high = comparison.bounded_interval
     return (low, high) if comparison.higher_is_better else (-high, -low)
 
 
@@ -286,8 +320,9 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
     """The figures a rule is read against for one candidate arm, from the bundle alone.
 
     The pass rates are every trial's, then each check's pass rate the arms' cells carry; each arm's lost trials are
-    trials it could still add. Cost is each arm's cost per reply. Each reading carries the bundle's contrast interval
-    for it, where the bundle computed one, and each arm its usable cases.
+    trials it could still add. Each rate carries its contrast's bounded interval, the one a switch reads, where the
+    bundle computed one (the overall pass rate's is its ``trial`` contrast). Cost is each arm's cost per reply, with
+    the cost contrast's interval. Each arm carries its usable cases.
 
     Args:
         bundle: The campaign's evidence.
@@ -311,6 +346,7 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
             theirs.usable,
             lost_control,
             lost_candidate,
+            interval=_bounded_better_way(_contrast(bundle, "trial", TRIAL_PASS_NAME, control, candidate, bounded=True)),
         )
     ]
     measures: dict[str, dict[str, tuple[int, int]]] = {}
@@ -330,10 +366,12 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
                     *by_arm[candidate],
                     lost_control,
                     lost_candidate,
-                    interval=_better_way(_contrast(bundle, name, control, candidate)),
+                    interval=_bounded_better_way(
+                        _contrast(bundle, "measure", _compared_as(name), control, candidate, bounded=True)
+                    ),
                 )
             )
-    cost = _contrast(bundle, _REPLY_COST, control, candidate)
+    cost = _contrast(bundle, "measure", _REPLY_COST, control, candidate, bounded=False)
     return RuleReadings(
         rates=tuple(rates),
         control_cost=ours.reply_cost_usd,
@@ -341,6 +379,7 @@ def rule_readings(bundle: AnalysisContextBundle, control: str, candidate: str) -
         control_cases=ours.usable_cases,
         candidate_cases=theirs.usable_cases,
         cost_interval=None if cost is None else cost.interval,
+        predates_bounded=bundle.schema_version < _BOUNDED_SHAPE,
     )
 
 
