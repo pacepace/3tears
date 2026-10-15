@@ -81,6 +81,13 @@ holding any version of it is already seeded, and the next version is ``case_set_
 
 The seeder creates. It never updates and never deletes.
 
+**Every definition it writes records what was seeded** (since ``.30``): a template, rubric dim, judge config and case
+set carry ``seed_digest``, the digest of the content written (:mod:`~threetears.evals.run.definition_digests`), and a
+judge case its corpus name (``seed_name``; its ``content_hash`` is what was seeded). Bringing a seeded definition up to
+date when the corpus moves is not the seed's work: :mod:`~threetears.evals.run.definition_drift` reads the drift and
+resets, explicitly, writing a new revision. A template name resolves to its current revision
+(``EvalStorage.load_template_by_name``), which is what a seeded judge case and case set are frozen into.
+
 Corpus files are the same create-ready shape the authoring paths accept — server-owned
 fields (``id``, ``doc_type``, ``schema_version``, ``scope_id``, ``created_at``,
 ``updated_at``) are absent, because loading and saving assign them.
@@ -121,12 +128,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.kernel.errors import ConflictError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
-from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, AuthoredVerdict
+from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, AuthoredVerdict, JudgeCase
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import CatalogRubricDim, EvalTemplate, JudgeConfig, JudgedArtifact
 from threetears.evals.run.authoring import active_judge_config_in, admit_template
 from threetears.evals.run.case_sets import mint_case_set
-from threetears.evals.run.judge_kind import author_judge_case, freeze_judge_cases
+from threetears.evals.run.definition_digests import (
+    case_set_digest,
+    current_revisions,
+    judge_config_digest,
+    rubric_dim_digest,
+    template_digest,
+)
+from threetears.evals.run.judge_kind import author_judge_case, freeze_seeded_judge_case
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
@@ -570,7 +584,8 @@ def seed_eval_definitions(
 
     storage = host.storage
     stored_templates = storage.query_templates(corpus.scope_id)
-    cases = _authored_cases(corpus, stored_templates, templates)
+    # A template is resolved in the store first (the store is master), as its current revision.
+    cases = authored_seed_cases(corpus, {**{t.name: t for t in templates}, **current_revisions(stored_templates)})
     outcome = SeedOutcome()
 
     # One archived-inclusive query per type, not one probe per document: the catalogue is
@@ -585,7 +600,7 @@ def seed_eval_definitions(
         templates,
         {(t.name,) for t in stored_templates},
         lambda t: (t.name,),
-        storage.save_template,
+        lambda t: storage.save_template(t.model_copy(update={"seed_digest": template_digest(t)})),
     )
     _seed_doc_type(
         outcome,
@@ -593,7 +608,7 @@ def seed_eval_definitions(
         corpus.rubric_dims,
         {(d.key,) for d in storage.query_rubric_dims(corpus.scope_id)},
         lambda d: (d.key,),
-        storage.save_rubric_dim,
+        lambda d: storage.save_rubric_dim(d.model_copy(update={"seed_digest": rubric_dim_digest(d)})),
         deleted={(t.key,) for t in storage.query_rubric_dim_tombstones(corpus.scope_id)},
     )
     _seed_doc_type(
@@ -602,7 +617,7 @@ def seed_eval_definitions(
         corpus.judge_configs,
         {_config_key(c) for c in existing_configs},
         _config_key,
-        storage.save_judge_config,
+        lambda c: storage.save_judge_config(c.model_copy(update={"seed_digest": judge_config_digest(c)})),
         # The corpus holds at most one non-archived config per dim (SeedCorpus refuses more), so the
         # store's active configs are the only ones a write could contradict.
         conflicts=lambda c: not c.archived and c.rubric_dim_id in dims_with_an_active_config,
@@ -610,25 +625,27 @@ def seed_eval_definitions(
     )
     frozen = _seed_judge_cases(outcome, host, corpus.scope_id, cases) if cases else {}
     if corpus.case_sets:
-        _seed_case_sets(outcome, host, corpus, frozen)
+        _seed_case_sets(outcome, host, corpus, frozen, {case.name: authored for case, authored in cases if case.name})
 
     return outcome
 
 
-def _authored_cases(
-    corpus: SeedCorpus, stored: Sequence[EvalTemplate], admitted: Sequence[EvalTemplate]
+def authored_seed_cases(
+    corpus: SeedCorpus, by_name: Mapping[str, EvalTemplate]
 ) -> list[tuple[SeedJudgeCase, AuthoredJudgeCase]]:
     """Every corpus judge case built through ``author_judge_case``, before anything is written; refused as a whole.
 
-    A template is resolved by name in the store first (the store is master: a corpus template whose name the store
-    holds is never written) and else among the corpus's admitted templates, which the same seed writes.
+    Args:
+        corpus: The corpus whose judge cases to build.
+        by_name: The template each name resolves to. The seed resolves one in the store first (the store is master:
+            a corpus template whose name the store holds is never written), as its current revision, and else among
+            the corpus's admitted templates, which the same seed writes; a drift read and a reset resolve one in the
+            corpus first, since they read and write what the corpus carries.
 
     Raises:
         ValidationFailedError: A case names a template neither holds, a judge template not of the judge kind, or a
             criterion or verdict ``judge_case_author`` would refuse; naming every such case.
     """
-    by_name = {template.name: template for template in admitted}
-    by_name.update({template.name: template for template in stored})
     built: list[tuple[SeedJudgeCase, AuthoredJudgeCase]] = []
     refusals: list[str] = []
     for case in corpus.judge_cases:
@@ -679,7 +696,9 @@ def _seed_judge_cases(
             failed += 1
             continue
         try:
-            frozen = freeze_judge_cases(storage, template=judge, scope_id=scope_id, authored=[authored]).cases[0]
+            frozen = freeze_seeded_judge_case(
+                storage, template=judge, scope_id=scope_id, authored=authored, seed_name=case.name
+            )
         except StorageError:
             failed += 1
             continue
@@ -696,7 +715,13 @@ def _seed_judge_cases(
     return stored
 
 
-def _seed_case_sets(outcome: SeedOutcome, host: EvalHost, corpus: SeedCorpus, frozen: Mapping[str, str]) -> None:
+def _seed_case_sets(
+    outcome: SeedOutcome,
+    host: EvalHost,
+    corpus: SeedCorpus,
+    frozen: Mapping[str, str],
+    authored: Mapping[str, AuthoredJudgeCase],
+) -> None:
     """Mint each corpus case set whose name the scope holds no version of, recording it under ``case_set``: created
     (as ``<name> v<version>``), already present (some version is stored), or failed (a case of it, or its judge
     template, did not land, or the store refused the set; the next boot retries it).
@@ -723,6 +748,7 @@ def _seed_case_sets(outcome: SeedOutcome, host: EvalHost, corpus: SeedCorpus, fr
                 template_id=judge.id,
                 test_case_ids=[frozen[name] for name in case_set.judge_cases],
                 tracked=case_set.tracked,
+                seed_digest=seed_case_set_digest(case_set, authored),
             )
         except (StorageError, ConflictError) as refused:
             # NOSILENT: logged and counted failed, which the seed's summary names; the next boot retries an empty slot.
@@ -734,6 +760,21 @@ def _seed_case_sets(outcome: SeedOutcome, host: EvalHost, corpus: SeedCorpus, fr
     outcome.created_keys["case_set"] = created_keys
     outcome.skipped["case_set"] = skipped
     outcome.failed["case_set"] = failed
+
+
+def seed_case_set_digest(case_set: SeedCaseSet, authored: Mapping[str, AuthoredJudgeCase]) -> str:
+    """The digest of a corpus case set's content: its name, template, ``tracked`` and each listed case's content.
+
+    Args:
+        case_set: The corpus set.
+        authored: Each corpus judge case the set may list, built, by its corpus name.
+    """
+    return case_set_digest(
+        name=case_set.name,
+        template=case_set.template,
+        tracked=case_set.tracked,
+        cases=[JudgeCase.from_authored(authored[name]).content_digest() for name in case_set.judge_cases],
+    )
 
 
 def _seed_doc_type[D](

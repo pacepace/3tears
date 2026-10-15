@@ -426,7 +426,15 @@ DURABLE_SCHEMA_VERSION: int = 15
 #:   reads, and digests, as it did. A build at v15.1 refuses an authored case by name when its judge kind reads it,
 #:   and keeps the test case's payload verbatim on every write. An older build that ignores this field reads the
 #:   document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 2
+#: - **v15.3** — a seeded definition records what was seeded, and a template has revisions: ``EvalTemplate``,
+#:   ``CatalogRubricDim``, ``JudgeConfig`` and ``CaseSet`` carry ``seed_digest`` (default None: written by no seed, or
+#:   seeded before the field existed), the digest of the content the seed or a definition reset wrote; a judge
+#:   ``EvalTestCase`` carries ``seed_name`` (default None), the corpus name it was seeded as, its ``content_hash``
+#:   being what was seeded; and ``EvalTemplate.revision`` (default 1) numbers the records of one name, a reset writing
+#:   the next as a new record. None is in no digest pre-image, and a template stored before reads as revision 1, the
+#:   only one its name had. An older build that ignores this field reads the document correctly, and its writes leave
+#:   it true.
+DURABLE_SCHEMA_MINOR: int = 3
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 #: The registered durable steps, oldest first: ``[s.from_version for s in DURABLE_UPGRADERS]`` is

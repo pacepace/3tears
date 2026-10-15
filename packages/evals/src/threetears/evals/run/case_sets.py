@@ -55,6 +55,14 @@ def _refuse_cases_outside(
         )
 
 
+def _one_template_name(storage: CaseSetStore, stored_id: str, template_id: str, scope_id: str) -> bool:
+    """Whether two template ids are one template: the same id, or two revisions of one name."""
+    if stored_id == template_id:
+        return True
+    stored, wanted = storage.load_template(stored_id, scope_id), storage.load_template(template_id, scope_id)
+    return stored is not None and wanted is not None and stored.name == wanted.name
+
+
 def mint_case_set(
     storage: CaseSetStore,
     *,
@@ -63,6 +71,7 @@ def mint_case_set(
     template_id: str,
     test_case_ids: Sequence[str],
     tracked: bool = True,
+    seed_digest: str | None = None,
 ) -> CaseSet:
     """Store the next version of the case set ``name``: version 1 for a new name, else one past the latest.
 
@@ -70,9 +79,13 @@ def mint_case_set(
         storage: Where sets and their cases live.
         scope_id: The scope the set lives in.
         name: The set's name.
-        template_id: The template whose cases it lists; every version of one name shares it.
+        template_id: The template whose cases it lists. Every version of one name lists cases of one template name:
+            the latest version's template, or a revision of it (a set re-minted after its template's reset lists the
+            newer revision's cases).
         test_case_ids: The cases, in order — each a stored case of the template in the scope.
         tracked: Whether the set is followed over time or made for one launch (metadata only).
+        seed_digest: The digest of the seeded content this version was minted from, when a seed or a definition
+            reset mints it; None otherwise.
 
     Returns:
         The stored version.
@@ -84,7 +97,7 @@ def mint_case_set(
     """
     versions = storage.query_case_sets(scope_id, name=name)
     latest = versions[0] if versions else None
-    if latest is not None and latest.template_id != template_id:
+    if latest is not None and not _one_template_name(storage, latest.template_id, template_id, scope_id):
         raise ValidationFailedError(
             f"case set {name!r} lists template {latest.template_id!r}'s cases, not {template_id!r}'s",
             remedy=f"name a new set for template {template_id!r}",
@@ -106,6 +119,7 @@ def mint_case_set(
             template_id=template_id,
             test_case_ids=list(test_case_ids),
             tracked=tracked,
+            seed_digest=seed_digest,
         )
     except ValueError as e:
         raise ValidationFailedError(f"invalid case set: {e}", remedy=SCHEMA_REMEDY) from e

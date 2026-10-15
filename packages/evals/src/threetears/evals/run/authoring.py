@@ -89,6 +89,9 @@ TEMPLATE_SERVER_FIELDS: tuple[str, ...] = (
     "created_at",
     "updated_at",
     "scope_id",
+    # What the seed and a definition reset record: never an author's to write.
+    "revision",
+    "seed_digest",
 )
 
 
@@ -720,6 +723,7 @@ RUBRIC_DIM_SERVER_FIELDS: tuple[str, ...] = (
     "created_at",
     "updated_at",
     "scope_id",
+    "seed_digest",
 )
 
 
@@ -907,6 +911,7 @@ JUDGE_CONFIG_SERVER_FIELDS: tuple[str, ...] = (
     "schema_minor",
     "created_at",
     "scope_id",
+    "seed_digest",
 )
 
 
@@ -1031,7 +1036,10 @@ def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     # one held, a newer build's among them.
     changes = {key: value for key, value in fields.items() if key not in JUDGE_CONFIG_SERVER_FIELDS}
     changes.update(rubric_dim_id=existing.rubric_dim_id, scope_id=scope_id, archived=False)
-    reminted = [key for key in JUDGE_CONFIG_SERVER_FIELDS if key not in ("schema_version", "schema_minor", "scope_id")]
+    # The seed's record is carried over, so a re-authored seeded config reads as the operator's edit of what was
+    # seeded (customized), never as a config with no record (unknown).
+    kept = ("schema_version", "schema_minor", "scope_id", "seed_digest")
+    reminted = [key for key in JUDGE_CONFIG_SERVER_FIELDS if key not in kept]
     try:
         new_config = edited_core_document(JudgeConfig, existing, changes, drop=reminted)
     except ValidationError as e:
