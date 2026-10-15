@@ -172,3 +172,31 @@ async def test_a_busy_ddl_lock_defers_the_install_and_the_drain_still_runs(
         await pool.release(holder)
 
     assert (done.applied, source.advanced) == (1, [_TABLE])
+
+
+async def test_the_migration_run_that_creates_a_switched_table_gives_it_its_trigger(db_container: str) -> None:
+    from threetears.core.coordination.migrations import register as register_coordination
+    from threetears.core.data.migrations import MigrationRunner
+
+    schema = f"marks_run_{uuid.uuid4().hex[:8]}"
+    conn = await asyncpg.connect(db_container)
+    try:
+        await conn.execute(f"CREATE SCHEMA {schema}")
+        await conn.execute(f"SET search_path TO {schema}")
+        runner = MigrationRunner()
+        register_coordination(runner)
+        await runner.apply_for_platform_schema(ConnectionSession(conn))
+
+        # from the same run: the revocation list carries its trigger before any write
+        assert (schema, "coordination_revocations") not in set(
+            await tables_missing_the_trigger(conn, ["coordination_revocations"])
+        )
+        await conn.execute(
+            "INSERT INTO coordination_revocations (purpose, key, revoked_at, expires_at, date_created, date_updated) "
+            "VALUES ('standing', 'k', now(), now() + interval '1 day', now(), now())"
+        )
+        marks = await conn.fetch(f"SELECT table_name FROM {schema}.{WRITE_MARKS_TABLE}")
+        assert [row["table_name"] for row in marks] == ["coordination_revocations"]
+    finally:
+        await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await conn.close()

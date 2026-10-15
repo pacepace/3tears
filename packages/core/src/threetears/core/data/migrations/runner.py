@@ -47,6 +47,7 @@ from threetears.core.data.migrations.preview import PreviewStore
 from threetears.core.data.migrations.registry import MigrationFunc, PackageMigrations
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.core.data.migrations.session import MigrationSession
+from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
 from threetears.observe import get_logger, traced
 
 __all__ = [
@@ -552,6 +553,11 @@ class MigrationRunner:
         for package in ordered:
             applied_count = await self._apply_package_pending(store, package, applied, target)
             count += applied_count
+        # still under the run's DDL lock: every switched-on table these packages create carries its
+        # write-mark trigger from this run, a table created before the trigger existed included
+        tables = sorted({name for package in ordered for name in package.write_generation_tables})
+        if tables:
+            await give_switched_tables_their_trigger(store, tables)
         return count
 
     async def _apply_package_pending(

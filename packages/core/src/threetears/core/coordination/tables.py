@@ -40,6 +40,8 @@ migration v002 adds the columns to tables created before them.
 
 from __future__ import annotations
 
+from threetears.core.collections.generation import WRITE_GENERATION
+
 import hashlib
 import time
 from datetime import UTC, datetime, timedelta
@@ -546,6 +548,7 @@ class CoordinationRevocationsCollection(CoordinationCollection):
     datetime_columns: ClassVar[frozenset[str]] = frozenset({"revoked_at", "expires_at", "date_created", "date_updated"})
     schema = TableSchema(
         name="coordination_revocations",
+        write_generation=WRITE_GENERATION,
         primary_key=("purpose", "key"),
         columns=[
             *_common_columns(),

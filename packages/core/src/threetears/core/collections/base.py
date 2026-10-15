@@ -43,6 +43,7 @@ from threetears.core.collections.delete_cascade import (
 )
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.generation import (
+    WRITE_GENERATION,
     WRITE_GENERATION_UNDECLARED,
     NoWriteGeneration,
     UndeclaredWriteGeneration,
@@ -681,6 +682,17 @@ class BaseCollection(ABC, Generic[EntityT]):
             set, or :attr:`invalidation_columns` is not a tuple of column names
         """
         super().__init_subclass__(**kwargs)
+        # the switch is the table's declaration (TableSchema.write_generation): a class over a
+        # switched-on schema is switched on, so every reader of ``write_generation`` -- this release's
+        # and one before it -- sees what the schema says. A class that caches absences keeps that
+        # path; its table is switched on through the absence cache already.
+        schema = getattr(cls, "schema", None)
+        if (
+            isinstance(getattr(schema, "write_generation", None), WriteGeneration)
+            and cls.negative_cache_max_age is None
+            and isinstance(cls.write_generation, UndeclaredWriteGeneration)
+        ):
+            cls.write_generation = WRITE_GENERATION
         if not isinstance(cls.write_generation, WriteGeneration | NoWriteGeneration | UndeclaredWriteGeneration):
             raise TypeError(
                 f"{cls.__name__}.write_generation must be WRITE_GENERATION, a NoWriteGeneration(reason=...) "

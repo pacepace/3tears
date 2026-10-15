@@ -30,6 +30,7 @@ from threetears.core.coordination.migrations.v002_add_l2_order_columns import ad
 from threetears.core.coordination.migrations.v003_create_collection_write_marks import (
     create_collection_write_marks,
 )
+from threetears.core.coordination.tables import CoordinationRevocationsCollection
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -54,6 +55,8 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
     pkg.version(1)(create_coordination_tables)
     pkg.version(2)(add_l2_order_columns)
     pkg.version(3)(create_collection_write_marks)
+    # the revocation list caches absences: its writes are marked from the run that creates it
+    pkg.mark_write_generation(CoordinationRevocationsCollection.schema)
     runner.register(pkg)
     return pkg
 

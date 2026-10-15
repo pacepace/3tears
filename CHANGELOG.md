@@ -8,6 +8,15 @@ packages (bumped in lock-step).
 
 ### Core: a committed write cannot lose its generation advance
 
+- **The switch is the table's declaration:** `TableSchema.write_generation` (`WRITE_GENERATION`).
+  A collection class over a switched-on schema reads its `write_generation` from it, so code reading
+  the class attribute keeps working. A migration package declares the switched-on tables it creates
+  (`PackageMigrations.mark_write_generation`, from the `TableSchema`, or by name for a collection with
+  none), and the runner gives each its write-mark trigger at the end of every run, under the run's
+  DDL lock: a switched-on table carries its trigger from the run that creates it, and an existing one
+  from the first run after this. The coordination package declares the revocation list, the acl
+  package its five tables. `tests/enforcement/test_write_generation_is_declared_on_the_schema.py`
+  fails a class and schema that disagree.
 - `threetears.core.collections.write_marks`: each switched-on table carries a statement-level
   trigger (`threetears_collection_write_mark`) that inserts a mark into `collection_write_marks` in the
   same transaction as the write, whoever wrote it: a broker, a direct pool, a write buffer, a
