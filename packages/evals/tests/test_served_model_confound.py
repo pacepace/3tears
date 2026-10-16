@@ -24,6 +24,7 @@ from threetears.evals.analysis import (
     DisclosureBlock,
     assemble_context_bundle,
     build_code_only_report,
+    report_markdown,
 )
 from threetears.evals.kernel import (
     CampaignDesign,
@@ -249,3 +250,19 @@ class TestTwoArmsOfOneAliasAnsweredByDifferentModels:
         )
         assert _row(bundle, "chunk_tokens") == [Confound(dimension=_CONFOUND, kind="served_model")]
         assert {reading.state for reading in bundle.arm_served_models} == {"one"}
+
+
+def test_an_arm_named_by_its_model_is_named_once_by_the_version_that_answered_it_and_by_its_label_in_every_table() -> (
+    None
+):
+    """The subhead names the served version, the name asked by in brackets as its label; every table says the label."""
+    control, other = _batch(_PINNED, "control"), _batch(_JUNE, "june")
+    bundle = _bundle(
+        [(control, _served(f"{_PINNED}-2026-05")), (other, _served(_JUNE))], design=_design(control, [_PINNED, _JUNE])
+    )
+    lines = report_markdown(build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")).splitlines()
+
+    assert lines[1].startswith("extractor-pinned-2026-05 (extractor-pinned, control) vs vendor/extractor-2026-06 · ")
+    rows = [line for line in lines if line.startswith("| ")]
+    assert "| ▸ extractor-pinned | 36 |" in "\n".join(rows)
+    assert not any("2026-05" in row for row in rows), "a table names the arm by its label alone"

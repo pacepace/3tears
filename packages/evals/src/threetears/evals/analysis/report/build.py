@@ -538,7 +538,8 @@ def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source:
     """The arms line: each arm named in full, once, the control first and marked, then the date, then the design.
 
     An arm named by its model is named by the version that answered it where the responses named one model other
-    than the one asked for (``arm_served_models``, the served-models check's own reading): what ran, not the alias.
+    than the one asked for (``arm_served_models``, the served-models check's own reading): what ran, not the alias,
+    with the label every table calls it by in brackets, ``gpt-4o-2024-08-06 (gpt-4o)``.
     """
     control = _control_key(bundle)
     keys = [board.variant_key for board in bundle.scoreboard]
@@ -549,7 +550,7 @@ def _arms_line(bundle: AnalysisContextBundle, names: dict[str, ArmName], source:
         if reading.state == "one" and len(reading.served_models) == 1
     }
     versioned = {
-        key: replace(name, model=served[key])
+        key: replace(name, model=served[key], given=True)
         if name.model is not None and key in served and served[key] != humanize("model", name.model)
         else name
         for key, name in names.items()
