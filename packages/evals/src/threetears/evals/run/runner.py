@@ -3511,8 +3511,10 @@ async def execute_run(
     executor = options.cell_executor if options.cell_executor is not None else InProcessCellExecutor()
     # The sinks of the cells running now, which the stop record counts when a ceiling stops the run.
     in_flight: list[_CellSink] = []
-    # Every cell that started, so the cells a stop kept from starting are counted rather than inferred.
-    started: list[_CellSink] = []
+    # How many cells started, so the cells a stop kept from starting are counted rather than inferred. A count,
+    # never the sinks: a finished cell's sink holds its output, and keeping every one would hold the run's whole
+    # trace volume until it ends.
+    cells_started = 0
     # What stops the run, once a cell decided it. Later cells see it and never start; the cells
     # already running finish, are saved and reported, and the stop is raised once they all have.
     stop = _RunStop()
@@ -3548,6 +3550,7 @@ async def execute_run(
             await one_cell(k, tc)
 
     async def one_cell(k: int, tc: EvalTestCase) -> None:
+        nonlocal cells_started
         # A stop decided while this cell waited for its turn reaches it here too.
         if stop.decided:
             return
@@ -3579,7 +3582,7 @@ async def execute_run(
         # into, and the timeout arm reads: the spend already billed, the
         # per-role rows, the output so far, and what the cell was waiting on when it struck.
         sink = _CellSink()
-        started.append(sink)
+        cells_started += 1
         in_flight.append(sink)
         try:
             await run_and_record(k, tc, sink)
@@ -3835,7 +3838,7 @@ async def execute_run(
                     landed_at_stop=reached.landed_at_stop,
                     landed_final=landed_final,
                     cells_in_flight=reached.cells_in_flight,
-                    cells_not_started=len(order) - len(started),
+                    cells_not_started=len(order) - cells_started,
                     unpriced_results=unpriced,
                 )
             )
