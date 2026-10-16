@@ -6,6 +6,11 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a host reads the analysis preparation bound rather than restating it
+
+- `threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S` (`host-contract`, 900 s) is exported: the bound on an
+  analysis generation's preparation, which a host cites when it explains a generation's total wall time.
+
 ### 3tears-evals: a host reads the lease pool's width rather than copying it
 
 - `threetears.evals.kernel.LEASE_POOL_WORKERS` (`host-contract`) is exported: how many threads the job leases' own

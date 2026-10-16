@@ -650,6 +650,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The write that renames a stored case, which a host otherwise made by writing the case document itself.
         "threetears.evals.ops.case_rename",
         "threetears.evals.ops.CaseRenamed",
+        # The bound on an analysis generation's preparation (assembly, prompt, client, first-call price), which a host
+        # cites when it explains a generation's total wall time.
+        "threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S",
         # What the host guide tells a host to call, build, catch, type against or read in its prose: the cost-cap
         # wrapper and the error a refused reservation raises, the strict reply projection and the schema it refuses,
         # the reader of a boot seed directory, a measure's per-entry marker, the narrow store ports a function types
@@ -1191,7 +1194,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 523  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.
+DECLARED_CEILING = 524  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time.
 
 
 def tier_of(qualified: str) -> Tier:

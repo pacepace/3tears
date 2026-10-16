@@ -45,6 +45,7 @@ and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.ops.analysis import (
+    ANALYSIS_PREPARATION_BUDGET_S,
     AnalysisDeleted,
     AnalysisGenerationEstimate,
     AnalysisLine,
@@ -239,6 +240,7 @@ from threetears.evals.ops.runs import (
 from threetears.evals.analysis.summary import EvalSummary, dollars_text
 
 __all__ = [
+    "ANALYSIS_PREPARATION_BUDGET_S",
     "ACTION_JOB_PREFIX",
     "JUDGE_TEMPERATURE_JOB_PREFIX",
     "LAUNCH_JOB_PREFIX",

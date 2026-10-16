@@ -1291,6 +1291,7 @@
 "threetears.evals.ops.analysis_generate": "provisional",
 "threetears.evals.ops.analysis_job_id": "provisional",
 "threetears.evals.ops.ANALYSIS_JOB_PREFIX": "provisional",
+"threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S": "host-contract",
 "threetears.evals.ops.AnalysisDeleted": "provisional",
 "threetears.evals.ops.AnalysisGeneration": "stable",
 "threetears.evals.ops.AnalysisGenerationEstimate": "provisional",

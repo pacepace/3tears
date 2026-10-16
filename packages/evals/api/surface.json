@@ -6451,6 +6451,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S": {
+      "kind": "constant (float)",
+      "signature": "",
+      "tier": "host-contract"
+    },
     "threetears.evals.ops.AnalysisDeleted": {
       "kind": "model",
       "signature": "",
