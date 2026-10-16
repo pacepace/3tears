@@ -28,10 +28,10 @@ from threetears.evals.run import (
     create_template,
     launchable_judge_kind,
     quote_launch,
-    refuse_ignored_template_fields,
     seed_eval_definitions,
     update_template,
 )
+from threetears.evals.run.authoring import refuse_ignored_template_fields
 from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

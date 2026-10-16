@@ -647,7 +647,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.run.metered_cell_tally",
         "threetears.evals.run.fold_metered_cell",
         "threetears.evals.run.precondition_failure_text",
-        "threetears.evals.run.refuse_ignored_template_fields",
         "threetears.evals.ops.run_label",
         # The write that renames a stored case, which a host otherwise made by writing the case document itself.
         "threetears.evals.ops.case_rename",
@@ -1187,7 +1186,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 519  # The host's imports set it on 2026-10-15; .33 adds the case rename a host calls and drops the six ceiling names.
+DECLARED_CEILING = 518  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields.
 
 
 def tier_of(qualified: str) -> Tier:

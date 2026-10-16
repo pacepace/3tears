@@ -133,10 +133,11 @@ pass it to every entrypoint. It holds:
   `ValidationFailedError` to refuse and returns `None` to admit. `kinds` (required) is the registry your `LaunchHost`
   is built with, the same mapping: a template stating a field its kind's entry never acts on
   (`LaunchableKind.ignored_template_fields`) is refused with the launch dispatch's own message, so your
-  `refuse_undeliverable_template` no longer calls `refuse_ignored_template_fields`. `create_template`,
-  `update_template`, the boot seed, a definition reset and the `definitions_reset` action read the checks off the host
-  they are handed, so every path admits a template under the same checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it
-  admitted would go unchecked; a check with nothing to refuse is a function that returns `None`.
+  `refuse_undeliverable_template` need not check those fields itself; it keeps only the refusals the package cannot
+  make for you. `create_template`, `update_template`, the boot seed, a definition reset and the `definitions_reset`
+  action read the checks off the host they are handed, so every path admits a template under the same checks. A host
+  with no template checks (`None`, the default) is refused by each of them, since a template it admitted would go
+  unchecked; a check with nothing to refuse is a function that returns `None`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 

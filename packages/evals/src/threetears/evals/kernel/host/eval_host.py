@@ -137,8 +137,8 @@ class TemplateChecks:
             refuses those itself, from ``kinds``.
         kinds: The host's launch registry, by kind name: the mapping its ``LaunchHost`` is built with. Every path that
             admits a template refuses one stating a field its kind's entry ignores
-            (``threetears.evals.run.refuse_ignored_template_fields``), as the launch dispatch does; a kind the registry
-            does not carry is refused nothing here, and its launch is refused by name.
+            (``threetears.evals.run.authoring.refuse_ignored_template_fields``), as the launch dispatch does; a kind
+            the registry does not carry is refused nothing here, and its launch is refused by name.
     """
 
     require_known_tools_allowed: Callable[[Sequence[str] | None], None]

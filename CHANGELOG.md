@@ -20,8 +20,8 @@ the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
   drift read now refuse a template stating a field its kind's entry ignores (`LaunchableKind.ignored_template_fields`),
   with the message the launch dispatch gives; an update that only sets `archived` is exempt, and a kind the registry
   does not carry is refused nothing at authoring. To port, build `TemplateChecks` with `kinds=` your registry and drop
-  your own call to `refuse_ignored_template_fields` from `refuse_undeliverable_template`. The name stays exported
-  from `threetears.evals.run`, `host-contract`.
+  your own call to `refuse_ignored_template_fields` from `refuse_undeliverable_template`: every path that admits a
+  template calls it for you, and the name is no longer exported from `threetears.evals.run`.
 - **A stored case is renamed through the package.** `case_rename(host, scope_id, case_id, name)`
   (`threetears.evals.ops`) and the `cases_rename` write action (`test_case_id`, `case_name`) write the case's `name`
   and nothing else, through the store's write path, and answer with a `CaseRenamed` (`test_case_id`, `old_name`,
@@ -67,16 +67,16 @@ the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
 
 **The surface**
 
-- **519 names are declared** (523 before): `case_rename` and `CaseRenamed` are added, both `host-contract`, and the
-  six separate ceiling names are removed.
+- **518 names are declared** (523 before): `case_rename` and `CaseRenamed` are added, both `host-contract`, and the
+  six separate ceiling names and `refuse_ignored_template_fields` are removed.
 
 **Machine-readable**
 
 - New fields: `TemplateChecks.kinds` (required), `TableBlock.title_ref` (the anchor a table's title links to),
   `OpsHost.seed_corpus`, `CaseResult.case_id` (the stored test case's id).
 - New: `EvalStorage.load_test_case_with_etag`, `save_test_case(if_match=)` and `case_rename(corpus=)`.
-- New: `IgnoresTemplateFields` (`threetears.evals.kernel.host`, `provisional`), the protocol `kinds` maps to and
-  `refuse_ignored_template_fields`'s second parameter is typed as; a `LaunchableKind` satisfies it.
+- New: `IgnoresTemplateFields` (`threetears.evals.kernel.host`, `provisional`), the protocol `kinds` maps to; a
+  `LaunchableKind` satisfies it.
 
 ### 3tears-evals: a typed decision rule, and the host's checks on the host (evaladopt.32)
 

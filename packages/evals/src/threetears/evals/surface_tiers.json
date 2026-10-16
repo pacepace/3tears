@@ -805,7 +805,6 @@
 "threetears.evals.run.RatingStore": "provisional",
 "threetears.evals.run.ReclaimStore": "provisional",
 "threetears.evals.run.record_witnessed_cell": "provisional",
-"threetears.evals.run.refuse_ignored_template_fields": "host-contract",
 "threetears.evals.run.refuse_raised_ceiling": "provisional",
 "threetears.evals.run.refuse_stale_presumptions": "provisional",
 "threetears.evals.run.Regrade": "provisional",

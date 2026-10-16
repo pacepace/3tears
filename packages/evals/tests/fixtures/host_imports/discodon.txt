@@ -149,6 +149,7 @@ threetears.evals.ops.AnalysisGeneration
 threetears.evals.ops.CampaignDefinition
 threetears.evals.ops.CampaignLine
 threetears.evals.ops.CampaignListing
+threetears.evals.ops.CaseRenamed
 threetears.evals.ops.CaseSetLine
 threetears.evals.ops.CaseSetMint
 threetears.evals.ops.EvalSummary
@@ -228,6 +229,7 @@ threetears.evals.run.assert_preconditions
 threetears.evals.run.build_judge_service
 threetears.evals.run.callers_missing_the_constructor
 threetears.evals.run.corpus_digests
+threetears.evals.run.create_template
 threetears.evals.run.definition_drift
 threetears.evals.run.delete_run
 threetears.evals.run.drive_conversation
@@ -243,7 +245,6 @@ threetears.evals.run.mint_case_set
 threetears.evals.run.plan_judge
 threetears.evals.run.precondition_failure_text
 threetears.evals.run.price_subject_call_floor
-threetears.evals.run.refuse_ignored_template_fields
 threetears.evals.run.rejudge_result
 threetears.evals.run.require_candidate_model
 threetears.evals.run.resolve_constructor

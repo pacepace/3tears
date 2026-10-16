@@ -4021,11 +4021,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.refuse_ignored_template_fields": {
-      "kind": "function",
-      "signature": "refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTemplateFields) -> None",
-      "tier": "host-contract"
-    },
     "threetears.evals.run.refuse_raised_ceiling": {
       "kind": "function",
       "signature": "",

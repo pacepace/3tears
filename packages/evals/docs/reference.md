@@ -484,8 +484,6 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | None`
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str) -> CalibrationRating`
-- **`refuse_ignored_template_fields`** · *host contract* · function · Refuse a template stating a field its kind never acts on (`LaunchableKind.ignored_template_fields`).
-  <br>`refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTemplateFields) -> None`
 - **`regrade`** · async function · Grade one stored result again from what its cell stored, and report every verdict that moved.
   <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade`
 - **`rejudge_result`** · async function · Re-score a finished result's failed judge dimensions from the evidence its judge read.
