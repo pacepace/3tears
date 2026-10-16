@@ -144,7 +144,9 @@ def _stop_reason(stops: Sequence[BudgetStop]) -> str:
     for stop in stops:
         if stop.currency == "cost_usd":
             unpriced = (
-                f"{stop.unpriced_results} result(s) spent what could not be priced, with " if stop.unpriced_results else ""
+                f"{stop.unpriced_results} result(s) spent what could not be priced, with "
+                if stop.unpriced_results
+                else ""
             )
             figures = f"{unpriced}${stop.landed_at_stop:.4f} of ${stop.ceiling:.4f} at the stop"
             segments.append(f"its cost cap: {figures}")

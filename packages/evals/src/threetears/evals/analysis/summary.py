@@ -59,7 +59,7 @@ from __future__ import annotations
 import math
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_validator
@@ -178,6 +178,7 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
         raise ValueError("a stop line is written from at least one stop record")
     segments: list[str] = []
     for position, stop in enumerate(stops):
+        show: Callable[[float | None], str]
         if stop.currency == "cost_usd":
             what, show = "its cost cap", dollars_text
         else:
