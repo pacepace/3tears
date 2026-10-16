@@ -6,9 +6,10 @@ module's source; :func:`unbroken_text_in` checks every module under a set of roo
 
 from threetears.enforcement.text_blocks.walkers import (
     FREE_TEXT,
+    FREE_TEXT_WORDS,
     MARKER,
     unbroken_text,
     unbroken_text_in,
 )
 
-__all__ = ["FREE_TEXT", "MARKER", "unbroken_text", "unbroken_text_in"]
+__all__ = ["FREE_TEXT", "FREE_TEXT_WORDS", "MARKER", "unbroken_text", "unbroken_text_in"]
