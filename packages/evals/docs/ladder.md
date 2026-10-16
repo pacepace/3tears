@@ -270,8 +270,8 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
 rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones,
-and still no arm separated: on 30 invoices the corrected interval on that gain reaches just below zero. The guardrail
-is the question the first screen names as unanswered: each arm stated a total once on a noisy invoice that prints
+and still v2 and v1 are not separated: on 30 invoices the corrected interval on that gain reaches just below zero.
+The guardrail is the question the first screen names as unanswered: each arm stated a total once on a noisy invoice that prints
 none, the interval on the difference is ±13 points against a margin of 2, and an undecided guardrail is never read as
 held, so the gate fails and the run exits 4. What would answer it is a narrower interval on that guardrail, and only
 an invoice that prints no amount due can fail it (7 of the 30 do): more of those hard-negative cases. One v2 trial
