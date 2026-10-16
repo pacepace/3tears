@@ -134,7 +134,7 @@ class TestSkillListSummaries:
         coll = FakeSkillsCollection()
         skill_id = _seed(coll, summary=BLANK)
         out = await _list_tool(coll, FakeRegistry()).ainvoke({})
-        assert out.splitlines() == ["Found 1 skills:", f"- [skill:{skill_id}] tide-check (kind=prose) -- "]
+        assert out.splitlines() == ["Found 1 skills:", f"- [skill:{skill_id}] tide-check (kind=prose)"]
 
 
 class TestSkillCreateSummary:
@@ -209,3 +209,8 @@ class TestSkillHistoryUses:
             f"- Oct 9, 2026 at 5:00 AM PDT, invoked: success [conversation:{CONV}]",
             "  why it was invoked:",
         ]
+
+    async def test_blank_outcome_notes_leave_no_separator(self) -> None:
+        tool, skill_id = _history(FakeSkillsCollection(), notes="checked", outcome_notes=BLANK)
+        out = await tool.ainvoke({"skill_id": str(skill_id)})
+        assert out.splitlines()[1] == f"- Oct 9, 2026 at 5:00 AM PDT, invoked: success [conversation:{CONV}]"

@@ -44,9 +44,8 @@ ruff shell-out in shape B, and the non-enforcement package tests.
 - [DECISION: a raising `parse_python_path` beside `parse_python_file` | the direct call sites
   raise, absorb or decode leniently, each on purpose; one raising primitive keeps each site's
   behaviour exact]
-- [ASSUMPTION: the new public names ship in the next minor | `parse_python_path` and
-  `clear_parse_cache` are API growth; whether they ride 0.70.0 (PR 800) or 0.71.0 is the
-  user's call at merge time, and the API-growth gate fails until then]
+- [DECISION: the new public names ship in 0.70.0 | `parse_python_path` and `clear_parse_cache`
+  are API growth; the user chose to merge this branch into PR 800, which carries the 0.70.0 bump]
 - [DECISION: the cache is released by a `pytest_runtest_teardown` hook, not a package-scoped
   fixture | `tests/enforcement` has no `__init__.py`, and pytest 9 holds such a fixture to the end
   of the session]
@@ -69,4 +68,4 @@ Critic mode: cumulative
 
 ## Status
 
-Chunk 01 built and reviewed (final: 0 blocking). Draft PR pending; version bump pending the user's call; integration suite to run before the PR leaves draft.
+Chunk 01 built and reviewed (final: 0 blocking). Merged into PR 800 (0.70.0); PR 801 closes in its favour.

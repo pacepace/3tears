@@ -777,7 +777,8 @@ def _format_skill_summary(entity: AgentSkillEntity) -> str:
     catalog rendering is consistent.
     """
     enabled_marker = "" if entity.enabled else " [disabled]"
-    return f"[skill:{entity.skill_id}] {entity.name}{enabled_marker} -- {one_line(entity.summary)}"
+    summary = one_line(entity.summary or "")
+    return f"[skill:{entity.skill_id}] {entity.name}{enabled_marker}" + (f" -- {summary}" if summary else "")
 
 
 def _skill_tool_lines(entity: AgentSkillEntity, bindable: Collection[str] | None) -> list[str]:
@@ -1359,9 +1360,10 @@ def load_skill_list_tool(
         lines: list[str] = [f"Found {len(combined)} skills:"]
         for entry in combined:
             marker = "" if entry["enabled"] else " [disabled]"
+            summary = one_line(str(entry["summary"] or ""))
             lines.append(
-                f"- [skill:{entry['skill_id']}] {entry['name']}{marker} (kind={entry['kind']}) "
-                f"-- {one_line(str(entry['summary']))}"
+                f"- [skill:{entry['skill_id']}] {entry['name']}{marker} (kind={entry['kind']})"
+                + (f" -- {summary}" if summary else "")
             )
         return "\n".join(lines)
 
@@ -2098,8 +2100,9 @@ def _render_use(use: AgentSkillInvocationEntity, zone: tzinfo | None) -> list[st
     how = "a wake ran it" if use.invocation_source == "wake" else "invoked"
     went = use.outcome or "no outcome reported"
     line = f"- {render_local_time(use.invoked_at, zone)}, {how}: {went}"
-    if use.outcome_notes:
-        line += f" -- {one_line(use.outcome_notes)}"
+    outcome_notes = one_line(use.outcome_notes or "")
+    if outcome_notes:
+        line += f" -- {outcome_notes}"
     line += f" [conversation:{use.conversation_id}]"
     if use.message_id is not None:
         line += f" [message:{use.message_id}]"
