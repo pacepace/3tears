@@ -86,11 +86,10 @@ class StoreConformanceFailure(AssertionError):
 class StoreConformanceCase:
     """One rule of the port, as a check over a store.
 
-    Attributes:
-        name: A stable identifier, for a test id (``"etag.stale_write_is_refused"``).
-        rule: The rule, in one sentence, as the port states it.
-        check: The check. Takes a fresh, empty store; returns, or raises
-            :class:`StoreConformanceFailure`.
+    :ivar name: A stable identifier, for a test id (``"etag.stale_write_is_refused"``).
+    :ivar rule: The rule, in one sentence, as the port states it.
+    :ivar check: The check. Takes a fresh, empty store; returns, or raises
+        :class:`StoreConformanceFailure`.
     """
 
     name: str
@@ -100,12 +99,10 @@ class StoreConformanceCase:
     def run(self, store: DocumentStore) -> None:
         """Run the case against ``store``, which must be fresh and empty.
 
-        Args:
-            store: The adapter under test.
-
-        Raises:
-            StoreConformanceFailure: The store broke the rule; the message names the case, the rule
-                and what was observed. Anything else the store raises propagates unchanged.
+        :param store: The adapter under test.
+        :ptype store: DocumentStore
+        :raises StoreConformanceFailure: The store broke the rule; the message names the case, the rule
+            and what was observed. Anything else the store raises propagates unchanged.
         """
         try:
             self.check(store)

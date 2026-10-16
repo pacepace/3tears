@@ -107,14 +107,12 @@ class WorldEvent(EvalDocumentModel, CoreShapeModel):
     def _shape_follows_kind(self) -> Self:
         """Refuse a record whose fields contradict its kind.
 
-        Returns:
-            The record.
-
-        Raises:
-            ValueError: An ambient record names a dimension, a condition, an event or a world cause, or claims
-                to be armed; a fired record names no dimension, condition or event, or carries what ambient
-                moved; a ``human`` record claims the rig caused it — no fire handle can be bound to a human
-                trigger.
+        :return: The record.
+        :rtype: Self
+        :raises ValueError: An ambient record names a dimension, a condition, an event or a world cause, or claims
+            to be armed; a fired record names no dimension, condition or event, or carries what ambient
+            moved; a ``human`` record claims the rig caused it — no fire handle can be bound to a human
+            trigger.
         """
         if self.kind == "ambient":
             if self.dimension is not None or self.condition is not None or self.event is not None:
@@ -144,13 +142,12 @@ class Firings:
     ``fired_armed("<dimension>")`` reads :attr:`armed`, and is *not established* when
     :attr:`armed_known` is False.
 
-    Attributes:
-        dimensions: Every triggered dimension that fired at least once, whoever caused it.
-        armed: The dimensions on which the event the cell's seed armed fired — a subset of ``dimensions``.
-        armed_known: Whether which firings were armed can be known at all. False for a witnessed cell:
-            no seed armed anything there, so the events record ``armed=False`` because nothing could
-            mark them armed, not because the cell established that none was — and ``fired_armed()``,
-            negated or not, is then not established rather than a verdict.
+    :ivar dimensions: Every triggered dimension that fired at least once, whoever caused it.
+    :ivar armed: The dimensions on which the event the cell's seed armed fired — a subset of ``dimensions``.
+    :ivar armed_known: Whether which firings were armed can be known at all. False for a witnessed cell:
+        no seed armed anything there, so the events record ``armed=False`` because nothing could
+        mark them armed, not because the cell established that none was — and ``fired_armed()``,
+        negated or not, is then not established rather than a verdict.
     """
 
     dimensions: frozenset[str] = frozenset()
@@ -160,9 +157,8 @@ class Firings:
     def __post_init__(self) -> None:
         """Refuse an armed firing that is not a firing, and an armed firing where none can be known.
 
-        Raises:
-            ValueError: ``armed`` names a dimension ``dimensions`` does not, or names any while
-                ``armed_known`` is False.
+        :raises ValueError: ``armed`` names a dimension ``dimensions`` does not, or names any while
+            ``armed_known`` is False.
         """
         if stray := sorted(self.armed - self.dimensions):
             raise ValueError(
@@ -186,14 +182,14 @@ class Firings:
         say ``armed=False`` because nothing could mark them otherwise, so which firings were armed is
         unknowable and ``fired_armed()`` is not established.
 
-        Args:
-            events: The cell's world events, in any order.
-            provenance: The apparatus provenance of the run the cell belongs to
-                (:attr:`~threetears.evals.schema.models.EvalRun.apparatus_provenance`).
-
-        Returns:
-            Every dimension that fired, and those on which an armed event fired — or, for a witnessed
+        :param events: The cell's world events, in any order.
+        :ptype events: Iterable[WorldEvent]
+        :param provenance: The apparatus provenance of the run the cell belongs to
+            (:attr:`~threetears.evals.schema.models.EvalRun.apparatus_provenance`).
+        :ptype provenance: ApparatusProvenance
+        :return: Every dimension that fired, and those on which an armed event fired — or, for a witnessed
             cell, no armed set and ``armed_known=False``.
+        :rtype: Firings
         """
         fired = [event for event in events if event.dimension is not None]
         dimensions = frozenset(event.dimension for event in fired if event.dimension is not None)

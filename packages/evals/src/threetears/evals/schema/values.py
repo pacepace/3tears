@@ -125,22 +125,22 @@ class SweepableValue(CoreShapeModel):
     ) -> SweepableValue:
         """Build a value by content-addressing a JSON-safe structure.
 
-        Args:
-            content: The value's content. Hashed canonically, so key order and whitespace do not
-                move the identity.
-            display: What to show a reader. Required unless ``scale`` is an interval, where it is
-                derived from the number and unit.
-            scale: The axis kind. Defaults to nominal, which is the only honest default for a
-                value the caller said nothing about.
-            keep_raw: Retain ``content`` on the model. Off by default: most callers are
-                snapshotting, and a snapshot that keeps its inputs scales retention with what the
-                candidate produced.
-
-        Returns:
-            The value.
-
-        Raises:
-            ValueError: When ``display`` is absent and the scale cannot derive one.
+        :param content: The value's content. Hashed canonically, so key order and whitespace do not
+            move the identity.
+        :ptype content: Any
+        :param display: What to show a reader. Required unless ``scale`` is an interval, where it is
+            derived from the number and unit.
+        :ptype display: str | None
+        :param scale: The axis kind. Defaults to nominal, which is the only honest default for a
+            value the caller said nothing about.
+        :ptype scale: Scale | None
+        :param keep_raw: Retain ``content`` on the model. Off by default: most callers are
+            snapshotting, and a snapshot that keeps its inputs scales retention with what the
+            candidate produced.
+        :ptype keep_raw: bool
+        :return: The value.
+        :rtype: SweepableValue
+        :raises ValueError: When ``display`` is absent and the scale cannot derive one.
         """
         return cls._build(canonical_digest(content), display=display, scale=scale, raw=content if keep_raw else None)
 
@@ -159,15 +159,16 @@ class SweepableValue(CoreShapeModel):
         the blob. No registry is consulted and none is needed — content-addressing is exactly the
         property that makes a value supplyable by a host whose store the engine cannot see.
 
-        Args:
-            payload: The raw bytes.
-            display: What to show a reader. Defaults to the digest's short prefix, which is a poor
-                label and an honest one — bytes carry no name.
-            scale: The axis kind. Defaults to nominal.
-
-        Returns:
-            The value. ``raw`` is always absent: bytes are the case where retaining the content is
+        :param payload: The raw bytes.
+        :ptype payload: bytes
+        :param display: What to show a reader. Defaults to the digest's short prefix, which is a poor
+            label and an honest one — bytes carry no name.
+        :ptype display: str | None
+        :param scale: The axis kind. Defaults to nominal.
+        :ptype scale: Scale | None
+        :return: The value. ``raw`` is always absent: bytes are the case where retaining the content is
             most likely to be exactly what a snapshot must not do.
+        :rtype: SweepableValue
         """
         digest = bytes_digest(payload)
         return cls._build(digest, display=display or f"sha256:{digest[:12]}", scale=scale, raw=None)
@@ -183,11 +184,10 @@ class SweepableValue(CoreShapeModel):
         what :attr:`not_of_kind` recognises, and a report never names an arm by a lever that does not apply
         to it.
 
-        Args:
-            kind: The kind whose lever this is, as a template's ``candidate_kind`` spells it.
-
-        Returns:
-            The level.
+        :param kind: The kind whose lever this is, as a template's ``candidate_kind`` spells it.
+        :ptype kind: str
+        :return: The level.
+        :rtype: SweepableValue
         """
         opening, closing = _NOT_THIS_KIND_DISPLAY
         return cls.of_bytes(_NOT_THIS_KIND + kind.encode(), display=f"{opening}{kind}{closing}")
@@ -200,8 +200,8 @@ class SweepableValue(CoreShapeModel):
         the hash must be the one :meth:`not_this_kind` mints for it. So a value of a host's own that merely
         reads ``(not a … run)`` is a value like any other, and is shown like one.
 
-        Returns:
-            The kind's name, or ``None``.
+        :return: The kind's name, or ``None``.
+        :rtype: str | None
         """
         opening, closing = _NOT_THIS_KIND_DISPLAY
         if not (self.display.startswith(opening) and self.display.endswith(closing)):
@@ -213,17 +213,17 @@ class SweepableValue(CoreShapeModel):
     def _build(cls, digest: str, *, display: str | None, scale: Scale | None, raw: Any | None) -> SweepableValue:
         """Assemble a value once its digest is known, deriving the display an interval implies.
 
-        Args:
-            digest: The content hash.
-            display: The caller's label, or ``None``.
-            scale: The caller's scale, or ``None`` for nominal.
-            raw: The underlying value to retain, or ``None``.
-
-        Returns:
-            The value.
-
-        Raises:
-            ValueError: When no display was given and the scale cannot derive one.
+        :param digest: The content hash.
+        :ptype digest: str
+        :param display: The caller's label, or ``None``.
+        :ptype display: str | None
+        :param scale: The caller's scale, or ``None`` for nominal.
+        :ptype scale: Scale | None
+        :param raw: The underlying value to retain, or ``None``.
+        :ptype raw: Any | None
+        :return: The value.
+        :rtype: SweepableValue
+        :raises ValueError: When no display was given and the scale cannot derive one.
         """
         resolved_scale: Scale = scale if scale is not None else NominalScale()
         if display is None:
@@ -285,8 +285,8 @@ class ProductionFooting(BaseModel):
     def sentence(self) -> str:
         """The disclosure in words, for a surface that prints a production-replicating cost.
 
-        Returns:
-            One sentence naming what moved and what could not be checked, or saying nothing moved.
+        :return: One sentence naming what moved and what could not be checked, or saying nothing moved.
+        :rtype: str
         """
         if self.moved_nothing:
             return (
@@ -334,9 +334,9 @@ class PooledProductionFooting(BaseModel):
     def sentence(self) -> str:
         """The pooled disclosure in words, grouping runs that ran at one footing.
 
-        Returns:
-            One sentence per footing the pooled runs ran at, naming its runs where they differ, and the runs
+        :return: One sentence per footing the pooled runs ran at, naming its runs where they differ, and the runs
             nobody checked.
+        :rtype: str
         """
         groups: dict[str, tuple[ProductionFooting, list[str]]] = {}
         unread: list[str] = []

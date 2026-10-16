@@ -63,8 +63,8 @@ class JobLease(EvalBaseModel, CoreShapeModel):
     def expires(self) -> datetime:
         """The expiry as an aware datetime.
 
-        Returns:
-            :attr:`expires_at`, parsed.
+        :return: :attr:`expires_at`, parsed.
+        :rtype: datetime
         """
         return datetime.fromisoformat(self.expires_at)
 
@@ -148,15 +148,13 @@ def with_fault(faults: list[str], entry: str) -> list[str]:
     An entry longer than :data:`JOB_FAULT_MAX_CHARS` is cut to it, ending in ``…``; a list already holding
     :data:`JOB_FAULTS_MAX` entries gives its last place to the new one, keeping the earliest.
 
-    Args:
-        faults: The record's faults as stored.
-        entry: The fault to add; blank is refused.
-
-    Returns:
-        The new list; ``faults`` is not changed.
-
-    Raises:
-        ValueError: ``entry`` is blank.
+    :param faults: The record's faults as stored.
+    :ptype faults: list[str]
+    :param entry: The fault to add; blank is refused.
+    :ptype entry: str
+    :return: The new list; ``faults`` is not changed.
+    :rtype: list[str]
+    :raises ValueError: ``entry`` is blank.
     """
     if not entry.strip():
         raise ValueError("a job fault names what went wrong; it cannot be blank")

@@ -71,9 +71,10 @@ class FunctionTool:
     def __init__(self, name: str, function: Tool) -> None:
         """Bind the function to the name the candidate calls it by.
 
-        Args:
-            name: The tool's name, which is also its one action and the ``tool`` of its recordings.
-            function: The function, called with the candidate's keyword arguments.
+        :param name: The tool's name, which is also its one action and the ``tool`` of its recordings.
+        :ptype name: str
+        :param function: The function, called with the candidate's keyword arguments.
+        :ptype function: Tool
         """
         self._name = name
         self._function = function
@@ -90,9 +91,8 @@ class FunctionTool:
     async def act(self, action: str, parameters: dict[str, Any]) -> ToolAnswer:
         """Call the function with ``parameters`` and return its answer.
 
-        Raises:
-            ApparatusError: The function answered something JSON cannot hold, which no cassette could
-                record or replay: the rig's fault, never the candidate's.
+        :raises ApparatusError: The function answered something JSON cannot hold, which no cassette could
+            record or replay: the rig's fault, never the candidate's.
         """
         answered = self._function(**parameters)
         if inspect.isawaitable(answered):
@@ -117,9 +117,8 @@ class ToolRecording:
     every call made live and its first answer kept; ``RECORD=1`` records it afresh. Which it does is decided when a
     run starts (:meth:`begin`), and the run's result says which.
 
-    Attributes:
-        path: The file.
-        mode: ``"record"`` or ``"replay"``, as the last :meth:`begin` decided.
+    :ivar path: The file.
+    :ivar mode: ``"record"`` or ``"replay"``, as the last :meth:`begin` decided.
     """
 
     def __init__(self, path: Path) -> None:
@@ -132,8 +131,7 @@ class ToolRecording:
     def begin(self) -> None:
         """Decide to record or replay, and read what the file holds.
 
-        Raises:
-            ToolRecordingMiss: A line of the file is not one this recorder writes.
+        :raises ToolRecordingMiss: A line of the file is not one this recorder writes.
         """
         rerecord = os.environ.get(RECORD_ENV) == "1"
         self.mode = "record" if rerecord or not self.path.is_file() else "replay"
@@ -155,8 +153,7 @@ class ToolRecording:
     def served(self, key: str, occurrence: int, tool: str, params: Mapping[str, Any]) -> Any:
         """The answer recorded for one ask.
 
-        Raises:
-            ToolRecordingMiss: The recording holds none: the ask changed since it was recorded.
+        :raises ToolRecordingMiss: The recording holds none: the ask changed since it was recorded.
         """
         try:
             return self._answers[(key, occurrence)]
@@ -198,9 +195,10 @@ class CellTools:
     def __init__(self, tools: Mapping[str, Tool], *, recording: ToolRecording | None = None) -> None:
         """Adapt each declared function to a tool.
 
-        Args:
-            tools: The declared tools, by name.
-            recording: Where their answers are recorded or replayed from; ``None`` calls them live.
+        :param tools: The declared tools, by name.
+        :ptype tools: Mapping[str, Tool]
+        :param recording: Where their answers are recorded or replayed from; ``None`` calls them live.
+        :ptype recording: ToolRecording | None
         """
         self._tools: dict[str, ToolLike] = {name: FunctionTool(name, function) for name, function in tools.items()}
         self._fault: ApparatusError | None = None
@@ -261,9 +259,8 @@ class CellTools:
     def raise_any_fault(self) -> None:
         """Re-raise the first rig fault a tool call met, whatever the candidate did with it.
 
-        Raises:
-            ApparatusError: A call this cell made met one — a replay miss, an exhausted or corrupt
-                recording, an answer no cassette could record.
+        :raises ApparatusError: A call this cell made met one — a replay miss, an exhausted or corrupt
+            recording, an answer no cassette could record.
         """
         if self._fault is not None:
             raise self._fault

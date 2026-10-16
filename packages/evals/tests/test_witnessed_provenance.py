@@ -51,11 +51,10 @@ def _with_a_commissioned_twin(
     The twin carries the narrow batch's every value and every observation — the same variant under
     the same recorded rig — and differs only in having been commissioned.
 
-    Args:
-        held_fixed: What the campaign declares held fixed; ``None`` keeps the toy host's own.
-
-    Returns:
-        The campaign, its runs (narrow, wide, twin) and each run's results.
+    :param held_fixed: What the campaign declares held fixed; ``None`` keeps the toy host's own.
+    :ptype held_fixed: ControlDeclaration | None
+    :return: The campaign, its runs (narrow, wide, twin) and each run's results.
+    :rtype: tuple[EvalCampaign, list[EvalRun], dict[str, list[EvalResult]]]
     """
     campaign, storage = toyhost_campaign()
     narrow_id, wide_id = campaign.run_ids

@@ -77,9 +77,10 @@ TOLERANCE_Z = 4.0
 def monte_carlo_se(rate: float, replicates: int) -> float:
     """The standard error of a simulated rate whose true value is ``rate``: ``sqrt(rate (1 - rate) / replicates)``.
 
-    Args:
-        rate: The rate the simulation would converge to — the nominal, when checking against it.
-        replicates: Independent replicates behind the estimate.
+    :param rate: The rate the simulation would converge to — the nominal, when checking against it.
+    :ptype rate: float
+    :param replicates: Independent replicates behind the estimate.
+    :ptype replicates: int
     """
     return math.sqrt(rate * (1.0 - rate) / replicates)
 
@@ -113,11 +114,10 @@ class ClusteredDesign:
     one observation around its case's level, so the intra-case correlation of two repeats is
     ``between² / (between² + repeat²)``.
 
-    Attributes:
-        n_cases: Cases, at least one.
-        repeats: Repeats per case (the engine's ``k``), at least one.
-        between_case_sd: Standard deviation of case levels.
-        repeat_sd: Standard deviation of one observation around its case's level.
+    :ivar n_cases: Cases, at least one.
+    :ivar repeats: Repeats per case (the engine's ``k``), at least one.
+    :ivar between_case_sd: Standard deviation of case levels.
+    :ivar repeat_sd: Standard deviation of one observation around its case's level.
     """
 
     n_cases: int
@@ -129,8 +129,8 @@ class ClusteredDesign:
 def draw_clustered(rng: random.Random, design: ClusteredDesign, *, mean: float = 0.0) -> list[list[float]]:
     """One arm's normal observations, grouped by case. Truth: every observation's expectation is ``mean``.
 
-    Returns:
-        ``n_cases`` lists of ``repeats`` observations each.
+    :return: ``n_cases`` lists of ``repeats`` observations each.
+    :rtype: list[list[float]]
     """
     observations = []
     for _ in range(design.n_cases):
@@ -150,8 +150,8 @@ def draw_paired_arms(
     difference of case means is normal with mean ``effect`` and variance
     ``2 between² (1 - correlation) + 2 repeat² / repeats``.
 
-    Returns:
-        ``(control, contrast)``, each ``n_cases`` lists of ``repeats`` observations, case-aligned.
+    :return: ``(control, contrast)``, each ``n_cases`` lists of ``repeats`` observations, case-aligned.
+    :rtype: tuple[list[list[float]], list[list[float]]]
     """
     shared_weight = math.sqrt(correlation)
     own_weight = math.sqrt(1.0 - correlation)
@@ -187,8 +187,8 @@ def draw_binary_paired_arms(
     cases are hard for every arm. Repeats are independent given the case. Truth: with ``effect=0`` every
     case has the same pass probability on both arms, so no difference exists to find.
 
-    Returns:
-        ``(control, contrast)``, each ``n_cases`` lists of ``repeats`` 0.0/1.0 observations.
+    :return: ``(control, contrast)``, each ``n_cases`` lists of ``repeats`` 0.0/1.0 observations.
+    :rtype: tuple[list[list[float]], list[list[float]]]
     """
     logit = math.log(base_rate / (1.0 - base_rate))
     control, contrast = [], []
@@ -224,10 +224,10 @@ def draw_confusion(
     each label receives ``(1 - accuracy) / (L - 1)`` of each other label's cases, which sums to its own
     missed share).
 
-    Returns:
-        One ``(confusion_cell value, test case id)`` per observation, the shape
+    :return: One ``(confusion_cell value, test case id)`` per observation, the shape
         :func:`~threetears.evals.analysis.confusion.label_statistics` reads: the case is what lets its
         intervals count cases rather than repeats.
+    :rtype: list[tuple[str, str]]
     """
     if intra_case_correlation > 0.0:
         concentration = 1.0 / intra_case_correlation - 1.0
@@ -260,8 +260,8 @@ def draw_rater_pairs(
     category off the scale — because the observed disagreement is exactly ``1 - agreement`` times the
     disagreement independent raters with these marginals would show, and kappa is one minus that ratio.
 
-    Returns:
-        ``n`` ``(first, second)`` pairs.
+    :return: ``n`` ``(first, second)`` pairs.
+    :rtype: list[tuple[int, int]]
     """
     pairs = []
     for _ in range(n):
@@ -282,9 +282,10 @@ def student_t_two_sided_mass(t: float, df: int) -> float:
     Abramowitz & Stegun 26.7.3 (odd df) and 26.7.4 (even df), with ``θ = atan(t / sqrt(df))``. Exact for
     integer df and sharing nothing with the engine's incomplete-beta route.
 
-    Args:
-        t: A non-negative statistic.
-        df: Degrees of freedom, at least 1.
+    :param t: A non-negative statistic.
+    :ptype t: float
+    :param df: Degrees of freedom, at least 1.
+    :ptype df: int
     """
     theta = math.atan(abs(t) / math.sqrt(df))
     cosine, sine = math.cos(theta), math.sin(theta)
@@ -362,12 +363,11 @@ def hedges_correction(df: int) -> float:
 class FamilyVerdict:
     """One contrast-against-control comparison as the family rule decides it.
 
-    Attributes:
-        p_raw: The separation test's two-sided p, or None when it ran no test.
-        p_adjusted: The Holm-adjusted p over the family, or None when there was no raw p.
-        verdict: ``untested``, ``not_separated``, ``equivalent``, ``improved`` or ``regressed``.
-        interval: The interval on the difference at the family's level, or None when no test ran.
-        equivalence_p_adjusted: The adjusted TOST p, or None when no equivalence test ran.
+    :ivar p_raw: The separation test's two-sided p, or None when it ran no test.
+    :ivar p_adjusted: The Holm-adjusted p over the family, or None when there was no raw p.
+    :ivar verdict: ``untested``, ``not_separated``, ``equivalent``, ``improved`` or ``regressed``.
+    :ivar interval: The interval on the difference at the family's level, or None when no test ran.
+    :ivar equivalence_p_adjusted: The adjusted TOST p, or None when no equivalence test ran.
     """
 
     p_raw: float | None
@@ -389,10 +389,10 @@ def family_verdicts(
     tested paired over the cases both sides ran when they share at least two, else unpaired over each
     side's values, its p :func:`~threetears.evals.analysis.stats.separation_p`'s — the t-test's where the
     values have spread, the bounded test's on the reading's declared range (``value_ranges``) where they have
-    none, None where no test can decide or the reading declares no range — as the bundle's is. A paired comparison with a declared margin (``margins``, aligned with ``comparisons``) also
-    runs the paired TOST against it, on the reading's declared range where ``value_ranges`` gives one
-    (:func:`~threetears.evals.analysis.stats.paired_equivalence`). Every separation p and TOST p is
-    Holm-adjusted together, the multiplier capped at the separation count
+    none, None where no test can decide or the reading declares no range — as the bundle's is. A paired comparison with
+    a declared margin (``margins``, aligned with ``comparisons``) also runs the paired TOST against it, on the reading's
+    declared range where ``value_ranges`` gives one (:func:`~threetears.evals.analysis.stats.paired_equivalence`). Every
+    separation p and TOST p is Holm-adjusted together, the multiplier capped at the separation count
     (:func:`~threetears.evals.analysis.stats.holm_adjust`); a comparison separates when its adjusted p is
     below α, its delta is nonzero and its interval, where one exists, excludes zero
     (:func:`~threetears.evals.analysis.stats.interval_permits_separation`), in the direction its sign and
@@ -404,8 +404,8 @@ def family_verdicts(
     time. ``test_simulated_multiple_comparisons`` pins the bundle to it: on seeded campaigns, every
     comparison the bundle publishes carries exactly this p, adjusted p, interval and verdict.
 
-    Returns:
-        One verdict per comparison, in order.
+    :return: One verdict per comparison, in order.
+    :rtype: list[FamilyVerdict]
     """
     tested: list[
         tuple[float | None, float | None, float | None, list[float], list[float], bool, tuple[float, float] | None]

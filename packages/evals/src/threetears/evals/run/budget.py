@@ -56,17 +56,16 @@ class CapBreach:
     bare assertion "the cap was exceeded", which names neither the limit an
     operator set nor the spend that crossed it.
 
-    Attributes:
-        max_cost_usd: The ceiling that bound the run.
-        accumulated_usd: This run's PRICED spend at the moment the cap tripped — the running cells' spend
-            and held reservations included, and a refused call's ceiling (``refused_call_usd``).
-        unpriced_results: Results whose spend could not be priced, counting a running cell's unpriced
-            pending spend as one. Non-zero is a breach on its own: the cap cannot say the run is inside
-            a ceiling it cannot count against.
-        refused_call_usd: The ceiling of the priced call the cap refused to admit, when a cell's reservation
-            is what reached it (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`) — the call
-            was never made, so ``accumulated_usd``, which counts it, is what the run WOULD have spent with it.
-            ``None`` when the spend itself crossed the cap.
+    :ivar max_cost_usd: The ceiling that bound the run.
+    :ivar accumulated_usd: This run's PRICED spend at the moment the cap tripped — the running cells' spend
+        and held reservations included, and a refused call's ceiling (``refused_call_usd``).
+    :ivar unpriced_results: Results whose spend could not be priced, counting a running cell's unpriced
+        pending spend as one. Non-zero is a breach on its own: the cap cannot say the run is inside
+        a ceiling it cannot count against.
+    :ivar refused_call_usd: The ceiling of the priced call the cap refused to admit, when a cell's reservation
+        is what reached it (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`) — the call
+        was never made, so ``accumulated_usd``, which counts it, is what the run WOULD have spent with it.
+        ``None`` when the spend itself crossed the cap.
     """
 
     max_cost_usd: float
@@ -94,10 +93,12 @@ class BudgetStoppedError(Exception):
         which spend is one an operator has to go and reconstruct — which is the
         state the message used to leave them in.
 
-        Args:
-            completed: Number of results delivered (and persisted) before the stop.
-            total: Total results the run's matrix would have produced.
-            breach: The ceiling and the accumulated spend that crossed it.
+        :param completed: Number of results delivered (and persisted) before the stop.
+        :ptype completed: int
+        :param total: Total results the run's matrix would have produced.
+        :ptype total: int
+        :param breach: The ceiling and the accumulated spend that crossed it.
+        :ptype breach: CapBreach
         """
         self.completed = completed
         self.total = total
@@ -136,26 +137,29 @@ class AccountExhaustedError(Exception):
     ``error_details``, unlike the two designed stops: nobody configured the account to run dry,
     and an operator has to act on it before the next launch can measure anything.
 
-    Attributes:
-        completed: Results delivered (and persisted) before the stop, the refused cell included.
-        total: Results the run's matrix would have produced.
-        accumulated_usd: What those delivered results cost, summed from what the loop recorded
-            — carried out so the stop reports the spend the run had already incurred. The priced
-            results' spend only.
-        unpriced_results: Delivered results whose spend could not be priced, and so is not in
-            ``accumulated_usd``.
-        detail: The refused cell's own apparatus message, naming the account fault's kind.
+    :ivar completed: Results delivered (and persisted) before the stop, the refused cell included.
+    :ivar total: Results the run's matrix would have produced.
+    :ivar accumulated_usd: What those delivered results cost, summed from what the loop recorded
+        — carried out so the stop reports the spend the run had already incurred. The priced
+        results' spend only.
+    :ivar unpriced_results: Delivered results whose spend could not be priced, and so is not in
+        ``accumulated_usd``.
+    :ivar detail: The refused cell's own apparatus message, naming the account fault's kind.
     """
 
     def __init__(self, completed: int, total: int, *, accumulated_usd: float, unpriced_results: int, detail: str):
         """Record how far the run got, what it had spent, and the refusal that stopped it.
 
-        Args:
-            completed: Results delivered (and persisted) before the stop.
-            total: Results the run's matrix would have produced.
-            accumulated_usd: The delivered priced results' summed cost.
-            unpriced_results: Delivered results whose spend could not be priced.
-            detail: The refused cell's apparatus message.
+        :param completed: Results delivered (and persisted) before the stop.
+        :ptype completed: int
+        :param total: Results the run's matrix would have produced.
+        :ptype total: int
+        :param accumulated_usd: The delivered priced results' summed cost.
+        :ptype accumulated_usd: float
+        :param unpriced_results: Delivered results whose spend could not be priced.
+        :ptype unpriced_results: int
+        :param detail: The refused cell's apparatus message.
+        :ptype detail: str
         """
         self.completed = completed
         self.total = total
@@ -197,16 +201,18 @@ class EvalRunCostCap:
     def __init__(self, run_id: str, max_cost_usd: float, *, enabled: bool):
         """Bind the cap to a run id and its ceiling.
 
-        Args:
-            run_id: The eval run this cap bounds — surfaced in the missing-cost
-                WARNING so a data gap is attributable to its run.
-            max_cost_usd: The per-run ceiling; the run stops once accumulated
-                spend exceeds it.
-            enabled: Whether the cap enforces. ``False`` makes :attr:`exceeded`
-                always ``False`` (uncapped). Required rather than defaulted:
-                only the caller knows whether its host has eval enforcement
-                switched on, and a cap that silently stops enforcing is worse
-                than one that fails to construct.
+        :param run_id: The eval run this cap bounds — surfaced in the missing-cost
+            WARNING so a data gap is attributable to its run.
+        :ptype run_id: str
+        :param max_cost_usd: The per-run ceiling; the run stops once accumulated
+            spend exceeds it.
+        :ptype max_cost_usd: float
+        :param enabled: Whether the cap enforces. ``False`` makes :attr:`exceeded`
+            always ``False`` (uncapped). Required rather than defaulted:
+            only the caller knows whether its host has eval enforcement
+            switched on, and a cap that silently stops enforcing is worse
+            than one that fails to construct.
+        :ptype enabled: bool
         """
         self._run_id = run_id
         self._max_cost_usd = max_cost_usd
@@ -230,15 +236,17 @@ class EvalRunCostCap:
         switched enforcement off. Which resolver each wants is the engine's knowledge,
         so the engine keeps it.
 
-        Args:
-            run_id: The eval run this cap bounds.
-            max_cost_usd: Optional per-run override (validated ``> 0`` at the service
-                boundary). ``None`` inherits the default below.
-            configured_max_cost_usd: The default ceiling, as a value.
-            enforcement_enabled: Whether the caller enforces eval ceilings at all.
-
-        Returns:
-            A cap bound to this run's ceiling, enforcing exactly when the caller said to.
+        :param run_id: The eval run this cap bounds.
+        :ptype run_id: str
+        :param max_cost_usd: Optional per-run override (validated ``> 0`` at the service
+            boundary). ``None`` inherits the default below.
+        :ptype max_cost_usd: float | None
+        :param configured_max_cost_usd: The default ceiling, as a value.
+        :ptype configured_max_cost_usd: float
+        :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
+        :ptype enforcement_enabled: bool
+        :return: A cap bound to this run's ceiling, enforcing exactly when the caller said to.
+        :rtype: EvalRunCostCap
         """
         return cls(
             run_id,
@@ -258,16 +266,17 @@ class EvalRunCostCap:
         through :meth:`for_run` from the unfiltered ceiling plus a separate ``enabled`` — so
         an unenforced run stores no ceiling while still carrying a cap object.
 
-        Args:
-            max_cost_usd: Optional per-run override, as passed to
-                :meth:`for_run`.
-            configured_max_cost_usd: The default ceiling, as a value.
-            enforcement_enabled: Whether the caller enforces eval ceilings at
-                all.
-
-        Returns:
-            The effective ceiling, or ``None`` when cost enforcement is
+        :param max_cost_usd: Optional per-run override, as passed to
+            :meth:`for_run`.
+        :ptype max_cost_usd: float | None
+        :param configured_max_cost_usd: The default ceiling, as a value.
+        :ptype configured_max_cost_usd: float
+        :param enforcement_enabled: Whether the caller enforces eval ceilings at
+            all.
+        :ptype enforcement_enabled: bool
+        :return: The effective ceiling, or ``None`` when cost enforcement is
             disabled and the run is therefore uncapped.
+        :rtype: float | None
         """
         return ceilings.resolve_effective_ceiling(
             max_cost_usd, configured=configured_max_cost_usd, enforcement_enabled=enforcement_enabled
@@ -283,15 +292,15 @@ class EvalRunCostCap:
         :data:`~threetears.evals.schema.models.CostCapOrigin` is produced — so a change to that
         vocabulary cannot reach the cost cap and miss the metered-call ledger.
 
-        Args:
-            max_cost_usd: Optional per-run override, as passed to :meth:`for_run`.
-            enforcement_enabled: Whether the caller enforces eval ceilings at all.
-
-        Returns:
-            A :data:`~threetears.evals.schema.models.CostCapOrigin` value: ``"uncapped"`` when
+        :param max_cost_usd: Optional per-run override, as passed to :meth:`for_run`.
+        :ptype max_cost_usd: float | None
+        :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
+        :ptype enforcement_enabled: bool
+        :return: A :data:`~threetears.evals.schema.models.CostCapOrigin` value: ``"uncapped"`` when
             enforcement is off (no ceiling bound the run, whatever the cascade would
             have resolved), else ``"chosen"`` for a launch-supplied ceiling and
             ``"inherited"`` for the configured default.
+        :rtype: KnownCostCapOrigin
         """
         return ceilings.resolve_ceiling_origin(max_cost_usd, enforcement_enabled=enforcement_enabled)
 
@@ -329,14 +338,13 @@ class EvalRunCostCap:
         raised and the cap is the only thing that knows the ceiling and the spend — a ``False`` there
         reaches the operator as an unattributed assertion.
 
-        Args:
-            pending_usd: Spend the running cells have made or reserved that is not yet recorded. ``None``
-                is pending spend that could not be priced, which breaches an enforcing cap as an unpriced
-                result does.
-
-        Returns:
-            ``None`` while the run is within its cap counting that spend (including when enforcement
+        :param pending_usd: Spend the running cells have made or reserved that is not yet recorded. ``None``
+            is pending spend that could not be priced, which breaches an enforcing cap as an unpriced
+            result does.
+        :ptype pending_usd: float | None
+        :return: ``None`` while the run is within its cap counting that spend (including when enforcement
             is disabled, which is uncapped), or the :class:`CapBreach` that stops it.
+        :rtype: CapBreach | None
         """
         if not self._enabled:
             return None
@@ -353,8 +361,8 @@ class EvalRunCostCap:
         trips the cap on the next check — and logged at WARNING with the run id. Pure in-memory
         arithmetic; no budget-layer or database call, so there is no fail-open surface.
 
-        Args:
-            cost_usd: The result's ``cost_usd``, ``None`` when its spend could not be priced.
+        :param cost_usd: The result's ``cost_usd``, ``None`` when its spend could not be priced.
+        :ptype cost_usd: float | None
         """
         if cost_usd is None:
             self._unpriced_results += 1

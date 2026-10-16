@@ -35,11 +35,10 @@ __all__ = [
 def page_violations(report: Report) -> list[StyleViolation]:
     """Every style rule a report's page breaks outside the data it quotes, its arms' names read as names.
 
-    Args:
-        report: The report.
-
-    Returns:
-        The violations; empty for a page that passes.
+    :param report: The report.
+    :ptype report: Report
+    :return: The violations; empty for a page that passes.
+    :rtype: list[StyleViolation]
     """
     names = {
         str(row["arm"]).removeprefix("▸ ")

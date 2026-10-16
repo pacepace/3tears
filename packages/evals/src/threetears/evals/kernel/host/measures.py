@@ -58,14 +58,13 @@ class MeasureRegistry(HostAttributed):
     def __init__(self, descriptors: Iterable[MetricDescriptor], *, families: Iterable[MeasureFamily] = ()) -> None:
         """Validate and store one host's measure catalogue.
 
-        Args:
-            descriptors: The measures this host can see.
-            families: The host's own measure families, beyond the engine's
-                (:data:`~threetears.evals.kernel.metrics.ENGINE_FAMILIES`). A descriptor may name one of
-                these or an engine family, and nothing else.
-
-        Raises:
-            MeasureRegistrationError: The catalogue is unsound. Every defect is reported at once.
+        :param descriptors: The measures this host can see.
+        :ptype descriptors: Iterable[MetricDescriptor]
+        :param families: The host's own measure families, beyond the engine's
+            (:data:`~threetears.evals.kernel.metrics.ENGINE_FAMILIES`). A descriptor may name one of
+            these or an engine family, and nothing else.
+        :ptype families: Iterable[MeasureFamily]
+        :raises MeasureRegistrationError: The catalogue is unsound. Every defect is reported at once.
         """
         self._init_attribution()
         self._descriptors: tuple[MetricDescriptor, ...] = tuple(descriptors)
@@ -152,12 +151,12 @@ class MeasureRegistry(HostAttributed):
     ) -> MeasureRegistry:
         """Build a registry from an existing ``{name: descriptor}`` catalogue.
 
-        Args:
-            catalog: The descriptors, keyed by name.
-            families: The host's own measure families.
-
-        Returns:
-            A validated registry over the catalogue's values.
+        :param catalog: The descriptors, keyed by name.
+        :ptype catalog: Mapping[str, MetricDescriptor]
+        :param families: The host's own measure families.
+        :ptype families: Iterable[MeasureFamily]
+        :return: A validated registry over the catalogue's values.
+        :rtype: MeasureRegistry
         """
         return cls(catalog.values(), families=families)
 
@@ -190,14 +189,11 @@ class MeasureRegistry(HostAttributed):
         cost to cost), because every host shares them and a decision surface with no cost or
         latency column is what leaving them unassigned produced.
 
-        Args:
-            name: A declared measure name.
-
-        Returns:
-            The declared axis, or None when the measure serves none.
-
-        Raises:
-            KeyError: This host declared no such measure.
+        :param name: A declared measure name.
+        :ptype name: str
+        :return: The declared axis, or None when the measure serves none.
+        :rtype: MeritAxis | None
+        :raises KeyError: This host declared no such measure.
         """
         return self._require(name).merit_axis
 

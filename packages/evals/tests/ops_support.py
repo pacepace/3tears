@@ -55,9 +55,10 @@ class MemoWriter(FixturedClient):
     def __init__(self, host: EvalHost, campaign: EvalCampaign) -> None:
         """Bind the writer to the campaign it analyses.
 
-        Args:
-            host: Where the campaign's runs are read.
-            campaign: The campaign the generation is over.
+        :param host: Where the campaign's runs are read.
+        :ptype host: EvalHost
+        :param campaign: The campaign the generation is over.
+        :ptype campaign: EvalCampaign
         """
         super().__init__("")
         self._host = host
@@ -109,18 +110,24 @@ def ops_fixture(
 ) -> OpsFixture:
     """The toy host as an operations host: its template saved, its corpus campaign stored.
 
-    Args:
-        generation: Whether the host generates analyses (its :class:`AnalysisGeneration`).
-        gate: Holds every generation open until set, for a test that needs one running.
-        ceiling_usd: What each generator call is priced at, at most; ``None`` for a writer that cannot price.
-        first_output: What each writer's first call returns in place of the memo, when set.
-        settings: The launch settings — the run and out-of-run caps, and whether they are enforced.
-        profile: The host's vocabulary; ``None`` is the toy host's own.
-        store: The document store under the host's storage; ``None`` is a fresh in-memory one.
-        job_lease_s: How long the host's job leases last unless renewed.
-
-    Returns:
-        The fixture.
+    :param generation: Whether the host generates analyses (its :class:`AnalysisGeneration`).
+    :ptype generation: bool
+    :param gate: Holds every generation open until set, for a test that needs one running.
+    :ptype gate: asyncio.Event | None
+    :param ceiling_usd: What each generator call is priced at, at most; ``None`` for a writer that cannot price.
+    :ptype ceiling_usd: float | None
+    :param first_output: What each writer's first call returns in place of the memo, when set.
+    :ptype first_output: str | None
+    :param settings: The launch settings — the run and out-of-run caps, and whether they are enforced.
+    :ptype settings: LaunchSettings
+    :param profile: The host's vocabulary; ``None`` is the toy host's own.
+    :ptype profile: HostProfile | None
+    :param store: The document store under the host's storage; ``None`` is a fresh in-memory one.
+    :ptype store: DocumentStore | None
+    :param job_lease_s: How long the host's job leases last unless renewed.
+    :ptype job_lease_s: float
+    :return: The fixture.
+    :rtype: OpsFixture
     """
     storage = EvalStorage(store if store is not None else InMemoryDocumentStore())
     storage.save_template(toyhost_template())

@@ -122,11 +122,10 @@ def _unknown_history_metric(metric: str) -> HistoryError:
     single per-run score to plot — and a message that only listed the three
     alternatives left the caller to infer that, which reads as "not implemented yet".
 
-    Args:
-        metric: The measure the caller asked to series.
-
-    Returns:
-        The refusal, ready to raise.
+    :param metric: The measure the caller asked to series.
+    :ptype metric: str
+    :return: The refusal, ready to raise.
+    :rtype: HistoryError
     """
     expected = f"expected one of {_metric_vocabulary(HISTORY_METRICS)}"
     resolved = resolve_measure_name(metric)
@@ -176,12 +175,11 @@ def _attribution_withheld(descriptor: MetricDescriptor) -> bool:
     outside what this predicate refuses. It says only that a scenario-bound label may
     not be attributed.
 
-    Args:
-        descriptor: The measure the series reports — the AGGREGATE descriptor, since
-            that is what a point holds.
-
-    Returns:
-        Whether a verdict on this measure must decline to attribute the move.
+    :param descriptor: The measure the series reports — the AGGREGATE descriptor, since
+        that is what a point holds.
+    :ptype descriptor: MetricDescriptor
+    :return: Whether a verdict on this measure must decline to attribute the move.
+    :rtype: bool
     """
     return descriptor.transferability_class == "scenario_bound"
 
@@ -193,11 +191,10 @@ def _attribution_disclosure(descriptor: MetricDescriptor) -> str | None:
     later renderer say the same thing — two copies of one caveat drift, which is why
     :func:`_unknown_history_metric` is shared for its refusal.
 
-    Args:
-        descriptor: The aggregate descriptor the series reports.
-
-    Returns:
-        The sentence, or ``None`` when the measure's verdicts carry no such limit.
+    :param descriptor: The aggregate descriptor the series reports.
+    :ptype descriptor: MetricDescriptor
+    :return: The sentence, or ``None`` when the measure's verdicts carry no such limit.
+    :rtype: str | None
     """
     if not _attribution_withheld(descriptor):
         return None
@@ -454,17 +451,14 @@ class HistoryResult(EvalBaseModel):
 def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     """Pick the per-result value extractor for a history measure.
 
-    Args:
-        metric: A measure in :data:`HISTORY_METRICS`.
-
-    Returns:
-        A callable reading the measure off one result, ``None`` when this result
+    :param metric: A measure in :data:`HISTORY_METRICS`.
+    :ptype metric: str
+    :return: A callable reading the measure off one result, ``None`` when this result
         did not carry it — a null that the aggregation drops rather than counts as
         zero, so an unmeasured latency never reads as instant.
-
-    Raises:
-        HistoryError: The metric is not one this surface can series. Unreachable
-            when :func:`compute_history` validated first; kept as the honest total answer.
+    :rtype: Callable[[EvalResult], float | None]
+    :raises HistoryError: The metric is not one this surface can series. Unreachable
+        when :func:`compute_history` validated first; kept as the honest total answer.
     """
     if metric == METRIC_COMPOSITE:
         return result_composite
@@ -495,12 +489,11 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
         def dual_axis_value(result: EvalResult) -> float | None:
             """Read one dual-score axis off a result, or ``None`` where it is not a measurement.
 
-            Args:
-                result: The observation to read.
-
-            Returns:
-                The raw 1-5 score, or ``None`` when the axis was not judged, was
+            :param result: The observation to read.
+            :ptype result: EvalResult
+            :return: The raw 1-5 score, or ``None`` when the axis was not judged, was
                 mis-stamped, or the cell was an apparatus failure.
+            :rtype: float | None
             """
             # Named attributes rather than a computed one: this pair is read the same way
             # in `project_score_records`, and a `getattr` by string puts a rename of either
@@ -548,15 +541,12 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
     (``summary_population``, ``"scored"`` when undeclared, through the bundle's own membership rule), so a
     cell the harness faulted is never in it. A ``bool`` counts as 1 or 0.
 
-    Args:
-        descriptor: The host's descriptor of the measure.
-
-    Returns:
-        The per-result reader, ``None`` where the result carries no number for the measure.
-
-    Raises:
-        HistoryError: The measure is not numeric, or declares no direction — a series could not say which
-            way a step is a decline.
+    :param descriptor: The host's descriptor of the measure.
+    :ptype descriptor: MetricDescriptor
+    :return: The per-result reader, ``None`` where the result carries no number for the measure.
+    :rtype: Callable[[EvalResult], float | None]
+    :raises HistoryError: The measure is not numeric, or declares no direction — a series could not say which
+        way a step is a decline.
     """
     from threetears.evals.analysis.bundle.measures import in_population
     from threetears.evals.kernel.metrics import summary_population
@@ -592,13 +582,13 @@ def _per_case_means(
     composite summary count. Observations with no value for the measure are
     dropped, so a case counts only where it was actually measured.
 
-    Args:
-        results: One contestant's results within one run.
-        value_of: The measure extractor from :func:`_history_value_of`.
-
-    Returns:
-        ``(per_case_mean, n_observations)`` — the per-case means keyed by
+    :param results: One contestant's results within one run.
+    :ptype results: list[EvalResult]
+    :param value_of: The measure extractor from :func:`_history_value_of`.
+    :ptype value_of: Callable[[EvalResult], float | None]
+    :return: ``(per_case_mean, n_observations)`` — the per-case means keyed by
         ``test_case_id``, and how many observations carried a value.
+    :rtype: tuple[dict[str, float], int]
     """
     by_case: dict[str, list[float]] = {}
     for result in results:
@@ -620,12 +610,11 @@ def _suite_epoch_key(run: EvalRun) -> tuple[str, tuple[str, ...]]:
     adjacent runs is a suite-version boundary: an aggregate step across it is the
     denominator changing, not necessarily the contestant regressing.
 
-    Args:
-        run: The run whose suite identity to key.
-
-    Returns:
-        ``(template_id, sorted test_case_ids)`` — the empty string stands in for an
+    :param run: The run whose suite identity to key.
+    :ptype run: EvalRun
+    :return: ``(template_id, sorted test_case_ids)`` — the empty string stands in for an
         ad-hoc run's absent template so ad-hoc runs still key stably.
+    :rtype: tuple[str, tuple[str, ...]]
     """
     return (run.template_id or "", tuple(sorted(run.test_case_ids)))
 
@@ -636,9 +625,10 @@ def _label_epochs_by_case_set(points: list[SeriesPoint], runs: Mapping[str, Eval
     An epoch mixing runs launched against a set with runs launched without one — or against two versions
     holding identical ids — keeps no label: the name would describe only some of its points.
 
-    Args:
-        points: One series' points, in order, epochs already numbered.
-        runs: The series' runs by id.
+    :param points: One series' points, in order, epochs already numbered.
+    :ptype points: list[SeriesPoint]
+    :param runs: The series' runs by id.
+    :ptype runs: Mapping[str, EvalRun]
     """
     by_epoch: dict[int, set[CaseSetRef | None]] = {}
     for point in points:
@@ -696,38 +686,43 @@ def compute_history(
     regression verdict against its neighbour, computed over a denominator the two do
     not share. The predicate is the completeness record, never the status.
 
-    Args:
-        runs: The runs supplying subject identity, suite set, and timestamps.
-        results: The observations to series.
-        metric: A measure in :data:`HISTORY_METRICS`, or the registry name of its
-            aggregate as ``list_metrics`` publishes it (``mean_composite`` for
-            ``composite``, and so on through
-            :data:`_AGGREGATE_OF_OBSERVATION`) — see :func:`resolve_measure_name` — or a
-            numeric, directional measure the host declares (a quick-path scorer's name),
-            read off each result's ``host_measures``. Defaults to composite quality.
-        min_absolute_change: Smallest absolute move that counts as a regression,
-            in the measure's own unit. ``0.0`` lets significance alone flag.
-        min_relative_change: Smallest move relative to the baseline that counts, as
-            a fraction. ``0.0`` lets significance alone flag.
-        subject_id: When set, restrict to this subject; others are counted as
-            ``n_filtered_out`` rather than dropped silently.
-        known_run_ids: Every run id in the corpus, so a result excluded by the
-            caller's own run filter is counted filtered-on-request rather than
-            unplaceable. See :func:`project_score_records`.
-        archived_run_ids: The corpus run ids the operator has archived, so an
-            archival exclusion is counted as ``results_from_archived_runs``
-            rather than under the caller's ``status`` filter. See
-            :func:`place_results`.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        A :class:`HistoryResult` — one :class:`MeasureSeries` per contestant,
+    :param runs: The runs supplying subject identity, suite set, and timestamps.
+    :ptype runs: list[EvalRun]
+    :param results: The observations to series.
+    :ptype results: list[EvalResult]
+    :param metric: A measure in :data:`HISTORY_METRICS`, or the registry name of its
+        aggregate as ``list_metrics`` publishes it (``mean_composite`` for
+        ``composite``, and so on through
+        :data:`_AGGREGATE_OF_OBSERVATION`) — see :func:`resolve_measure_name` — or a
+        numeric, directional measure the host declares (a quick-path scorer's name),
+        read off each result's ``host_measures``. Defaults to composite quality.
+    :ptype metric: str
+    :param min_absolute_change: Smallest absolute move that counts as a regression,
+        in the measure's own unit. ``0.0`` lets significance alone flag.
+    :ptype min_absolute_change: float
+    :param min_relative_change: Smallest move relative to the baseline that counts, as
+        a fraction. ``0.0`` lets significance alone flag.
+    :ptype min_relative_change: float
+    :param subject_id: When set, restrict to this subject; others are counted as
+        ``n_filtered_out`` rather than dropped silently.
+    :ptype subject_id: str | None
+    :param known_run_ids: Every run id in the corpus, so a result excluded by the
+        caller's own run filter is counted filtered-on-request rather than
+        unplaceable. See :func:`project_score_records`.
+    :ptype known_run_ids: set[str] | None
+    :param archived_run_ids: The corpus run ids the operator has archived, so an
+        archival exclusion is counted as ``results_from_archived_runs``
+        rather than under the caller's ``status`` filter. See
+        :func:`place_results`.
+    :ptype archived_run_ids: set[str] | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: A :class:`HistoryResult` — one :class:`MeasureSeries` per contestant,
         sorted by subject then model then variant then identity version, plus corpus-level accounting.
-
-    Raises:
-        HistoryError: ``metric`` is not one this surface can series — refused
-            before any row is read, so a typo cannot return an empty series that
-            reads like a measure nobody recorded.
+    :rtype: HistoryResult
+    :raises HistoryError: ``metric`` is not one this surface can series — refused
+        before any row is read, so a typo cannot return an empty series that
+        reads like a measure nobody recorded.
     """
     from threetears.evals.analysis.stats import (
         EQUIVALENCE_TEST_NAME,

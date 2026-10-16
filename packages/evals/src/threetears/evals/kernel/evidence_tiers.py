@@ -198,10 +198,9 @@ class TierCriterion(EvalDocumentModel):
     def _state_follows_the_numbers(self) -> TierCriterion:
         """Refuse a state its own numbers contradict — the state is arithmetic, never a second opinion.
 
-        Raises:
-            ValueError: ``results`` exceeds ``n`` (every result counted is at least one pair); one end of the
-                interval without the other, or an interval without an agreement or not containing it; or
-                ``state`` is not the one :func:`criterion_state` derives from the numbers.
+        :raises ValueError: ``results`` exceeds ``n`` (every result counted is at least one pair); one end of the
+            interval without the other, or an interval without an agreement or not containing it; or
+            ``state`` is not the one :func:`criterion_state` derives from the numbers.
         """
         if self.results > self.n:
             raise ValueError(f"a criterion over {self.n} pairs cannot cover {self.results} results")
@@ -368,9 +367,8 @@ class JudgeEvidenceTier(EvalDocumentModel):
     def _tier_follows_the_criteria(self) -> JudgeEvidenceTier:
         """Refuse a tier the criteria do not decide, or criteria held to thresholds other than the ruled ones.
 
-        Raises:
-            ValueError: ``tier`` is not :func:`tier_of` of the criteria, or a criterion's threshold or floor is
-                not this module's constant.
+        :raises ValueError: ``tier`` is not :func:`tier_of` of the criteria, or a criterion's threshold or floor is
+            not this module's constant.
         """
         if (self.calibration.threshold, self.calibration.min_results) != (
             CALIBRATION_MIN_AGREEMENT,
@@ -399,13 +397,14 @@ def agreement_statistic(scale: RubricScale, kappa: float | None, weighted_kappa:
     Over two categories quadratic weights and no weights are the same number, which is why an agreement
     read publishes no weighted kappa on pass/fail; reading ``kappa`` there is reading that number.
 
-    Args:
-        scale: The dimension's scale.
-        kappa: The unweighted kappa.
-        weighted_kappa: The quadratic-weighted kappa (None on pass/fail).
-
-    Returns:
-        The figure, or None when it is undefined.
+    :param scale: The dimension's scale.
+    :ptype scale: RubricScale
+    :param kappa: The unweighted kappa.
+    :ptype kappa: float | None
+    :param weighted_kappa: The quadratic-weighted kappa (None on pass/fail).
+    :ptype weighted_kappa: float | None
+    :return: The figure, or None when it is undefined.
+    :rtype: float | None
     """
     return weighted_kappa if scale == "ordinal" else kappa
 
@@ -420,17 +419,20 @@ def criterion_state(
 ) -> CriterionState:
     """How one criterion reads, decided on the agreement's interval and never on its point estimate.
 
-    Args:
-        results: The distinct results the agreement covers.
-        agreement: The agreement figure, or None when undefined.
-        interval: Its confidence bounds ``(lower, upper)``, or None when there are none.
-        threshold: The agreement asked for (inclusive).
-        min_results: The fewest distinct results (inclusive).
-
-    Returns:
-        ``insufficient`` below the floor, or on an undefined agreement or interval; else ``met`` when the
+    :param results: The distinct results the agreement covers.
+    :ptype results: int
+    :param agreement: The agreement figure, or None when undefined.
+    :ptype agreement: float | None
+    :param interval: Its confidence bounds ``(lower, upper)``, or None when there are none.
+    :ptype interval: tuple[float, float] | None
+    :param threshold: The agreement asked for (inclusive).
+    :ptype threshold: float
+    :param min_results: The fewest distinct results (inclusive).
+    :ptype min_results: int
+    :return: ``insufficient`` below the floor, or on an undefined agreement or interval; else ``met`` when the
         lower bound reaches the threshold, ``not_met`` when the upper bound is below it, and ``undecided``
         when the interval straddles it.
+    :rtype: CriterionState
     """
     if results < min_results or agreement is None or interval is None:
         return "insufficient"
@@ -491,14 +493,14 @@ def separation_criterion(
 def tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvidenceTier:
     """The tier two criteria decide.
 
-    Args:
-        calibration: The judge's agreement with people.
-        separation: The judge's agreement with itself.
-
-    Returns:
-        ``calibrated`` when calibration is met; else ``separation`` when separation is met; else
+    :param calibration: The judge's agreement with people.
+    :ptype calibration: TierCriterion
+    :param separation: The judge's agreement with itself.
+    :ptype separation: TierCriterion
+    :return: ``calibrated`` when calibration is met; else ``separation`` when separation is met; else
         ``incidental`` when both were shown below their bars (``not_met``); else ``undetermined`` — which an
         ``undecided`` criterion leads to, since an interval across the bar shows neither.
+    :rtype: JudgedEvidenceTier
     """
     if calibration.state == "met":
         return "calibrated"
@@ -512,14 +514,11 @@ def tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvid
 def weakest_judged_tier(tiers: list[JudgedEvidenceTier]) -> JudgedEvidenceTier:
     """What several judged readings can bear together: the weakest of them (see :data:`JUDGED_TIERS_WEAKEST_FIRST`).
 
-    Args:
-        tiers: At least one tier.
-
-    Returns:
-        The weakest.
-
-    Raises:
-        ValueError: ``tiers`` is empty — no reading has no tier to compose, and none is not undetermined.
+    :param tiers: At least one tier.
+    :ptype tiers: list[JudgedEvidenceTier]
+    :return: The weakest.
+    :rtype: JudgedEvidenceTier
+    :raises ValueError: ``tiers`` is empty — no reading has no tier to compose, and none is not undetermined.
     """
     if not tiers:
         raise ValueError("composing judged tiers needs at least one")

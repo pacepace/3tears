@@ -106,16 +106,14 @@ def validated_kind_spec(template: EvalTemplate, *, profile: HostProfile) -> Base
     code, so a spec valid when it was written can be refused after the model moves, and the launch
     is where that must be found rather than mid-run.
 
-    Args:
-        template: The template, whose ``candidate_kind`` names the kind.
-        profile: The host, whose kind contracts declare each kind's spec model.
-
-    Returns:
-        The validated spec, or ``None`` for a kind with no spec model and a template stating nothing.
-
-    Raises:
-        ValidationFailedError: The kind's spec model refuses the spec — naming each field and the
-            template — or the kind declares no spec and the template states one.
+    :param template: The template, whose ``candidate_kind`` names the kind.
+    :ptype template: EvalTemplate
+    :param profile: The host, whose kind contracts declare each kind's spec model.
+    :ptype profile: HostProfile
+    :return: The validated spec, or ``None`` for a kind with no spec model and a template stating nothing.
+    :rtype: BaseModel | None
+    :raises ValidationFailedError: The kind's spec model refuses the spec — naming each field and the
+        template — or the kind declares no spec and the template states one.
     """
     try:
         return profile.kind_contract(template.candidate_kind).validate_spec(template.kind_spec)
@@ -133,12 +131,11 @@ def refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTe
     dispatch: a field is stated when it holds anything but its default. It reads the registry entry it is handed, never
     the template's kind, which each caller reads once. A host no longer calls it from its own checks.
 
-    Args:
-        template: The template, as authored or as stored.
-        launchable: The registry entry of the kind it declares.
-
-    Raises:
-        ValidationFailedError: The template states a field the kind ignores; every one is named.
+    :param template: The template, as authored or as stored.
+    :ptype template: EvalTemplate
+    :param launchable: The registry entry of the kind it declares.
+    :ptype launchable: IgnoresTemplateFields
+    :raises ValidationFailedError: The template states a field the kind ignores; every one is named.
     """
     if stated := [
         name
@@ -182,31 +179,30 @@ def create_template(
     (:func:`refuse_undeclared_judges`), then the name's uniqueness. The template is stored with its
     ``kind_spec`` as the spec model resolved it — every field, defaults included.
 
-    Args:
-        host: The host: where templates are read and written, the world the template's
-            expressions are held to, and its template checks (``template_checks``): its tool
-            catalog, its seed walk, its launch registry and its kind capabilities.
-        definition: Template fields (``name`` + ``intent`` required; the
-            rest optional per :class:`~threetears.evals.schema.models.EvalTemplate`).
-        scope_id: The scope the template lives in.
-
-    Returns:
-        The persisted :class:`~threetears.evals.schema.models.EvalTemplate`.
-
-    Raises:
-        ValidationFailedError: ``definition`` fails template validation, its
-            ``kind_spec`` is refused by the kind's spec model (naming the field),
-            its rubric carries a non-namespaced dim name, its ``tools_allowed``
-            names a tool type the catalog does not have, one of its
-            expressions names world state this host cannot supply, a goal check
-            carries no control or does not discriminate between its controls
-            (:func:`~threetears.evals.run.check_controls.refuse_non_discriminating_checks`), its
-            ``world_seed`` names a dimension no run of this host can seed, it states a field its kind
-            never acts on (:func:`refuse_ignored_template_fields`, naming each), or
-            it declares apparatus its candidate kind cannot honour, or a judged dimension declares no
-            judge, or one the scope contradicts (:func:`refuse_undeclared_judges`).
-        ConflictError: a template with the same name already exists.
-        RefusedInput: The host supplies no template checks.
+    :param host: The host: where templates are read and written, the world the template's
+        expressions are held to, and its template checks (``template_checks``): its tool
+        catalog, its seed walk, its launch registry and its kind capabilities.
+    :ptype host: EvalHost
+    :param definition: Template fields (``name`` + ``intent`` required; the
+        rest optional per :class:`~threetears.evals.schema.models.EvalTemplate`).
+    :ptype definition: dict[str, Any]
+    :param scope_id: The scope the template lives in.
+    :ptype scope_id: str
+    :return: The persisted :class:`~threetears.evals.schema.models.EvalTemplate`.
+    :rtype: EvalTemplate
+    :raises ValidationFailedError: ``definition`` fails template validation, its
+        ``kind_spec`` is refused by the kind's spec model (naming the field),
+        its rubric carries a non-namespaced dim name, its ``tools_allowed``
+        names a tool type the catalog does not have, one of its
+        expressions names world state this host cannot supply, a goal check
+        carries no control or does not discriminate between its controls
+        (:func:`~threetears.evals.run.check_controls.refuse_non_discriminating_checks`), its
+        ``world_seed`` names a dimension no run of this host can seed, it states a field its kind
+        never acts on (:func:`refuse_ignored_template_fields`, naming each), or
+        it declares apparatus its candidate kind cannot honour, or a judged dimension declares no
+        judge, or one the scope contradicts (:func:`refuse_undeclared_judges`).
+    :raises ConflictError: a template with the same name already exists.
+    :raises RefusedInput: The host supplies no template checks.
     """
     reject_unknown_authoring_fields("create_template", definition, EvalTemplate, TEMPLATE_SERVER_FIELDS)
     clean = {k: v for k, v in definition.items() if k not in TEMPLATE_SERVER_FIELDS}
@@ -248,20 +244,20 @@ def admit_template(
     uniqueness is the caller's question, because the two callers answer it differently — authoring
     refuses a taken name, a seed reads it as an occupied slot.
 
-    Args:
-        template: The constructed template, in its scope.
-        profile: The host whose kinds, world, tools and action schemas the template is held to.
-        checks: The host's template checks (``EvalHost.template_checks``).
-        active_judge_config: The id of the judge config that would score a dimension, by its name, or ``None``
-            when none would: the store's active one for authoring (:func:`active_judge_config_in`), and for a
-            seed the corpus's own beside the store's, since a seed writes both.
-
-    Returns:
-        The template with its ``kind_spec`` as the kind's spec model resolves it — every field,
+    :param template: The constructed template, in its scope.
+    :ptype template: EvalTemplate
+    :param profile: The host whose kinds, world, tools and action schemas the template is held to.
+    :ptype profile: HostProfile
+    :param checks: The host's template checks (``EvalHost.template_checks``).
+    :ptype checks: TemplateChecks
+    :param active_judge_config: The id of the judge config that would score a dimension, by its name, or ``None``
+        when none would: the store's active one for authoring (:func:`active_judge_config_in`), and for a
+        seed the corpus's own beside the store's, since a seed writes both.
+    :ptype active_judge_config: Callable[[str], str | None]
+    :return: The template with its ``kind_spec`` as the kind's spec model resolves it — every field,
         defaults included — which is the shape it is stored in.
-
-    Raises:
-        ValidationFailedError: Any refusal :func:`create_template` documents other than the name's.
+    :rtype: EvalTemplate
+    :raises ValidationFailedError: Any refusal :func:`create_template` documents other than the name's.
     """
     template = template.model_copy(update={"kind_spec": freeze(validated_kind_spec(template, profile=profile))})
     checks.require_known_tools_allowed(template.tools_allowed)
@@ -277,12 +273,12 @@ def admit_template(
 def active_judge_config_in(storage: DefinitionStore, scope_id: str) -> Callable[[str], str | None]:
     """The lookup :func:`refuse_undeclared_judges` reads a scope's judge configs through: a dim's active config id.
 
-    Args:
-        storage: Where the judge configs are read.
-        scope_id: The scope the template lives in, and its configs with it.
-
-    Returns:
-        A function from a dimension's name to the id of its active judge config, or ``None`` when it has none.
+    :param storage: Where the judge configs are read.
+    :ptype storage: DefinitionStore
+    :param scope_id: The scope the template lives in, and its configs with it.
+    :ptype scope_id: str
+    :return: A function from a dimension's name to the id of its active judge config, or ``None`` when it has none.
+    :rtype: Callable[[str], str | None]
     """
 
     def active(dim: str) -> str | None:
@@ -314,15 +310,16 @@ def judge_declaration_defects(
     The two reserved axes are not a rubric's, so they are not asked here: their kind declares them, and a config
     scores one when it is active and the built-in prompt otherwise, as before.
 
-    Args:
-        template: The template, in its scope.
-        active_judge_config: A dimension's active judge config id, or ``None`` (:func:`active_judge_config_in`).
-        selected: ``{dim: config_id}`` a launch named (``judge_config_ids``), which scores a dim in place of its
-            active config; ``None`` at registration, which names none.
-
-    Returns:
-        ``(fault, remedy)`` per defective dimension, in rubric order; empty when every dimension is declared as
+    :param template: The template, in its scope.
+    :ptype template: EvalTemplate
+    :param active_judge_config: A dimension's active judge config id, or ``None`` (:func:`active_judge_config_in`).
+    :ptype active_judge_config: Callable[[str], str | None]
+    :param selected: ``{dim: config_id}`` a launch named (``judge_config_ids``), which scores a dim in place of its
+        active config; ``None`` at registration, which names none.
+    :ptype selected: Mapping[str, str] | None
+    :return: ``(fault, remedy)`` per defective dimension, in rubric order; empty when every dimension is declared as
         the scope can honour.
+    :rtype: list[tuple[str, str]]
     """
     chosen = dict(selected or {})
     defects: list[tuple[str, str]] = []
@@ -375,20 +372,20 @@ def refuse_undeclared_judges(
     the declaration or a scope that moved since, every launch before any spend. Before it, a dimension with no
     active config was scored by the engine's built-in prompt and a run recorded ``builtin:<sha>`` with nothing
     saying a configured judge had been meant. The quick path declares its own dimensions (a
-    :class:`~threetears.evals.quick.judged.Judge` is the built-in judge by construction), so it meets this without a field
-    to fill.
+    :class:`~threetears.evals.quick.judged.Judge` is the built-in judge by construction), so it meets this without a
+    field to fill.
 
     Every defective dimension is named in the one error (:func:`judge_declaration_defects`), so an author fixing a
     seed of fourteen dimensions sees every one that needs a declaration at once.
 
-    Args:
-        template: The template, in its scope.
-        active_judge_config: A dimension's active judge config id, or ``None``.
-        selected: The configs a launch named per dim, or ``None``.
-
-    Raises:
-        ValidationFailedError: A judged dimension declares no judge, declares ``"configured"`` with no config to
-            score it, or declares ``"builtin"`` while a config is active (or selected) for it.
+    :param template: The template, in its scope.
+    :ptype template: EvalTemplate
+    :param active_judge_config: A dimension's active judge config id, or ``None``.
+    :ptype active_judge_config: Callable[[str], str | None]
+    :param selected: The configs a launch named per dim, or ``None``.
+    :ptype selected: Mapping[str, str] | None
+    :raises ValidationFailedError: A judged dimension declares no judge, declares ``"configured"`` with no config to
+        score it, or declares ``"builtin"`` while a config is active (or selected) for it.
     """
     defects = judge_declaration_defects(template, active_judge_config, selected=selected)
     if not defects:
@@ -411,15 +408,14 @@ def refuse_stale_presumptions(template: EvalTemplate, *, profile: HostProfile) -
     startup, and a listing that stops answering takes the recovery down with the problem. A
     list is a catalogue; a get and a launch are uses.
 
-    Args:
-        template: The template about to be used.
-        profile: The host whose world the presumptions resolve against.
-
-    Raises:
-        ValidationFailedError: A precondition names a path no declared dimension covers.
-            Translated here rather than left as the resolution's ``ValueError`` — an untranslated
-            one reaches an operator as a 500 with no message, which is the opposite of failing
-            loudly.
+    :param template: The template about to be used.
+    :ptype template: EvalTemplate
+    :param profile: The host whose world the presumptions resolve against.
+    :ptype profile: HostProfile
+    :raises ValidationFailedError: A precondition names a path no declared dimension covers.
+        Translated here rather than left as the resolution's ``ValueError`` — an untranslated
+        one reaches an operator as a 500 with no message, which is the opposite of failing
+        loudly.
     """
     if not template.preconditions:
         return
@@ -470,29 +466,29 @@ def refuse_unsupplied_world(
     is the exception, refused unless the action's schema closes the value, because nothing but
     that schema can say a parameter is not text the model wrote.
 
-    **What fires is asked too.** A goal check's ``fired("<dimension>")`` or ``fired_armed("<dimension>")`` must name a triggered dimension
-    the host declares, and a seed scheduling ambient perturbation needs a world with a
+    **What fires is asked too.** A goal check's ``fired("<dimension>")`` or ``fired_armed("<dimension>")`` must name a
+    triggered dimension the host declares, and a seed scheduling ambient perturbation needs a world with a
     ``perturb_ambient`` handle — each is a template asking for a world event no run of this host could
     produce, and a check over one scores False on every trial.
 
-    Args:
-        template: The template being written.
-        profile: The host whose world, tools and action schemas the expressions are held to.
-        authored: The field names this write AUTHORS, or None to check every field. An update
-            merges over the stored shape, so checking unconditionally would make a template
-            whose world the registry has since moved uneditable in all its other fields —
-            while still refusing to let a bad expression be WRITTEN, which is the point. The
-            same authoring-scoped rule ``rubric`` and ``tools_allowed`` carry above.
-
-    Raises:
-        ValidationFailedError: An expression names state this host cannot supply, or a goal
-            check the language cannot read. The latter is refused here for the reason
-            :class:`~threetears.evals.schema.models.Precondition` refuses its own at parse: an
-            expression no run can evaluate is an apparatus failure discovered after the
-            spend, attributed to whatever the run was doing. Also a ``fired()`` name that is not a
-            triggered dimension, or ambient perturbation on a world with no handle for it. Also a goal check that
-            string-matches a field the host's world marks as model prose: code checks
-            structure, never prose, so that text is a rubric dimension's to judge.
+    :param template: The template being written.
+    :ptype template: EvalTemplate
+    :param profile: The host whose world, tools and action schemas the expressions are held to.
+    :ptype profile: HostProfile
+    :param authored: The field names this write AUTHORS, or None to check every field. An update
+        merges over the stored shape, so checking unconditionally would make a template
+        whose world the registry has since moved uneditable in all its other fields —
+        while still refusing to let a bad expression be WRITTEN, which is the point. The
+        same authoring-scoped rule ``rubric`` and ``tools_allowed`` carry above.
+    :ptype authored: Container[str] | None
+    :raises ValidationFailedError: An expression names state this host cannot supply, or a goal
+        check the language cannot read. The latter is refused here for the reason
+        :class:`~threetears.evals.schema.models.Precondition` refuses its own at parse: an
+        expression no run can evaluate is an apparatus failure discovered after the
+        spend, attributed to whatever the run was doing. Also a ``fired()`` name that is not a
+        triggered dimension, or ambient perturbation on a world with no handle for it. Also a goal check that
+        string-matches a field the host's world marks as model prose: code checks
+        structure, never prose, so that text is a rubric dimension's to judge.
     """
     defects: list[str] = []
     prose_matches: list[str] = []
@@ -584,19 +580,18 @@ def refuse_unsupplied_world(
 def get_template(host: EvalHost, template_id: str, scope_id: str) -> EvalTemplate:
     """Load a template by id within a scope.
 
-    Args:
-        host: The host: where the template is read, and the world its presumptions resolve in.
-        template_id: The template.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The template.
-
-    Raises:
-        NotFoundError: No template with that id in the scope.
-        ValidationFailedError: It presumes world state this host no longer declares. An
-            update does NOT go through here, deliberately, so a template refused for that
-            reason stays editable into a shape that resolves.
+    :param host: The host: where the template is read, and the world its presumptions resolve in.
+    :ptype host: EvalHost
+    :param template_id: The template.
+    :ptype template_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The template.
+    :rtype: EvalTemplate
+    :raises NotFoundError: No template with that id in the scope.
+    :raises ValidationFailedError: It presumes world state this host no longer declares. An
+        update does NOT go through here, deliberately, so a template refused for that
+        reason stays editable into a shape that resolves.
     """
     template = host.storage.load_template(template_id, scope_id)
     if template is None:
@@ -633,30 +628,30 @@ def update_template(
     shape, stamps ``updated_at``, and saves. Server-owned identity/lifecycle
     fields in ``fields`` are ignored.
 
-    Args:
-        host: The host: where templates are read and written, the world an authored
-            expression is held to, and its template checks (``template_checks``): the tool
-            catalog asked only when this update writes ``tools_allowed``, the seed walk only when
-            it writes ``world_seed``, and its launch registry and kind capabilities over the merged template
-            unless the update only sets ``archived``.
-        template_id: Template to update.
-        scope_id: The scope it lives in.
-        fields: Partial field map to overlay onto the existing template.
-
-    Returns:
-        The persisted, updated :class:`~threetears.evals.schema.models.EvalTemplate`.
-
-    Raises:
-        NotFoundError: No template with that id.
-        ValidationFailedError: ``fields`` is empty, the merged shape is
-            invalid, an update writing ``kind_spec`` or ``candidate_kind`` leaves a spec the
-            kind's spec model refuses, or an authored ``rubric`` / ``tools_allowed`` /
-            ``preconditions`` / ``goal_state_checks`` / ``goal_check_controls`` /
-            ``world_seed`` fails the authoring guard that field carries — an authored ``rubric``'s
-            being that every judged dimension declares its judge as the scope can honour
-            (:func:`refuse_undeclared_judges`), or, unless the update only sets ``archived``, the merged template
-            states a field its kind never acts on (:func:`refuse_ignored_template_fields`, naming each).
-        RefusedInput: The host supplies no template checks.
+    :param host: The host: where templates are read and written, the world an authored
+        expression is held to, and its template checks (``template_checks``): the tool
+        catalog asked only when this update writes ``tools_allowed``, the seed walk only when
+        it writes ``world_seed``, and its launch registry and kind capabilities over the merged template
+        unless the update only sets ``archived``.
+    :ptype host: EvalHost
+    :param template_id: Template to update.
+    :ptype template_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param fields: Partial field map to overlay onto the existing template.
+    :ptype fields: dict[str, Any]
+    :return: The persisted, updated :class:`~threetears.evals.schema.models.EvalTemplate`.
+    :rtype: EvalTemplate
+    :raises NotFoundError: No template with that id.
+    :raises ValidationFailedError: ``fields`` is empty, the merged shape is
+        invalid, an update writing ``kind_spec`` or ``candidate_kind`` leaves a spec the
+        kind's spec model refuses, or an authored ``rubric`` / ``tools_allowed`` /
+        ``preconditions`` / ``goal_state_checks`` / ``goal_check_controls`` /
+        ``world_seed`` fails the authoring guard that field carries — an authored ``rubric``'s
+        being that every judged dimension declares its judge as the scope can honour
+        (:func:`refuse_undeclared_judges`), or, unless the update only sets ``archived``, the merged template
+        states a field its kind never acts on (:func:`refuse_ignored_template_fields`, naming each).
+    :raises RefusedInput: The host supplies no template checks.
     """
     checks = host.checks_for("update_template")
     existing = host.storage.load_template(template_id, scope_id)
@@ -763,18 +758,17 @@ def create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, s
     archives the old record first; ``load_active_rubric_dim`` resolves the
     latest non-archived record for a key).
 
-    Args:
-        storage: Where catalog rubric dims are read and written.
-        definition: Catalog-dim fields (``key`` + ``dim`` required; the rest
-            optional per :class:`~threetears.evals.schema.models.CatalogRubricDim`).
-        scope_id: The scope the dim lives in.
-
-    Returns:
-        The persisted :class:`~threetears.evals.schema.models.CatalogRubricDim`.
-
-    Raises:
-        ValidationFailedError: ``definition`` fails catalog-dim validation.
-        ConflictError: an active dim with the same ``key`` already exists.
+    :param storage: Where catalog rubric dims are read and written.
+    :ptype storage: DefinitionStore
+    :param definition: Catalog-dim fields (``key`` + ``dim`` required; the rest
+        optional per :class:`~threetears.evals.schema.models.CatalogRubricDim`).
+    :ptype definition: dict[str, Any]
+    :param scope_id: The scope the dim lives in.
+    :ptype scope_id: str
+    :return: The persisted :class:`~threetears.evals.schema.models.CatalogRubricDim`.
+    :rtype: CatalogRubricDim
+    :raises ValidationFailedError: ``definition`` fails catalog-dim validation.
+    :raises ConflictError: an active dim with the same ``key`` already exists.
     """
     reject_unknown_authoring_fields("create_rubric_dim", definition, CatalogRubricDim, RUBRIC_DIM_SERVER_FIELDS)
     clean = {k: v for k, v in definition.items() if k not in RUBRIC_DIM_SERVER_FIELDS}
@@ -796,8 +790,7 @@ def create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, s
 def get_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str) -> CatalogRubricDim:
     """Load a catalog rubric dim by id within a scope.
 
-    Raises:
-        NotFoundError: No rubric dim with that id in the scope.
+    :raises NotFoundError: No rubric dim with that id in the scope.
     """
     dim = storage.load_rubric_dim(dim_id, scope_id)
     if dim is None:
@@ -828,18 +821,18 @@ def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fiel
     stamps ``updated_at``, and saves. Server-owned identity/lifecycle fields
     in ``fields`` are ignored.
 
-    Args:
-        storage: Where catalog rubric dims are read and written.
-        dim_id: Catalog dim to update.
-        scope_id: The scope it lives in.
-        fields: Partial field map to overlay onto the existing dim.
-
-    Returns:
-        The persisted, updated :class:`~threetears.evals.schema.models.CatalogRubricDim`.
-
-    Raises:
-        NotFoundError: No rubric dim with that id.
-        ValidationFailedError: ``fields`` is empty or the merged shape is invalid.
+    :param storage: Where catalog rubric dims are read and written.
+    :ptype storage: DefinitionStore
+    :param dim_id: Catalog dim to update.
+    :ptype dim_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param fields: Partial field map to overlay onto the existing dim.
+    :ptype fields: dict[str, Any]
+    :return: The persisted, updated :class:`~threetears.evals.schema.models.CatalogRubricDim`.
+    :rtype: CatalogRubricDim
+    :raises NotFoundError: No rubric dim with that id.
+    :raises ValidationFailedError: ``fields`` is empty or the merged shape is invalid.
     """
     existing = storage.load_rubric_dim(dim_id, scope_id)
     if existing is None:
@@ -895,18 +888,19 @@ def delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, c
     edits to it are gone, and the seed will not write it back. The gate is unconditional because a dim
     nothing has drawn from yet is the freshly authored one least likely to have a second copy.
 
-    Args:
-        storage: Where catalog rubric dims are read, deleted and tombstoned.
-        dim_id: Catalog rubric dim to destroy.
-        scope_id: The scope it lives in.
-        confirm: Must echo ``dim_id``; see
-            :func:`threetears.evals.run.curation.require_delete_confirmation`.
-
-    Raises:
-        NotFoundError: No rubric dim with that id in the scope.
-        ValidationFailedError: ``confirm`` does not echo ``dim_id``.
-        StorageError: The tombstone or the delete failed to write. A failed tombstone leaves the dim
-            in place, so no delete happens that a seed could undo.
+    :param storage: Where catalog rubric dims are read, deleted and tombstoned.
+    :ptype storage: DefinitionStore
+    :param dim_id: Catalog rubric dim to destroy.
+    :ptype dim_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param confirm: Must echo ``dim_id``; see
+        :func:`threetears.evals.run.curation.require_delete_confirmation`.
+    :ptype confirm: str | None
+    :raises NotFoundError: No rubric dim with that id in the scope.
+    :raises ValidationFailedError: ``confirm`` does not echo ``dim_id``.
+    :raises StorageError: The tombstone or the delete failed to write. A failed tombstone leaves the dim
+        in place, so no delete happens that a seed could undo.
     """
     dim = storage.load_rubric_dim(dim_id, scope_id)
     if dim is None:
@@ -952,19 +946,18 @@ def create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *,
     re-author rather than silently shadowing the live config
     (``load_active_judge_config`` resolves the latest non-archived record).
 
-    Args:
-        storage: Where judge configs are read and written.
-        definition: Judge-config fields (``name`` + ``rubric_dim_id`` +
-            ``prompt_template`` required; the rest optional per
-            :class:`~threetears.evals.schema.models.JudgeConfig`).
-        scope_id: The scope the config lives in.
-
-    Returns:
-        The persisted :class:`~threetears.evals.schema.models.JudgeConfig`.
-
-    Raises:
-        ValidationFailedError: ``definition`` fails judge-config validation.
-        ConflictError: an active config already exists for that ``rubric_dim_id``.
+    :param storage: Where judge configs are read and written.
+    :ptype storage: DefinitionStore
+    :param definition: Judge-config fields (``name`` + ``rubric_dim_id`` +
+        ``prompt_template`` required; the rest optional per
+        :class:`~threetears.evals.schema.models.JudgeConfig`).
+    :ptype definition: dict[str, Any]
+    :param scope_id: The scope the config lives in.
+    :ptype scope_id: str
+    :return: The persisted :class:`~threetears.evals.schema.models.JudgeConfig`.
+    :rtype: JudgeConfig
+    :raises ValidationFailedError: ``definition`` fails judge-config validation.
+    :raises ConflictError: an active config already exists for that ``rubric_dim_id``.
     """
     reject_unknown_authoring_fields("create_judge_config", definition, JudgeConfig, JUDGE_CONFIG_SERVER_FIELDS)
     clean = {k: v for k, v in definition.items() if k not in JUDGE_CONFIG_SERVER_FIELDS}
@@ -986,8 +979,7 @@ def create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *,
 def get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) -> JudgeConfig:
     """Load a judge config by id within a scope.
 
-    Raises:
-        NotFoundError: No judge config with that id in the scope.
+    :raises NotFoundError: No judge config with that id in the scope.
     """
     config = storage.load_judge_config(config_id, scope_id)
     if config is None:
@@ -1029,19 +1021,19 @@ def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     the active config for that dim. New before old, so a failed write leaves
     the dim with its old config active rather than with none.
 
-    Args:
-        storage: Where judge configs are read and written.
-        config_id: Judge config to re-author.
-        scope_id: The scope it lives in; the new version lives there too.
-        fields: Partial field map to overlay onto the existing config.
-
-    Returns:
-        The persisted new-version :class:`~threetears.evals.schema.models.JudgeConfig`.
-
-    Raises:
-        NotFoundError: No judge config with that id.
-        ValidationFailedError: ``fields`` is empty or the merged shape is invalid.
-        StorageError: A write failed; if it was the new version's, nothing changed.
+    :param storage: Where judge configs are read and written.
+    :ptype storage: DefinitionStore
+    :param config_id: Judge config to re-author.
+    :ptype config_id: str
+    :param scope_id: The scope it lives in; the new version lives there too.
+    :ptype scope_id: str
+    :param fields: Partial field map to overlay onto the existing config.
+    :ptype fields: dict[str, Any]
+    :return: The persisted new-version :class:`~threetears.evals.schema.models.JudgeConfig`.
+    :rtype: JudgeConfig
+    :raises NotFoundError: No judge config with that id.
+    :raises ValidationFailedError: ``fields`` is empty or the merged shape is invalid.
+    :raises StorageError: A write failed; if it was the new version's, nothing changed.
     """
     existing = storage.load_judge_config(config_id, scope_id)
     if existing is None:
@@ -1116,18 +1108,19 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     the same call refuse or destroy depending on whether anyone had run an
     eval yet.
 
-    Args:
-        storage: Where judge configs are read and deleted.
-        config_id: Judge config to destroy.
-        scope_id: The scope it lives in.
-        confirm: Must echo ``config_id``; see
-            :func:`threetears.evals.run.curation.require_delete_confirmation`.
-
-    Raises:
-        NotFoundError: No judge config with that id in the scope.
-        ValidationFailedError: ``confirm`` does not echo ``config_id``.
-        StorageError: The tombstone or the delete failed to write. A failed tombstone leaves the config in
-            place, so no delete happens that a seed could undo.
+    :param storage: Where judge configs are read and deleted.
+    :ptype storage: DefinitionStore
+    :param config_id: Judge config to destroy.
+    :ptype config_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param confirm: Must echo ``config_id``; see
+        :func:`threetears.evals.run.curation.require_delete_confirmation`.
+    :ptype confirm: str | None
+    :raises NotFoundError: No judge config with that id in the scope.
+    :raises ValidationFailedError: ``confirm`` does not echo ``config_id``.
+    :raises StorageError: The tombstone or the delete failed to write. A failed tombstone leaves the config in
+        place, so no delete happens that a seed could undo.
     """
     config = storage.load_judge_config(config_id, scope_id)
     if config is None:

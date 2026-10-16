@@ -363,16 +363,16 @@ class HostProfile:
         unactionable the moment a second host runs, which is what the extraction is for. Binding
         happens first so the cross-checks below are named too.
 
-        Raises:
-            BarRegistrationError: A bar contradicts the measure registry.
-            ProfileRegistrationError: A name is registered as both a sweepable and a world
-                dimension, an ``observed_model_levers`` entry claims a lever name the engine
-                reserves or names no lever this host declares, a lever's ``acts_on`` names no numeric
-                measure the engine or this host declares, a kind contract's seats name
-                neither a pinned role nor an apparatus dimension, or leave out a dimension whose
-                blank is a real level, a kind is contracted twice or two contracts' lever prefixes overlap, a kind contract's lever is registered in
-                :attr:`host_sweepables` as well, the registry lacks a lever the engine resolves
-                for every run, or ``release_label`` names no registered ``label``.
+        :raises BarRegistrationError: A bar contradicts the measure registry.
+        :raises ProfileRegistrationError: A name is registered as both a sweepable and a world
+            dimension, an ``observed_model_levers`` entry claims a lever name the engine
+            reserves or names no lever this host declares, a lever's ``acts_on`` names no numeric
+            measure the engine or this host declares, a kind contract's seats name
+            neither a pinned role nor an apparatus dimension, or leave out a dimension whose
+            blank is a real level, a kind is contracted twice or two contracts' lever prefixes overlap, a kind
+            contract's lever is registered in
+            :attr:`host_sweepables` as well, the registry lacks a lever the engine resolves
+            for every run, or ``release_label`` names no registered ``label``.
         """
         self._refuse_overlapping_kind_contracts()
         self._refuse_a_kind_lever_registered_by_hand()
@@ -401,22 +401,20 @@ class HostProfile:
         for, which is exactly what an empty contract refuses; so every caller asks one contract, and
         a refusal reads the same whether the host declared the kind's models or not.
 
-        Args:
-            kind: A kind's name, as a template's ``candidate_kind`` spells it.
-
-        Returns:
-            The declared contract, or an empty one.
+        :param kind: A kind's name, as a template's ``candidate_kind`` spells it.
+        :ptype kind: str
+        :return: The declared contract, or an empty one.
+        :rtype: KindContract
         """
         return next((contract for contract in self.kinds if contract.kind == kind), None) or KindContract(kind)
 
     def analysis_writer_refusal(self, model: str) -> str | None:
         """Why ``model`` may not write an analysis for this host, or ``None`` when it may.
 
-        Args:
-            model: The writer model id, as requested or as the host's client resolved its default.
-
-        Returns:
-            The refusal, naming the allowed models; ``None`` when the host declares no list or lists ``model``.
+        :param model: The writer model id, as requested or as the host's client resolved its default.
+        :ptype model: str
+        :return: The refusal, naming the allowed models; ``None`` when the host declares no list or lists ``model``.
+        :rtype: str | None
         """
         if not self.analysis_writer_models or model in self.analysis_writer_models:
             return None
@@ -433,12 +431,11 @@ class HostProfile:
         :attr:`variant_levers` and are composed beside these by
         :func:`~threetears.evals.kernel.identity.derive_variant_identity`.
 
-        Args:
-            run: The run, of any kind.
-
-        Returns:
-            Lever name -> level. A run of a kind other than a contract's sits at that contract's
+        :param run: The run, of any kind.
+        :ptype run: EvalRun
+        :return: Lever name -> level. A run of a kind other than a contract's sits at that contract's
             "not a run of this kind" level on each of its levers.
+        :rtype: dict[str, SweepableValue]
         """
         levels = {
             CANDIDATE_MODEL_LEVER: SweepableValue.of(run.candidate_model, display=run.candidate_model),
@@ -456,8 +453,7 @@ class HostProfile:
         can name one lever twice — and the later contract's level, or its "not a run of this kind"
         level, would overwrite the earlier's in the variant map, collapsing arms that differ on it.
 
-        Raises:
-            ProfileRegistrationError: A kind is contracted twice, or two contracts' prefixes overlap.
+        :raises ProfileRegistrationError: A kind is contracted twice, or two contracts' prefixes overlap.
         """
         names = [contract.kind for contract in self.kinds]
         if repeated := sorted({name for name in names if names.count(name) > 1}):
@@ -484,8 +480,7 @@ class HostProfile:
         the same lever named twice or a different input that happens to share its name; neither is
         expressible.
 
-        Raises:
-            ProfileRegistrationError: A contract's lever name is already declared by the host.
+        :raises ProfileRegistrationError: A contract's lever name is already declared by the host.
         """
         if twice := sorted(
             name for contract in self.kinds for name in contract.lever_names if self.host_sweepables.get(name)
@@ -502,8 +497,7 @@ class HostProfile:
         a registry that does not declare them as levers would refuse every key at the first run.
         Both come with :data:`~threetears.evals.kernel.host.sweepables.SHARED_CORE`.
 
-        Raises:
-            ProfileRegistrationError: Either lever is missing, or declared under another role.
+        :raises ProfileRegistrationError: Either lever is missing, or declared under another role.
         """
         missing = [
             name
@@ -522,8 +516,7 @@ class HostProfile:
         The path reaches a storage projection, which refuses anything else at query time; refused
         here instead, so a host with a typo fails at startup rather than on its first listing.
 
-        Raises:
-            ProfileRegistrationError: A path with an empty or non-identifier segment.
+        :raises ProfileRegistrationError: A path with an empty or non-identifier segment.
         """
         if bad := sorted(
             p for p in self.listing_elisions if not all(_IDENTIFIER.fullmatch(seg) for seg in p.split("."))
@@ -540,8 +533,7 @@ class HostProfile:
         no error anywhere; a lever or an apparatus input named here would place runs in time by what they
         swept or what measured them, which is a comparison drawn as a timeline.
 
-        Raises:
-            ProfileRegistrationError: The name is undeclared, or declared with another role.
+        :raises ProfileRegistrationError: The name is undeclared, or declared with another role.
         """
         if self.release_label is None:
             return
@@ -562,8 +554,7 @@ class HostProfile:
         disagree about which usage role establishes it, on the surface that reports a run's
         effective configuration. Refused where both name spaces are in hand.
 
-        Raises:
-            ProfileRegistrationError: The host declared a recovery rule for a reserved name.
+        :raises ProfileRegistrationError: The host declared a recovery rule for a reserved name.
         """
         if reserved := sorted(set(self.observed_model_levers) & {CANDIDATE_MODEL_LEVER}):
             raise ProfileRegistrationError(
@@ -594,8 +585,7 @@ class HostProfile:
         reason ``derive_variant_identity`` already refuses a variant map naming an unregistered
         lever.
 
-        Raises:
-            ProfileRegistrationError: A name appears in both registries.
+        :raises ProfileRegistrationError: A name appears in both registries.
         """
         if self.world is None:
             return
@@ -621,9 +611,8 @@ class HostProfile:
         and usage roles are a closed set (``RoleUsage.role``), so a misspelled role recovers nothing in
         exactly the same silent way.
 
-        Raises:
-            ProfileRegistrationError: A key names no declarable lever, with the remedy the registry prints;
-                or a value names no usage role.
+        :raises ProfileRegistrationError: A key names no declarable lever, with the remedy the registry prints;
+            or a value names no usage role.
         """
         # Imported here: the models module imports from this package, so a module-level import would cycle.
         from threetears.evals.schema.models import USAGE_ROLES
@@ -657,9 +646,8 @@ class HostProfile:
         ``unchecked`` with nothing to say the declaration was the cause — a declaration that reads as live
         and checks nothing, while the reason it gives blames the data.
 
-        Raises:
-            ProfileRegistrationError: An ``acts_on`` names no declared measure, a non-numeric one, or one
-                no result carries as a single value.
+        :raises ProfileRegistrationError: An ``acts_on`` names no declared measure, a non-numeric one, or one
+            no result carries as a single value.
         """
         # Imported here: both modules import the models module, which imports this package.
         from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
@@ -711,8 +699,7 @@ class HostProfile:
           such a dimension unseated would never omit it AND would log a contradiction on every read
           about a value nobody set: a silent no-op wearing a warning. Seat it.
 
-        Raises:
-            ProfileRegistrationError: Any defect above, with every instance named.
+        :raises ProfileRegistrationError: Any defect above, with every instance named.
         """
         roles = {role.name for role in self.sweepables.roles}
         defects: list[str] = []
@@ -760,8 +747,7 @@ class HostProfile:
         lever per read, which is what a bisection over every field produced. A caller asking about
         one is wrong, so it is refused by name rather than answered.
 
-        Raises:
-            ValueError: ``dimension`` is not an apparatus dimension this host declares.
+        :raises ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
         declared = self.sweepables.get(dimension)
         if declared is not None and declared.role == "apparatus":
@@ -786,15 +772,13 @@ class HostProfile:
         only for a blank). Per run, because one kind runs
         judged and code-only templates alike, and a per-kind answer is false for one of them.
 
-        Args:
-            run: The run.
-            dimension: The declared apparatus input name.
-
-        Returns:
-            Whether the run's rig had that seat.
-
-        Raises:
-            ValueError: ``dimension`` is not an apparatus dimension this host declares.
+        :param run: The run.
+        :ptype run: EvalRun
+        :param dimension: The declared apparatus input name.
+        :ptype dimension: str
+        :return: Whether the run's rig had that seat.
+        :rtype: bool
+        :raises ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
         self._require_apparatus("seats", dimension)
         if run.judge_model is None and dimension in _UNJUDGED_RUN_HAS_NO:
@@ -814,16 +798,15 @@ class HostProfile:
         unknown — and stays the blank it is, ``undecided`` where its declaration says so, when the run did
         have the seat and recorded nothing in it.
 
-        Args:
-            run: The run.
-            dimension: The declared apparatus input name.
-            value: What the run's reader returned for it.
-
-        Returns:
-            ``value``, or :data:`UNSEATED_LEVEL`.
-
-        Raises:
-            ValueError: ``dimension`` is not an apparatus dimension this host declares.
+        :param run: The run.
+        :ptype run: EvalRun
+        :param dimension: The declared apparatus input name.
+        :ptype dimension: str
+        :param value: What the run's reader returned for it.
+        :ptype value: Any
+        :return: ``value``, or :data:`UNSEATED_LEVEL`.
+        :rtype: Any
+        :raises ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
         self._require_apparatus("apparatus_level", dimension)
         if not self.seats(run, dimension) and self.sweepables.is_indeterminate(dimension, value):
@@ -850,22 +833,20 @@ class HostProfile:
           a seat only the run's own record narrowed away (judge configs a code grader recorded on an
           unjudged run) contradicts no declaration, so it is reported without the warning.
 
-        Args:
-            dimension: The declared apparatus input name.
-            observed: ``(run, value)`` for every run under consideration. Pass them all: one run that
-                seats the dimension keeps it, and one run recording a level refutes the claim, so a
-                caller that passes only the first would omit on the strength of the run that agreed.
-
-        Returns:
-            True when no kind present seats the dimension and nothing contradicts it, which is
+        :param dimension: The declared apparatus input name.
+        :ptype dimension: str
+        :param observed: ``(run, value)`` for every run under consideration. Pass them all: one run that
+            seats the dimension keeps it, and one run recording a level refutes the claim, so a
+            caller that passes only the first would omit on the strength of the run that agreed.
+        :ptype observed: Iterable[tuple[EvalRun, Any]]
+        :return: True when no kind present seats the dimension and nothing contradicts it, which is
             when a surface should behave as though the host never had it.
-
-        Raises:
-            ValueError: No runs were passed. Answering without them is the unvalidated omission this
-                method replaces, and it is available to a caller that simply forgets the argument — so
-                it is refused rather than defaulted. Or ``dimension`` is not an apparatus dimension
-                this host declares: a lever or a label has no seat, and answering for one logged a
-                false seat contradiction for every lever a bisection compared.
+        :rtype: bool
+        :raises ValueError: No runs were passed. Answering without them is the unvalidated omission this
+            method replaces, and it is available to a caller that simply forgets the argument — so
+            it is refused rather than defaulted. Or ``dimension`` is not an apparatus dimension
+            this host declares: a lever or a label has no seat, and answering for one logged a
+            false seat contradiction for every lever a bisection compared.
         """
         self._require_apparatus("omits_apparatus", dimension)
         observations = list(observed)
@@ -942,14 +923,13 @@ class HostProfile:
         ``sweepables.get`` here instead is what let the gate accept a container and refuse a
         member while advertising a list that held neither.
 
-        Args:
-            dimension: The input a campaign wants to sweep.
-
-        Returns:
-            ``covered`` when the host's registry admits the name as an axis; ``uncovered``
+        :param dimension: The input a campaign wants to sweep.
+        :ptype dimension: str
+        :return: ``covered`` when the host's registry admits the name as an axis; ``uncovered``
             carrying the registry's reason otherwise. The registry cannot drift from itself
             because it is the same set of declarations the engine reads to bisect and to build
             variant keys.
+        :rtype: Coverage
         """
         refusal = self.sweepables.refuse_as_axis(dimension)
         return Coverage("covered") if refusal is None else Coverage("uncovered", refusal)
@@ -964,16 +944,15 @@ class HostProfile:
         ``uncovered`` reasons therefore differ, because the remedies differ: an unregistered
         dimension needs somebody to declare it, a witnessed one needs the scenario rewritten.
 
-        Args:
-            dimension: The state dimension a scenario presumes.
-
-        Returns:
-            ``inapplicable`` when this host instantiates no world at all — a different answer
+        :param dimension: The state dimension a scenario presumes.
+        :ptype dimension: str
+        :return: ``inapplicable`` when this host instantiates no world at all — a different answer
             from ``uncovered``, and the one a consumer evaluating production traffic deserves;
             ``covered`` when a run can seed the dimension; ``uncovered`` naming the dimension
             otherwise. The reason names the **dimension**, never the area: "this area is
             unevaluable" is a conclusion this map is not entitled to draw, and an author told so
             would abandon a probe that another mechanism could have answered.
+        :rtype: Coverage
         """
         if self.world is None:
             return Coverage("inapplicable", "this host instantiates no simulated world")
@@ -1003,16 +982,15 @@ class HostProfile:
         declared dimension with no ``read`` handle: the end state is read through ``read`` alone,
         so no cell's end state ever holds it and a check over it can never be established.
 
-        Args:
-            path: A dotted path into the world, with the language's own root already stripped.
-
-        Returns:
-            ``covered`` when a declared dimension covers the path and declares a ``read`` handle;
+        :param path: A dotted path into the world, with the language's own root already stripped.
+        :ptype path: str
+        :return: ``covered`` when a declared dimension covers the path and declares a ``read`` handle;
             ``uncovered`` naming the path otherwise — including on a host that instantiates no world
             at all, and for a dimension nothing reads back. The goal language
             roots ``state`` at declared dimensions only, so on such a host a state path names
             nothing a run could ever read, and a check over it is a typo or a check written for
             another host, not an inapplicable question.
+        :rtype: Coverage
         """
         if self.world is None:
             return Coverage(
@@ -1045,16 +1023,15 @@ class HostProfile:
         ``jobs.queue``: a path addresses INSIDE a dimension's value, and only the dimension is
         registered.
 
-        Args:
-            path: A dotted path into the world, with the language's own root already stripped.
-
-        Returns:
-            ``inapplicable`` when this host instantiates no world at all — a scenario on such a
+        :param path: A dotted path into the world, with the language's own root already stripped.
+        :ptype path: str
+        :return: ``inapplicable`` when this host instantiates no world at all — a scenario on such a
             host presumes nothing this map can speak for; ``covered`` when a run can seed the
             dimension the path addresses; ``uncovered`` naming the path and the remedy otherwise.
             The two ``uncovered`` reasons differ because the remedies do, exactly as
             :meth:`representable`'s do: an unknown path needs the dimension declared or the
             expression corrected, a witnessed one needs the scenario rewritten.
+        :rtype: Coverage
         """
         if self.world is None:
             return Coverage("inapplicable", "this host instantiates no simulated world")

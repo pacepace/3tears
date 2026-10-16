@@ -739,11 +739,10 @@ _SELF_KEYED_PAYLOAD_READERS: dict[str, tuple[tuple[str, str], ...]] = {
 def _host_payload_reads(tree: ast.AST) -> list[ast.AST]:
     """Every attribute or subscript access to ``host_payload`` in a parsed module.
 
-    Args:
-        tree: The parsed module.
-
-    Returns:
-        The reaching nodes.
+    :param tree: The parsed module.
+    :ptype tree: ast.AST
+    :return: The reaching nodes.
+    :rtype: list[ast.AST]
     """
     return [
         node
@@ -765,13 +764,13 @@ def _self_keyed_violations(source: str, keys: tuple[tuple[str, str], ...]) -> li
     module's constants and reads nothing by a string literal (subscript or ``.get``) — so the
     only keys it can reach are its own.
 
-    Args:
-        source: The module's source.
-        keys: The module's ``(key constant, writer)`` pairs: each constant naming a payload key it
-            owns, and the function that writes that payload.
-
-    Returns:
-        The failed conditions, as sentences.
+    :param source: The module's source.
+    :ptype source: str
+    :param keys: The module's ``(key constant, writer)`` pairs: each constant naming a payload key it
+        owns, and the function that writes that payload.
+    :ptype keys: tuple[tuple[str, str], ...]
+    :return: The failed conditions, as sentences.
+    :rtype: list[str]
     """
     tree = ast.parse(source)
     problems: list[str] = []

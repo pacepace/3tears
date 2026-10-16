@@ -104,16 +104,15 @@ class AbandonedRunSweepReport(EvalBaseModel):
 def get_run(storage: RunStore, run_id: str, scope_id: str) -> EvalRun:
     """Load an eval run by id within its scope, whole.
 
-    Args:
-        storage: The run's store.
-        run_id: The run to load.
-        scope_id: The partition the run lives in.
-
-    Returns:
-        The run.
-
-    Raises:
-        NotFoundError: No run with that id in the scope.
+    :param storage: The run's store.
+    :ptype storage: RunStore
+    :param run_id: The run to load.
+    :ptype run_id: str
+    :param scope_id: The partition the run lives in.
+    :ptype scope_id: str
+    :return: The run.
+    :rtype: EvalRun
+    :raises NotFoundError: No run with that id in the scope.
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
@@ -133,8 +132,8 @@ def cancel_run(
 
     The run is read as every process reads it (:func:`~threetears.evals.kernel.job_leases.settle_job_record`): one whose
     lease has lapsed is written lost first, and has then ended. A run that has not ended gets the cancel written on
-    its record (:func:`~threetears.evals.kernel.job_leases.request_job_cancel`), which the process holding it reads at its
-    next lease renewal; when that process is this one, ``job_manager`` cancels it at once as well. Either way the
+    its record (:func:`~threetears.evals.kernel.job_leases.request_job_cancel`), which the process holding it reads at
+    its next lease renewal; when that process is this one, ``job_manager`` cancels it at once as well. Either way the
     job's own ``CancelledError`` boundary writes ``cancelled`` (plus ``reason`` into ``cancellation_reason``) as
     the task unwinds. Request-then-converge: the run returned here may still read ``running`` for up to one
     renewal interval — confirm via :func:`get_run`.
@@ -143,23 +142,24 @@ def cancel_run(
     outcome, so an operator's decision to stop is readable apart from the things that broke. Results already
     persisted by the run remain valid and readable.
 
-    Args:
-        storage: The run's store.
-        run_id: Run to cancel.
-        scope_id: The partition the run lives in.
-        job_manager: This process's job manager, to cancel a run it runs without waiting for a renewal; ``None``
-            when the caller has none, and the cancel lands through the record alone.
-        reason: Optional operator-facing reason recorded on the run.
-
-    Returns:
-        The run as persisted after the cancel request (see convergence note above).
-
-    Raises:
-        NotFoundError: No run with that id in the scope.
-        ValidationFailedError: The run has already ended (``completed`` / ``failed`` / ``cancelled`` /
-            ``budget_stopped`` / ``exhausted``) — lost included, which this read may have just written.
-        ConflictError: The run kept changing while its lapsed lease was being written lost; nothing was decided.
-        StorageError: A read or the request's write failed.
+    :param storage: The run's store.
+    :ptype storage: LeaseStore
+    :param run_id: Run to cancel.
+    :ptype run_id: str
+    :param scope_id: The partition the run lives in.
+    :ptype scope_id: str
+    :param job_manager: This process's job manager, to cancel a run it runs without waiting for a renewal; ``None``
+        when the caller has none, and the cancel lands through the record alone.
+    :ptype job_manager: EvalJobManager | None
+    :param reason: Optional operator-facing reason recorded on the run.
+    :ptype reason: str | None
+    :return: The run as persisted after the cancel request (see convergence note above).
+    :rtype: EvalRun
+    :raises NotFoundError: No run with that id in the scope.
+    :raises ValidationFailedError: The run has already ended (``completed`` / ``failed`` / ``cancelled`` /
+        ``budget_stopped`` / ``exhausted``) — lost included, which this read may have just written.
+    :raises ConflictError: The run kept changing while its lapsed lease was being written lost; nothing was decided.
+    :raises StorageError: A read or the request's write failed.
     """
     run, _ = settle_job_record(storage, RUN_JOB, run_id, scope_id)
     if run is None:
@@ -184,11 +184,9 @@ def cancel_run(
 def require_cancellable(run: EvalRun) -> None:
     """Refuse a cancel of a run that has already ended — :func:`cancel_run`'s first check, for a caller that splits it.
 
-    Args:
-        run: The run as read.
-
-    Raises:
-        ValidationFailedError: The run is already terminal; a lost run says so, with its cause.
+    :param run: The run as read.
+    :ptype run: EvalRun
+    :raises ValidationFailedError: The run is already terminal; a lost run says so, with its cause.
     """
     if run.status not in NON_TERMINAL_RUN_STATUSES:
         lost = f"; it was lost: {run.lost.cause}" if run.lost is not None else ""
@@ -229,15 +227,15 @@ def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> Abando
     all be read is not one of them: it is written lost with its completeness unknown, since settling reads nothing
     past the run that can fail it (:func:`~threetears.evals.kernel.job_leases.settle_tolerantly`).
 
-    Args:
-        storage: The runs' store.
-        scopes: The scopes to sweep, which the host names — the engine cannot enumerate the scopes a store holds
-            and does not assume the store can. Each is scanned in turn.
-
-    Returns:
-        Counts plus the ids written lost. ``already_settled`` / ``skipped_live`` / ``unreadable`` say why a scan
+    :param storage: The runs' store.
+    :ptype storage: ReclaimStore
+    :param scopes: The scopes to sweep, which the host names — the engine cannot enumerate the scopes a store holds
+        and does not assume the store can. Each is scanned in turn.
+    :ptype scopes: Iterable[str]
+    :return: Counts plus the ids written lost. ``already_settled`` / ``skipped_live`` / ``unreadable`` say why a scan
         wrote less than it saw — ``skipped_live`` counts runs some process holds a live lease on, and a non-zero
         ``unreadable`` means the corpus has outlived the model that wrote it.
+    :rtype: AbandonedRunSweepReport
     """
     runs: list[EvalRun] = []
     unreadable_rows = 0
@@ -310,30 +308,29 @@ async def rejudge_result(
     which is worse than leaving it missing. All refusals are raised before any judge
     call is paid for.
 
-    Args:
-        host: The host: the result's store, the judge clients it builds — through the same
-            run-pinned resolution the launch scored through — and how a judge call that raised
-            becomes the text its outcome keeps.
-        result_id: The result to re-judge.
-        scope_id: The partition the result's run lives in.
-
-    Returns:
-        The result as stored after the re-judge. Dims that failed again stay missing
+    :param host: The host: the result's store, the judge clients it builds — through the same
+        run-pinned resolution the launch scored through — and how a judge call that raised
+        becomes the text its outcome keeps.
+    :ptype host: EvalHost
+    :param result_id: The result to re-judge.
+    :ptype result_id: str
+    :param scope_id: The partition the result's run lives in.
+    :ptype scope_id: str
+    :return: The result as stored after the re-judge. Dims that failed again stay missing
         and are named in its recomposed ``judge_error``.
-
-    Raises:
-        NotFoundError: No result, run, template, judge config or test case with the recorded id.
-        ValidationFailedError: The result has no failed judge dimension, or an apparatus
-            input cannot be reproduced (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`
-            names which input and why).
-        ConflictError: The rewrite did not land — something else wrote the result
-            between the read and the write, or the write failed (storage reports both
-            as one ``False``). Nothing was stored, and the judge spend is on the log line.
-        ValueError: The host supplies no completion clients, so nothing could re-judge.
-        CompletionProtocolDefect: The judge client's completion does not meet the protocol — the host's defect.
-            Nothing is stored; the spend is on the log line.
-        StorageError: The result was re-scored and stored but its run's excluded-cell count
-            could not be updated.
+    :rtype: EvalResult
+    :raises NotFoundError: No result, run, template, judge config or test case with the recorded id.
+    :raises ValidationFailedError: The result has no failed judge dimension, or an apparatus
+        input cannot be reproduced (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`
+        names which input and why).
+    :raises ConflictError: The rewrite did not land — something else wrote the result
+        between the read and the write, or the write failed (storage reports both
+        as one ``False``). Nothing was stored, and the judge spend is on the log line.
+    :raises ValueError: The host supplies no completion clients, so nothing could re-judge.
+    :raises CompletionProtocolDefect: The judge client's completion does not meet the protocol — the host's defect.
+        Nothing is stored; the spend is on the log line.
+    :raises StorageError: The result was re-scored and stored but its run's excluded-cell count
+        could not be updated.
     """
     storage = host.storage
     clients = host.completion_clients("a re-judge")
@@ -395,15 +392,14 @@ async def rejudge_result(
 def _rejudge_inputs(
     storage: EvalStorage, result_id: str, scope_id: str
 ) -> tuple[EvalResult, str | None, EvalRun, ReproducibleJudgeInputs, list[str]]:
-    """Everything a re-judge reads before it pays for a call, or the refusal — the store reads of :func:`rejudge_result`.
+    """Everything a re-judge reads before it pays for a call, or the refusal — the store reads of
+    :func:`rejudge_result`.
 
-    Returns:
-        The result, the etag its rewrite must present, its run, the run's reproduced judge inputs, and the
+    :return: The result, the etag its rewrite must present, its run, the run's reproduced judge inputs, and the
         dims to re-ask.
-
-    Raises:
-        NotFoundError: No result, run, template, judge config or test case with the recorded id.
-        ValidationFailedError: Nothing to re-judge, or an apparatus input cannot be reproduced.
+    :rtype: tuple[EvalResult, str | None, EvalRun, ReproducibleJudgeInputs, list[str]]
+    :raises NotFoundError: No result, run, template, judge config or test case with the recorded id.
+    :raises ValidationFailedError: Nothing to re-judge, or an apparatus input cannot be reproduced.
     """
     # Every store hands a found document's etag back (the port's contract), so the rewrite is
     # conditional: a re-judge racing another writer of this result is refused rather than clobbering it.
@@ -453,9 +449,8 @@ def _recount_rejudged_exclusion(
     run document has other writers. It runs after the result write has landed, so a
     failure here is reported as the run's count being stale, never as the re-judge failing.
 
-    Raises:
-        StorageError: The result is stored and re-scored, and the run's count could not be
-            updated after every attempt.
+    :raises StorageError: The result is stored and re-scored, and the run's count could not be
+        updated after every attempt.
     """
     if (
         classify_result(before) is not ResultOutcome.INFRA_EXCLUDE
@@ -558,22 +553,26 @@ def record_completeness(
     run's unknown completeness reads with its cause beside it rather than only
     in the log; that write failing too is logged with both errors.
 
-    Args:
-        storage: The run's store.
-        run_id: The run whose loop just finished.
-        scope_id: The partition the run lives in.
-        cells: One summary per cell the loop ran.
-        metered: The run ledger's final tally of metered third-party calls, or
-            ``None`` for a caller with no ledger. Written on the SAME document
-            write as the completeness record because it answers the same
-            question from the other side: completeness says how much of the
-            matrix was delivered, this says whether what was delivered was
-            measured against a world the candidate could fully reach. Both are
-            lost if the write is lost, so pairing them costs nothing and keeps
-            the two from disagreeing about which attempt won the race. Unlike
-            the completeness counts it is NOT recomputed per attempt — the
-            tally belongs to the run's ledger, not to whichever document
-            version this write lands on.
+    :param storage: The run's store.
+    :ptype storage: JobStore
+    :param run_id: The run whose loop just finished.
+    :ptype run_id: str
+    :param scope_id: The partition the run lives in.
+    :ptype scope_id: str
+    :param cells: One summary per cell the loop ran.
+    :ptype cells: Sequence[CellSummary]
+    :param metered: The run ledger's final tally of metered third-party calls, or
+        ``None`` for a caller with no ledger. Written on the SAME document
+        write as the completeness record because it answers the same
+        question from the other side: completeness says how much of the
+        matrix was delivered, this says whether what was delivered was
+        measured against a world the candidate could fully reach. Both are
+        lost if the write is lost, so pairing them costs nothing and keeps
+        the two from disagreeing about which attempt won the race. Unlike
+        the completeness counts it is NOT recomputed per attempt — the
+        tally belongs to the run's ledger, not to whichever document
+        version this write lands on.
+    :ptype metered: MeteredCallTally | None
     """
     record: RunCompleteness | None = None
 

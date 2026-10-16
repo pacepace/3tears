@@ -155,16 +155,18 @@ class MemoStyle:
     ) -> str:
         """One sentence the memo stands on (a title, an answer, a proposal), held to every rule.
 
-        Args:
-            text: What the memo wrote.
-            fallback: What code says instead when the sentence restates a measured number: the finding's table row.
-            decides: Whether the sentence asserts a decision (an answer, a title, an adopted proposal), so a settled
-                rule it contradicts replaces it; a deferred proposal or a next step asserts none.
-            settled: Code's sentence on a reading a clause the rule settled, which replaces a sentence disputing that
-                difference (:data:`_HEDGES`); None where no settled clause reads it.
-
-        Returns:
-            The sentence to print; its remaining violations are recorded.
+        :param text: What the memo wrote.
+        :ptype text: str
+        :param fallback: What code says instead when the sentence restates a measured number: the finding's table row.
+        :ptype fallback: str | None
+        :param decides: Whether the sentence asserts a decision (an answer, a title, an adopted proposal), so a settled
+            rule it contradicts replaces it; a deferred proposal or a next step asserts none.
+        :ptype decides: bool
+        :param settled: Code's sentence on a reading a clause the rule settled, which replaces a sentence disputing that
+            difference (:data:`_HEDGES`); None where no settled clause reads it.
+        :ptype settled: str | None
+        :return: The sentence to print; its remaining violations are recorded.
+        :rtype: str
         """
         named = self.names_arms(" ".join(text.split()))
         if decides and self._decides_otherwise(named) and self.rule_sentence is not None:
@@ -188,15 +190,16 @@ class MemoStyle:
     def prose(self, text: str, *, settled: str | None = None, said: str | None = None) -> str:
         """A paragraph in a fold (a finding's body, a caveat), each sentence held to every rule.
 
-        Args:
-            text: What the memo wrote.
-            settled: Code's sentence on a reading a clause the rule settled, which replaces a sentence disputing that
-                difference; None where no settled clause reads it.
-            said: What the finding already printed: a disputing sentence is dropped, not replaced, where that holds
-                code's sentence already.
-
-        Returns:
-            The kept sentences; a sentence restating a measured number or breaking a fixable rule is dropped.
+        :param text: What the memo wrote.
+        :ptype text: str
+        :param settled: Code's sentence on a reading a clause the rule settled, which replaces a sentence disputing that
+            difference; None where no settled clause reads it.
+        :ptype settled: str | None
+        :param said: What the finding already printed: a disputing sentence is dropped, not replaced, where that holds
+            code's sentence already.
+        :ptype said: str | None
+        :return: The kept sentences; a sentence restating a measured number or breaking a fixable rule is dropped.
+        :rtype: str
         """
         kept = []
         for part in sentences(self.names_arms(text)):

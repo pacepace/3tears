@@ -39,15 +39,14 @@ RefusedSetting = Literal[
 class SettingRefusal:
     """A provider refusing a request for one setting it carried, in the provider's own words.
 
-    Attributes:
-        setting: What was refused (:data:`RefusedSetting`).
-        message: The provider's own message, for the log; never the whole body.
-        word: For ``effort_word``, the word refused, or ``None`` for the one the request carried.
-        accepted: For ``effort_word``, the words the provider listed as taken, when it listed them.
-        limit: For ``max_tokens``, the model's own output cap, as the provider named it.
-        beside_reasoning: For ``temperature``, that the refused request reasoned (an effort word other than
-            ``none``, or a budget), so what it teaches holds beside reasoning only. Set by
-            :func:`~threetears.evals.negotiation.negotiate` from the refused request; a reader leaves it ``False``.
+    :ivar setting: What was refused (:data:`RefusedSetting`).
+    :ivar message: The provider's own message, for the log; never the whole body.
+    :ivar word: For ``effort_word``, the word refused, or ``None`` for the one the request carried.
+    :ivar accepted: For ``effort_word``, the words the provider listed as taken, when it listed them.
+    :ivar limit: For ``max_tokens``, the model's own output cap, as the provider named it.
+    :ivar beside_reasoning: For ``temperature``, that the refused request reasoned (an effort word other than
+        ``none``, or a budget), so what it teaches holds beside reasoning only. Set by
+        :func:`~threetears.evals.negotiation.negotiate` from the refused request; a reader leaves it ``False``.
     """
 
     setting: RefusedSetting
@@ -60,11 +59,10 @@ class SettingRefusal:
     def teach(self, facts: SettingFacts) -> SettingFacts:
         """``facts`` with what this refusal says added.
 
-        Args:
-            facts: What was known of the model.
-
-        Returns:
-            What is known once the refusal is.
+        :param facts: What was known of the model.
+        :ptype facts: SettingFacts
+        :return: What is known once the refusal is.
+        :rtype: SettingFacts
         """
         if self.setting == "temperature":
             if self.beside_reasoning:

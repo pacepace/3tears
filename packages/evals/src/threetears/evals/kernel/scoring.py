@@ -113,12 +113,13 @@ class CellSummary:
     def from_result(cls, result: EvalResult, *, persisted: bool) -> CellSummary:
         """Summarize a persisted result down to its bounded coordinates.
 
-        Args:
-            result: the result that was just written.
-            persisted: what ``storage.save_eval_result`` reported. Required
-                rather than defaulted, so a new call site has to state whether
-                the write was checked instead of inheriting an optimistic
-                ``True``.
+        :param result: the result that was just written.
+        :ptype result: EvalResult
+        :param persisted: what ``storage.save_eval_result`` reported. Required
+            rather than defaulted, so a new call site has to state whether
+            the write was checked instead of inheriting an optimistic
+            ``True``.
+        :ptype persisted: bool
         """
         return cls(
             result_id=result.id,
@@ -144,12 +145,12 @@ def summarize_completeness(run: EvalRun, cells: Sequence[CellSummary]) -> RunCom
     :attr:`~threetears.evals.schema.models.RunCompleteness.measured_cells` (persisted minus
     excluded) cannot double-subtract a cell that was both excluded and lost.
 
-    Args:
-        run: The authoritative run document — the source of the promised matrix.
-        cells: What :func:`~threetears.evals.run.runner.execute_run` returned, one summary per cell it ran.
-
-    Returns:
-        The counts, ready to store on the run.
+    :param run: The authoritative run document — the source of the promised matrix.
+    :ptype run: EvalRun
+    :param cells: What :func:`~threetears.evals.run.runner.execute_run` returned, one summary per cell it ran.
+    :ptype cells: Sequence[CellSummary]
+    :return: The counts, ready to store on the run.
+    :rtype: RunCompleteness
     """
     persisted = [cell for cell in cells if cell.persisted]
     return RunCompleteness(
@@ -178,12 +179,12 @@ def reconstruct_completeness(run: EvalRun, results: Sequence[EvalResult]) -> Run
     <threetears.evals.schema.models.RunCompleteness.counted_from>` records that this is a
     reconstruction so no reader has to infer it from the equality.
 
-    Args:
-        run: The abandoned run being reclaimed — the source of the promised matrix.
-        results: Every result stored against that run.
-
-    Returns:
-        The counts, ready to store on the run.
+    :param run: The abandoned run being reclaimed — the source of the promised matrix.
+    :ptype run: EvalRun
+    :param results: Every result stored against that run.
+    :ptype results: Sequence[EvalResult]
+    :return: The counts, ready to store on the run.
+    :rtype: RunCompleteness
     """
     return RunCompleteness(
         expected_cells=run.expected_cells,
@@ -212,11 +213,10 @@ def boundary_dim_names(rubric: Iterable[RubricDim]) -> frozenset[str]:
     off the definition here and records the boundary ones on the result
     (:attr:`~threetears.evals.schema.models.EvalResult.judge_cannot_tell_boundary`).
 
-    Args:
-        rubric: The template's rubric dims.
-
-    Returns:
-        The boundary dims' names.
+    :param rubric: The template's rubric dims.
+    :ptype rubric: Iterable[RubricDim]
+    :return: The boundary dims' names.
+    :rtype: frozenset[str]
     """
     return frozenset(dim.name for dim in rubric if dim.axis == "boundary")
 
@@ -247,12 +247,11 @@ def result_composite(result: EvalResult) -> float | None:
     cases, a caller that needs to tell them apart (drop vs coerce) must call
     :func:`classify_result` itself — :func:`~threetears.evals.kernel.scoring._group_case_composites` does.
 
-    Args:
-        result: The eval result to score.
-
-    Returns:
-        The 0–1 composite, ``0.0`` for a candidate failure, or ``None`` when
+    :param result: The eval result to score.
+    :ptype result: EvalResult
+    :return: The 0–1 composite, ``0.0`` for a candidate failure, or ``None`` when
         there is no scoreable quality signal (infra-excluded or no rubric dims).
+    :rtype: float | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -272,11 +271,10 @@ def composite_basis(result: EvalResult) -> list[str] | None:
     what the arithmetic used rather than what the template declares. ``[]`` is a composite meaned over
     nothing: a candidate failure's ``0.0`` is a score by policy, not an average of any dimension.
 
-    Args:
-        result: The eval result.
-
-    Returns:
-        The sorted dimension names, ``[]`` for a composite set by policy, or None when there is no composite.
+    :param result: The eval result.
+    :ptype result: EvalResult
+    :return: The sorted dimension names, ``[]`` for a composite set by policy, or None when there is no composite.
+    :rtype: list[str] | None
     """
     if result_composite(result) is None:
         return None
@@ -314,13 +312,12 @@ class CompositeBasis(EvalBaseModel):
 def pool_composite_bases(bases: Iterable[Sequence[str] | None]) -> CompositeBasis | None:
     """The basis of a composite pooled from members with these bases — the one reading every pooled surface uses.
 
-    Args:
-        bases: Each pooled member's basis (:func:`composite_basis`, or
-            :attr:`~threetears.evals.analysis.reporting.ScoreRecord.dimension_basis` on a composite row); None
-            for a member with no composite, which pooled nothing.
-
-    Returns:
-        The pooled basis, or None when no member carried a composite.
+    :param bases: Each pooled member's basis (:func:`composite_basis`, or
+        :attr:`~threetears.evals.analysis.reporting.ScoreRecord.dimension_basis` on a composite row); None
+        for a member with no composite, which pooled nothing.
+    :ptype bases: Iterable[Sequence[str] | None]
+    :return: The pooled basis, or None when no member carried a composite.
+    :rtype: CompositeBasis | None
     """
     present = [tuple(basis) for basis in bases if basis is not None]
     if not present:
@@ -428,16 +425,14 @@ def _pass_hat_k_curve(attempts_by_case: Iterable[Sequence[bool]]) -> list[PassHa
 def pass_hat_k_at(curve: Sequence[PassHatPoint], k: int) -> PassHatPoint:
     """Read one depth off a pass^k curve, as an unmeasured point when the curve never reached it.
 
-    Args:
-        curve: A curve from :func:`compute_pass_hat_k` or :func:`pool_pass_hat_k`.
-        k: The depth wanted, at least 1.
-
-    Returns:
-        The curve's point at ``k``, or ``{"k": k, "pass_hat_k": None, "n_cases": 0}`` when no
+    :param curve: A curve from :func:`compute_pass_hat_k` or :func:`pool_pass_hat_k`.
+    :ptype curve: Sequence[PassHatPoint]
+    :param k: The depth wanted, at least 1.
+    :ptype k: int
+    :return: The curve's point at ``k``, or ``{"k": k, "pass_hat_k": None, "n_cases": 0}`` when no
         case was measured that deep.
-
-    Raises:
-        ValueError: ``k`` is below 1, where pass^k has no meaning.
+    :rtype: PassHatPoint
+    :raises ValueError: ``k`` is below 1, where pass^k has no meaning.
     """
     if k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
@@ -462,11 +457,10 @@ def has_pass_criterion(result: EvalResult) -> bool:
     failing every criterion it never had. A result whose run pinned a judge (``judge_model``) is in, scored or
     not: its criteria were asked, so a judged arm whose candidate failed before the judge ran still fails.
 
-    Args:
-        result: The eval result.
-
-    Returns:
-        True when pass^k can decide the attempt.
+    :param result: The eval result.
+    :ptype result: EvalResult
+    :return: True when pass^k can decide the attempt.
+    :rtype: bool
     """
     capability_cannot_tell = set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
     return bool(
@@ -564,14 +558,14 @@ def compute_pass_hat_k(
     pools two configurations. Repeats across RUNS of one configuration are pooled by
     :func:`pool_pass_hat_k`, which is what a cross-run surface calls.
 
-    Args:
-        results: The results to score.
-        rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
-        k: The depth of the headline ``pass_hat_k``. ``None`` takes each group's deepest
-            ``k_iteration`` attempted — the run's planned k on a run that finished its matrix.
-
-    Returns:
-        ``{(model, eval_run_id): {"pass_hat_k": float | None, "k": int, "n_cases_at_k": int,
+    :param results: The results to score.
+    :ptype results: Sequence[EvalResult]
+    :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
+    :ptype rubric_threshold: int
+    :param k: The depth of the headline ``pass_hat_k``. ``None`` takes each group's deepest
+        ``k_iteration`` attempted — the run's planned k on a run that finished its matrix.
+    :ptype k: int | None
+    :return: ``{(model, eval_run_id): {"pass_hat_k": float | None, "k": int, "n_cases_at_k": int,
         "pass_hat_k_curve": [{"k", "pass_hat_k", "n_cases"}, ...], "n_test_cases": int,
         "n_cannot_tell_excluded": int, "n_no_criterion_excluded": int,
         "pass_hat_k_unmeasured_reason": str | None}}``.
@@ -590,9 +584,8 @@ def compute_pass_hat_k(
         The default ``k`` counts infra-excluded attempts, so it is the deepest iteration
         *attempted*, and it is per ``(model, run)``: pooling the run's models would let one
         model's deeper cells set the depth for a model that never got past its first.
-
-    Raises:
-        ValueError: ``k`` is below 1.
+    :rtype: dict[tuple[str, str], dict[str, Any]]
+    :raises ValueError: ``k`` is below 1.
     """
     if k is not None and k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
@@ -642,11 +635,10 @@ def pass_hat_k_cell(run: EvalRun) -> tuple[str, ...]:
     cell: nothing recorded says what it held fixed, and pooling it would be a merge nothing
     downstream can undo. Refusing costs only depth.
 
-    Args:
-        run: The run whose cell is wanted.
-
-    Returns:
-        A hashable cell id; equal for two runs exactly when their attempts may pool.
+    :param run: The run whose cell is wanted.
+    :ptype run: EvalRun
+    :return: A hashable cell id; equal for two runs exactly when their attempts may pool.
+    :rtype: tuple[str, ...]
     """
     if run.context_key is None:
         return ("run", run.id)
@@ -665,15 +657,16 @@ def pool_pass_hat_k_attempts(
     interval over them, or a test pairing two contestants on the cases both ran — reads them through the
     one keying that produced the headline rather than re-deriving it.
 
-    Args:
-        results: The pool.
-        cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`; a run absent from it is its own cell.
-        rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
-
-    Returns:
-        ``(attempts, n_cannot_tell)``: each ``(cell, variant_key, identity_version, model, test_case_id)``
+    :param results: The pool.
+    :ptype results: Sequence[EvalResult]
+    :param cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`; a run absent from it is its own cell.
+    :ptype cell_of_run: Mapping[str, Hashable]
+    :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
+    :ptype rubric_threshold: int
+    :return: ``(attempts, n_cannot_tell)``: each ``(cell, variant_key, identity_version, model, test_case_id)``
         unit's scored attempts in result order, and the attempts left out because a judge could not tell.
         A unit whose every attempt was left out is absent.
+    :rtype: tuple[dict[tuple[Hashable, str, int, str, str], list[bool]], int]
     """
     cases: dict[tuple[Hashable, str, int, str, str], list[bool]] = {}
     n_cannot_tell = 0
@@ -693,16 +686,14 @@ def case_pass_hat_k(attempts: Sequence[bool], k: int) -> float | None:
     ``C(c, k) / C(n, k)`` (see :func:`compute_pass_hat_k`): the per-case value every pass^k headline
     averages, public so an interval or a paired test over cases reads the same number the headline does.
 
-    Args:
-        attempts: The case's scored attempts.
-        k: The depth, at least 1.
-
-    Returns:
-        The estimate, or ``None`` when the case has fewer than ``k`` scored attempts — it cannot stand in
+    :param attempts: The case's scored attempts.
+    :ptype attempts: Sequence[bool]
+    :param k: The depth, at least 1.
+    :ptype k: int
+    :return: The estimate, or ``None`` when the case has fewer than ``k`` scored attempts — it cannot stand in
         for a depth it was not measured at.
-
-    Raises:
-        ValueError: ``k`` is below 1.
+    :rtype: float | None
+    :raises ValueError: ``k`` is below 1.
     """
     if k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
@@ -727,20 +718,20 @@ def pool_pass_hat_k(
     model, test_case_id)``, so a caller handing in a mixed pool still never pools two variants,
     and the same test case measured under two cells stays two cases, averaged side by side.
 
-    Args:
-        results: The pool — typically one contestant's results across runs.
-        cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`. A run absent from the map is
-            its own cell, which is the direction that cannot produce a wrong merge.
-        k: The depth of the headline ``pass_hat_k``. Required: a pool spans runs, whose
-            ``k_iteration`` counters restart, so no depth can be read off the attempts.
-        rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
-
-    Returns:
-        One entry in :func:`compute_pass_hat_k`'s row shape, ``n_test_cases`` counting
+    :param results: The pool — typically one contestant's results across runs.
+    :ptype results: Sequence[EvalResult]
+    :param cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`. A run absent from the map is
+        its own cell, which is the direction that cannot produce a wrong merge.
+    :ptype cell_of_run: Mapping[str, Hashable]
+    :param k: The depth of the headline ``pass_hat_k``. Required: a pool spans runs, whose
+        ``k_iteration`` counters restart, so no depth can be read off the attempts.
+    :ptype k: int
+    :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
+    :ptype rubric_threshold: int
+    :return: One entry in :func:`compute_pass_hat_k`'s row shape, ``n_test_cases`` counting
         case-within-cell units.
-
-    Raises:
-        ValueError: ``k`` is below 1.
+    :rtype: dict[str, Any]
+    :raises ValueError: ``k`` is below 1.
     """
     if k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
@@ -758,9 +749,9 @@ def percentile(sorted_values: list[float], pct: float) -> float:
 
     **Nearest-rank, not interpolated**: rank = ceil(pct/100 * n), 1-indexed — an observed value. No engine
     surface reads it: at ``pct=50`` it is the lower middle value at an even count, not the median, which the
-    run summary reads with :func:`median_unbiased_quantile` at 0.5. **It is not the engine's tail estimator**: at ``pct=95`` it is the
-    sample maximum for every ``n <= 19``, which falls below the true 95th percentile most of the time at
-    the sizes a run has, so a tail is read with :func:`median_unbiased_quantile` instead.
+    run summary reads with :func:`median_unbiased_quantile` at 0.5. **It is not the engine's tail estimator**: at
+    ``pct=95`` it is the sample maximum for every ``n <= 19``, which falls below the true 95th percentile most of the
+    time at the sizes a run has, so a tail is read with :func:`median_unbiased_quantile` instead.
 
     **There is a second percentile in this module and it differs on TWO axes.**
     :func:`median_unbiased_quantile` interpolates (Hyndman–Fan type 8) and takes its quantile on the
@@ -785,15 +776,13 @@ def percentile(sorted_values: list[float], pct: float) -> float:
     own rollups — and an underscore on a name another
     module imports says the opposite of what is true.
 
-    Args:
-        sorted_values: Ascending-sorted values, at least one element.
-        pct: The percentile wanted, on the **0-100** scale.
-
-    Returns:
-        The rank-nearest observed value.
-
-    Raises:
-        ValueError: If ``pct`` is outside ``[0, 100]``, or in ``(0, 1]`` — see above.
+    :param sorted_values: Ascending-sorted values, at least one element.
+    :ptype sorted_values: list[float]
+    :param pct: The percentile wanted, on the **0-100** scale.
+    :ptype pct: float
+    :return: The rank-nearest observed value.
+    :rtype: float
+    :raises ValueError: If ``pct`` is outside ``[0, 100]``, or in ``(0, 1]`` — see above.
     """
     if not 0 <= pct <= 100:
         raise ValueError(f"pct must be in [0, 100], got {pct}")
@@ -823,14 +812,11 @@ def median_unbiased_quantile_min_n(q: float) -> int:
     labelled. For the 95th percentile (and the 5th) that is 13 observations: the largest of 13 falls below
     the true 95th percentile ``0.95^13 = 0.51`` of the time, the largest of 5 ``0.95^5 = 0.77`` of it.
 
-    Args:
-        q: The quantile, in ``(0, 1)``.
-
-    Returns:
-        The smallest ``n`` with ``1 <= h <= n``.
-
-    Raises:
-        ValueError: ``q`` is outside ``(0, 1)``.
+    :param q: The quantile, in ``(0, 1)``.
+    :ptype q: float
+    :return: The smallest ``n`` with ``1 <= h <= n``.
+    :rtype: int
+    :raises ValueError: ``q`` is outside ``(0, 1)``.
     """
     if not 0.0 < q < 1.0:
         raise ValueError(f"a quantile needs 0 < q < 1, got {q}")
@@ -855,15 +841,13 @@ def median_unbiased_quantile(sorted_values: Sequence[float], q: float) -> float 
     the sample, and the only figure left is the extreme observation, which is a different statistic
     with a different name. A caller reports the maximum (or minimum) under that name instead.
 
-    Args:
-        sorted_values: The observations, ascending.
-        q: The quantile, in ``(0, 1)`` — on the [0, 1] scale, not :func:`percentile`'s 0–100.
-
-    Returns:
-        The estimate, or ``None`` when the sample is too small to give one.
-
-    Raises:
-        ValueError: ``q`` is outside ``(0, 1)``.
+    :param sorted_values: The observations, ascending.
+    :ptype sorted_values: Sequence[float]
+    :param q: The quantile, in ``(0, 1)`` — on the [0, 1] scale, not :func:`percentile`'s 0–100.
+    :ptype q: float
+    :return: The estimate, or ``None`` when the sample is too small to give one.
+    :rtype: float | None
+    :raises ValueError: ``q`` is outside ``(0, 1)``.
     """
     if not 0.0 < q < 1.0:
         raise ValueError(f"a quantile needs 0 < q < 1, got {q}")
@@ -929,18 +913,18 @@ def compute_latency_summary(
     percentile — at five totals it falls below the true one 77% of the time — so it is reported as
     ``max_total_ms``, under its own name, at every size.
 
-    Returns:
-        ``{(model, eval_run_id): {"mean_total_ms", "median_total_ms",
+    :return: ``{(model, eval_run_id): {"mean_total_ms", "median_total_ms",
         "p95_total_ms", "max_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
         "n_llm_ms", "n_tool_ms", "n_results"}}``, with a component and its
-        count both absent when nothing measured it, and ``p95_total_ms`` absent below 13 totals. ``n_results`` counts the
-        results carrying a :class:`LatencyMetrics` at all; each ``n_<field>``
+        count both absent when nothing measured it, and ``p95_total_ms`` absent below 13 totals. ``n_results`` counts
+        the results carrying a :class:`LatencyMetrics` at all; each ``n_<field>``
         is the denominator its own mean was computed over, and they can
         legitimately disagree.
         ``mean_llm_ms`` is the model-attributable axis (tool time is
         model-independent), so it is the one to compare across models;
         ``mean_tool_ms`` completes the total = llm + tool decomposition
         (total also absorbs framework overhead, so the three need not sum).
+    :rtype: dict[tuple[str, str], dict[str, Any]]
     """
     grouped: dict[tuple[str, str], list[LatencyMetrics]] = {}
     for r in results:
@@ -1026,11 +1010,11 @@ def compute_async_delivery_summary(
       a 95th percentile can be estimated at all (below that the only candidate is the slowest delivery,
       which is not a 95th percentile).
 
-    Returns:
-        ``{(model, eval_run_id): {"async_deliveries", "async_deliveries_substituted",
+    :return: ``{(model, eval_run_id): {"async_deliveries", "async_deliveries_substituted",
         "async_delivery_mean_elapsed_ms", "async_delivery_median_elapsed_ms", "async_delivery_p95_elapsed_ms",
         "async_delivery_elapsed_n"}}``, a group present only when one of its results watched for background
         work, the duration keys absent when no real delivery measured one and the tail absent below 13.
+    :rtype: dict[tuple[str, str], dict[str, Any]]
     """
     grouped: dict[tuple[str, str], list[AsyncDelivery]] = {}
     for r in results:
@@ -1128,12 +1112,12 @@ def compute_cost_summary(
     gap is how many results contributed nothing. Read them, not ``n_results``, when judging how
     well evidenced a cost figure is.
 
-    Returns:
-        ``{(model, eval_run_id): {"total_cost_usd", "mean_cost_usd", "n_cost_usd",
+    :return: ``{(model, eval_run_id): {"total_cost_usd", "mean_cost_usd", "n_cost_usd",
         "total_prod_cost_usd", "mean_prod_cost_usd", "n_prod_cost_usd",
         "n_results"}}``. The program pair is absent when no result in the group was priced,
         and the three prod keys absent together when none measured a production-replicating
         cost. ``n_cost_usd`` and ``n_results`` are always present.
+    :rtype: dict[tuple[str, str], dict[str, Any]]
     """
     grouped: dict[tuple[str, str], list[tuple[float | None, float | None]]] = {}
     for r in results:
@@ -1217,13 +1201,13 @@ def compute_dimension_summary(
     :func:`compute_cost_summary`, which reports every group with results, and the
     run's degraded disclosure names the excluded cells.
 
-    Returns:
-        ``{(model, eval_run_id, dim): {"scale", "mean_score", "min_score",
+    :return: ``{(model, eval_run_id, dim): {"scale", "mean_score", "min_score",
         "max_score", "n"}}``. Scores are the stored integers — 1–5, or 1/0 on a pass/fail
         dimension, whose ``mean_score`` is therefore its pass rate; ``mean_score``
         is a float, ``min_score`` / ``max_score`` are ints. ``n`` counts the
         scores that survived the exclusion above, so it is comparable with
         pass^k's ``n_test_cases`` rather than with the group's raw result count.
+    :rtype: dict[tuple[str, str, str], dict[str, Any]]
     """
     grouped: dict[tuple[str, str, str], list[int]] = {}
     scales: dict[tuple[str, str, str], set[str]] = {}
@@ -1291,10 +1275,10 @@ def _group_case_composites(
     Goal-only groups (no rubric dims anywhere) get an empty ``per_case`` — the
     composite is undefined there, not zero.
 
-    Returns:
-        ``{(model, run_id): {"has_rubric": bool, "per_case": {tc_id: float}, "basis": CompositeBasis | None}}``
+    :return: ``{(model, run_id): {"has_rubric": bool, "per_case": {tc_id: float}, "basis": CompositeBasis | None}}``
         — ``basis`` is what the group's composites were meaned over (:func:`pool_composite_bases`), None when
         the group has no composite.
+    :rtype: dict[tuple[str, str], dict[str, Any]]
     """
     raw: dict[tuple[str, str], dict[str, list[float | None]]] = {}
     has_rubric: dict[tuple[str, str], bool] = {}
@@ -1339,12 +1323,12 @@ def compute_composite_summary(
     questions. ``composite_basis`` carries the union of the bases and marks that pool ragged
     (:class:`CompositeBasis`), so the number cannot be read without it.
 
-    Returns:
-        ``{(model, run_id): {"mean_composite": float | None, "n_cases": int, "composite_basis": dict | None}}``.
+    :return: ``{(model, run_id): {"mean_composite": float | None, "n_cases": int, "composite_basis": dict | None}}``.
         ``mean_composite`` is ``None`` for goal-only groups (no rubric dims);
         ``n_cases`` is the number of cases contributing to the composite (0 when
         undefined); ``composite_basis`` is the :class:`CompositeBasis` as a dict
         (``dimensions``, ``bases``, ``ragged``), ``None`` exactly when ``mean_composite`` is.
+    :rtype: dict[tuple[str, str], dict[str, Any]]
     """
     out: dict[tuple[str, str], dict[str, Any]] = {}
     for key, info in _group_case_composites(results).items():
@@ -1370,8 +1354,8 @@ def compute_per_case_composites(
     comparison can pair scores by ``test_case_id`` across two runs
     for a paired significance test. Goal-only groups contribute nothing.
 
-    Returns:
-        ``{(model, run_id, test_case_id): composite}``.
+    :return: ``{(model, run_id, test_case_id): composite}``.
+    :rtype: dict[tuple[str, str, str], float]
     """
     out: dict[tuple[str, str, str], float] = {}
     for (model, run_id), info in _group_case_composites(results).items():

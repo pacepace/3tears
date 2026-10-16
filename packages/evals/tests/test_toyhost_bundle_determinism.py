@@ -35,13 +35,10 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 def _leaf_diffs(a, b, path=""):
     """Every differing leaf between two JSON-shaped structures.
 
-    Args:
-        a: Left structure.
-        b: Right structure.
-        path: Accumulated dotted path.
-
-    Returns:
-        ``(path, left, right)`` triples, empty when identical.
+    :param a: Left structure.
+    :param b: Right structure.
+    :param path: Accumulated dotted path.
+    :return: ``(path, left, right)`` triples, empty when identical.
     """
     if isinstance(a, dict) and isinstance(b, dict):
         return [d for k in sorted(set(a) | set(b)) for d in _leaf_diffs(a.get(k), b.get(k), f"{path}.{k}")]

@@ -114,18 +114,24 @@ def launch_job_work(
 ) -> JobWork[EvalLaunch]:
     """An admitted launch as work: its launchers run, its runs started together and waited for to their end.
 
-    Args:
-        host: The launching host, whose job manager runs the runs.
-        admitted: The launch as :func:`~threetears.evals.run.admit_launch` admitted it.
-        template_id: The template it launches.
-        subject_id: The subject it measures.
-        models: The models it named, one arm each.
-        k_runs: Repeats of every case.
-        n_variations: Cases it generates first.
-        scope_id: The scope its runs live in.
-
-    Returns:
-        The work; its record is the launch, its id the launch group's.
+    :param host: The launching host, whose job manager runs the runs.
+    :ptype host: LaunchHost
+    :param admitted: The launch as :func:`~threetears.evals.run.admit_launch` admitted it.
+    :ptype admitted: AdmittedLaunch
+    :param template_id: The template it launches.
+    :ptype template_id: str
+    :param subject_id: The subject it measures.
+    :ptype subject_id: str
+    :param models: The models it named, one arm each.
+    :ptype models: list[str]
+    :param k_runs: Repeats of every case.
+    :ptype k_runs: int
+    :param n_variations: Cases it generates first.
+    :ptype n_variations: int
+    :param scope_id: The scope its runs live in.
+    :ptype scope_id: str
+    :return: The work; its record is the launch, its id the launch group's.
+    :rtype: JobWork[EvalLaunch]
     """
     manager = host.job_manager
     record = EvalLaunch(

@@ -38,11 +38,10 @@ _KIND_OF_ERROR: Mapping[type[EvalServiceError], KnownRefusalKind] = {
 def refusal_kind(error: EvalServiceError) -> KnownRefusalKind:
     """The kind an engine error refuses as: its nearest public class's.
 
-    Args:
-        error: The error.
-
-    Returns:
-        The kind; a host's own subclass of a public error takes that error's kind.
+    :param error: The error.
+    :ptype error: EvalServiceError
+    :return: The kind; a host's own subclass of a public error takes that error's kind.
+    :rtype: KnownRefusalKind
     """
     return next(_KIND_OF_ERROR[base] for base in type(error).__mro__ if base in _KIND_OF_ERROR)
 
@@ -50,11 +49,10 @@ def refusal_kind(error: EvalServiceError) -> KnownRefusalKind:
 def job_refusal(error: EvalServiceError) -> JobRefusal:
     """The refusal a job's record keeps when ``error`` ended its work: its kind and its own status.
 
-    Args:
-        error: The engine error that refused the work.
-
-    Returns:
-        The refusal, as a poll of the job serves it.
+    :param error: The engine error that refused the work.
+    :ptype error: EvalServiceError
+    :return: The refusal, as a poll of the job serves it.
+    :rtype: JobRefusal
     """
     return JobRefusal(kind=refusal_kind(error), status=error.status_code)
 

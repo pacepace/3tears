@@ -145,11 +145,9 @@ def _dotted(namespace: str, key: str) -> str:
 def _dotted_registry(address=_dotted) -> WorldRegistry:
     """A host whose dimension names compose the carrier in (``shelf.stock``).
 
-    Args:
-        address: The addressing it declares; the composition by default.
-
-    Returns:
-        The registry.
+    :param address: The addressing it declares; the composition by default.
+    :return: The registry.
+    :rtype: WorldRegistry
     """
     return WorldRegistry(
         [

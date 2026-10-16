@@ -126,12 +126,10 @@ class ApparatusClass(EvalDocumentModel):
     def _unknown_and_recorded_are_disjoint(self) -> ApparatusClass:
         """A dimension cannot be both recorded and unrecorded.
 
-        Returns:
-            The validated class.
-
-        Raises:
-            ValueError: A dimension appears in both maps, which means two producers disagreed
-                about whether it was observed and the class can no longer say which is true.
+        :return: The validated class.
+        :rtype: ApparatusClass
+        :raises ValueError: A dimension appears in both maps, which means two producers disagreed
+            about whether it was observed and the class can no longer say which is true.
         """
         if overlap := sorted(set(self.recorded) & set(self.unknown_dimensions)):
             raise ValueError(f"dimensions are both recorded and unknown: {', '.join(overlap)}")
@@ -248,15 +246,13 @@ class Cell(EvalDocumentModel):
     def _the_counts_agree_with_each_other(self) -> Cell:
         """Every count is arithmetic over the evidence, never a second source of truth for it.
 
-        Returns:
-            The validated cell.
-
-        Raises:
-            ValueError: ``n_observations`` disagrees with ``observation_ids``, which would let a
-                cell report a sample size no list of evidence supports; the case count and the
-                repeats are not all present or all absent; or ``n_cases`` cases repeated between
-                the stated bounds cannot add up to ``n_observations``, which would let a cell
-                state a replication its own sample contradicts.
+        :return: The validated cell.
+        :rtype: Cell
+        :raises ValueError: ``n_observations`` disagrees with ``observation_ids``, which would let a
+            cell report a sample size no list of evidence supports; the case count and the
+            repeats are not all present or all absent; or ``n_cases`` cases repeated between
+            the stated bounds cannot add up to ``n_observations``, which would let a cell
+            state a replication its own sample contradicts.
         """
         if self.n_observations != len(self.observation_ids):
             raise ValueError(
@@ -353,11 +349,9 @@ class NextExperiment(EvalDocumentModel):
     def _recording_can_only_help(self) -> NextExperiment:
         """A next-experiment that promises no gain is noise a reader must still read.
 
-        Returns:
-            The validated entry.
-
-        Raises:
-            ValueError: The promised observation count does not exceed today's, so there is nothing to act on.
+        :return: The validated entry.
+        :rtype: NextExperiment
+        :raises ValueError: The promised observation count does not exceed today's, so there is nothing to act on.
         """
         if self.n_observations_if_recorded <= self.n_observations_now:
             raise ValueError(
@@ -399,20 +393,21 @@ def apparatus_class_of(
 ) -> ApparatusClass:
     """Classify one observation's rig from the dimensions it recorded.
 
-    Args:
-        recorded: Dimension → canonical level. A ``None`` level, or a dimension named in
-            ``dimensions`` and absent here, is an unrecorded dimension.
-        dimensions: Every apparatus dimension the host declares. Supplied so a dimension the
-            registry knows about and this observation never mentioned reads as unrecorded
-            rather than as a dimension that does not exist — those are different facts, and only the
-            declaration can tell them apart.
-        provenance: Whether the rig was set (``commissioned``) or found (``witnessed``). Required:
-            only the writer of the observations knows, and a default would let a log read as an
-            experiment.
-
-    Returns:
-        The class. Its id digests the recorded map, the names of the unrecorded dimensions and the
+    :param recorded: Dimension → canonical level. A ``None`` level, or a dimension named in
+        ``dimensions`` and absent here, is an unrecorded dimension.
+    :ptype recorded: Mapping[str, str | None]
+    :param dimensions: Every apparatus dimension the host declares. Supplied so a dimension the
+        registry knows about and this observation never mentioned reads as unrecorded
+        rather than as a dimension that does not exist — those are different facts, and only the
+        declaration can tell them apart.
+    :ptype dimensions: Collection[str]
+    :param provenance: Whether the rig was set (``commissioned``) or found (``witnessed``). Required:
+        only the writer of the observations knows, and a default would let a log read as an
+        experiment.
+    :ptype provenance: ApparatusProvenance
+    :return: The class. Its id digests the recorded map, the names of the unrecorded dimensions and the
         provenance — see :class:`ApparatusClass` for why none of the three can be dropped.
+    :rtype: ApparatusClass
     """
     known = {name: level for name, level in recorded.items() if level is not None}
     unknown = sorted((set(dimensions) | set(recorded)) - set(known))
@@ -453,12 +448,12 @@ def cell_ref(variant_key: str, apparatus_class_id: str) -> str:
     (:func:`~threetears.evals.analysis.references.cell_of_alias`) back to it, so a stored analysis
     carries this identity and never the alias.
 
-    Args:
-        variant_key: The cell's variant coordinate.
-        apparatus_class_id: The cell's apparatus coordinate.
-
-    Returns:
-        The reference.
+    :param variant_key: The cell's variant coordinate.
+    :ptype variant_key: str
+    :param apparatus_class_id: The cell's apparatus coordinate.
+    :ptype apparatus_class_id: str
+    :return: The reference.
+    :rtype: str
     """
     return f"{variant_key}{_CELL_REF_SEPARATOR}{apparatus_class_id}"
 
@@ -466,14 +461,13 @@ def cell_ref(variant_key: str, apparatus_class_id: str) -> str:
 def variant_of_cell_ref(ref: str) -> str | None:
     """Read the variant coordinate out of a cell reference, or refuse it.
 
-    Args:
-        ref: A reference minted by :func:`cell_ref`.
-
-    Returns:
-        The variant key, or ``None`` when the string is not a cell reference. ``None`` is a
+    :param ref: A reference minted by :func:`cell_ref`.
+    :ptype ref: str
+    :return: The variant key, or ``None`` when the string is not a cell reference. ``None`` is a
         refusal rather than a fallback: a caller that guessed — reading an unparseable ref as
         a bare variant key, say — would place a measurement at a coordinate nobody stated,
         and a number at the wrong arm is the one error a reader cannot see.
+    :rtype: str | None
     """
     variant, separator, apparatus = ref.partition(_CELL_REF_SEPARATOR)
     if not separator or not variant or not apparatus:
@@ -486,12 +480,11 @@ def _refusal(
 ) -> tuple[Literal["apparatus_differs", "apparatus_unknown"], list[str]] | None:
     """Decide whether two apparatus classes may merge, and on what grounds they may not.
 
-    Args:
-        a: One class.
-        b: The other.
-
-    Returns:
-        ``(reason, dimensions)`` when the merge is refused, or None when the two are one class.
+    :param a: One class.
+    :ptype a: ApparatusClass
+    :param b: The other.
+    :ptype b: ApparatusClass
+    :return: ``(reason, dimensions)`` when the merge is refused, or None when the two are one class.
 
         **A definite difference is reported ahead of an unknown, and only dimensions recorded
         on BOTH sides can be different.** Both halves of that matter and they pull opposite
@@ -501,6 +494,7 @@ def _refusal(
         merge is closed whatever else is unknown, and saying ``apparatus_unknown`` there sends
         an operator to record a dimension that cannot change the outcome. Reporting the
         decisive fact first is what keeps the actionable reason actionable.
+    :rtype: tuple[Literal['apparatus_differs', 'apparatus_unknown'], list[str]] | None
     """
     undecidable = set(a.unknown_dimensions) | set(b.unknown_dimensions)
     comparable = (set(a.recorded) & set(b.recorded)) - undecidable
@@ -521,17 +515,15 @@ def pool_observations(
     and three producers would be free to disagree about which observations were in which
     cell.
 
-    Args:
-        observations: Every observation under analysis. Order does not matter; outputs are
-            sorted so the bundle they land in stays fingerprintable.
-        classes: Apparatus class id → the class, for every id the observations reference.
-
-    Returns:
-        ``(cells, refused_merges, next_experiments)``.
-
-    Raises:
-        KeyError: An observation references an apparatus class not in ``classes``, which
-            would silently drop it from every cell.
+    :param observations: Every observation under analysis. Order does not matter; outputs are
+        sorted so the bundle they land in stays fingerprintable.
+    :ptype observations: Sequence[Observation]
+    :param classes: Apparatus class id → the class, for every id the observations reference.
+    :ptype classes: Mapping[str, ApparatusClass]
+    :return: ``(cells, refused_merges, next_experiments)``.
+    :rtype: tuple[list[Cell], list[RefusedMerge], list[NextExperiment]]
+    :raises KeyError: An observation references an apparatus class not in ``classes``, which
+        would silently drop it from every cell.
     """
     grouped: dict[tuple[str, str], list[Observation]] = defaultdict(list)
     for obs in observations:
@@ -563,14 +555,13 @@ def _replication_of(members: Sequence[Observation]) -> dict[str, int | None]:
     pools every run of one setting, so its repeats per case are the sum of theirs, and a run's
     launch count describes only the run.
 
-    Args:
-        members: The observations pooled into the cell.
-
-    Returns:
-        ``n_cases``, ``repeats_per_case_min`` and ``repeats_per_case_max``, all None when any
+    :param members: The observations pooled into the cell.
+    :ptype members: Sequence[Observation]
+    :return: ``n_cases``, ``repeats_per_case_min`` and ``repeats_per_case_max``, all None when any
         observation carries no case reference — a cell partly on a battery and partly off one
         has no single count of cases to state, and counting only the half that has one would
         report a replication for evidence it does not describe.
+    :rtype: dict[str, int | None]
     """
     refs = [obs.case_ref for obs in members]
     if any(ref is None for ref in refs):
@@ -588,13 +579,13 @@ def _replication_of(members: Sequence[Observation]) -> dict[str, int | None]:
 def _refused_merges(cells: Sequence[Cell], classes: Mapping[str, ApparatusClass]) -> list[RefusedMerge]:
     """Name every pair of same-variant cells that stayed apart, and the rule that kept them.
 
-    Args:
-        cells: The pooled cells.
-        classes: Apparatus class id → the class.
-
-    Returns:
-        One entry per refused pair, sorted. Pairs are unordered — a refusal is symmetric, and
+    :param cells: The pooled cells.
+    :ptype cells: Sequence[Cell]
+    :param classes: Apparatus class id → the class.
+    :ptype classes: Mapping[str, ApparatusClass]
+    :return: One entry per refused pair, sorted. Pairs are unordered — a refusal is symmetric, and
         emitting both directions would double every count a reader makes off this list.
+    :rtype: list[RefusedMerge]
     """
     by_variant: dict[str, list[Cell]] = defaultdict(list)
     for cell in cells:
@@ -642,14 +633,14 @@ def _next_experiments(cells: Sequence[Cell], classes: Mapping[str, ApparatusClas
     cells that would then pool are those agreeing on every other recorded dimension and
     sharing a provenance. Anything else is a merge this recording cannot complete.
 
-    Args:
-        cells: The pooled cells.
-        classes: Apparatus class id → the class.
-
-    Returns:
-        One entry per (variant, dimension) that recording could actually unblock, sorted. A
+    :param cells: The pooled cells.
+    :ptype cells: Sequence[Cell]
+    :param classes: Apparatus class id → the class.
+    :ptype classes: Mapping[str, ApparatusClass]
+    :return: One entry per (variant, dimension) that recording could actually unblock, sorted. A
         dimension whose recording would merge nothing is omitted — an entry promising no gain
         is worse than no entry, because a reader acts on it.
+    :rtype: list[NextExperiment]
     """
     by_variant: dict[str, list[Cell]] = defaultdict(list)
     for cell in cells:
@@ -709,16 +700,17 @@ def _reachable_once_recorded(
     nobody can keep — with an empty ``observation_ids``, because no cell in it is actually
     missing the dimension. That entry reaches the analysis bundle and then the generator.
 
-    Args:
-        group: Cells that agree on every recorded dimension OTHER than this one.
-        classes: Apparatus class id → the class.
-        dimension: The dimension whose recording is hypothesised.
-
-    Returns:
-        The cells one recording could pool: every cell missing the dimension, plus the LARGEST
+    :param group: Cells that agree on every recorded dimension OTHER than this one.
+    :ptype group: Sequence[Cell]
+    :param classes: Apparatus class id → the class.
+    :ptype classes: Mapping[str, ApparatusClass]
+    :param dimension: The dimension whose recording is hypothesised.
+    :ptype dimension: str
+    :return: The cells one recording could pool: every cell missing the dimension, plus the LARGEST
         set of cells already agreeing on a single recorded value for it. Largest because the
         unknowns may turn out to match any of the recorded values, and the optimistic branch is
         the one worth showing — but only one of them, since the recorders cannot all be right.
+    :rtype: list[Cell]
     """
     unknown = [c for c in group if dimension in classes[c.apparatus_class_id].unknown_dimensions]
     if not unknown:
@@ -743,17 +735,18 @@ def _mergeable_groups(
 ) -> list[list[Cell]]:
     """Group cells that would become one cell once ``dimension`` is recorded and agrees.
 
-    Args:
-        candidates: Cells whose only unknown is ``dimension`` (or which have none).
-        classes: Apparatus class id → the class.
-        dimension: The dimension whose recording is being hypothesised.
-
-    Returns:
-        The groups, each in cell order. Two cells share a group when they agree on every
+    :param candidates: Cells whose only unknown is ``dimension`` (or which have none).
+    :ptype candidates: Sequence[Cell]
+    :param classes: Apparatus class id → the class.
+    :ptype classes: Mapping[str, ApparatusClass]
+    :param dimension: The dimension whose recording is being hypothesised.
+    :ptype dimension: str
+    :return: The groups, each in cell order. Two cells share a group when they agree on every
         recorded dimension OTHER than the one being hypothesised and share a provenance —
         ``dimension`` itself is excluded from the comparison because the hypothesis is that it
         gets recorded, so a side that already recorded it must not count as disagreeing with a
         side that has not.
+    :rtype: list[list[Cell]]
     """
     grouped: dict[str, list[Cell]] = defaultdict(list)
     for cell in candidates:
@@ -771,12 +764,11 @@ def _mergeable_groups(
 def subject_key_instabilities(observed: Iterable[tuple[str, str]]) -> list[SubjectKeyInstability]:
     """Report subject keys and labels that disagree about how many subjects there are.
 
-    Args:
-        observed: ``(subject_key, subject_label)`` for every observation, duplicates included.
-
-    Returns:
-        Every instability, keys before labels and sorted within each. Empty when the two
+    :param observed: ``(subject_key, subject_label)`` for every observation, duplicates included.
+    :ptype observed: Iterable[tuple[str, str]]
+    :return: Every instability, keys before labels and sorted within each. Empty when the two
         agree, which is the ordinary case and the one that must produce no noise.
+    :rtype: list[SubjectKeyInstability]
     """
     labels_by_key: dict[str, set[str]] = defaultdict(set)
     keys_by_label: dict[str, set[str]] = defaultdict(set)

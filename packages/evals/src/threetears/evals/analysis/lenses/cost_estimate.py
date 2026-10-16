@@ -105,12 +105,12 @@ def _cost_band(history: Sequence[float], n_observations: int) -> tuple[float, fl
     takes the normal-theory band ``t(0.95, n-1) * s * sqrt(m + m^2/n)`` around ``m`` times its mean, floored
     at zero — which assumes symmetric costs and says so.
 
-    Args:
-        history: The past per-observation costs, at least :data:`COST_ESTIMATE_MIN_BASIS` of them.
-        n_observations: How many observations the proposed sweep would run.
-
-    Returns:
-        ``(low, high, basis)``: the band in dollars and the sentence stating its method and assumptions.
+    :param history: The past per-observation costs, at least :data:`COST_ESTIMATE_MIN_BASIS` of them.
+    :ptype history: Sequence[float]
+    :param n_observations: How many observations the proposed sweep would run.
+    :ptype n_observations: int
+    :return: ``(low, high, basis)``: the band in dollars and the sentence stating its method and assumptions.
+    :rtype: tuple[float, float, str]
     """
     from threetears.evals.analysis.stats import (
         INTERVAL_LEVEL,
@@ -168,14 +168,13 @@ class PlannedCost(EvalBaseModel):
     prediction was derived from among them — says how many of its observations the plan did not make
     (:attr:`PivotCell.n_unplanned`).
 
-    Attributes:
-        model: The planned candidate model.
-        template_id: The template the plan runs; ``None`` for an estimate pooled over templates, which sits beside
-            the model's cells whatever their template.
-        run_ids: The runs the plan launched; empty before it launched, when the observed cost beside it is
-            history the plan did not make.
-        n_observations: The observations the prediction totals (cases × repeats).
-        predicted: The predicted total cost, or ``None`` for a model nothing predicted.
+    :ivar model: The planned candidate model.
+    :ivar template_id: The template the plan runs; ``None`` for an estimate pooled over templates, which sits beside
+        the model's cells whatever their template.
+    :ivar run_ids: The runs the plan launched; empty before it launched, when the observed cost beside it is
+        history the plan did not make.
+    :ivar n_observations: The observations the prediction totals (cases × repeats).
+    :ivar predicted: The predicted total cost, or ``None`` for a model nothing predicted.
     """
 
     model: str
@@ -306,11 +305,10 @@ class CostEstimate(EvalBaseModel):
     def planned_costs(self, run_ids: Sequence[str] = ()) -> list[PlannedCost]:
         """Each priced cell as a cost pivot's plan: its model, the template the estimate was scoped to, its prediction.
 
-        Args:
-            run_ids: The runs the plan launched, once it has; empty before.
-
-        Returns:
-            One :class:`PlannedCost` per cell with a prediction and at least one planned observation.
+        :param run_ids: The runs the plan launched, once it has; empty before.
+        :ptype run_ids: Sequence[str]
+        :return: One :class:`PlannedCost` per cell with a prediction and at least one planned observation.
+        :rtype: list[PlannedCost]
         """
         return [
             PlannedCost(
@@ -387,37 +385,47 @@ def compute_estimate_cost(
     Runs carrying no ``template_id`` are ad-hoc, built from explicit test cases, so
     they can match no proposed template and are excluded rather than pooled.
 
-    Args:
-        runs: The corpus runs, supplying each result's cassette mode and subject.
-        results: The corpus results, supplying per-observation ``cost_usd``.
-        models: The candidate models the proposed sweep would run.
-        k_runs: Proposed iterations per test case.
-        n_test_cases: Proposed test-case count.
-        n_settings: How many settings each model runs at — a launch's ``variations``. The
-            historical basis is per MODEL, not per setting, so every setting of one model is
-            priced at that model's mean: a setting that changes how much the candidate works
-            (``agent.max_rounds``, a longer directive) moves its real cost off that mean in
-            whichever direction it moves the work, and nothing in the history can say which.
-        n_test_cases_source: Where that count came from — echoed, not used. Resolving
-            it needs a template read, which this pure function cannot do.
-        template_case_count: The named template's persisted case count; echoed too.
-        template_candidate_kind: The named template's candidate kind; echoed too, because
-            what a zero case count means is the kind's answer rather than the count's.
-        cassette_mode: The proposed run's cassette mode; history is matched to it.
-        subject_id: Optional — restrict the historical basis to one subject.
-        template_id: Optional — restrict the historical basis to one template, which
-            is what the proposed sweep will actually run.
-        computed_at: The instant stamped on each cell's prediction (ISO-8601); ``None`` stamps now.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        A :class:`CostEstimate` — per-model cells, each predicted as a :class:`PredictedValue`, and a total, each banded only where its
-        basis reaches the minimum; a thinner cell carries its point estimate alone, and one
+    :param runs: The corpus runs, supplying each result's cassette mode and subject.
+    :ptype runs: list[EvalRun]
+    :param results: The corpus results, supplying per-observation ``cost_usd``.
+    :ptype results: list[EvalResult]
+    :param models: The candidate models the proposed sweep would run.
+    :ptype models: list[str]
+    :param k_runs: Proposed iterations per test case.
+    :ptype k_runs: int
+    :param n_test_cases: Proposed test-case count.
+    :ptype n_test_cases: int
+    :param n_settings: How many settings each model runs at — a launch's ``variations``. The
+        historical basis is per MODEL, not per setting, so every setting of one model is
+        priced at that model's mean: a setting that changes how much the candidate works
+        (``agent.max_rounds``, a longer directive) moves its real cost off that mean in
+        whichever direction it moves the work, and nothing in the history can say which.
+    :ptype n_settings: int
+    :param n_test_cases_source: Where that count came from — echoed, not used. Resolving
+        it needs a template read, which this pure function cannot do.
+    :ptype n_test_cases_source: Literal['supplied', 'derived', 'generated', 'default']
+    :param template_case_count: The named template's persisted case count; echoed too.
+    :ptype template_case_count: int | None
+    :param template_candidate_kind: The named template's candidate kind; echoed too, because
+        what a zero case count means is the kind's answer rather than the count's.
+    :ptype template_candidate_kind: str | None
+    :param cassette_mode: The proposed run's cassette mode; history is matched to it.
+    :ptype cassette_mode: str
+    :param subject_id: Optional — restrict the historical basis to one subject.
+    :ptype subject_id: str | None
+    :param template_id: Optional — restrict the historical basis to one template, which
+        is what the proposed sweep will actually run.
+    :ptype template_id: str | None
+    :param computed_at: The instant stamped on each cell's prediction (ISO-8601); ``None`` stamps now.
+    :ptype computed_at: str | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: A :class:`CostEstimate` — per-model cells, each predicted as a :class:`PredictedValue`, and a total, each
+        banded only where its basis reaches the minimum; a thinner cell carries its point estimate alone, and one
         unbanded cell leaves the total unbanded too.
-
-    Raises:
-        CostEstimateError: The proposal is malformed — no models, or a
-            non-positive grid.
+    :rtype: CostEstimate
+    :raises CostEstimateError: The proposal is malformed — no models, or a
+        non-positive grid.
     """
     if not models:
         raise CostEstimateError("no models proposed — nothing to estimate")

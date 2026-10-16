@@ -72,11 +72,10 @@ def annotation_carries_prose(annotation: Any) -> bool:
     Walks ``Annotated`` metadata and every type argument, so ``ModelProse | None``,
     ``list[ModelProse]`` and ``Annotated[ModelProse, BeforeValidator(...)]`` all count.
 
-    Args:
-        annotation: A type annotation, as a field declares it.
-
-    Returns:
-        True when the marker appears anywhere in it.
+    :param annotation: A type annotation, as a field declares it.
+    :ptype annotation: Any
+    :return: True when the marker appears anywhere in it.
+    :rtype: bool
     """
     if get_origin(annotation) is Annotated:
         base, *metadata = get_args(annotation)
@@ -90,11 +89,10 @@ def field_is_prose(field: FieldInfo) -> bool:
     Pydantic lifts a field's top-level ``Annotated`` metadata into ``FieldInfo.metadata`` and
     strips it from ``FieldInfo.annotation``, so both are read.
 
-    Args:
-        field: One entry of a model's ``model_fields``.
-
-    Returns:
-        True when the field, or a type inside it, carries the marker.
+    :param field: One entry of a model's ``model_fields``.
+    :ptype field: FieldInfo
+    :return: True when the field, or a type inside it, carries the marker.
+    :rtype: bool
     """
     return any(item is MODEL_PROSE_MARKER for item in field.metadata) or annotation_carries_prose(field.annotation)
 
@@ -109,11 +107,10 @@ def schema_is_prose(schema: Mapping[str, Any] | None) -> bool:
     counts — an array whose items are an ``anyOf`` with one prose branch is prose, as the path addressing
     finds a prose field under a branch.
 
-    Args:
-        schema: A schema node, or None for a position no schema describes.
-
-    Returns:
-        True when the node, or the node's ``items``, carries :data:`PROSE_SCHEMA_KEY` in any of its shapes.
+    :param schema: A schema node, or None for a position no schema describes.
+    :ptype schema: Mapping[str, Any] | None
+    :return: True when the node, or the node's ``items``, carries :data:`PROSE_SCHEMA_KEY` in any of its shapes.
+    :rtype: bool
     """
     if not isinstance(schema, Mapping):
         return False
@@ -136,15 +133,15 @@ def schema_nodes_at(schema: Mapping[str, Any], segments: tuple[str, ...]) -> tup
     walker in the engine reads, so this cannot stop short of a position the honoured-subset audit or the
     registry's self-contradiction check descends into.
 
-    Args:
-        schema: The root schema — a world dimension's value schema, or an action's parameter schema.
-        segments: What the expression addresses below the root, as
-            :attr:`threetears.evals.schema.goal_grammar.TextMatch.operand` spells it.
-
-    Returns:
-        The addressed nodes, each a schema the position can take; empty where no shape describes the position
+    :param schema: The root schema — a world dimension's value schema, or an action's parameter schema.
+    :ptype schema: Mapping[str, Any]
+    :param segments: What the expression addresses below the root, as
+        :attr:`threetears.evals.schema.goal_grammar.TextMatch.operand` spells it.
+    :ptype segments: tuple[str, ...]
+    :return: The addressed nodes, each a schema the position can take; empty where no shape describes the position
         (a ``.length`` pseudo-attribute, an undeclared property). Each caller decides what an undescribed
         position means: the world prose gate refuses nothing on one, the call-parameter gate refuses it.
+    :rtype: tuple[Mapping[str, Any], ...]
     """
     nodes: list[Any] = [schema]
     for segment in segments:

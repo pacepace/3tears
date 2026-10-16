@@ -135,12 +135,12 @@ def _is_literal_text_collection(node: ast.AST) -> bool:
 def matches_over_prose(source: str, prose: frozenset[str]) -> list[tuple[int, str, str]]:
     """Every deterministic string match over a prose field in ``source``.
 
-    Args:
-        source: Python source text.
-        prose: The prose field names.
-
-    Returns:
-        ``(line, field, how)`` per match, in line order.
+    :param source: Python source text.
+    :ptype source: str
+    :param prose: The prose field names.
+    :ptype prose: frozenset[str]
+    :return: ``(line, field, how)`` per match, in line order.
+    :rtype: list[tuple[int, str, str]]
     """
     found: list[tuple[int, str, str]] = []
     for node in ast.walk(ast.parse(source)):

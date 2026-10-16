@@ -56,13 +56,12 @@ class Grader:
 
     Built by :func:`grader`; listed in an eval's ``grader`` as the grader it wraps would be.
 
-    Attributes:
-        target: The function, or the field name.
-        margin: The most a difference in it may be and still be too small to act on, so a contrast on it can read
-            ``equivalent``; ``None`` declares none.
-        guard: Makes it a guardrail with this margin: decided for each arm against the control apart from every
-            contrast, ``held``, ``breached`` or ``undecided``; ``None`` keeps it a quality reading.
-        range: The lowest and highest grade a function returning a number can give; ``None`` for a pass/fail.
+    :ivar target: The function, or the field name.
+    :ivar margin: The most a difference in it may be and still be too small to act on, so a contrast on it can read
+        ``equivalent``; ``None`` declares none.
+    :ivar guard: Makes it a guardrail with this margin: decided for each arm against the control apart from every
+        contrast, ``held``, ``breached`` or ``undecided``; ``None`` keeps it a quality reading.
+    :ivar range: The lowest and highest grade a function returning a number can give; ``None`` for a pass/fail.
     """
 
     target: Callable[[Mapping[str, Any], Any], float | bool] | str
@@ -73,9 +72,9 @@ class Grader:
     def __post_init__(self) -> None:
         """Refuse a declaration no reading could carry.
 
-        Raises:
-            ValueError: A target that is neither a function nor a field name; a margin or guard that is not a positive
-                number; both a margin and a guard; or a range on a field, or one that is not two numbers, low first.
+        :raises ValueError: A target that is neither a function nor a field name; a margin or guard that is not a
+            positive number; both a margin and a guard; or a range on a field, or one that is not two numbers, low
+            first.
         """
         if isinstance(self.target, Judge):
             raise ValueError("a Judge declares its guardrails itself (Judge(guard={'dimension': 0.02})); list it bare")
@@ -138,17 +137,18 @@ def grader(
 ) -> Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]:
     """Declare what a reading needs beside its grade: ``@grader(guard=0.02)``, ``grader("total", margin=0.05)``.
 
-    Args:
-        target: The function or field name to wrap; ``None`` returns a decorator that wraps the function it decorates.
-        margin: The equivalence margin, in the reading's own units (0.05 is five points on a pass rate).
-        guard: Makes the reading a guardrail with this margin.
-        range: The lowest and highest grade a function returning a number gives.
-
-    Returns:
-        The :class:`Grader`, or, with no ``target``, the decorator building one.
-
-    Raises:
-        ValueError: As :class:`Grader` refuses.
+    :param target: The function or field name to wrap; ``None`` returns a decorator that wraps the function it
+        decorates.
+    :ptype target: Callable[[Mapping[str, Any], Any], float | bool] | str | None
+    :param margin: The equivalence margin, in the reading's own units (0.05 is five points on a pass rate).
+    :ptype margin: float | None
+    :param guard: Makes the reading a guardrail with this margin.
+    :ptype guard: float | None
+    :param range: The lowest and highest grade a function returning a number gives.
+    :ptype range: tuple[float, float] | None
+    :return: The :class:`Grader`, or, with no ``target``, the decorator building one.
+    :rtype: Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]
+    :raises ValueError: As :class:`Grader` refuses.
     """
     if target is None:
 
@@ -162,12 +162,13 @@ def grader(
 def field_value(out: Any, name: str) -> Any:
     """The answer's value of one field: an attribute of a pydantic model, a key of a mapping, or the answer itself.
 
-    Args:
-        out: The runner's answer; a world runner's is read through its ``answer``.
-        name: The field.
-
-    Returns:
-        The value as JSON would carry it, or a sentinel the label reads as unusable when the answer has no such field.
+    :param out: The runner's answer; a world runner's is read through its ``answer``.
+    :ptype out: Any
+    :param name: The field.
+    :ptype name: str
+    :return: The value as JSON would carry it, or a sentinel the label reads as unusable when the answer has no such
+        field.
+    :rtype: Any
     """
     if isinstance(out, WorldOutcome):
         out = out.answer
@@ -202,9 +203,8 @@ def predicted_label(out: Any, name: str | None) -> str:
 def expected_label(case: Mapping[str, Any], name: str) -> str:
     """The label a case expects in field ``name``.
 
-    Raises:
-        ValueError: The case has no such field, or its value is no label (blank, ``None``, a list, a mapping), or is
-            :data:`UNUSABLE_ANSWER`.
+    :raises ValueError: The case has no such field, or its value is no label (blank, ``None``, a list, a mapping), or is
+        :data:`UNUSABLE_ANSWER`.
     """
     if name not in case:
         raise ValueError(f"the field grader {name!r} reads the case's {name!r}, which it lacks")
@@ -225,11 +225,10 @@ def field_scorer(name: str) -> GraderFunction:
     field) passes, and any value fails, shown with the answer as every miss is. Only the classifier, which counts
     labels, refuses a ``null``.
 
-    Args:
-        name: The field.
-
-    Returns:
-        The grading function, named ``name`` and annotated ``-> bool``.
+    :param name: The field.
+    :ptype name: str
+    :return: The grading function, named ``name`` and annotated ``-> bool``.
+    :rtype: GraderFunction
     """
 
     def matches(case: Mapping[str, Any], out: Any) -> bool:
@@ -249,16 +248,15 @@ def field_scorer(name: str) -> GraderFunction:
 class GraderPlan:
     """An eval's graders, sorted by what reads them.
 
-    Attributes:
-        scorers: Every function grader, and every field after the classifier, as the measures they report.
-        classifier: The field the run classifies on (the first field listed), or ``None``.
-        fields: Every field grader, in order, the classifier first.
-        goal_checks: Every expression grader.
-        judge: The judge, or ``None``.
-        margins: Each scorer's equivalence margin, by name.
-        ranges: Each numeric scorer's range, by name.
-        guardrails: Each scorer declared a guardrail, by name.
-        classifier_margin: The classifier's accuracy margin, declared on the runs; ``None`` for none.
+    :ivar scorers: Every function grader, and every field after the classifier, as the measures they report.
+    :ivar classifier: The field the run classifies on (the first field listed), or ``None``.
+    :ivar fields: Every field grader, in order, the classifier first.
+    :ivar goal_checks: Every expression grader.
+    :ivar judge: The judge, or ``None``.
+    :ivar margins: Each scorer's equivalence margin, by name.
+    :ivar ranges: Each numeric scorer's range, by name.
+    :ivar guardrails: Each scorer declared a guardrail, by name.
+    :ivar classifier_margin: The classifier's accuracy margin, declared on the runs; ``None`` for none.
     """
 
     scorers: list[GraderFunction] = field(default_factory=list)
@@ -280,16 +278,13 @@ class GraderPlan:
 def plan_graders(graders: Any) -> GraderPlan:
     """Sort an eval's ``grader`` slot into what reads each grader.
 
-    Args:
-        graders: One grader, or a list of them, each a function, a field name, an expression, a
-            :class:`~threetears.evals.quick.judged.Judge` or a :class:`Grader`.
-
-    Returns:
-        The plan.
-
-    Raises:
-        ValueError: No grader; two judges; a grader of no known form; a field named after an engine core measure; or a
-            name graded twice.
+    :param graders: One grader, or a list of them, each a function, a field name, an expression, a
+        :class:`~threetears.evals.quick.judged.Judge` or a :class:`Grader`.
+    :ptype graders: Any
+    :return: The plan.
+    :rtype: GraderPlan
+    :raises ValueError: No grader; two judges; a grader of no known form; a field named after an engine core measure; or
+        a name graded twice.
     """
     listed: Sequence[Any] = graders if isinstance(graders, list | tuple) else [graders]
     if not listed:

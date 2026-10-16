@@ -266,8 +266,7 @@ def _launch_settings(arms: int = 1, max_cost_usd: float | None = None) -> Launch
 def refuse_an_unusable_cap(max_cost_usd: float | None) -> None:
     """Refuse a spend ceiling that is not a positive finite number of US dollars.
 
-    Raises:
-        ValueError: A ``max_cost_usd`` that is a bool, not a number, not finite, or not above 0.
+    :raises ValueError: A ``max_cost_usd`` that is a bool, not a number, not finite, or not above 0.
     """
     if max_cost_usd is not None and (
         isinstance(max_cost_usd, bool)
@@ -279,13 +278,13 @@ def refuse_an_unusable_cap(max_cost_usd: float | None) -> None:
 
 
 def _scorer_reader_name(name: str) -> str:
-    """What a reader calls a scorer's measure: its def's name in words, as a score — ``exact_match`` is "Exact match score".
+    """What a reader calls a scorer's measure: its def's name in words, as a score — ``exact_match`` is "Exact match
+    score".
 
-    Args:
-        name: The scorer's ``__name__``.
-
-    Returns:
-        The reader-facing name its descriptor carries.
+    :param name: The scorer's ``__name__``.
+    :ptype name: str
+    :return: The reader-facing name its descriptor carries.
+    :rtype: str
     """
     words = " ".join(name.replace("_", " ").split())
     return f"{words[:1].upper()}{words[1:]} score"
@@ -310,21 +309,21 @@ def scorer_measure(
     joins no contrast and no composite, with the guardrail's direction and its margin as the measure's
     ``materiality_threshold``.
 
-    Args:
-        scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
-            when it has one, describes it.
-        margin: The measure's declared margin (``materiality_threshold``): the most a difference in it may be and
-            still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
-            and no contrast on it can.
-        value_range: The lowest and highest value a non-``bool`` scorer can return, or ``None``.
-        guardrail: Declares the measure a guardrail, with its margin and direction; ``None`` for a quality score.
-            A guardrail takes no ``margin`` beside it: its margin is the guardrail's own.
-
-    Returns:
-        The descriptor :func:`callable_host` registers for it.
-
-    Raises:
-        ValueError: Both ``margin`` and ``guardrail`` are given.
+    :param scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
+        when it has one, describes it.
+    :ptype scorer: Scorer
+    :param margin: The measure's declared margin (``materiality_threshold``): the most a difference in it may be and
+        still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
+        and no contrast on it can.
+    :ptype margin: float | None
+    :param value_range: The lowest and highest value a non-``bool`` scorer can return, or ``None``.
+    :ptype value_range: tuple[float, float] | None
+    :param guardrail: Declares the measure a guardrail, with its margin and direction; ``None`` for a quality score.
+        A guardrail takes no ``margin`` beside it: its margin is the guardrail's own.
+    :ptype guardrail: Guardrail | None
+    :return: The descriptor :func:`callable_host` registers for it.
+    :rtype: MetricDescriptor
+    :raises ValueError: Both ``margin`` and ``guardrail`` are given.
     """
     name = _scorer_name(scorer)
     doc = inspect.getdoc(scorer)
@@ -389,15 +388,15 @@ def refuse_unusable_margins(
     (#695). A ``bool`` scorer is on 0 to 1; any other has the range ``ranges`` declares for it, or none, and a
     margin on it with none is refused here rather than accepted and never tested.
 
-    Args:
-        scorers: The scorers whose measures the margins are declared on.
-        margins: Each margin, by the name of the scorer it is declared on.
-        ranges: Each non-``bool`` scorer's range, by its name.
-
-    Raises:
-        ValueError: A margin or range on a name no scorer has (the classifier's accuracy and every engine core
-            measure among them), a margin that is not a positive finite number, a range on a ``bool`` scorer or
-            one that is not two finite numbers, low below high, or a margin on a scorer with no range.
+    :param scorers: The scorers whose measures the margins are declared on.
+    :ptype scorers: Sequence[Scorer]
+    :param margins: Each margin, by the name of the scorer it is declared on.
+    :ptype margins: Mapping[str, float]
+    :param ranges: Each non-``bool`` scorer's range, by its name.
+    :ptype ranges: Mapping[str, tuple[float, float]] | None
+    :raises ValueError: A margin or range on a name no scorer has (the classifier's accuracy and every engine core
+        measure among them), a margin that is not a positive finite number, a range on a ``bool`` scorer or
+        one that is not two finite numbers, low below high, or a margin on a scorer with no range.
     """
     ranges = dict(ranges or {})
     names = [_scorer_name(scorer) for scorer in scorers]
@@ -455,8 +454,7 @@ def refuse_unusable_margins(
 def refuse_a_store_beside_a_host(store: DocumentStore | None, host: EvalHost | None) -> None:
     """Refuse ``store=`` beside ``host=``: a host brings its own storage, and one call stores in one place.
 
-    Raises:
-        ValueError: Both were given.
+    :raises ValueError: Both were given.
     """
     if store is not None and host is not None:
         raise ValueError(
@@ -484,16 +482,17 @@ def refuse_unusable_guardrails(
     A judged dimension's guardrail is the :class:`~threetears.evals.quick.judged.Judge`'s to declare and refuse
     (``Judge(guard=...)``); this holds a function grader's.
 
-    Args:
-        scorers: The graders whose measures a guardrail may be declared on.
-        guardrails: Each guardrail, by the name of the grader it is declared on.
-        margins: The margins declared beside them, by grader.
-        ranges: The ranges declared for graders returning a number, by grader.
-
-    Raises:
-        ValueError: A guardrail that is not a :class:`~threetears.evals.quick.guardrails.Guardrail`; on an engine core
-            measure, or a name no grader has; on a grader also given a margin; or a margin as wide as the grader's
-            range (0 to 1 for a pass/fail).
+    :param scorers: The graders whose measures a guardrail may be declared on.
+    :ptype scorers: Sequence[Scorer]
+    :param guardrails: Each guardrail, by the name of the grader it is declared on.
+    :ptype guardrails: Mapping[str, Guardrail]
+    :param margins: The margins declared beside them, by grader.
+    :ptype margins: Mapping[str, float] | None
+    :param ranges: The ranges declared for graders returning a number, by grader.
+    :ptype ranges: Mapping[str, tuple[float, float]] | None
+    :raises ValueError: A guardrail that is not a :class:`~threetears.evals.quick.guardrails.Guardrail`; on an engine
+        core measure, or a name no grader has; on a grader also given a margin; or a margin as wide as the grader's
+        range (0 to 1 for a pass/fail).
     """
     names = [_scorer_name(scorer) for scorer in scorers]
     by_name = dict(zip(names, scorers, strict=True))
@@ -532,14 +531,11 @@ def callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, K
     accepts as a campaign's axis. A host of the caller's own declares these on its profile's ``kinds`` to
     take an arm's levers.
 
-    Args:
-        levers: The levers' names.
-
-    Returns:
-        The unjudged kind's contract, then the judged kind's.
-
-    Raises:
-        ValueError: A lever name no overlay field could carry, ``model``, or one given twice.
+    :param levers: The levers' names.
+    :ptype levers: Sequence[str]
+    :return: The unjudged kind's contract, then the judged kind's.
+    :rtype: tuple[KindContract, KindContract]
+    :raises ValueError: A lever name no overlay field could carry, ``model``, or one given twice.
     """
     if not levers:
         return CALLABLE_KIND_CONTRACT, JUDGED_CALLABLE_KIND_CONTRACT
@@ -595,49 +591,56 @@ def callable_host(
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
-    What :class:`~threetears.evals.quick.contract.Eval` builds when it is handed no host. With no ``store``, its store lives as long as the
-    returned value, so a caller wanting to run several candidates into one store and compare them builds this
-    once and hands it to each call. With one, the runs are wherever that store keeps them, and a later process
-    reads them through ``callable_host(<the same scorers>, store=<the same store>)``. A classifier's ``match`` and ``confusion_cell`` are core measures,
-    so a host for a classifier with no scorers of its own declares none: ``callable_host()``. It declares
-    the contracts of both callable kinds, so one host serves judged and unjudged calls alike.
+    What :class:`~threetears.evals.quick.contract.Eval` builds when it is handed no host. With no ``store``, its store
+    lives as long as the returned value, so a caller wanting to run several candidates into one store and compare them
+    builds this once and hands it to each call. With one, the runs are wherever that store keeps them, and a later
+    process reads them through ``callable_host(<the same scorers>, store=<the same store>)``. A classifier's ``match``
+    and ``confusion_cell`` are core measures, so a host for a classifier with no scorers of its own declares none:
+    ``callable_host()``. It declares the contracts of both callable kinds, so one host serves judged and unjudged calls
+    alike.
 
-    Args:
-        scorers: The scorer functions whose measures the host declares.
-        levers: The levers every run in this host states a level of beside its model
-            (:func:`callable_kind_contracts`), each handed to :class:`~threetears.evals.quick.contract.Eval` as ``levers=``.
-        world: The world a world run seeds (:class:`~threetears.evals.quick.world.World`), declared on the
-            profile; ``None`` declares none.
-        arms: Declare :data:`ARM_LEVER`, the lever a comparison (an eval whose runner is a mapping of arms)
-            names its arms on, so its report reads ``candidate=<name>``; what a comparison builds when handed no
-            host. A run that states no arm (an eval of one arm in this host) is at its candidate model's label.
-        margins: A margin declared on a scorer's measure, by the scorer's name (:func:`scorer_measure`), so a
-            contrast on it can read ``equivalent``; ``None`` declares none. No margin is ever assumed.
-        ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
-            (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
-            scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
-        store: Where every document is stored (any :class:`~threetears.evals.schema.DocumentStore`):
-            :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs in a file. ``None`` builds a fresh
-            :class:`~threetears.evals.storage.InMemoryDocumentStore`, which keeps nothing past the process.
-        clients: The completion clients the engine's own model calls use after the run (a re-judge, an
-            analysis), as :class:`~threetears.evals.kernel.host.EvalHost` takes them; ``None`` supplies none,
-            and a call needing them is refused. A :class:`~threetears.evals.quick.Judge` brings its own for the run.
-        trace_sink: Where each cell's trace is sent, as :class:`~threetears.evals.kernel.host.EvalHost` takes
-            it; ``None`` traces nothing.
-        guardrails: The scorers declared guardrails, by name, each with its margin and direction
-            (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
-            every contrast. A guardrail on a judged dimension is the campaign's to declare, so it is
-            :class:`~threetears.evals.quick.judged.Judge`'s, not a host's. ``None`` declares none.
-
-    Returns:
-        The host.
-
-    Raises:
-        ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
-            any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer,
-            is not a positive number or is on a scorer with no range; a range is unusable
-            (:func:`refuse_unusable_margins`); or a guardrail names no scorer, is not a ``Guardrail``, is declared
-            on a scorer given a margin too, or is as wide as its scorer's range.
+    :param scorers: The scorer functions whose measures the host declares.
+    :ptype scorers: Sequence[Scorer]
+    :param levers: The levers every run in this host states a level of beside its model
+        (:func:`callable_kind_contracts`), each handed to :class:`~threetears.evals.quick.contract.Eval` as ``levers=``.
+    :ptype levers: Sequence[str]
+    :param world: The world a world run seeds (:class:`~threetears.evals.quick.world.World`), declared on the
+        profile; ``None`` declares none.
+    :ptype world: World | None
+    :param arms: Declare :data:`ARM_LEVER`, the lever a comparison (an eval whose runner is a mapping of arms)
+        names its arms on, so its report reads ``candidate=<name>``; what a comparison builds when handed no
+        host. A run that states no arm (an eval of one arm in this host) is at its candidate model's label.
+    :ptype arms: bool
+    :param margins: A margin declared on a scorer's measure, by the scorer's name (:func:`scorer_measure`), so a
+        contrast on it can read ``equivalent``; ``None`` declares none. No margin is ever assumed.
+    :ptype margins: Mapping[str, float] | None
+    :param ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
+        (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
+        scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
+    :ptype ranges: Mapping[str, tuple[float, float]] | None
+    :param store: Where every document is stored (any :class:`~threetears.evals.schema.DocumentStore`):
+        :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs in a file. ``None`` builds a fresh
+        :class:`~threetears.evals.storage.InMemoryDocumentStore`, which keeps nothing past the process.
+    :ptype store: DocumentStore | None
+    :param clients: The completion clients the engine's own model calls use after the run (a re-judge, an
+        analysis), as :class:`~threetears.evals.kernel.host.EvalHost` takes them; ``None`` supplies none,
+        and a call needing them is refused. A :class:`~threetears.evals.quick.Judge` brings its own for the run.
+    :ptype clients: CompletionClients | None
+    :param trace_sink: Where each cell's trace is sent, as :class:`~threetears.evals.kernel.host.EvalHost` takes
+        it; ``None`` traces nothing.
+    :ptype trace_sink: TraceSink | None
+    :param guardrails: The scorers declared guardrails, by name, each with its margin and direction
+        (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
+        every contrast. A guardrail on a judged dimension is the campaign's to declare, so it is
+        :class:`~threetears.evals.quick.judged.Judge`'s, not a host's. ``None`` declares none.
+    :ptype guardrails: Mapping[str, Guardrail] | None
+    :return: The host.
+    :rtype: EvalHost
+    :raises ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
+        any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer,
+        is not a positive number or is on a scorer with no range; a range is unusable
+        (:func:`refuse_unusable_margins`); or a guardrail names no scorer, is not a ``Guardrail``, is declared
+        on a scorer given a margin too, or is as wide as its scorer's range.
     """
     _refuse_unnamed_or_repeated(scorers)
     margins = dict(margins or {})
@@ -701,28 +704,33 @@ def callable_kind(
 ) -> CandidateKind:
     """The kind over a plain async candidate and its scorers, for a host of your own to launch.
 
-    What :class:`~threetears.evals.quick.contract.Eval` runs each cell through, as an ordinary :class:`~threetears.evals.kernel.CandidateKind`
-    a launcher wires like any other (``KindWiring(kind_factory=lambda _cell: kind, ...)``), declared on the profile
-    under :data:`CALLABLE_KIND` by :func:`callable_kind_contracts` (:data:`JUDGED_CALLABLE_KIND` with a judge).
-    Each cell calls the candidate with its case, read from the stored test case's ``host_payload["case"]``, where
-    the quick path stores it, and each scorer with the case and the answer, landing each score as a host measure
-    under the scorer's name. A candidate that raises fails its cell; a scorer that raises, returns no number, or
-    returns one outside its range excludes it.
+    What :class:`~threetears.evals.quick.contract.Eval` runs each cell through, as an ordinary
+    :class:`~threetears.evals.kernel.CandidateKind` a launcher wires like any other (``KindWiring(kind_factory=lambda
+    _cell: kind, ...)``), declared on the profile under :data:`CALLABLE_KIND` by :func:`callable_kind_contracts`
+    (:data:`JUDGED_CALLABLE_KIND` with a judge). Each cell calls the candidate with its case, read from the stored test
+    case's ``host_payload["case"]``, where the quick path stores it, and each scorer with the case and the answer,
+    landing each score as a host measure under the scorer's name. A candidate that raises fails its cell; a scorer that
+    raises, returns no number, or returns one outside its range excludes it.
 
-    Args:
-        candidate: The callable under test.
-        scorers: The grades: plain functions, or :class:`~threetears.evals.quick.Measure` objects declaring their own
-            measure (``@measure(...)``), each reported under its name.
-        classifies: Whether each case carries an expected label (``host_payload["expected"]``), landing ``match``
-            and ``confusion_cell``.
-        label_field: The field of the answer its label is read from; ``None`` reads the answer itself.
-        judge: The judge whose evidence each answer carries, for the judged kind; ``None`` for an unjudged one.
-        tools: The tools the candidate is called with beside each case; ``None`` for a candidate called alone.
-        ranges: Each scorer's range, by name, every score is held to; a ``Measure``'s own ``value_range`` when not
-            named here.
-
-    Returns:
-        The kind: one instance serves every cell of a run.
+    :param candidate: The callable under test.
+    :ptype candidate: Candidate | ToolUsingCandidate
+    :param scorers: The grades: plain functions, or :class:`~threetears.evals.quick.Measure` objects declaring their own
+        measure (``@measure(...)``), each reported under its name.
+    :ptype scorers: Sequence[Scorer]
+    :param classifies: Whether each case carries an expected label (``host_payload["expected"]``), landing ``match``
+        and ``confusion_cell``.
+    :ptype classifies: bool
+    :param label_field: The field of the answer its label is read from; ``None`` reads the answer itself.
+    :ptype label_field: str | None
+    :param judge: The judge whose evidence each answer carries, for the judged kind; ``None`` for an unjudged one.
+    :ptype judge: Judge | None
+    :param tools: The tools the candidate is called with beside each case; ``None`` for a candidate called alone.
+    :ptype tools: Mapping[str, Tool] | None
+    :param ranges: Each scorer's range, by name, every score is held to; a ``Measure``'s own ``value_range`` when not
+        named here.
+    :ptype ranges: Mapping[str, tuple[float, float]] | None
+    :return: The kind: one instance serves every cell of a run.
+    :rtype: CandidateKind
     """
     _refuse_unnamed_or_repeated(scorers)
     held = {
@@ -791,18 +799,25 @@ class CallableKind:
     ) -> None:
         """Bind the candidate and its scorers.
 
-        Args:
-            candidate: The callable under test.
-            scorers: The grades, each reported under its own name.
-            classifies: Whether the candidate is a classifier, whose every case carries its expected label.
-            label_field: The field of the answer its label is read from; ``None`` reads the answer itself, which is
-                a label only as a non-blank string.
-            judge: The judge whose evidence each answer carries, or ``None`` for an unjudged kind.
-            tools: The tools the candidate is called with beside each case, or ``None`` for a candidate
-                called with the case alone. A candidate handed tools answers a
-                :class:`~threetears.evals.quick.world.WorldOutcome`: its answer, and the calls it made.
-            recording: Where the tools' answers are recorded or replayed from, or ``None`` to call them live.
-            ranges: Each scorer's declared range, by its name, which every score it returns must lie in.
+        :param candidate: The callable under test.
+        :ptype candidate: Candidate | ToolUsingCandidate
+        :param scorers: The grades, each reported under its own name.
+        :ptype scorers: Sequence[Scorer]
+        :param classifies: Whether the candidate is a classifier, whose every case carries its expected label.
+        :ptype classifies: bool
+        :param label_field: The field of the answer its label is read from; ``None`` reads the answer itself, which is
+            a label only as a non-blank string.
+        :ptype label_field: str | None
+        :param judge: The judge whose evidence each answer carries, or ``None`` for an unjudged kind.
+        :ptype judge: Judge | None
+        :param tools: The tools the candidate is called with beside each case, or ``None`` for a candidate
+            called with the case alone. A candidate handed tools answers a
+            :class:`~threetears.evals.quick.world.WorldOutcome`: its answer, and the calls it made.
+        :ptype tools: Mapping[str, Tool] | None
+        :param recording: Where the tools' answers are recorded or replayed from, or ``None`` to call them live.
+        :ptype recording: ToolRecording | None
+        :param ranges: Each scorer's declared range, by its name, which every score it returns must lie in.
+        :ptype ranges: Mapping[str, tuple[float, float]] | None
         """
         self._candidate = candidate
         self._ranges = dict(ranges or {})
@@ -831,17 +846,21 @@ class CallableKind:
     ) -> _Prepared:
         """Records the arm's model label, and builds the cell's tools, wired to its cassettes when it has any.
 
-        Args:
-            subject_snapshot: The run's subject, unused.
-            variant_config: The cell's variant; its candidate model labels the arm.
-            world_seed: The template's seed, which this kind has no world to write.
-            span_window: The cell's trace windows, unused.
-            cassettes: The cell's cassettes in a capture or replay run, which only a kind with tools is
-                launched with, and ``None`` with cassettes off.
-            world: Unread — a callable has no world to seed, so the cell opens none.
-
-        Returns:
-            The prepared candidate.
+        :param subject_snapshot: The run's subject, unused.
+        :ptype subject_snapshot: SubjectSnapshot | None
+        :param variant_config: The cell's variant; its candidate model labels the arm.
+        :ptype variant_config: VariantConfig
+        :param world_seed: The template's seed, which this kind has no world to write.
+        :ptype world_seed: WorldSeed
+        :param span_window: The cell's trace windows, unused.
+        :ptype span_window: CellSpanWindow
+        :param cassettes: The cell's cassettes in a capture or replay run, which only a kind with tools is
+            launched with, and ``None`` with cassettes off.
+        :ptype cassettes: CellCassettes | None
+        :param world: Unread — a callable has no world to seed, so the cell opens none.
+        :ptype world: WorldSession | None
+        :return: The prepared candidate.
+        :rtype: _Prepared
         """
         tools = CellTools(self._tools, recording=self._recording) if self._tools is not None else None
         if cassettes is not None and tools is not None:
@@ -851,17 +870,18 @@ class CallableKind:
     async def invoke(self, instance: _Prepared, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Run the candidate on one case, grade its answer, and report the grades.
 
-        Args:
-            instance: What ``prepare`` returned.
-            test_case: The cell's case; the caller's case rides on its ``host_payload``.
-            sink: The cell's sink. The candidate's call cannot be priced before it is made, so the run's cost
-                cap is asked first — a cell the cap has already been reached for calls nothing and returns
-                empty, which the runner excludes for the cap — and what an
-                :class:`~threetears.evals.quick.answer.Answer` reports it cost is counted the moment it returns.
-
-        Returns:
-            The answer as the stored trace, and each scorer's grade as a host measure, beside a
+        :param instance: What ``prepare`` returned.
+        :ptype instance: _Prepared
+        :param test_case: The cell's case; the caller's case rides on its ``host_payload``.
+        :ptype test_case: EvalTestCase
+        :param sink: The cell's sink. The candidate's call cannot be priced before it is made, so the run's cost
+            cap is asked first — a cell the cap has already been reached for calls nothing and returns
+            empty, which the runner excludes for the cap — and what an
+            :class:`~threetears.evals.quick.answer.Answer` reports it cost is counted the moment it returns.
+        :ptype sink: CellSink
+        :return: The answer as the stored trace, and each scorer's grade as a host measure, beside a
             classifier's ``match`` and ``confusion_cell``, and a judged kind's evidence.
+        :rtype: CandidateOutput
         """
         case = test_case.host_payload[_CASE_KEY]
         try:
@@ -956,11 +976,10 @@ def _missed(expected: str) -> dict[str, bool | float | str]:
     cases it would have got wrong read more accurate than one that answered them, and its refusals were in
     none of its precision or recall.
 
-    Args:
-        expected: The case's expected label.
-
-    Returns:
-        The measures to land beside the failure.
+    :param expected: The case's expected label.
+    :ptype expected: str
+    :return: The measures to land beside the failure.
+    :rtype: dict[str, bool | float | str]
     """
     return {MATCH_MEASURE: False, CONFUSION_CELL_MEASURE: confusion_cell(expected, UNUSABLE_ANSWER)}
 
@@ -972,8 +991,7 @@ async def _call_candidate(candidate: Candidate | ToolUsingCandidate, case: Any, 
     not stall the event loop the run's other arms and its timeouts run on, and whatever it returns is awaited
     when it is awaitable. Cells within one run are serial, so it is never called beside itself in one arm.
 
-    Raises:
-        ApparatusError: A tool call met a rig fault, re-raised here even when the candidate caught it.
+    :raises ApparatusError: A tool call met a rig fault, re-raised here even when the candidate caught it.
     """
     if tools is None:
         if _is_async_callable(candidate):
@@ -993,13 +1011,13 @@ async def _call_candidate(candidate: Candidate | ToolUsingCandidate, case: Any, 
 
 
 def _is_async_callable(candidate: object) -> bool:
-    """Whether calling ``candidate`` returns a coroutine: an ``async def``, a partial of one, or an object with one as its ``__call__``.
+    """Whether calling ``candidate`` returns a coroutine: an ``async def``, a partial of one, or an object with one as
+    its ``__call__``.
 
-    Args:
-        candidate: The callable.
-
-    Returns:
-        ``True`` for an async callable; ``False`` for a plain function, which a call runs to its end.
+    :param candidate: The callable.
+    :ptype candidate: object
+    :return: ``True`` for an async callable; ``False`` for a plain function, which a call runs to its end.
+    :rtype: bool
     """
     if inspect.iscoroutinefunction(candidate):
         return True
@@ -1010,10 +1028,11 @@ def _is_async_callable(candidate: object) -> bool:
 def _refuse_a_sync_candidate_handed_tools(arms: Sequence[CallableArm], *, why: str | None) -> None:
     """Refuse, before anything runs, a synchronous candidate that would be handed async tools it cannot await.
 
-    Args:
-        arms: The arms.
-        why: What the candidates are handed (``"tools"``, ``"a world's tools"``), or ``None`` when nothing is,
-            and a synchronous candidate is called in a thread.
+    :param arms: The arms.
+    :ptype arms: Sequence[CallableArm]
+    :param why: What the candidates are handed (``"tools"``, ``"a world's tools"``), or ``None`` when nothing is,
+        and a synchronous candidate is called in a thread.
+    :ptype why: str | None
     """
     if why is None:
         return
@@ -1157,8 +1176,7 @@ def _refuse_undeclared_measures(host: EvalHost, scorers: Sequence[Scorer]) -> No
 def _case_names(cases: list[dict[str, Any]]) -> list[str]:
     """What each case is called in its results and in every error line: its own ``id``, else its position.
 
-    Raises:
-        ValueError: An ``id`` that is not a non-blank string or an int, or two cases called alike.
+    :raises ValueError: An ``id`` that is not a non-blank string or an int, or two cases called alike.
     """
     names: list[str] = []
     for index, case in enumerate(cases):
@@ -1200,8 +1218,7 @@ def _case_strata(cases: list[dict[str, Any]], names: list[str]) -> tuple[list[di
     and before the case set is addressed, so re-labelling a case keeps the case, its template and the history of
     every run over it.
 
-    Raises:
-        ValueError: A case whose ``stratum`` is neither absent, ``None``, nor a non-blank string.
+    :raises ValueError: A case whose ``stratum`` is neither absent, ``None``, nor a non-blank string.
     """
     if not any(STRATUM_KEY in case for case in cases):
         return cases, None
@@ -1329,16 +1346,15 @@ def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] 
 class CallableArm:
     """One arm a one-call launch runs: the candidate, the model its run is labelled by, and its other levers.
 
-    Attributes:
-        candidate: The candidate under test.
-        model: The model the caller named for the arm, stored as its run's candidate model and recorded as chosen;
-            ``None`` when the caller named none.
-        levers: The arm's level of every other lever, by name, or ``None`` for none.
-        arm: The arm's name, stated on its run as its level of :data:`ARM_LEVER` (and as its subject), for a
-            host that declares that lever (``callable_host(arms=True)``); ``None`` names no arm.
-        default_model: What an arm that names no model is labelled by, stored as its run's candidate model and
-            recorded as inherited: the candidate runs as itself, so nothing moved it off its own model. ``None``
-            takes the candidate's ``__name__``.
+    :ivar candidate: The candidate under test.
+    :ivar model: The model the caller named for the arm, stored as its run's candidate model and recorded as chosen;
+        ``None`` when the caller named none.
+    :ivar levers: The arm's level of every other lever, by name, or ``None`` for none.
+    :ivar arm: The arm's name, stated on its run as its level of :data:`ARM_LEVER` (and as its subject), for a
+        host that declares that lever (``callable_host(arms=True)``); ``None`` names no arm.
+    :ivar default_model: What an arm that names no model is labelled by, stored as its run's candidate model and
+        recorded as inherited: the candidate runs as itself, so nothing moved it off its own model. ``None``
+        takes the candidate's ``__name__``.
     """
 
     candidate: Candidate | ToolUsingCandidate | WorldAgent | Log
@@ -1504,18 +1520,20 @@ def _world_seeds(
 ) -> list[dict[str, Any]] | None:
     """Each case's starting state for a world with state, or ``None`` for any other run, refusing an incoherent one.
 
-    Args:
-        world: The runner's world, or ``None``.
-        seeds: Each case's ``world``, as the cases carried it (``None`` where a case carried none), or ``None`` when
-            no case carried one.
-        goal_checks: The expression graders.
-        host: The caller's own host, or ``None``.
-        names: What each case is called.
-
-    Raises:
-        ValueError: A goal check, or a case's ``world``, with no world with state to read or seed; a case of a world
-            with state that carries no ``world``, or one the state refuses; a goal check reading state or naming a
-            tool the world lacks; or a given host that does not declare the world.
+    :param world: The runner's world, or ``None``.
+    :ptype world: World | None
+    :param seeds: Each case's ``world``, as the cases carried it (``None`` where a case carried none), or ``None`` when
+        no case carried one.
+    :ptype seeds: Sequence[Any] | None
+    :param goal_checks: The expression graders.
+    :ptype goal_checks: Sequence[str]
+    :param host: The caller's own host, or ``None``.
+    :ptype host: EvalHost | None
+    :param names: What each case is called.
+    :ptype names: list[str]
+    :raises ValueError: A goal check, or a case's ``world``, with no world with state to read or seed; a case of a world
+        with state that carries no ``world``, or one the state refuses; a goal check reading state or naming a
+        tool the world lacks; or a given host that does not declare the world.
     """
     if world is None or not world.stateful:
         if goal_checks:
@@ -1610,9 +1628,9 @@ def _template_intent(arms: Sequence[CallableArm], graded_by: str, intent: str | 
     ``intent`` when given; else the candidates' docstring, when every arm's has one and they share its
     first line; else a generic sentence.
 
-    Returns:
-        The intent, and its source as a summary names it: ``None`` for the ``intent`` given, else a phrase
+    :return: The intent, and its source as a summary names it: ``None`` for the ``intent`` given, else a phrase
         saying which docstring it was read from or why it is the generic sentence.
+    :rtype: tuple[str, str | None]
     """
     if intent is not None:
         return intent, None
@@ -1659,41 +1677,54 @@ async def run_arms(
     because ``start_run`` launches every run it starts at one set of overlays and the arms of a factorial differ in
     theirs.
 
-    Args:
-        cases: The cases, each a JSON object. Its reserved keys (:data:`RESERVED_CASE_KEYS`) are read and withheld:
-            ``id`` names it in its results, its errors and on the report's page (a case with none is called by its
-            position, from ``0``, and numbered on the page),
-            ``stratum`` is the kind of case it is, stored as its test case's stratum so the summary reads every
-            measure again per stratum, and ``world`` is its starting state on a world with state.
-        arms: The arms, distinct — no two at one model and one level of every lever — which the caller holds.
-        scorers: The function graders, each reported as a measure named by its ``__name__``.
-        scope_id: The scope the template, cases and runs are stored in.
-        host: Where to run and store: it declares a measure for every scorer, the callable kinds' contracts and the
-            world (:func:`callable_host`).
-        template_name: The template's name, as a listing of templates shows it.
-        expected: Declares the runner a classifier: called once per case, it returns the label a correct answer
-            gives. Each cell then lands ``match`` and ``confusion_cell``.
-        label_field: The field of the answer a classifier's label is read from; ``None`` reads the answer itself.
-        judge: The judge every arm's answers are graded by — one, so no difference between arms is one of judging.
-        intent: What every case asks, which a judge reads; ``None`` takes the first line of the runners' docstring.
-        world: The world every arm's agent acts on, or ``None``.
-        goal_checks: Goal-state checks over a world with state, each reported as passed or failed per cell.
-        k: Repeats per case, per arm.
-        max_cost_usd: The most each arm's run may spend, in US dollars; ``None`` runs uncapped, which every summary
-            states.
-        subject: The subject every arm's run shares (a comparison's: its arms are variants of one subject, so the
-            frontier and history rank them together); ``None`` makes each run's subject its arm's name, else its
-            model.
-        margins: Run-scoped margins on core rate measures (``{"accuracy": 0.05}``), declared on every arm's run.
-        measure_latency: Declare latency under test: the cases run one at a time.
-
-    Returns:
-        Each arm's finished run's summary, read back from the store, in arm order.
-
-    Raises:
-        ValueError: The cases, the arms, the graders, the cap or the world refused, each naming why; a host of the
-            caller's own declaring no callable-kind contract, or no measure for a scorer.
-        ValidationFailedError: The launch refused.
+    :param cases: The cases, each a JSON object. Its reserved keys (:data:`RESERVED_CASE_KEYS`) are read and withheld:
+        ``id`` names it in its results, its errors and on the report's page (a case with none is called by its
+        position, from ``0``, and numbered on the page),
+        ``stratum`` is the kind of case it is, stored as its test case's stratum so the summary reads every
+        measure again per stratum, and ``world`` is its starting state on a world with state.
+    :ptype cases: Sequence[Mapping[str, Any]]
+    :param arms: The arms, distinct — no two at one model and one level of every lever — which the caller holds.
+    :ptype arms: Sequence[CallableArm]
+    :param scorers: The function graders, each reported as a measure named by its ``__name__``.
+    :ptype scorers: Sequence[Scorer]
+    :param scope_id: The scope the template, cases and runs are stored in.
+    :ptype scope_id: str
+    :param host: Where to run and store: it declares a measure for every scorer, the callable kinds' contracts and the
+        world (:func:`callable_host`).
+    :ptype host: EvalHost
+    :param template_name: The template's name, as a listing of templates shows it.
+    :ptype template_name: str
+    :param expected: Declares the runner a classifier: called once per case, it returns the label a correct answer
+        gives. Each cell then lands ``match`` and ``confusion_cell``.
+    :ptype expected: ExpectedLabel | None
+    :param label_field: The field of the answer a classifier's label is read from; ``None`` reads the answer itself.
+    :ptype label_field: str | None
+    :param judge: The judge every arm's answers are graded by — one, so no difference between arms is one of judging.
+    :ptype judge: Judge | None
+    :param intent: What every case asks, which a judge reads; ``None`` takes the first line of the runners' docstring.
+    :ptype intent: str | None
+    :param world: The world every arm's agent acts on, or ``None``.
+    :ptype world: World | None
+    :param goal_checks: Goal-state checks over a world with state, each reported as passed or failed per cell.
+    :ptype goal_checks: Sequence[str]
+    :param k: Repeats per case, per arm.
+    :ptype k: int
+    :param max_cost_usd: The most each arm's run may spend, in US dollars; ``None`` runs uncapped, which every summary
+        states.
+    :ptype max_cost_usd: float | None
+    :param subject: The subject every arm's run shares (a comparison's: its arms are variants of one subject, so the
+        frontier and history rank them together); ``None`` makes each run's subject its arm's name, else its
+        model.
+    :ptype subject: str | None
+    :param margins: Run-scoped margins on core rate measures (``{"accuracy": 0.05}``), declared on every arm's run.
+    :ptype margins: Mapping[str, float] | None
+    :param measure_latency: Declare latency under test: the cases run one at a time.
+    :ptype measure_latency: bool
+    :return: Each arm's finished run's summary, read back from the store, in arm order.
+    :rtype: list[EvalSummary]
+    :raises ValueError: The cases, the arms, the graders, the cap or the world refused, each naming why; a host of the
+        caller's own declaring no callable-kind contract, or no measure for a scorer.
+    :raises ValidationFailedError: The launch refused.
     """
     plain_cases = _plain_cases(cases)
     names = _case_names(plain_cases)

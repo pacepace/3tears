@@ -379,13 +379,12 @@ class CoreUpgrader:
     Named for the shared reader (:meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`), which the durable
     space reads through.
 
-    Attributes:
-        from_version: The core version the step reads.
-        doc_types: The types it rewrites. Every other type of its space passes through the step unchanged but
-            for its number.
-        reason: What changed at the bump, in one line.
-        upgrade: The rewrite: pure, and never touching an addressing field, a host or kind payload, or a
-            stored key or digest (the module's step rules).
+    :ivar from_version: The core version the step reads.
+    :ivar doc_types: The types it rewrites. Every other type of its space passes through the step unchanged but
+        for its number.
+    :ivar reason: What changed at the bump, in one line.
+    :ivar upgrade: The rewrite: pure, and never touching an addressing field, a host or kind payload, or a
+        stored key or digest (the module's step rules).
     """
 
     from_version: int
@@ -468,12 +467,11 @@ class VersionSpace:
     (:meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`), parameterized by the space a model class
     declares (``version_space``).
 
-    Attributes:
-        name: The space's name, as a refusal states it (``core``, ``durable``).
-        version: The major this build writes, and the newest a read accepts.
-        minor: The minor this build writes within ``version``.
-        baseline: The oldest major a read accepts.
-        upgraders: The chain from ``baseline`` to ``version``; empty for the core, which reads only its own major.
+    :ivar name: The space's name, as a refusal states it (``core``, ``durable``).
+    :ivar version: The major this build writes, and the newest a read accepts.
+    :ivar minor: The minor this build writes within ``version``.
+    :ivar baseline: The oldest major a read accepts.
+    :ivar upgraders: The chain from ``baseline`` to ``version``; empty for the core, which reads only its own major.
     """
 
     name: str
@@ -521,19 +519,20 @@ def upgrade_document(
     ``doc_type``, and the document's ``schema_version`` is then set to the step's ``from_version + 1`` here, so a
     step never writes the number itself. A document already at ``current`` is returned as a copy, unchanged.
 
-    Args:
-        document: The stored document, as the store returned it.
-        steps: The upgrade chain (:data:`DURABLE_UPGRADERS` in production; the core's is empty).
-        current: The version to read to.
-        baseline: The oldest version read.
-        space: The version space's name, as a refusal states it.
-
-    Returns:
-        A new document at ``current``; the input is not modified.
-
-    Raises:
-        CoreVersionRefused: ``schema_version`` is missing or not an integer, above ``current``, below
-            ``baseline``, or a step the chain needs is not registered.
+    :param document: The stored document, as the store returned it.
+    :ptype document: Mapping[str, Any]
+    :param steps: The upgrade chain (:data:`DURABLE_UPGRADERS` in production; the core's is empty).
+    :ptype steps: Sequence[CoreUpgrader]
+    :param current: The version to read to.
+    :ptype current: int
+    :param baseline: The oldest version read.
+    :ptype baseline: int
+    :param space: The version space's name, as a refusal states it.
+    :ptype space: str
+    :return: A new document at ``current``; the input is not modified.
+    :rtype: dict[str, Any]
+    :raises CoreVersionRefused: ``schema_version`` is missing or not an integer, above ``current``, below
+        ``baseline``, or a step the chain needs is not registered.
     """
     version = document.get("schema_version")
     doc_type = document.get("doc_type")
@@ -572,15 +571,13 @@ def read_core_minor(document: Mapping[str, Any], *, space: str = "core") -> int:
     A document stored before a minor existed lacks the key, and reads as its major's first minor, as any optional
     field's absence reads as its default.
 
-    Args:
-        document: The stored document, as the store returned it.
-        space: The version space's name, as a refusal states it.
-
-    Returns:
-        Its ``schema_minor``.
-
-    Raises:
-        CoreVersionRefused: ``schema_minor`` is present and is not a whole number of zero or more.
+    :param document: The stored document, as the store returned it.
+    :ptype document: Mapping[str, Any]
+    :param space: The version space's name, as a refusal states it.
+    :ptype space: str
+    :return: Its ``schema_minor``.
+    :rtype: int
+    :raises CoreVersionRefused: ``schema_minor`` is present and is not a whole number of zero or more.
     """
     if "schema_minor" not in document:
         return 0
@@ -596,14 +593,11 @@ def read_core_minor(document: Mapping[str, Any], *, space: str = "core") -> int:
 def upgrade_durable_document(document: Mapping[str, Any]) -> dict[str, Any]:
     """:func:`upgrade_document` with this build's durable chain, version and baseline.
 
-    Args:
-        document: A stored durable document.
-
-    Returns:
-        The document at :data:`DURABLE_SCHEMA_VERSION`.
-
-    Raises:
-        CoreVersionRefused: See :func:`upgrade_document`.
+    :param document: A stored durable document.
+    :ptype document: Mapping[str, Any]
+    :return: The document at :data:`DURABLE_SCHEMA_VERSION`.
+    :rtype: dict[str, Any]
+    :raises CoreVersionRefused: See :func:`upgrade_document`.
     """
     return upgrade_document(
         document,

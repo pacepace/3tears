@@ -187,15 +187,13 @@ def _ordinal_score(name: str, value: Any) -> int:
     Nothing is truncated, rounded, stripped or clamped into range — each of those would record a score the judge
     never gave.
 
-    Args:
-        name: The criterion, for the message.
-        value: What the reply carried for it.
-
-    Returns:
-        The score.
-
-    Raises:
-        ValueError: The value is neither one of :data:`ORDINAL_ANSWERS` nor an integer on the scale.
+    :param name: The criterion, for the message.
+    :ptype name: str
+    :param value: What the reply carried for it.
+    :ptype value: Any
+    :return: The score.
+    :rtype: int
+    :raises ValueError: The value is neither one of :data:`ORDINAL_ANSWERS` nor an integer on the scale.
     """
     if isinstance(value, str):
         if value not in ORDINAL_ANSWERS:
@@ -221,15 +219,13 @@ def _pass_fail_score(name: str, value: Any) -> int:
     Only the two words the prompt offered are taken. A number is refused rather than read as a
     pass or a fail: the judge was asked a yes-or-no question, and a 4 is not an answer to it.
 
-    Args:
-        name: The criterion, for the message.
-        value: What the reply carried for it.
-
-    Returns:
-        1 for ``"pass"``, 0 for ``"fail"``.
-
-    Raises:
-        ValueError: The value is not ``"pass"`` or ``"fail"``.
+    :param name: The criterion, for the message.
+    :ptype name: str
+    :param value: What the reply carried for it.
+    :ptype value: Any
+    :return: 1 for ``"pass"``, 0 for ``"fail"``.
+    :rtype: int
+    :raises ValueError: The value is not ``"pass"`` or ``"fail"``.
     """
     if not isinstance(value, str) or value not in PASS_FAIL_SCORES:
         raise ValueError(f"Criterion '{name}' is pass/fail, and the judge answered {value!r}")
@@ -256,13 +252,13 @@ def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_off
     is the one enum form every provider's strict mode enforces; an integer enum was sent and not enforced
     (:data:`ORDINAL_ANSWERS` says where).
 
-    Args:
-        criteria: The criteria, as :func:`run_judge_llm` takes them: each with its ``name`` and, optionally, its
-            ``scale`` (a key of :data:`SCALE_READERS`).
-        cannot_tell_offered: Whether the prompt offered :data:`CANNOT_TELL`.
-
-    Returns:
-        The directive.
+    :param criteria: The criteria, as :func:`run_judge_llm` takes them: each with its ``name`` and, optionally, its
+        ``scale`` (a key of :data:`SCALE_READERS`).
+    :ptype criteria: Sequence[Mapping[str, Any]]
+    :param cannot_tell_offered: Whether the prompt offered :data:`CANNOT_TELL`.
+    :ptype cannot_tell_offered: bool
+    :return: The directive.
+    :rtype: dict[str, Any]
     """
     answers = {
         str(criterion["name"]): _scale_answers(str(criterion.get("scale", "ordinal")), cannot_tell_offered)
@@ -312,13 +308,12 @@ def _parse_criteria_response(
 
     A criterion dict carrying ``"scale": "pass_fail"`` is answered ``"pass"`` or ``"fail"`` and
     returned as 1 or 0; one without a scale is ordinal, answered as one of :data:`ORDINAL_ANSWERS` (or a bare
-    integer on the scale) and returned as its integer. With ``cannot_tell_offered``, a criterion may carry :data:`CANNOT_TELL` in place of its
-    score; it is returned under ``cannot_tell`` and left out of ``criteria_scores``.
+    integer on the scale) and returned as its integer. With ``cannot_tell_offered``, a criterion may carry
+    :data:`CANNOT_TELL` in place of its score; it is returned under ``cannot_tell`` and left out of ``criteria_scores``.
 
-    Raises:
-        ValueError: If the response cannot be parsed, carries no string ``reasoning``, is missing
-            a criterion, or scores one with anything but an answer on its scale (or the offered
-            answer).
+    :raises ValueError: If the response cannot be parsed, carries no string ``reasoning``, is missing
+        a criterion, or scores one with anything but an answer on its scale (or the offered
+        answer).
     """
     data = extract_json(content)
 
@@ -401,27 +396,32 @@ async def run_judge_llm(
 ) -> dict[str, Any] | None:
     """Run an LLM judge call against a set of criteria and parse the response.
 
-    Args:
-        client: LLM client with an async ``generate(system=..., user=...)``
-            method returning a :class:`~threetears.evals.schema.completion.CompletionResult`:
-            ``content``, ``input_tokens``, ``output_tokens``, ``cost_usd``,
-            ``model``, ``served_model``, ``reasoning_tokens`` and the normalized ``stop_reason``.
-        system_prompt: System prompt for the judge.
-        user_prompt: User prompt containing the candidate output / context.
-        criteria_dicts: List of criterion dicts with at least ``name`` +
-            ``weight`` keys.
-        label: Human label for log messages (e.g. ``"Judge"``).
-        case_id: Test case ID for log context.
-        cannot_tell_offered: Whether the prompt offered :data:`CANNOT_TELL`. When it did, a
-            criterion answered that way is returned in ``criteria_cannot_tell`` rather than
-            refused; when it did not, the answer is a reply that broke the protocol.
-        failure_describer: The host's reading of what ``client`` raises. When given, a raised call's
-            error is its description, and the result carries ``account_refused`` — set when the
-            provider refused the call for the calling account, which no retry or other model
-            changes. ``None`` — a host caller that acts on no account fault — keeps the raised text.
-
-    Returns:
-        Parsed result dict with ``criteria_scores`` (normalised to 0-1),
+    :param client: LLM client with an async ``generate(system=..., user=...)``
+        method returning a :class:`~threetears.evals.schema.completion.CompletionResult`:
+        ``content``, ``input_tokens``, ``output_tokens``, ``cost_usd``,
+        ``model``, ``served_model``, ``reasoning_tokens`` and the normalized ``stop_reason``.
+    :ptype client: Any
+    :param system_prompt: System prompt for the judge.
+    :ptype system_prompt: str
+    :param user_prompt: User prompt containing the candidate output / context.
+    :ptype user_prompt: str
+    :param criteria_dicts: List of criterion dicts with at least ``name`` +
+        ``weight`` keys.
+    :ptype criteria_dicts: list[dict[str, Any]]
+    :param label: Human label for log messages (e.g. ``"Judge"``).
+    :ptype label: str
+    :param case_id: Test case ID for log context.
+    :ptype case_id: str
+    :param cannot_tell_offered: Whether the prompt offered :data:`CANNOT_TELL`. When it did, a
+        criterion answered that way is returned in ``criteria_cannot_tell`` rather than
+        refused; when it did not, the answer is a reply that broke the protocol.
+    :ptype cannot_tell_offered: bool
+    :param failure_describer: The host's reading of what ``client`` raises. When given, a raised call's
+        error is its description, and the result carries ``account_refused`` — set when the
+        provider refused the call for the calling account, which no retry or other model
+        changes. ``None`` — a host caller that acts on no account fault — keeps the raised text.
+    :ptype failure_describer: ProviderFailureDescriber | None
+    :return: Parsed result dict with ``criteria_scores`` (normalised to 0-1),
         ``criteria_ordinal_scores`` (the stored integers: 1-5, or 1/0 for pass/fail), ``criteria_names``,
         ``reasoning``, ``judge_served_model`` and ``judge_temperature`` (see below), and ``judge_usage``; or
         ``{"error": "...", "response_preview": "..."}`` on failure. ``judge_usage`` is on every
@@ -454,11 +454,10 @@ async def run_judge_llm(
         ``served_model`` and never off ``model``: the host may fill ``model`` from the request,
         and a floating alias in the request would then stand where the concrete scorer belongs,
         making two runs judged by different models compare equal.
-
-    Raises:
-        CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`), or
-            its optional ``sent_settings`` holds something other than request settings or ``None``, carrying the
-            calls made and what they cost.
+    :rtype: dict[str, Any] | None
+    :raises CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`), or
+        its optional ``sent_settings`` holds something other than request settings or ``None``, carrying the
+        calls made and what they cost.
     """
     # Retry on parse-failure so a single malformed judge response can't
     # silently drop a rubric dimension. We retry on any parse failure of a FINISHED
@@ -521,8 +520,8 @@ async def run_judge_llm(
     def _thread_spend(defect: CompletionProtocolDefect) -> None:
         """Thread the attempts' spend onto a protocol defect and log it, for the caller to re-raise.
 
-        Args:
-            defect: The defect a member read raised, given the calls made so far and what they cost.
+        :param defect: The defect a member read raised, given the calls made so far and what they cost.
+        :ptype defect: CompletionProtocolDefect
         """
         spent = _cumulative_usage()
         if spent is not None:
@@ -690,11 +689,10 @@ def defect_usage(defect: CompletionProtocolDefect) -> CallUsage | None:
     What a caller counts the billed calls by on its way out (:func:`run_judge_llm` sets them on the defect), so a run
     failed by the defect still sums what it paid for.
 
-    Args:
-        defect: The defect, as :func:`run_judge_llm` raised it.
-
-    Returns:
-        The usage, or ``None`` when no call was counted on it.
+    :param defect: The defect, as :func:`run_judge_llm` raised it.
+    :ptype defect: CompletionProtocolDefect
+    :return: The usage, or ``None`` when no call was counted on it.
+    :rtype: CallUsage | None
     """
     if defect.calls == 0:
         return None
@@ -716,11 +714,10 @@ def _agreed_sent_settings(attempts: Sequence[ClientRequestSettings | None]) -> C
     What a usage record folding the attempts can name: one record cannot name two values, and an attempt that reported
     none leaves the fold unverified, as one unpriced attempt leaves its dollars unknown.
 
-    Args:
-        attempts: What each attempt was sent with, in order (``None`` = that attempt's client did not say).
-
-    Returns:
-        The shared value, or ``None``.
+    :param attempts: What each attempt was sent with, in order (``None`` = that attempt's client did not say).
+    :ptype attempts: Sequence[ClientRequestSettings | None]
+    :return: The shared value, or ``None``.
+    :rtype: ClientRequestSettings | None
     """
     if not attempts or attempts[0] is None:
         return None
@@ -741,16 +738,14 @@ def sent_temperature(completion: CompletionResult) -> JudgeTemperature:
     judge comparison — with no error anywhere; so a completion without it is refused here, naming the check that
     holds a host's type to the protocol.
 
-    Args:
-        completion: The judge call's completion.
-
-    Returns:
-        The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client sent none.
-
-    Raises:
-        CompletionProtocolDefect: The completion carries no ``temperature`` — its type does not meet the
-            :class:`~threetears.evals.schema.completion.CompletionResult` protocol. The host's defect, which fails
-            the run rather than one dimension (a ``TypeError``).
+    :param completion: The judge call's completion.
+    :ptype completion: CompletionResult
+    :return: The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client sent
+        none.
+    :rtype: JudgeTemperature
+    :raises CompletionProtocolDefect: The completion carries no ``temperature`` — its type does not meet the
+        :class:`~threetears.evals.schema.completion.CompletionResult` protocol. The host's defect, which fails
+        the run rather than one dimension (a ``TypeError``).
     """
     try:
         sent = completion.temperature

@@ -258,9 +258,8 @@ def _no_turn_delivered(n_observations: int, n_infra_excluded: int, n_no_turn: in
 def _check_failures_fit(n_observations: int, n_infra_excluded: int, n_candidate_failed: int, n_no_turn: int) -> None:
     """Refuse failure counts that cannot come from the observations they partition.
 
-    Raises:
-        ValueError: The faulted and failed counts sum to more than ``n_observations``, or more failures took no
-            turn than failed at all.
+    :raises ValueError: The faulted and failed counts sum to more than ``n_observations``, or more failures took no
+        turn than failed at all.
     """
     if n_infra_excluded + n_candidate_failed > n_observations:
         raise ValueError(
@@ -432,8 +431,7 @@ class CellFacts(EvalDocumentModel):
         the two failure counts are kept together or not at all. A cell claiming otherwise is describing a
         population that does not exist.
 
-        Raises:
-            ValueError: Any of those does not hold.
+        :raises ValueError: Any of those does not hold.
         """
         _check_failures_fit(self.n_observations, self.n_infra_excluded, self.n_candidate_failed, self.n_no_turn)
         return self
@@ -443,9 +441,8 @@ class CellFacts(EvalDocumentModel):
     def _strata_are_distinct_and_named(cls, strata: list[StratumFacts]) -> list[StratumFacts]:
         """Refuse a stratum listed twice, or a breakdown whose only entry is the cases that declare none.
 
-        Raises:
-            ValueError: Two entries share a stratum, or every entry is the undeclared one — a cell none of
-                whose cases declares a stratum is not broken down at all, and says so by an empty list.
+        :raises ValueError: Two entries share a stratum, or every entry is the undeclared one — a cell none of
+            whose cases declares a stratum is not broken down at all, and says so by an empty list.
         """
         names = [stratum.stratum for stratum in strata]
         if len(set(names)) != len(names):
@@ -461,9 +458,8 @@ class CellFacts(EvalDocumentModel):
         A stratum left out would leave its observations in the pooled figure and in no stratum, and a
         reader adding the strata up would meet a cell larger than its parts with nothing saying why.
 
-        Raises:
-            ValueError: The strata's observations, faulted observations, failed observations or cases do not
-                sum to the cell's.
+        :raises ValueError: The strata's observations, faulted observations, failed observations or cases do not
+            sum to the cell's.
         """
         if not self.strata:
             return self
@@ -493,12 +489,12 @@ def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
     cell two ways. The sentence names no cell: the bundle lists the cells beside it, and the table names
     their arms after it when only some cells failed.
 
-    Args:
-        n_all_failed: The cells where no result took a turn, at least one.
-        n_cells: The cells on the surface.
-
-    Returns:
-        The sentence.
+    :param n_all_failed: The cells where no result took a turn, at least one.
+    :ptype n_all_failed: int
+    :param n_cells: The cells on the surface.
+    :ptype n_cells: int
+    :return: The sentence.
+    :rtype: str
     """
     if n_all_failed == n_cells:
         return (
@@ -547,11 +543,10 @@ def earlier_control_mark(earlier: EarlierControl) -> str:
     Said beside the arm's own name, as a second rig is (``@ rig <digest>``), because the levels are the
     control's and only the predicate differs.
 
-    Args:
-        earlier: The control's cells under the earlier predicate.
-
-    Returns:
-        The mark.
+    :param earlier: The control's cells under the earlier predicate.
+    :ptype earlier: EarlierControl
+    :return: The mark.
+    :rtype: str
     """
     return f"the control under identity predicate v{earlier.identity_version}"
 
@@ -895,12 +890,12 @@ class DecisionSurface(EvalDocumentModel):
         its rubric's own name, marked judged. The key is never lost: every surface carrying a heading carries the
         key beside it for a reader who needs to cite it.
 
-        Args:
-            measure_id: The measure's key, or a judged dimension's name.
-            reading: ``judged`` for a judged dimension; anything else reads a measure.
-
-        Returns:
-            The heading.
+        :param measure_id: The measure's key, or a judged dimension's name.
+        :ptype measure_id: str
+        :param reading: ``judged`` for a judged dimension; anything else reads a measure.
+        :ptype reading: str
+        :return: The heading.
+        :rtype: str
         """
         if reading == "judged":
             return f"{measure_id} (judged)"

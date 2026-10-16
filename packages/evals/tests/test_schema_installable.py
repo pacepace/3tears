@@ -57,11 +57,10 @@ PACKAGE_SETS: tuple[tuple[str, ...], ...] = (("schema",), ("schema", "kernel"))
 def _members(packages: tuple[str, ...]) -> list[str]:
     """A set of packages, as source-relative paths: every module its path places in one of them.
 
-    Args:
-        packages: Package names as the placement rule spells them.
-
-    Returns:
-        The member files, sorted.
+    :param packages: Package names as the placement rule spells them.
+    :ptype packages: tuple[str, ...]
+    :return: The member files, sorted.
+    :rtype: list[str]
     """
     return sorted(
         str(path.relative_to(SOURCE_ROOT))
@@ -79,11 +78,10 @@ _REQUIREMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 def _dotted(rel: str) -> str:
     """Source-relative module path to the dotted name it is imported under.
 
-    Args:
-        rel: A path like ``threetears/evals/schema/models.py`` or ``threetears/evals/__init__.py``.
-
-    Returns:
-        The dotted module name; a package's ``__init__`` resolves to the package itself.
+    :param rel: A path like ``threetears/evals/schema/models.py`` or ``threetears/evals/__init__.py``.
+    :ptype rel: str
+    :return: The dotted module name; a package's ``__init__`` resolves to the package itself.
+    :rtype: str
     """
     return rel.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
 
@@ -97,11 +95,10 @@ def _module_file(module: str) -> str | None:
     tree says which is a module. A name that resolves to no file is a symbol, and symbols are
     carried by the module that defines them.
 
-    Args:
-        module: A dotted name.
-
-    Returns:
-        The source-relative path of the ``.py`` file it names, or ``None``.
+    :param module: A dotted name.
+    :ptype module: str
+    :return: The source-relative path of the ``.py`` file it names, or ``None``.
+    :rtype: str | None
     """
     parts = module.split(".")
     root = SOURCE_ROOT
@@ -123,11 +120,10 @@ def _eval_files_named(rel: str) -> list[str]:
     to resolve in the cut package — a ``TYPE_CHECKING`` import is a module the package's type
     checkers need, and a function-local one is a module its callers reach.
 
-    Args:
-        rel: Source-relative path of the member to walk.
-
-    Returns:
-        Source-relative paths under ``threetears/evals/``, deduplicated, in sorted order.
+    :param rel: Source-relative path of the member to walk.
+    :ptype rel: str
+    :return: Source-relative paths under ``threetears/evals/``, deduplicated, in sorted order.
+    :rtype: list[str]
     """
     path = SOURCE_ROOT / rel
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -158,12 +154,12 @@ def _closure_breaches(members: Iterable[str], reaches: Callable[[str], Iterable[
     :func:`test_the_closure_assertion_names_the_pair_that_breaks_it`. A check written inline
     against the real tree can only ever be observed passing.
 
-    Args:
-        members: The admitted set, as source-relative paths.
-        reaches: What one member imports, as source-relative paths under ``threetears/evals/``.
-
-    Returns:
-        The offending pairs, sorted; empty when the set is closed.
+    :param members: The admitted set, as source-relative paths.
+    :ptype members: Iterable[str]
+    :param reaches: What one member imports, as source-relative paths under ``threetears/evals/``.
+    :ptype reaches: Callable[[str], Iterable[str]]
+    :return: The offending pairs, sorted; empty when the set is closed.
+    :rtype: list[tuple[str, str]]
     """
     admitted = set(members)
     return sorted((member, reached) for member in admitted for reached in reaches(member) if reached not in admitted)
@@ -232,8 +228,8 @@ def _pydantic_distributions() -> list[metadata.Distribution]:
     by an ``extra ==`` marker is not installed by ``pip install pydantic`` and must not be in an
     environment claiming to hold nothing but pydantic.
 
-    Returns:
-        The distributions, pydantic first.
+    :return: The distributions, pydantic first.
+    :rtype: list[metadata.Distribution]
     """
     seen: set[str] = set()
     order: list[metadata.Distribution] = []
@@ -263,9 +259,10 @@ def _stage_the_package(stage: Path, packages: tuple[str, ...]) -> None:
     ``__init__.py`` of its own, exactly as an installed family package does not. No other 3tears package
     is staged: the engine depends on none.
 
-    Args:
-        stage: Directory to build the importable tree in.
-        packages: The set to stage.
+    :param stage: Directory to build the importable tree in.
+    :ptype stage: Path
+    :param packages: The set to stage.
+    :ptype packages: tuple[str, ...]
     """
     for rel in _members(packages):
         destination = stage / rel
@@ -280,8 +277,8 @@ def _stage_pydantic(deps: Path) -> None:
     the probe must load the real wheel, not a reconstruction of it. Nothing is downloaded — every
     distribution here is one this environment already has.
 
-    Args:
-        deps: Directory to build the dependency path entry in.
+    :param deps: Directory to build the dependency path entry in.
+    :ptype deps: Path
     """
     for dist in _pydantic_distributions():
         site = Path(dist.locate_file(""))
@@ -334,9 +331,10 @@ def test_every_member_imports_with_nothing_but_its_declared_dependencies(
     standard library. A probe that silently kept this repository on its path would import
     everything and prove nothing.
 
-    Args:
-        tmp_path: pytest's per-test directory, which is where the environment is built.
-        packages: The set probed.
+    :param tmp_path: pytest's per-test directory, which is where the environment is built.
+    :ptype tmp_path: Path
+    :param packages: The set probed.
+    :ptype packages: tuple[str, ...]
     """
     stage = tmp_path / "package"
     deps = tmp_path / "deps"

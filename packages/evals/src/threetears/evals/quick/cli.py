@@ -147,15 +147,14 @@ class HostCommand:
     line names the host rather than a product mounting it with its own factory — and its handler is
     handed the very host object the factory built for this invocation, with the parsed namespace.
 
-    Attributes:
-        name: The subcommand's name. None of :data:`ENGINE_COMMANDS`, and unique among the host's.
-        help: One line, shown in the program's usage and as the command's description.
-        configure: Adds the command's own arguments to its parser; ``--scope`` (and ``--host``) are
-            already there.
-        handler: Carries the command out and returns its exit code. It may be a coroutine function,
-            which the command line runs to completion. A refusal it raises as
-            :class:`~threetears.evals.kernel.EvalServiceError` is printed to stderr and exits 2, as
-            the engine's commands' refusals are.
+    :ivar name: The subcommand's name. None of :data:`ENGINE_COMMANDS`, and unique among the host's.
+    :ivar help: One line, shown in the program's usage and as the command's description.
+    :ivar configure: Adds the command's own arguments to its parser; ``--scope`` (and ``--host``) are
+        already there.
+    :ivar handler: Carries the command out and returns its exit code. It may be a coroutine function,
+        which the command line runs to completion. A refusal it raises as
+        :class:`~threetears.evals.kernel.EvalServiceError` is printed to stderr and exits 2, as
+        the engine's commands' refusals are.
     """
 
     name: str
@@ -167,11 +166,9 @@ class HostCommand:
 def _refuse_colliding_commands(commands: Sequence[HostCommand]) -> None:
     """Refuse host commands whose names would shadow an engine command or each other.
 
-    Args:
-        commands: The host's commands.
-
-    Raises:
-        ValueError: A name is an engine command's, or two host commands share one.
+    :param commands: The host's commands.
+    :ptype commands: Sequence[HostCommand]
+    :raises ValueError: A name is an engine command's, or two host commands share one.
     """
     seen: set[str] = set()
     for host_command in commands:
@@ -214,15 +211,12 @@ class _Refused(Exception):
 def _load_host_factory(spec: str) -> HostFactory:
     """The host factory a ``module:attribute`` spec names.
 
-    Args:
-        spec: ``package.module:callable``.
-
-    Returns:
-        The callable.
-
-    Raises:
-        _Refused: The spec is not ``module:attribute``, the module cannot be imported, it has no such
-            attribute, or the attribute is not callable.
+    :param spec: ``package.module:callable``.
+    :ptype spec: str
+    :return: The callable.
+    :rtype: HostFactory
+    :raises _Refused: The spec is not ``module:attribute``, the module cannot be imported, it has no such
+        attribute, or the attribute is not callable.
     """
     module_name, colon, attribute = spec.partition(":")
     if not colon or not module_name or not attribute:
@@ -244,17 +238,16 @@ def build_parser(
 ) -> argparse.ArgumentParser:
     """The command line's parser.
 
-    Args:
-        prog: The program name usage lines print.
-        takes_host: Whether each command takes ``--host``. A product that mounts the commands with its
-            own host factory passes ``False``, and the option does not exist.
-        commands: The host's own subcommands, added after the engine's.
-
-    Returns:
-        The parser; ``command`` on the parsed namespace names the subcommand.
-
-    Raises:
-        ValueError: A host command's name is an engine command's, or two host commands share one.
+    :param prog: The program name usage lines print.
+    :ptype prog: str
+    :param takes_host: Whether each command takes ``--host``. A product that mounts the commands with its
+        own host factory passes ``False``, and the option does not exist.
+    :ptype takes_host: bool
+    :param commands: The host's own subcommands, added after the engine's.
+    :ptype commands: Sequence[HostCommand]
+    :return: The parser; ``command`` on the parsed namespace names the subcommand.
+    :rtype: argparse.ArgumentParser
+    :raises ValueError: A host command's name is an engine command's, or two host commands share one.
     """
     _refuse_colliding_commands(commands)
     names = [*ENGINE_COMMANDS, *(host_command.name for host_command in commands)]
@@ -428,8 +421,7 @@ def build_parser(
 def _fail_on(text: str) -> tuple[str, ...]:
     """Parse ``--fail-on``, refusing an outcome no gate fails on so argparse names the argument.
 
-    Raises:
-        argparse.ArgumentTypeError: A name that is no outcome, or none at all.
+    :raises argparse.ArgumentTypeError: A name that is no outcome, or none at all.
     """
     try:
         return parse_fail_on(text)
@@ -440,8 +432,7 @@ def _fail_on(text: str) -> tuple[str, ...]:
 def _json_object(text: str) -> dict[str, Any]:
     """Parse a command-line JSON object, refusing anything else so argparse names the argument.
 
-    Raises:
-        argparse.ArgumentTypeError: ``text`` is not JSON, or is JSON but not an object.
+    :raises argparse.ArgumentTypeError: ``text`` is not JSON, or is JSON but not an object.
     """
     try:
         parsed = json.loads(text)
@@ -461,23 +452,23 @@ def run_cli(
 ) -> int:
     """Parse ``argv`` and carry out the command, printing to stdout and refusals to stderr.
 
-    Args:
-        argv: The arguments after the program name; ``None`` reads ``sys.argv``.
-        host_factory: The host to work in, for a product mounting these commands; ``None`` takes it
-            from ``--host``.
-        prog: The program name usage lines print.
-        commands: The host's own subcommands, mounted beside the engine's (:data:`ENGINE_COMMANDS`); each
-            one's handler is handed the host the factory built.
-
-    Returns:
-        The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused, 3 when
+    :param argv: The arguments after the program name; ``None`` reads ``sys.argv``.
+    :ptype argv: Sequence[str] | None
+    :param host_factory: The host to work in, for a product mounting these commands; ``None`` takes it
+        from ``--host``.
+    :ptype host_factory: HostFactory | None
+    :param prog: The program name usage lines print.
+    :ptype prog: str
+    :param commands: The host's own subcommands, mounted beside the engine's (:data:`ENGINE_COMMANDS`); each
+        one's handler is handed the host the factory built.
+    :ptype commands: Sequence[HostCommand]
+    :return: The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused, 3 when
         it failed on an error nothing anticipated (its traceback is printed to stderr), 4 when ``gate`` read an
         outcome its ``--fail-on`` names, or whatever a host command's handler returned.
-
-    Raises:
-        ValueError: A host command's name is an engine command's, or two host commands share one —
-            refused before ``argv`` is parsed, since it is the mounting product's code and not the
-            user's command line.
+    :rtype: int
+    :raises ValueError: A host command's name is an engine command's, or two host commands share one —
+        refused before ``argv`` is parsed, since it is the mounting product's code and not the
+        user's command line.
     """
     args = build_parser(prog, takes_host=host_factory is None, commands=commands).parse_args(argv)
     handlers = {host_command.name: host_command.handler for host_command in commands}
@@ -578,8 +569,7 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
 async def _judge_temperature(host: EvalHost, args: argparse.Namespace) -> None:
     """Compare the run's judge at the two temperatures (or price it, with ``--estimate``), and print what it read.
 
-    Raises:
-        _Refused: ``--max-cost-usd`` is not a positive amount.
+    :raises _Refused: ``--max-cost-usd`` is not a positive amount.
     """
     if not args.no_cap and not (math.isfinite(args.max_cost_usd) and args.max_cost_usd > 0):
         raise _Refused(f"--max-cost-usd must be a positive amount of dollars; got {args.max_cost_usd!r}")
@@ -610,8 +600,7 @@ async def _judge_temperature(host: EvalHost, args: argparse.Namespace) -> None:
 def _gate(host: EvalHost, args: argparse.Namespace) -> int:
     """Gate on the campaign's typed verdicts: print the result, and exit 4 when a named outcome occurred.
 
-    Raises:
-        _Refused: The campaign has no verdict to gate on, or a ``--reading`` no verdict is on.
+    :raises _Refused: The campaign has no verdict to gate on, or a ``--reading`` no verdict is on.
     """
     verdicts = campaign_verdicts(host, args.campaign, args.scope)
     if not verdicts:
@@ -631,8 +620,7 @@ def _gate(host: EvalHost, args: argparse.Namespace) -> int:
 def _report(host: EvalHost, args: argparse.Namespace) -> None:
     """Print the campaign's report in the asked-for form, or write the page, its Markdown and its bundle to ``--out``.
 
-    Raises:
-        _Refused: ``--out`` cannot be written.
+    :raises _Refused: ``--out`` cannot be written.
     """
     report = campaign_report(host, args.campaign, args.scope)
     if args.out is None:

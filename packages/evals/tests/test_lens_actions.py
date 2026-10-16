@@ -90,8 +90,8 @@ def evals() -> MountedTool:
 def _priced(fixture: OpsFixture) -> OpsFixture:
     """Store a run of the toy template launched as a toy arm will be, with three priced results; price by history.
 
-    Returns:
-        The fixture over a host whose launch pricer is the engine's history pricer.
+    :return: The fixture over a host whose launch pricer is the engine's history pricer.
+    :rtype: OpsFixture
     """
     storage = fixture.host.eval_host.storage
     template = toyhost_template()

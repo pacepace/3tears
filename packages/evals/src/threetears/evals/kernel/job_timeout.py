@@ -25,14 +25,13 @@ class EvalJobTimeout(Exception):
     the host. A type the host owned would make the engine name a module it cannot
     be installed without.
 
-    Attributes:
-        budget_s: The budget that was breached, in seconds.
-        elapsed_s: Wall-clock seconds spent before it fired.
-        attribution: What the host names as innermost when the deadline hit — the
-            operation itself when nothing was nested inside it, for a host whose
-            timeouts carry names. ``None`` only when the implementation has no
-            name to give, which is the case for :func:`default_job_timeout`:
-            plain ``asyncio.timeout`` has no vocabulary of operations at all.
+    :ivar budget_s: The budget that was breached, in seconds.
+    :ivar elapsed_s: Wall-clock seconds spent before it fired.
+    :ivar attribution: What the host names as innermost when the deadline hit — the
+        operation itself when nothing was nested inside it, for a host whose
+        timeouts carry names. ``None`` only when the implementation has no
+        name to give, which is the case for :func:`default_job_timeout`:
+        plain ``asyncio.timeout`` has no vocabulary of operations at all.
     """
 
     def __init__(self, budget_s: float, elapsed_s: float, attribution: str | None = None) -> None:
@@ -102,17 +101,14 @@ async def default_job_timeout(budget_s: float) -> AsyncIterator[float]:
     named operation, no nesting, no attribution — because those are the host's
     concerns, and an engine that assumed them would not install without one.
 
-    Args:
-        budget_s: Wall-clock ceiling for the body, in seconds.
-
-    Yields:
-        The budget, so a caller can honour it at an inner layer.
-
-    Raises:
-        ValueError: If ``budget_s`` is not positive — on entry, before the body
-            runs. See :class:`JobTimeoutFactory` for why the ordering is part of
-            the contract rather than an implementation detail.
-        EvalJobTimeout: If the body outlives the budget.
+    :param budget_s: Wall-clock ceiling for the body, in seconds.
+    :ptype budget_s: float
+    :yield: The budget, so a caller can honour it at an inner layer.
+    :rtype: AsyncIterator[float]
+    :raises ValueError: If ``budget_s`` is not positive — on entry, before the body
+        runs. See :class:`JobTimeoutFactory` for why the ordering is part of
+        the contract rather than an implementation detail.
+    :raises EvalJobTimeout: If the body outlives the budget.
     """
     if budget_s <= 0:
         raise ValueError(f"job timeout budget must be positive, got {budget_s}")
@@ -132,11 +128,10 @@ async def default_job_timeout(budget_s: float) -> AsyncIterator[float]:
 def timed_out_detail(timed_out: EvalJobTimeout) -> str:
     """Why a job's work was stopped by its time budget, in a poll's words — one wording for every job kind.
 
-    Args:
-        timed_out: The budget's firing.
-
-    Returns:
-        The record's ``detail`` (an analysis attempt's ``error``).
+    :param timed_out: The budget's firing.
+    :ptype timed_out: EvalJobTimeout
+    :return: The record's ``detail`` (an analysis attempt's ``error``).
+    :rtype: str
     """
     named = f"; the host named {timed_out.attribution!r} as running when it fired" if timed_out.attribution else ""
     return (

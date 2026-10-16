@@ -121,11 +121,10 @@ def params_hash(params: Mapping[str, Any]) -> str:
     tool params, rather than raising: a raise would fire only at capture time and silently leave a
     gap in the corpus.
 
-    Args:
-        params: The action parameters, or the background work's request.
-
-    Returns:
-        A 16-char hex prefix of the sha256 of the canonical JSON — 64 bits, ample within one case.
+    :param params: The action parameters, or the background work's request.
+    :ptype params: Mapping[str, Any]
+    :return: A 16-char hex prefix of the sha256 of the canonical JSON — 64 bits, ample within one case.
+    :rtype: str
     """
     canonical = json.dumps(dict(params or {}), sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
@@ -134,8 +133,7 @@ def params_hash(params: Mapping[str, Any]) -> str:
 def _rebuild[R: Recordable](payload_type: type[R], recorded: dict[str, Any], *, key: CassetteKey) -> R:
     """Rebuild one recording as its seam's declared type, a misfit raised as the rig's fault.
 
-    Raises:
-        CassetteCorrupt: The recording does not validate as ``payload_type``.
+    :raises CassetteCorrupt: The recording does not validate as ``payload_type``.
     """
     try:
         return payload_type.model_validate(recorded)
@@ -149,9 +147,8 @@ def _rebuild[R: Recordable](payload_type: type[R], recorded: dict[str, Any], *, 
 def _blocks(seam: object) -> bool:
     """Whether an action seam drives its tools by blocking calls — the one decision the two flavours differ in.
 
-    Raises:
-        ValueError: The seam is both an ``ActionSeam`` and a ``SyncActionSeam``.
-        TypeError: It is neither.
+    :raises ValueError: The seam is both an ``ActionSeam`` and a ``SyncActionSeam``.
+    :raises TypeError: It is neither.
     """
     awaited = isinstance(seam, ActionSeam)
     blocking = isinstance(seam, SyncActionSeam)
@@ -206,16 +203,23 @@ class CassetteCell:
     ) -> None:
         """Bind the cell to its run's corpus and its own coordinates.
 
-        Args:
-            mode: Whether the cell records or replays.
-            store: Where the corpus lives.
-            scope_id: The scope the corpus lives in.
-            corpus_id: The capture run whose corpus this is.
-            template_id: The template the cell runs.
-            test_case_id: The cell's case.
-            model: The cell's candidate model — capture provenance.
-            holes: Where a recording the capture failed to write is named, one ``error_details`` entry each, for
-                the runner to write on the capture run (:attr:`CassetteLane.holes`); ``None`` keeps none.
+        :param mode: Whether the cell records or replays.
+        :ptype mode: Literal['capture', 'replay']
+        :param store: Where the corpus lives.
+        :ptype store: CassetteStore
+        :param scope_id: The scope the corpus lives in.
+        :ptype scope_id: str
+        :param corpus_id: The capture run whose corpus this is.
+        :ptype corpus_id: str
+        :param template_id: The template the cell runs.
+        :ptype template_id: str
+        :param test_case_id: The cell's case.
+        :ptype test_case_id: str
+        :param model: The cell's candidate model — capture provenance.
+        :ptype model: str
+        :param holes: Where a recording the capture failed to write is named, one ``error_details`` entry each, for
+            the runner to write on the capture run (:attr:`CassetteLane.holes`); ``None`` keeps none.
+        :ptype holes: list[str] | None
         """
         self._mode: Literal["capture", "replay"] = mode
         self._store = store
@@ -268,13 +272,13 @@ class CassetteCell:
         )
 
     def _read(self, key: CassetteKey, *, seam: CassetteSeam) -> EvalCassette:
-        """The recording of ``key``, from the case's recordings as :meth:`open` read them, or the rig's failure to have one.
+        """The recording of ``key``, from the case's recordings as :meth:`open` read them, or the rig's failure to have
+        one.
 
-        Raises:
-            CassetteMiss: The corpus never recorded this ask.
-            CassetteExhausted: It recorded this ask ``key.occurrence`` times.
-            CassetteCorrupt: The case's recordings could not be read, this row does not load, or it was recorded at
-                the other seam.
+        :raises CassetteMiss: The corpus never recorded this ask.
+        :raises CassetteExhausted: It recorded this ask ``key.occurrence`` times.
+        :raises CassetteCorrupt: The case's recordings could not be read, this row does not load, or it was recorded at
+            the other seam.
         """
         if self._read_failure is not None:
             raise CassetteCorrupt(f"Cassette recording {key.doc_id!r} could not be read back: {self._read_failure}")
@@ -335,9 +339,8 @@ class CassetteCell:
         row that does not load fails the call that asks for it, as reading that row would. A **capture** clears what
         the corpus already holds for the case, so the case's recording is this cell's session alone.
 
-        Raises:
-            ValueError: The cell was already opened.
-            CassetteCorrupt: A capture could not clear the case's previous recording.
+        :raises ValueError: The cell was already opened.
+        :raises CassetteCorrupt: A capture could not clear the case's previous recording.
         """
         if self._opened:
             raise ValueError("this cell's cassettes are already open; the runner opens a cell once")
@@ -377,8 +380,7 @@ class CassetteCell:
         named among the lane's holes, and a replay asking for it reports the hole. The runner calls this off the
         loop. Idempotent: what was written is not written again.
 
-        Raises:
-            ValueError: The cell has not ended (:meth:`close`), so its background work may still settle.
+        :raises ValueError: The cell has not ended (:meth:`close`), so its background work may still settle.
         """
         if not self._closed:
             raise ValueError("a cell's cassettes are flushed after it ends; close it first")
@@ -395,14 +397,12 @@ class CassetteCell:
         leaves the candidate as the kind built it. It touches no store: the runner opened the cell
         (:meth:`open`) before handing it to ``prepare``.
 
-        Args:
-            seams: The cell candidate's seams.
-
-        Raises:
-            TypeError: ``seams`` is not a :class:`~threetears.evals.kernel.cassettes.CassetteSeams`.
-            ValueError: The cell was already wired, or was never opened; ``seams`` declares no seam at all;
-                its action seam names no tool; a tool is declared on both seams; or the action seam did not
-                apply the wrap exactly once over every tool it declared.
+        :param seams: The cell candidate's seams.
+        :ptype seams: CassetteSeams
+        :raises TypeError: ``seams`` is not a :class:`~threetears.evals.kernel.cassettes.CassetteSeams`.
+        :raises ValueError: The cell was already wired, or was never opened; ``seams`` declares no seam at all;
+            its action seam names no tool; a tool is declared on both seams; or the action seam did not
+            apply the wrap exactly once over every tool it declared.
         """
         if not self._opened:
             raise ValueError("this cell's cassettes were never opened; the runner opens a cell before its prepare")
@@ -519,14 +519,12 @@ class CassetteCell:
     ) -> tuple[CassetteKey, Recordable | None]:
         """Key one recordable call and, in replay, serve it — the half of an action that is not the live call.
 
-        Returns:
-            The call's key, and the recording rebuilt as ``result_type`` in replay or ``None`` in
+        :return: The call's key, and the recording rebuilt as ``result_type`` in replay or ``None`` in
             capture, where the caller runs the tool live and hands the result to :meth:`_record_action`.
-
-        Raises:
-            CassetteMiss: Replay, and the corpus never recorded this call.
-            CassetteExhausted: Replay, and it recorded this call fewer times than it is now made.
-            CassetteCorrupt: Replay, and the recording could not be read back or rebuilt.
+        :rtype: tuple[CassetteKey, Recordable | None]
+        :raises CassetteMiss: Replay, and the corpus never recorded this call.
+        :raises CassetteExhausted: Replay, and it recorded this call fewer times than it is now made.
+        :raises CassetteCorrupt: Replay, and the recording could not be read back or rebuilt.
         """
         key = self._next_key(tool, action, parameters)
         if self._mode == "replay":
@@ -558,8 +556,7 @@ class CassetteCell:
     ) -> None:
         """Record how one captured piece of background work ended — a ticket's settlement.
 
-        Raises:
-            ValueError: The work was already settled.
+        :raises ValueError: The work was already settled.
         """
         if self._closed:
             # The cell has ended and already recorded this work as undelivered, which is what its
@@ -632,12 +629,11 @@ class CassetteCell:
         the cell served. A reading taken when a deadline cut the cell off is held to the first rule
         only: it may legitimately not have caught up.
 
-        Args:
-            deliveries: The kind's ``async_deliveries``.
-            complete: Whether this is the kind's returned output rather than a mid-cell reading.
-
-        Raises:
-            ReplayReportDefect: The report says a replayed piece of work ran live, or leaves one out.
+        :param deliveries: The kind's ``async_deliveries``.
+        :ptype deliveries: Sequence[AsyncDelivery] | None
+        :param complete: Whether this is the kind's returned output rather than a mid-cell reading.
+        :ptype complete: bool
+        :raises ReplayReportDefect: The report says a replayed piece of work ran live, or leaves one out.
         """
         if not self._replayed_tools:
             return
@@ -691,13 +687,13 @@ class CassetteProxy:
     ) -> None:
         """Wrap one tool for one cell.
 
-        Args:
-            wrapped: The tool.
-            act: The cell's capture-or-replay of one awaited call to it.
-            act_sync: The cell's capture-or-replay of one blocking call to it.
-
-        Raises:
-            ValueError: Not exactly one of ``act`` and ``act_sync`` was given.
+        :param wrapped: The tool.
+        :ptype wrapped: ToolLike | SyncToolLike
+        :param act: The cell's capture-or-replay of one awaited call to it.
+        :ptype act: Callable[[str, dict[str, Any]], Awaitable[Recordable]] | None
+        :param act_sync: The cell's capture-or-replay of one blocking call to it.
+        :ptype act_sync: Callable[[str, dict[str, Any]], Recordable] | None
+        :raises ValueError: Not exactly one of ``act`` and ``act_sync`` was given.
         """
         if (act is None) == (act_sync is None):
             raise ValueError(
@@ -733,11 +729,10 @@ class CassetteProxy:
         answer to it is the tool's own unknown-action answer — the same one a run without cassettes
         gives.
 
-        Raises:
-            TypeError: The tool was wired on a synchronous action seam; call :meth:`act_sync`.
-            CassetteMiss: Replay, and the corpus never recorded this call.
-            CassetteExhausted: Replay, and the corpus recorded this call fewer times than it is now made.
-            CassetteCorrupt: Replay, and the recording could not be read back.
+        :raises TypeError: The tool was wired on a synchronous action seam; call :meth:`act_sync`.
+        :raises CassetteMiss: Replay, and the corpus never recorded this call.
+        :raises CassetteExhausted: Replay, and the corpus recorded this call fewer times than it is now made.
+        :raises CassetteCorrupt: Replay, and the recording could not be read back.
         """
         if self._act is None:
             raise TypeError(f"{self.name!r} was wired on a SyncActionSeam; its calls go through act_sync")
@@ -749,11 +744,10 @@ class CassetteProxy:
         The same rules, through the same code: an undispatchable action gets the tool's own answer and
         never reaches the corpus, and a replay serves the recording of this call's occurrence or raises.
 
-        Raises:
-            TypeError: The tool was wired on an awaited action seam; call :meth:`act`.
-            CassetteMiss: Replay, and the corpus never recorded this call.
-            CassetteExhausted: Replay, and the corpus recorded this call fewer times than it is now made.
-            CassetteCorrupt: Replay, and the recording could not be read back.
+        :raises TypeError: The tool was wired on an awaited action seam; call :meth:`act`.
+        :raises CassetteMiss: Replay, and the corpus never recorded this call.
+        :raises CassetteExhausted: Replay, and the corpus recorded this call fewer times than it is now made.
+        :raises CassetteCorrupt: Replay, and the recording could not be read back.
         """
         if self._act_sync is None:
             raise TypeError(f"{self.name!r} was wired on an ActionSeam; its calls go through act")
@@ -810,14 +804,13 @@ class CassetteLane:
     cell (:meth:`cell`), which the runner hands that cell's ``prepare``. One lane per run is what
     binds a run's whole matrix to one corpus.
 
-    Attributes:
-        mode: ``'capture'`` or ``'replay'``; ``'off'`` is refused, since a run with cassettes off has
-            no lane.
-        store: Where cassettes are read and written.
-        scope_id: The scope every record this lane touches lives in.
-        corpus_id: The corpus: a capture run's own id, or the capture run a replay names.
-        holes: Every recording a capture failed to write, one ``error_details`` entry each, appended by the lane's
-            cells as they fail; the runner writes them on the capture run, which is this lane's run.
+    :ivar mode: ``'capture'`` or ``'replay'``; ``'off'`` is refused, since a run with cassettes off has
+        no lane.
+    :ivar store: Where cassettes are read and written.
+    :ivar scope_id: The scope every record this lane touches lives in.
+    :ivar corpus_id: The corpus: a capture run's own id, or the capture run a replay names.
+    :ivar holes: Every recording a capture failed to write, one ``error_details`` entry each, appended by the lane's
+        cells as they fail; the runner writes them on the capture run, which is this lane's run.
     """
 
     mode: Literal["capture", "replay"]
@@ -829,8 +822,7 @@ class CassetteLane:
     def __post_init__(self) -> None:
         """Refuse a lane in a mode that records and replays nothing.
 
-        Raises:
-            ValueError: ``mode`` is not ``'capture'`` or ``'replay'``.
+        :raises ValueError: ``mode`` is not ``'capture'`` or ``'replay'``.
         """
         if self.mode not in ("capture", "replay"):
             raise ValueError(
@@ -842,13 +834,13 @@ class CassetteLane:
     def for_run(cls, run: EvalRun, store: CassetteStore) -> CassetteLane | None:
         """The lane a run's own cassette settings call for, or ``None`` when its cassettes are off.
 
-        Args:
-            run: The run: its ``cassette_mode``, its ``scope_id``, and the corpus — its own ``id`` for a
-                capture, ``cassette_corpus_id`` for a replay.
-            store: Where its cassettes are read and written.
-
-        Returns:
-            The lane, or ``None`` for ``cassette_mode='off'``.
+        :param run: The run: its ``cassette_mode``, its ``scope_id``, and the corpus — its own ``id`` for a
+            capture, ``cassette_corpus_id`` for a replay.
+        :ptype run: EvalRun
+        :param store: Where its cassettes are read and written.
+        :ptype store: CassetteStore
+        :return: The lane, or ``None`` for ``cassette_mode='off'``.
+        :rtype: CassetteLane | None
         """
         if run.cassette_mode == "off":
             return None
@@ -861,13 +853,14 @@ class CassetteLane:
     def cell(self, *, template_id: str, test_case_id: str, model: str) -> CassetteCell:
         """The handle one cell of this run is given.
 
-        Args:
-            template_id: The template the cell runs.
-            test_case_id: The cell's case.
-            model: The cell's candidate model.
-
-        Returns:
-            The cell's handle, unwired.
+        :param template_id: The template the cell runs.
+        :ptype template_id: str
+        :param test_case_id: The cell's case.
+        :ptype test_case_id: str
+        :param model: The cell's candidate model.
+        :ptype model: str
+        :return: The cell's handle, unwired.
+        :rtype: CassetteCell
         """
         return CassetteCell(
             mode=self.mode,

@@ -143,14 +143,20 @@ def _observe_read(
     and ``cells_out`` the pivot's cells (absent for an export, ``refused`` for a pivot that was refused after
     its projection). A refused call is still logged: it paid for the read all the same.
 
-    Args:
-        lens: The operation, as the line names it (``pivot``, ``export_results``).
-        scope_id: The scope read.
-        started: ``time.perf_counter()`` at the call's start.
-        runs_in: The runs listed.
-        results_in: The results read.
-        records_out: The score records projected.
-        cells_out: The pivot's cell count, ``"refused"``, or ``None`` for a lens that has no cells.
+    :param lens: The operation, as the line names it (``pivot``, ``export_results``).
+    :ptype lens: str
+    :param scope_id: The scope read.
+    :ptype scope_id: str
+    :param started: ``time.perf_counter()`` at the call's start.
+    :ptype started: float
+    :param runs_in: The runs listed.
+    :ptype runs_in: int
+    :param results_in: The results read.
+    :ptype results_in: int
+    :param records_out: The score records projected.
+    :ptype records_out: int
+    :param cells_out: The pivot's cell count, ``"refused"``, or ``None`` for a lens that has no cells.
+    :ptype cells_out: int | str | None
     """
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     over = records_out > READ_TIER_ROW_BUDGET
@@ -215,8 +221,7 @@ class LensStore(Protocol):
 def _load_campaign(storage: LensStore, campaign_id: str, scope_id: str) -> EvalCampaign:
     """Load a campaign within a scope, refusing an unknown id as the campaign family does.
 
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
+    :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
@@ -227,8 +232,7 @@ def _load_campaign(storage: LensStore, campaign_id: str, scope_id: str) -> EvalC
 def _load_run(storage: LensStore, run_id: str, scope_id: str) -> EvalRun:
     """Load one run whole, refusing an unknown id as the run family does.
 
-    Raises:
-        NotFoundError: No run with that id in the scope.
+    :raises NotFoundError: No run with that id in the scope.
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
@@ -270,15 +274,12 @@ def _status_filter(status: str | None) -> str | None:
     it carries; MCP renders it as the ``Error (VALIDATION_FAILED): …`` prose its
     handler decorator produces. One refusal, two spellings of it.
 
-    Args:
-        status: Raw filter from the caller, straight off the wire.
-
-    Returns:
-        ``None`` to include every run, else the status to filter on.
-
-    Raises:
-        ValidationFailedError: The value is not a status a run can carry, nor
-            ``"all"``.
+    :param status: Raw filter from the caller, straight off the wire.
+    :ptype status: str | None
+    :return: ``None`` to include every run, else the status to filter on.
+    :rtype: str | None
+    :raises ValidationFailedError: The value is not a status a run can carry, nor
+        ``"all"``.
     """
     try:
         return normalize_status_filter(status)
@@ -305,16 +306,16 @@ def _corpus_and_cohort(list_runs: RunLister, scope_id: str) -> tuple[list[EvalRu
     corpus minus the cohort" is exactly how those would drift into disagreeing
     about which narrowing dropped a run. One split, computed once, here.
 
-    Args:
-        list_runs: The run listing (:data:`RunLister`).
-        scope_id: Partition key — the scope whose runs to split.
-
-    Returns:
-        ``(corpus, cohort, archived_run_ids)`` — the corpus is every run in the
+    :param list_runs: The run listing (:data:`RunLister`).
+    :ptype list_runs: RunLister
+    :param scope_id: Partition key — the scope whose runs to split.
+    :ptype scope_id: str
+    :return: ``(corpus, cohort, archived_run_ids)`` — the corpus is every run in the
         scope; the cohort is the corpus minus operator-archived runs; the
         third element is the ids of the runs that difference removed. Callers
         narrow the cohort further (by status, by explicit run ids) and pass the
         corpus's ids as ``known_run_ids`` and this set as ``archived_run_ids``.
+    :rtype: tuple[list[EvalRun], list[EvalRun], set[str]]
     """
     corpus = list_runs(scope_id, include_archived=True)
     return corpus, [run for run in corpus if not run.archived], {run.id for run in corpus if run.archived}
@@ -367,41 +368,45 @@ def comparison_sets(
     the reporting layer has no reason to know. Turning a grouping concept into its members is this
     function's one lookup, through the store's ``load_campaign``.
 
-    Args:
-        storage: Where the scope's results and ``campaign_id``'s campaign are read (:class:`LensStore`).
-        scope_id: Partition key — the scope whose runs to group.
-        list_runs: The run listing (:data:`RunLister`), which owns the archival exclusion.
-        status: Raw run-status filter, defaulting to ``"completed"`` because
-            an in-flight run has no stable case set to compare on. ``"all"``
-            groups every run regardless of status; anything that is neither
-            is refused rather than answered with an empty grouping.
-        full_windows: List every measurement span rather than summarising a
-            large group's spans. Surfaces whose consumer renders the text itself
-            pass ``True``; the chat surface leaves it off, since that is
-            where an unbroken paragraph of spans stops being readable.
-        campaign_id: Narrow the grouping to this campaign's member runs. The
-            members are taken as the campaign STORES them, unfiltered: this
-            method already narrows by ``status`` and inherits the archival
-            exclusion from ``list_runs``, and intersecting a second,
-            differently-defined narrowing here would leave a caller unable to
-            say which one removed a run. A member that does not resolve — a run
-            destroyed outside the delete cascade — is logged by the grouping
-            rather than refused.
-        run_ids: Narrow the grouping to these runs directly, for a caller whose
-            set is not a campaign. Mutually exclusive with ``campaign_id``.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.lenses.comparison_sets.ComparisonSetsResult` —
+    :param storage: Where the scope's results and ``campaign_id``'s campaign are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param scope_id: Partition key — the scope whose runs to group.
+    :ptype scope_id: str
+    :param list_runs: The run listing (:data:`RunLister`), which owns the archival exclusion.
+    :ptype list_runs: RunLister
+    :param status: Raw run-status filter, defaulting to ``"completed"`` because
+        an in-flight run has no stable case set to compare on. ``"all"``
+        groups every run regardless of status; anything that is neither
+        is refused rather than answered with an empty grouping.
+    :ptype status: str | None
+    :param full_windows: List every measurement span rather than summarising a
+        large group's spans. Surfaces whose consumer renders the text itself
+        pass ``True``; the chat surface leaves it off, since that is
+        where an unbroken paragraph of spans stops being readable.
+    :ptype full_windows: bool
+    :param campaign_id: Narrow the grouping to this campaign's member runs. The
+        members are taken as the campaign STORES them, unfiltered: this
+        method already narrows by ``status`` and inherits the archival
+        exclusion from ``list_runs``, and intersecting a second,
+        differently-defined narrowing here would leave a caller unable to
+        say which one removed a run. A member that does not resolve — a run
+        destroyed outside the delete cascade — is logged by the grouping
+        rather than refused.
+    :ptype campaign_id: str | None
+    :param run_ids: Narrow the grouping to these runs directly, for a caller whose
+        set is not a campaign. Mutually exclusive with ``campaign_id``.
+    :ptype run_ids: list[str] | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.comparison_sets.ComparisonSetsResult` —
         ``comparison_sets`` sorted by subject then template, plus
         ``out_of_scope_run_ids`` naming what a scope left out. A group whose
         every member is out of scope is not returned at all.
-
-    Raises:
-        ValidationFailedError: ``status`` is neither ``"all"`` nor a status a
-            run can carry, or both ``campaign_id`` and ``run_ids`` were supplied
-            — each is a question the caller can restate.
-        NotFoundError: ``campaign_id`` names no campaign in the scope.
+    :rtype: dict[str, Any]
+    :raises ValidationFailedError: ``status`` is neither ``"all"`` nor a status a
+        run can carry, or both ``campaign_id`` and ``run_ids`` were supplied
+        — each is a question the caller can restate.
+    :raises NotFoundError: ``campaign_id`` names no campaign in the scope.
     """
     if campaign_id and run_ids:
         # Refused rather than intersected, or one silently preferred. Two scopes is an
@@ -453,40 +458,47 @@ def pivot(
     (a REST ``Query`` default, an adapter ``normalize_blank``, and this
     method's own fallback), which is three places for one answer to change.
 
-    Args:
-        storage: Where the scope's results are read (:class:`LensStore`).
-        scope_id: Partition key — the scope to aggregate over.
-        list_runs: The run listing (:data:`RunLister`).
-        row_factor: Coordinate to use as the row axis.
-        column_factor: Coordinate to use as the column axis; the axis the
-            Simpson's guard pools over rows.
-        metric: Which observation-level measure to aggregate. ``None`` or
-            blank takes the composite.
-        weighting: Aggregation weighting; ``None`` or blank takes the
-            disclosed default (equal per scenario).
-        subject_id: Optional single-subject filter. Required to pivot a
-            judge-mediated measure over a multi-subject scope.
-        status: Raw run-status filter, defaulting to ``"completed"`` for the
-            same reason as :func:`comparison_sets` — an in-flight run's cells
-            are still arriving. ``"all"`` aggregates over every run.
-        predicted_cost: The estimate the caller made before these runs, as
-            :func:`~threetears.evals.analysis.lenses.cost_estimate.compute_estimate_cost` returned it — the model, or its JSON
-            form as a caller across a wire holds it — or the planned costs of a launch its host's pricer priced
-            (:class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost`, which
-            :func:`~threetears.evals.ops.launch_estimate`'s ``LaunchEstimate`` is). Each cost cell at a planned model
-            then carries that model's predicted cost per observation beside the cost it observed. ``None`` shows
-            observed cost alone.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The :class:`~threetears.evals.analysis.lenses.pivot.PivotTable`.
-
-    Raises:
-        ValidationFailedError: The pivot cannot be answered honestly — an
-            unknown metric, weighting, run status, axis or filter coordinate,
-            or a cross-subject pooling that would average measurements derived
-            from different rubrics; or a ``predicted_cost`` that is not an estimate, or
-            that was handed to a pivot of another metric or with no model axis.
+    :param storage: Where the scope's results are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param scope_id: Partition key — the scope to aggregate over.
+    :ptype scope_id: str
+    :param list_runs: The run listing (:data:`RunLister`).
+    :ptype list_runs: RunLister
+    :param row_factor: Coordinate to use as the row axis.
+    :ptype row_factor: str
+    :param column_factor: Coordinate to use as the column axis; the axis the
+        Simpson's guard pools over rows.
+    :ptype column_factor: str
+    :param metric: Which observation-level measure to aggregate. ``None`` or
+        blank takes the composite.
+    :ptype metric: str | None
+    :param weighting: Aggregation weighting; ``None`` or blank takes the
+        disclosed default (equal per scenario).
+    :ptype weighting: str | None
+    :param subject_id: Optional single-subject filter. Required to pivot a
+        judge-mediated measure over a multi-subject scope.
+    :ptype subject_id: str | None
+    :param status: Raw run-status filter, defaulting to ``"completed"`` for the
+        same reason as :func:`comparison_sets` — an in-flight run's cells
+        are still arriving. ``"all"`` aggregates over every run.
+    :ptype status: str | None
+    :param predicted_cost: The estimate the caller made before these runs, as
+        :func:`~threetears.evals.analysis.lenses.cost_estimate.compute_estimate_cost` returned it — the model, or its
+        JSON form as a caller across a wire holds it — or the planned costs of a launch its host's pricer priced
+        (:class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost`, which
+        :func:`~threetears.evals.ops.launch_estimate`'s ``LaunchEstimate`` is). Each cost cell at a planned model
+        then carries that model's predicted cost per observation beside the cost it observed. ``None`` shows
+        observed cost alone.
+    :ptype predicted_cost: CostEstimate | Sequence[PlannedCost] | Mapping[str, Any] | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The :class:`~threetears.evals.analysis.lenses.pivot.PivotTable`.
+    :rtype: PivotTable
+    :raises ValidationFailedError: The pivot cannot be answered honestly — an
+        unknown metric, weighting, run status, axis or filter coordinate,
+        or a cross-subject pooling that would average measurements derived
+        from different rubrics; or a ``predicted_cost`` that is not an estimate, or
+        that was handed to a pivot of another metric or with no model axis.
     """
     started = time.perf_counter()
     estimate: CostEstimate | list[PlannedCost] | None
@@ -577,32 +589,36 @@ def frontier(
     as a validated float and MCP as the string a tool argument is, and
     normalizing in both places is exactly how the two surfaces drift.
 
-    Args:
-        storage: Where the scope's results are read (:class:`LensStore`).
-        scope_id: Partition key — the scope to rank over.
-        list_runs: The run listing (:data:`RunLister`).
-        bar: The pass^k threshold the verdict is made against. ``None`` or
-            blank computes the frontier without a verdict rather than against
-            an invented default. A string is parsed; a non-number is
-            refused.
-        subject_id: Optional single-subject filter; other subjects' results
-            are counted as filtered-out rather than dropped silently.
-        status: Raw run-status filter, defaulting to ``"completed"`` for the
-            same reason as :func:`pivot`. ``"all"`` ranks over every run.
-        profile: The host whose sweepable declarations each point's production-replicating cost is read
-            against (#571): every point and verdict then names what each of its runs set away from the subject's
-            production configuration, read off the WHOLE run. ``None`` leaves that disclosure ``None`` — nobody
-            checked, never "nothing moved".
-        control_variant_key: The variant each contestant's boundary (guardrail) dimensions are held against;
-            ``None`` checks none, and the answer says so per subject.
-
-    Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.lenses.frontier.FrontierResult` dict.
-
-    Raises:
-        ValidationFailedError: The bar is not a number or is outside
-            ``[0, 1]``, or ``status`` is neither ``"all"`` nor a status a run
-            can carry — each a question the caller can restate.
+    :param storage: Where the scope's results are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param scope_id: Partition key — the scope to rank over.
+    :ptype scope_id: str
+    :param list_runs: The run listing (:data:`RunLister`).
+    :ptype list_runs: RunLister
+    :param bar: The pass^k threshold the verdict is made against. ``None`` or
+        blank computes the frontier without a verdict rather than against
+        an invented default. A string is parsed; a non-number is
+        refused.
+    :ptype bar: float | str | None
+    :param subject_id: Optional single-subject filter; other subjects' results
+        are counted as filtered-out rather than dropped silently.
+    :ptype subject_id: str | None
+    :param status: Raw run-status filter, defaulting to ``"completed"`` for the
+        same reason as :func:`pivot`. ``"all"`` ranks over every run.
+    :ptype status: str | None
+    :param profile: The host whose sweepable declarations each point's production-replicating cost is read
+        against (#571): every point and verdict then names what each of its runs set away from the subject's
+        production configuration, read off the WHOLE run. ``None`` leaves that disclosure ``None`` — nobody
+        checked, never "nothing moved".
+    :ptype profile: HostProfile | None
+    :param control_variant_key: The variant each contestant's boundary (guardrail) dimensions are held against;
+        ``None`` checks none, and the answer says so per subject.
+    :ptype control_variant_key: str | None
+    :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.frontier.FrontierResult` dict.
+    :rtype: dict[str, Any]
+    :raises ValidationFailedError: The bar is not a number or is outside
+        ``[0, 1]``, or ``status`` is neither ``"all"`` nor a status a run
+        can carry — each a question the caller can restate.
     """
     try:
         parsed_bar = normalize_bar(bar)
@@ -663,28 +679,33 @@ def history(
     **Arguments arrive raw.** Blank-normalization and the status filter happen
     here, at the one seam, for the reason spelled out in :func:`pivot`.
 
-    Args:
-        storage: Where the scope's results are read (:class:`LensStore`).
-        scope_id: Partition key — the scope to series over.
-        list_runs: The run listing (:data:`RunLister`).
-        metric: Which measure to track. ``None`` or blank takes the composite.
-        min_absolute_change: Smallest absolute move a regression flag counts,
-            in the measure's own unit; ``0.0`` lets significance alone flag.
-        min_relative_change: Smallest move relative to the baseline a flag
-            counts, as a fraction; ``0.0`` lets significance alone flag.
-        subject_id: Optional single-subject filter; other subjects' results
-            are counted as filtered-out rather than dropped silently.
-        status: Raw run-status filter, defaulting to ``"completed"`` for the
-            same reason as :func:`pivot`. ``"all"`` series over every run.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The :class:`~threetears.evals.analysis.lenses.history.HistoryResult`.
-
-    Raises:
-        ValidationFailedError: The metric is not one this surface can series,
-            or ``status`` is neither ``"all"`` nor a status a run can carry —
-            each a question the caller can restate.
+    :param storage: Where the scope's results are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param scope_id: Partition key — the scope to series over.
+    :ptype scope_id: str
+    :param list_runs: The run listing (:data:`RunLister`).
+    :ptype list_runs: RunLister
+    :param metric: Which measure to track. ``None`` or blank takes the composite.
+    :ptype metric: str | None
+    :param min_absolute_change: Smallest absolute move a regression flag counts,
+        in the measure's own unit; ``0.0`` lets significance alone flag.
+    :ptype min_absolute_change: float
+    :param min_relative_change: Smallest move relative to the baseline a flag
+        counts, as a fraction; ``0.0`` lets significance alone flag.
+    :ptype min_relative_change: float
+    :param subject_id: Optional single-subject filter; other subjects' results
+        are counted as filtered-out rather than dropped silently.
+    :ptype subject_id: str | None
+    :param status: Raw run-status filter, defaulting to ``"completed"`` for the
+        same reason as :func:`pivot`. ``"all"`` series over every run.
+    :ptype status: str | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The :class:`~threetears.evals.analysis.lenses.history.HistoryResult`.
+    :rtype: HistoryResult
+    :raises ValidationFailedError: The metric is not one this surface can series,
+        or ``status`` is neither ``"all"`` nor a status a run can carry —
+        each a question the caller can restate.
     """
     metric = normalize_blank(metric, METRIC_COMPOSITE)
     subject = (subject_id or "").strip() or None
@@ -723,15 +744,16 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     quality signal; budget never filters, because the spend was real whatever
     the run's fate. Passing every run is the whole contract of this view.
 
-    Args:
-        storage: Where the scope's results are read (:class:`LensStore`).
-        scope_id: Partition key — the scope whose spend to total.
-        list_runs: The run listing (:data:`RunLister`).
-
-    Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.lenses.program_budget.ProgramBudget` dict —
+    :param storage: Where the scope's results are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param scope_id: Partition key — the scope whose spend to total.
+    :ptype scope_id: str
+    :param list_runs: The run listing (:data:`RunLister`).
+    :ptype list_runs: RunLister
+    :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.program_budget.ProgramBudget` dict —
         per-run spend with a cumulative series, plus the incomplete-run
         accounting that names the spend a quality view would have dropped.
+    :rtype: dict[str, Any]
     """
     # Archived runs are INCLUDED here, unlike every quality surface. Archiving is
     # a measurement curation, not a financial one: a run retired because its
@@ -756,13 +778,14 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
     archived run's dollars were still spent. The rows say which are archived
     so a deliberate retirement is not read as an oversight.
 
-    Args:
-        storage: Where the scope's results and every campaign are read (:class:`LensStore`).
-        scope_id: Partition key — the scope whose runs to check.
-        list_runs: The run listing (:data:`RunLister`).
-
-    Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.lenses.orphaned_runs.OrphanedRunsResult`.
+    :param storage: Where the scope's results and every campaign are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param scope_id: Partition key — the scope whose runs to check.
+    :ptype scope_id: str
+    :param list_runs: The run listing (:data:`RunLister`).
+    :ptype list_runs: RunLister
+    :return: A JSON-safe :class:`~threetears.evals.analysis.lenses.orphaned_runs.OrphanedRunsResult`.
+    :rtype: dict[str, Any]
     """
     runs = list_runs(scope_id, include_archived=True)
     results = storage.query_eval_results(scope_id)
@@ -796,39 +819,42 @@ def export_results(
     status here rather than in the query — so a JSON export's exclusion counts
     distinguish "excluded on request" from "unplaceable".
 
-    Args:
-        storage: Where the scope's results are read (:class:`LensStore`).
-        scope_id: Partition key — the scope to export.
-        list_runs: The run listing (:data:`RunLister`).
-        fmt: ``"csv"`` (default) or ``"json"``. ``None`` or blank takes CSV,
-            the flat-rows-for-analysis form.
-        status: Raw run-status filter, defaulting to ``"completed"`` for the
-            same reason as :func:`pivot`. ``"all"`` exports every run's rows.
-        run_ids: Optional — restrict the export to these run ids. When given,
-            only those runs' results are fetched (each query is run-id-indexed
-            in storage) rather than the whole scope, so a targeted export of
-            a handful of runs reads a handful of runs' rows. What it saves is
-            rows, not row width: the stored result carries no trace payload at
-            all — that lives in a sibling :class:`~threetears.evals.schema.models.EvalTrace`
-            document no export path reads. Unknown ids are silently absent (they
-            contribute no rows). ``None`` exports every run, as before.
+    :param storage: Where the scope's results are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param scope_id: Partition key — the scope to export.
+    :ptype scope_id: str
+    :param list_runs: The run listing (:data:`RunLister`).
+    :ptype list_runs: RunLister
+    :param fmt: ``"csv"`` (default) or ``"json"``. ``None`` or blank takes CSV,
+        the flat-rows-for-analysis form.
+    :ptype fmt: str | None
+    :param status: Raw run-status filter, defaulting to ``"completed"`` for the
+        same reason as :func:`pivot`. ``"all"`` exports every run's rows.
+    :ptype status: str | None
+    :param run_ids: Optional — restrict the export to these run ids. When given,
+        only those runs' results are fetched (each query is run-id-indexed
+        in storage) rather than the whole scope, so a targeted export of
+        a handful of runs reads a handful of runs' rows. What it saves is
+        rows, not row width: the stored result carries no trace payload at
+        all — that lives in a sibling :class:`~threetears.evals.schema.models.EvalTrace`
+        document no export path reads. Unknown ids are silently absent (they
+        contribute no rows). ``None`` exports every run, as before.
 
-            **A named id is honoured even when the run is archived**, matching
-            ``EvalService.get_run`` and every other by-id surface: archiving withholds a
-            run from the *default* cohort, not from a caller who asked for it by
-            name. Only the unnamed case — the one that expressed no preference —
-            is narrowed to the cohort.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The :class:`~threetears.evals.analysis.lenses.export.ScoreExport`: its body is CSV text or a JSON
+        **A named id is honoured even when the run is archived**, matching
+        ``EvalService.get_run`` and every other by-id surface: archiving withholds a
+        run from the *default* cohort, not from a caller who asked for it by
+        name. Only the unnamed case — the one that expressed no preference —
+        is narrowed to the cohort.
+    :ptype run_ids: list[str] | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The :class:`~threetears.evals.analysis.lenses.export.ScoreExport`: its body is CSV text or a JSON
         :class:`~threetears.evals.analysis.reporting.ScoreProjection`, and beside it the row count,
         the exclusions and the completeness disclosures a CSV body has no place for.
-
-    Raises:
-        ValidationFailedError: The format is not one this surface can emit,
-            or ``status`` is neither ``"all"`` nor a status a run can carry —
-            each a question the caller can restate.
+    :rtype: ScoreExport
+    :raises ValidationFailedError: The format is not one this surface can emit,
+        or ``status`` is neither ``"all"`` nor a status a run can carry —
+        each a question the caller can restate.
     """
     started = time.perf_counter()
     fmt = normalize_blank(fmt, "csv")
@@ -911,19 +937,23 @@ def run_summary(
     Each row also carries the host's own columns for its group (``row_columns``) — a host's
     rollup of what its kind reported — laid over the aggregates last.
 
-    Args:
-        storage: Where the run's results are read (:class:`LensStore`).
-        run_id: The eval run to summarize.
-        scope_id: Partition key — the scope the run lives in.
-        load_run_listed: Loads one run the way a listing does (its scalars, not its host
-            payload), raising ``NotFoundError`` for an unknown id.
-        row_columns: The host's per-group columns (:data:`RowColumns`).
-        profile: The host whose sweepable declarations say which inputs the run moved off the
-            subject's production configuration — the disclosure every prod-cost row carries.
-        rubric_threshold: Minimum rubric score counted as a pass (default 3).
-
-    Returns:
-        ``{"run_id", "status", "candidate_kind", "candidate_model", "k_runs", "rubric_threshold",
+    :param storage: Where the run's results are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param run_id: The eval run to summarize.
+    :ptype run_id: str
+    :param scope_id: Partition key — the scope the run lives in.
+    :ptype scope_id: str
+    :param load_run_listed: Loads one run the way a listing does (its scalars, not its host
+        payload), raising ``NotFoundError`` for an unknown id.
+    :ptype load_run_listed: Callable[[str, str], EvalRun]
+    :param row_columns: The host's per-group columns (:data:`RowColumns`).
+    :ptype row_columns: RowColumns
+    :param profile: The host whose sweepable declarations say which inputs the run moved off the
+        subject's production configuration — the disclosure every prod-cost row carries.
+    :ptype profile: HostProfile
+    :param rubric_threshold: Minimum rubric score counted as a pass (default 3).
+    :ptype rubric_threshold: int
+    :return: ``{"run_id", "status", "candidate_kind", "candidate_model", "k_runs", "rubric_threshold",
         "rows": [{"model", "run_id", "pass_hat_k", "k", "n_cases_at_k", "pass_hat_k_curve",
         "n_test_cases", "n_cannot_tell_excluded", "mean_total_ms", "median_total_ms",
         "p95_total_ms", "max_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
@@ -992,9 +1022,8 @@ def run_summary(
         short run's rates would otherwise read as comparable;
         ``dimension_rows`` is empty when the run's template carries no
         judge-scored rubric dimensions.
-
-    Raises:
-        NotFoundError: No run with that id in the scope.
+    :rtype: dict[str, Any]
+    :raises NotFoundError: No run with that id in the scope.
     """
     # The summary reads the run's scalars and never its payload.
     run = load_run_listed(run_id, scope_id)
@@ -1107,12 +1136,17 @@ def bisect_runs(
     Both subject fields are reported, and the pair is informative: same
     ``subject_id`` with a differing name is a rename, not a different subject.
 
-    Args:
-        storage: Where the runs and their results are read (:class:`LensStore`).
-        run_a_id: First run id (the baseline), in ``scope_id``.
-        run_b_id: Second run id (the candidate), in ``scope_id``.
-        scope_id: Partition key — the scope the runs live in.
-        profile: The host whose vocabulary this reads.
+    :param storage: Where the runs and their results are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param run_a_id: First run id (the baseline), in ``scope_id``.
+    :ptype run_a_id: str
+    :param run_b_id: Second run id (the candidate), in ``scope_id``.
+    :ptype run_b_id: str
+    :param scope_id: Partition key — the scope the runs live in.
+    :ptype scope_id: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+
 
     A field whose comparison cannot be decided lands in neither bucket. Two
     runs that both recorded no subject identity are not thereby the same
@@ -1121,13 +1155,11 @@ def bisect_runs(
     rows and covariates. Those fields land in ``unknown``, and ``details``
     still carries both raw values so a reader can see why.
 
-    Returns:
-        ``{"run_a", "run_b", "differs": [field, ...], "same": [field, ...],
+    :return: ``{"run_a", "run_b", "differs": [field, ...], "same": [field, ...],
         "unknown": [field, ...], "details": {field: {"a": ..., "b": ...}}}``.
         JSON-safe.
-
-    Raises:
-        NotFoundError: Either run id is missing in the scope.
+    :rtype: dict[str, Any]
+    :raises NotFoundError: Either run id is missing in the scope.
     """
     run_a = _load_run(storage, run_a_id, scope_id)
     run_b = _load_run(storage, run_b_id, scope_id)
@@ -1211,8 +1243,8 @@ def compare_two_runs(
     emitted with it.** Pairing needs the two runs to have actually scored the
     same frozen ``test_case_id`` s; a shared ``template_id`` only makes that
     possible, and two runs of one template whose case sets do not intersect
-    are compared unpaired (:data:`~threetears.evals.analysis.stats.UNPAIRED_TEST_NAME`). Deriving pairing from the template — as
-    ``comparison_basis`` invites — names a test that did not run, so every
+    are compared unpaired (:data:`~threetears.evals.analysis.stats.UNPAIRED_TEST_NAME`). Deriving pairing from the
+    template — as ``comparison_basis`` invites — names a test that did not run, so every
     row carries ``paired`` and no surface re-derives it.
 
     **Composite comparisons are withheld across subjects.** Rubric
@@ -1227,19 +1259,23 @@ def compare_two_runs(
     Pure composition over the two run loads + the query-time aggregators; no
     new storage method.
 
-    Args:
-        storage: Where the runs and their results are read (:class:`LensStore`).
-        run_a_id: Baseline run id, in ``scope_id``.
-        run_b_id: Candidate run id, in ``scope_id``.
-        scope_id: Partition key — the scope both runs live in.
-        load_template: Loads a template by id, raising ``NotFoundError`` for an unknown one —
-            the per-template rollup's display name, which falls back to the id.
-        subject_detail: The host's one-entry ``{subject label: detail}`` map for a run, which
-            the config diff aligns run A's and run B's subjects by.
-        rubric_threshold: Minimum rubric score counted as a pass^k pass.
-
-    Returns:
-        ``{"run_id_a", "run_id_b", "comparison_basis",
+    :param storage: Where the runs and their results are read (:class:`LensStore`).
+    :ptype storage: LensStore
+    :param run_a_id: Baseline run id, in ``scope_id``.
+    :ptype run_a_id: str
+    :param run_b_id: Candidate run id, in ``scope_id``.
+    :ptype run_b_id: str
+    :param scope_id: Partition key — the scope both runs live in.
+    :ptype scope_id: str
+    :param load_template: Loads a template by id, raising ``NotFoundError`` for an unknown one —
+        the per-template rollup's display name, which falls back to the id.
+    :ptype load_template: Callable[[str], EvalTemplate]
+    :param subject_detail: The host's one-entry ``{subject label: detail}`` map for a run, which
+        the config diff aligns run A's and run B's subjects by.
+    :ptype subject_detail: Callable[[EvalRun], dict[str, dict[str, Any]]]
+    :param rubric_threshold: Minimum rubric score counted as a pass^k pass.
+    :ptype rubric_threshold: int
+    :return: ``{"run_id_a", "run_id_b", "comparison_basis",
         "composite_comparability", "rubric_threshold", "comparison": {"arm": {...},
         "per_template": [...]}, "subject_detail_a",
         "subject_detail_b"}``. ``comparison_basis`` says only whether the
@@ -1247,9 +1283,9 @@ def compare_two_runs(
         ``composite_comparability`` is the withholding disclosure, or
         ``None`` when the composites are comparable.
         The ``arm`` row carries ``model_{a,b}``, ``served_models_{a,b}`` (which models the responses named as
-        having answered each run's candidate calls — one, pooled or unrecorded — never the requested id), ``k``, ``pass_hat_k_{a,b,delta}``,
-        ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned over, ragged
-        when its results carried different dimension sets), ``composite_bases_differ``,
+        having answered each run's candidate calls — one, pooled or unrecorded — never the requested id), ``k``,
+        ``pass_hat_k_{a,b,delta}``, ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned
+        over, ragged when its results carried different dimension sets), ``composite_bases_differ``,
         ``composite_interval`` (at ``interval_level``),
         ``n_cases_{a,b}``, ``n_left_out_{a,b}``, ``count_{a,b}``, ``paired`` (True only over at least one
         case both runs scored), ``n_pairs`` (how many; None when nothing was paired),
@@ -1262,9 +1298,8 @@ def compare_two_runs(
         when paired, only those both runs scored, which is not a run's own mean
         when ``n_left_out`` is above 0; ``count_{a,b}`` is each run's own case count.
         JSON-safe.
-
-    Raises:
-        NotFoundError: Either run id is missing in the scope.
+    :rtype: dict[str, Any]
+    :raises NotFoundError: Either run id is missing in the scope.
     """
     run_a = _load_run(storage, run_a_id, scope_id)
     run_b = _load_run(storage, run_b_id, scope_id)
@@ -1477,11 +1512,14 @@ def _pass_criteria(results: Sequence[EvalResult]) -> list[PassCriterion]:
 def _composite_untested_reason(*, scored_a: int, scored_b: int, tested: bool, shared: bool) -> str | None:
     """Why no composite test ran between two runs — or None when one did.
 
-    Args:
-        scored_a: Cases run A carries a composite on.
-        scored_b: Cases run B carries a composite on.
-        tested: Whether both samples the test reads hold a case.
-        shared: Whether the runs share frozen cases to pair on.
+    :param scored_a: Cases run A carries a composite on.
+    :ptype scored_a: int
+    :param scored_b: Cases run B carries a composite on.
+    :ptype scored_b: int
+    :param tested: Whether both samples the test reads hold a case.
+    :ptype tested: bool
+    :param shared: Whether the runs share frozen cases to pair on.
+    :ptype shared: bool
     """
     if tested:
         return None
@@ -1507,15 +1545,19 @@ def _compare_per_template(
     row with both runs' scores; differing templates yield a row each with
     the other side null. Ad-hoc runs (``template_id is None``) contribute no row.
 
-    Args:
-        run_a: Baseline run.
-        run_b: Candidate run.
-        arm: The arm row.
-        load_template: Loads a template by id, for its display name.
-        composites_comparable: ``False`` withholds ``composite_delta`` here
-            too: rolling up by template does not make two subjects'
-            composites comparable, so the rollup withholds wherever the arm
-            row does.
+    :param run_a: Baseline run.
+    :ptype run_a: EvalRun
+    :param run_b: Candidate run.
+    :ptype run_b: EvalRun
+    :param arm: The arm row.
+    :ptype arm: dict[str, Any]
+    :param load_template: Loads a template by id, for its display name.
+    :ptype load_template: Callable[[str], EvalTemplate]
+    :param composites_comparable: ``False`` withholds ``composite_delta`` here
+        too: rolling up by template does not make two subjects'
+        composites comparable, so the rollup withholds wherever the arm
+        row does.
+    :ptype composites_comparable: bool
     """
     rows: list[dict[str, Any]] = []
     for template_id in dict.fromkeys(t for t in (run_a.template_id, run_b.template_id) if t is not None):

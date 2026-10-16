@@ -235,8 +235,7 @@ class Confound(EvalDocumentModel):
     def _observed_mechanism_carries_its_evidence(self) -> Confound:
         """An observed-mechanism confound states its values and threshold; no other kind carries either.
 
-        Raises:
-            ValueError: The evidence fields disagree with ``kind``.
+        :raises ValueError: The evidence fields disagree with ``kind``.
         """
         if self.kind == "observed_mechanism":
             if self.threshold is None or len(self.level_values) < 2 or self.status != "varied":
@@ -323,11 +322,10 @@ _OBSERVED_MECHANISMS: dict[str, _ObservedMechanism] = {
 def observed_mechanism_key(covariate: str) -> str:
     """Name an observed mechanism for the confound maps.
 
-    Args:
-        covariate: The covariate's registered name.
-
-    Returns:
-        The prefixed key. See :data:`OBSERVED_MECHANISM_PREFIX`.
+    :param covariate: The covariate's registered name.
+    :ptype covariate: str
+    :return: The prefixed key. See :data:`OBSERVED_MECHANISM_PREFIX`.
+    :rtype: str
     """
     return f"{OBSERVED_MECHANISM_PREFIX}{covariate}"
 
@@ -406,8 +404,7 @@ class MechanismCheck(EvalDocumentModel):
     def _state_carries_its_evidence(self) -> MechanismCheck:
         """Each state carries exactly the evidence that decides it.
 
-        Raises:
-            ValueError: The fields contradict ``state``.
+        :raises ValueError: The fields contradict ``state``.
         """
         if (self.state == "unchecked") != (self.reason is not None):
             raise ValueError("a mechanism check is unchecked exactly when it states a reason")
@@ -479,8 +476,7 @@ class ArmServedModel(EvalDocumentModel):
     def _state_follows_the_counts(self) -> ArmServedModel:
         """The state is the one the served models and the unrecorded count imply, never a second opinion.
 
-        Raises:
-            ValueError: ``state`` disagrees with ``served_models`` and ``n_unrecorded``.
+        :raises ValueError: ``state`` disagrees with ``served_models`` and ``n_unrecorded``.
         """
         expected = served_model_state(self.served_models, self.n_unrecorded)
         if self.state != expected or self.n_unrecorded > self.n_results:
@@ -773,8 +769,7 @@ class ScopeDivergence(EvalDocumentModel):
         A blank sentence counts as no sentence, here and in the chart's payload alike: both ask
         :func:`~threetears.evals.analysis.remainder.remainder_state`.
 
-        Raises:
-            ValueError: If both are set, or neither is.
+        :raises ValueError: If both are set, or neither is.
         """
         remainder_state(self.unattributed_delta, self.unattributed_withheld)
         return self
@@ -1943,11 +1938,10 @@ NO_DESIGN_EXPLORATORY = (
 def post_hoc_disclosure(question_ids: Sequence[str]) -> str:
     """The sentence a campaign gets when its only live questions were declared after its first run.
 
-    Args:
-        question_ids: The post-hoc questions' ids, in declaration order.
-
-    Returns:
-        The disclosure.
+    :param question_ids: The post-hoc questions' ids, in declaration order.
+    :ptype question_ids: Sequence[str]
+    :return: The disclosure.
+    :rtype: str
     """
     return (
         f"This campaign's question(s) {', '.join(question_ids)} were declared after its first run, so every finding "
@@ -1965,14 +1959,14 @@ def exploratory_disclosure(declared: CampaignDesign | None, first_run_at: str | 
     question gets the no-question line, and one whose live questions were all declared after its first run
     (:func:`~threetears.evals.kernel.declaration.preregistered_questions`) the post-hoc line naming them.
 
-    Args:
-        declared: The campaign's declaration, or None when it declared none.
-        first_run_at: When the campaign's first member run was created, or None where no run's time is to hand (a
-            report laid out from a stored analysis, which keeps none, or a campaign with no run yet), where every
-            live question reads as asked before.
-
-    Returns:
-        The disclosure, or None when the campaign declares at least one live question asked before its first run.
+    :param declared: The campaign's declaration, or None when it declared none.
+    :ptype declared: CampaignDesign | None
+    :param first_run_at: When the campaign's first member run was created, or None where no run's time is to hand (a
+        report laid out from a stored analysis, which keeps none, or a campaign with no run yet), where every
+        live question reads as asked before.
+    :ptype first_run_at: str | None
+    :return: The disclosure, or None when the campaign declares at least one live question asked before its first run.
+    :rtype: str | None
     """
     if declared is None:
         return NO_DESIGN_EXPLORATORY
@@ -2154,8 +2148,7 @@ class ArmScoreboard(EvalDocumentModel):
     def _the_census_adds_up(self) -> ArmScoreboard:
         """Refuse a census whose parts do not sum to its whole.
 
-        Raises:
-            ValueError: lost and usable do not make ran, or passed and failed do not make usable.
+        :raises ValueError: lost and usable do not make ran, or passed and failed do not make usable.
         """
         lost = sum(self.lost.values())
         if lost + self.usable != self.ran:
@@ -3030,8 +3023,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         "identical" is quantified over, and because the A/B loop's premise is that nothing but the
         prompt moved.
 
-        Returns:
-            A 64-character lowercase hex digest.
+        :return: A 64-character lowercase hex digest.
+        :rtype: str
         """
         return evidence_digest(self.to_dict())
 
@@ -3046,11 +3039,10 @@ def evidence_digest(document: Mapping[str, Any]) -> str:
     The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
     rather than the model — a frozen reporter case checks the bundle it holds against the fingerprint it recorded.
 
-    Args:
-        document: A bundle as its stored dict.
-
-    Returns:
-        A 64-character lowercase hex digest.
+    :param document: A bundle as its stored dict.
+    :ptype document: Mapping[str, Any]
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
     """
     return canonical_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE})
 
@@ -3173,18 +3165,21 @@ class BundleInspection(EvalDocumentModel):
     ) -> BundleInspection:
         """Wrap an assembled bundle, computing its fingerprint, the comparison and, on a mismatch, its cause.
 
-        Args:
-            bundle: The freshly assembled bundle to project.
-            analysis_id: The analysis the caller addressed, when they addressed one.
-            recorded_fingerprint: That analysis's stored ``bundle_fingerprint``.
-            recorded_schema_version: That analysis's stored ``bundle_schema_version``; None when it recorded none.
-            recorded_host_declarations_digest: That analysis's stored ``host_declarations_digest``; None when it
-                recorded none.
-
-        Returns:
-            The inspection payload, with ``reproduces_generation`` set exactly when
+        :param bundle: The freshly assembled bundle to project.
+        :ptype bundle: AnalysisContextBundle
+        :param analysis_id: The analysis the caller addressed, when they addressed one.
+        :ptype analysis_id: str | None
+        :param recorded_fingerprint: That analysis's stored ``bundle_fingerprint``.
+        :ptype recorded_fingerprint: str | None
+        :param recorded_schema_version: That analysis's stored ``bundle_schema_version``; None when it recorded none.
+        :ptype recorded_schema_version: int | None
+        :param recorded_host_declarations_digest: That analysis's stored ``host_declarations_digest``; None when it
+            recorded none.
+        :ptype recorded_host_declarations_digest: str | None
+        :return: The inspection payload, with ``reproduces_generation`` set exactly when
             a recorded fingerprint was supplied to compare against, and ``mismatch_cause``
             exactly when that comparison is False.
+        :rtype: BundleInspection
         """
         fingerprint = bundle.fingerprint()
         reproduces = None if recorded_fingerprint is None else fingerprint == recorded_fingerprint
@@ -3262,11 +3257,10 @@ def host_declarations_digest(profile: HostProfile) -> str:
     What it does not cover: a reader callable's behaviour (code, not a declaration), and the host's measure and
     bar registries, which describe readings rather than partitioning them.
 
-    Args:
-        profile: The host profile a bundle is assembled under.
-
-    Returns:
-        A 64-character lowercase hex digest.
+    :param profile: The host profile a bundle is assembled under.
+    :ptype profile: HostProfile
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
     """
     sweepables = sorted(
         (declared.name, declared.role, declared.indeterminate_when_blank)

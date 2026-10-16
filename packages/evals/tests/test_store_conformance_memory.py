@@ -337,39 +337,41 @@ class _EtagScheme(DocumentStore):
     def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
         """The token the scheme gives a stored document: by default the inner store's etag, unchanged.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
-            document: The stored document, as the inner store hands it back.
-            inner_etag: The inner store's etag for it.
-
-        Returns:
-            The token a caller sees.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :param document: The stored document, as the inner store hands it back.
+        :ptype document: dict[str, Any]
+        :param inner_etag: The inner store's etag for it.
+        :ptype inner_etag: str
+        :return: The token a caller sees.
+        :rtype: str
         """
         return inner_etag
 
     def written(self, doc_id: str, scope_id: str) -> None:
         """Called under the lock after each write that landed, whole-document or merge; a scheme's state moves here.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
         """
 
     def inner_etag(self, doc_id: str, scope_id: str, if_match: str) -> str | None:
         """Translate a caller's token to the inner store's etag the write presents.
 
-        Args:
-            doc_id: The document's own id.
-            scope_id: The scope it lives in.
-            if_match: The token the caller presented.
-
-        Returns:
-            The inner store's current etag, when ``if_match`` is the scheme's current token for the document; a
+        :param doc_id: The document's own id.
+        :ptype doc_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :param if_match: The token the caller presented.
+        :ptype if_match: str
+        :return: The inner store's current etag, when ``if_match`` is the scheme's current token for the document; a
             scheme may return ``None`` to let the write land unconditionally.
-
-        Raises:
-            StoreConflict: ``if_match`` is not the document's current token, or there is no such document.
+        :rtype: str | None
+        :raises StoreConflict: ``if_match`` is not the document's current token, or there is no such document.
         """
         document, etag = self.inner.get_with_etag(doc_id, scope_id)
         if document is None or etag is None or self.token(doc_id, scope_id, document, etag) != if_match:

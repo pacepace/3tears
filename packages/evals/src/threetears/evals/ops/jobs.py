@@ -270,13 +270,13 @@ def sweep_key(sweep_id: str, scope_id: str) -> str:
 def sweep_progress(sweep: EvalSweep, runs: dict[str, EvalRun]) -> dict[str, Any]:
     """A sweep's progress: how many arms it has launched and finished, and each launched arm's run status.
 
-    Args:
-        sweep: Its record.
-        runs: Its launched arms' runs, by id.
-
-    Returns:
-        ``{"arms_total", "arms_launched", "arms_finished", "arms": {label: status}}``, a never-launched arm's
+    :param sweep: Its record.
+    :ptype sweep: EvalSweep
+    :param runs: Its launched arms' runs, by id.
+    :ptype runs: dict[str, EvalRun]
+    :return: ``{"arms_total", "arms_launched", "arms_finished", "arms": {label: status}}``, a never-launched arm's
         status ``not_launched``.
+    :rtype: dict[str, Any]
     """
     finished = {"completed", "budget_stopped", "exhausted", "failed", "cancelled"}
     statuses = {
@@ -294,12 +294,12 @@ def sweep_progress(sweep: EvalSweep, runs: dict[str, EvalRun]) -> dict[str, Any]
 def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
     """A sweep's job status from its record and its launched arms' runs.
 
-    Args:
-        sweep: Its record, as settled.
-        runs: Its launched arms' runs, by id.
-
-    Returns:
-        The status, its progress counting the arms launched and finished.
+    :param sweep: Its record, as settled.
+    :ptype sweep: EvalSweep
+    :param runs: Its launched arms' runs, by id.
+    :ptype runs: dict[str, EvalRun]
+    :return: The status, its progress counting the arms launched and finished.
+    :rtype: JobStatus
     """
     state: JobState = "lost" if sweep.lost is not None else _SWEEP_STATES[sweep.outcome]
     detail = sweep.detail
@@ -353,15 +353,12 @@ def action_job_id(record_id: str) -> str:
 def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
     """Read a job id back into what it names.
 
-    Args:
-        job_id: An id a start returned.
-
-    Returns:
-        ``(kind, record_id, None)`` for every kind but a generation, and ``("analysis", campaign_id, attempt_id)``
+    :param job_id: An id a start returned.
+    :ptype job_id: str
+    :return: ``(kind, record_id, None)`` for every kind but a generation, and ``("analysis", campaign_id, attempt_id)``
         for a generation.
-
-    Raises:
-        ValidationFailedError: The id is none of the shapes — a typed or truncated id, which names no job.
+    :rtype: tuple[JobKind, str, str | None]
+    :raises ValidationFailedError: The id is none of the shapes — a typed or truncated id, which names no job.
     """
     for prefix, kind in _PREFIXED.items():
         if job_id.startswith(prefix) and job_id[len(prefix) :]:
@@ -385,11 +382,10 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
 def _run_status(run: EvalRun) -> JobStatus:
     """A run's job status from its stored document, as settled.
 
-    Args:
-        run: The run as stored.
-
-    Returns:
-        The status: ``lost`` when its record says so, else its own status's job state.
+    :param run: The run as stored.
+    :ptype run: EvalRun
+    :return: The status: ``lost`` when its record says so, else its own status's job state.
+    :rtype: JobStatus
     """
     state: JobState = "lost" if run.lost is not None else _RUN_STATES[run.status]
     detail = run.cancellation_reason or run.budget_stop_reason or ("; ".join(run.error_details) or None)
@@ -411,12 +407,12 @@ def _run_status(run: EvalRun) -> JobStatus:
 def _attempt_status(job_id: str, attempt: EvalAnalysisAttempt) -> JobStatus:
     """A generation's job status from its attempt record, as settled.
 
-    Args:
-        job_id: The job's id.
-        attempt: Its attempt, as stored.
-
-    Returns:
-        The status: ``running`` while the attempt is, ``lost`` when its record says so, else its outcome's state.
+    :param job_id: The job's id.
+    :ptype job_id: str
+    :param attempt: Its attempt, as stored.
+    :ptype attempt: EvalAnalysisAttempt
+    :return: The status: ``running`` while the attempt is, ``lost`` when its record says so, else its outcome's state.
+    :rtype: JobStatus
     """
     if attempt.lost is not None:
         state: JobState = "lost"
@@ -464,8 +460,8 @@ def _record_status(
 ) -> JobStatus:
     """A job's status from a record of the job-work shape (:mod:`threetears.evals.run.job_work`), as settled.
 
-    Returns:
-        The status: ``lost`` when its record says so, else its outcome's state; the result only once completed.
+    :return: The status: ``lost`` when its record says so, else its outcome's state; the result only once completed.
+    :rtype: JobStatus
     """
     state: JobState = "lost" if record.lost is not None else _OUTCOME_STATES[record.outcome]
     detail = record.detail
@@ -492,12 +488,12 @@ def _record_status(
 def launch_progress(launch: EvalLaunch, runs: dict[str, EvalRun]) -> dict[str, Any]:
     """A launch's progress: its runs started and finished, and each started run's status by its arm.
 
-    Args:
-        launch: Its record.
-        runs: Its started runs, by id.
-
-    Returns:
-        ``{"runs_started", "runs_finished", "runs": {run id: status}}``.
+    :param launch: Its record.
+    :ptype launch: EvalLaunch
+    :param runs: Its started runs, by id.
+    :ptype runs: dict[str, EvalRun]
+    :return: ``{"runs_started", "runs_finished", "runs": {run id: status}}``.
+    :rtype: dict[str, Any]
     """
     finished = {"completed", "budget_stopped", "exhausted", "failed", "cancelled"}
     statuses = {run_id: runs[run_id].status if run_id in runs else "not_found" for run_id in launch.run_ids}
@@ -532,8 +528,7 @@ async def _settled_attempt(
 ) -> EvalAnalysisAttempt:
     """A generation's attempt, settled, answered only under the campaign the job id names.
 
-    Raises:
-        NotFoundError: No attempt with that id in the scope, or it is filed under another campaign.
+    :raises NotFoundError: No attempt with that id in the scope, or it is filed under another campaign.
     """
     attempt = await _settled(host, ANALYSIS_JOB, attempt_id, scope_id)
     if attempt is None or attempt.campaign_id != campaign_id:
@@ -547,23 +542,22 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     The record is read on the host's blocking executor and settled: one that has not ended and whose lease has
     lapsed is written lost first (:func:`~threetears.evals.kernel.job_leases.settle_job_record`).
 
-    Args:
-        host: The host whose store holds the job's record.
-        job_id: The id the start returned.
-        scope_id: The scope the work's record lives in.
-
-    Returns:
-        The job's status.
-
-    Raises:
-        ValidationFailedError: The id names no job.
-        NotFoundError: No record of the job in the scope (another scope's job reads so), or a generation's
-            attempt filed under another campaign than the id names.
-        ConflictError: The record kept changing while its lapsed lease was being written lost; poll again.
-        UnreadableRunError: The job's run, or a run its sweep or launch started, does not validate under this
-            build's model.
-        UnreadableRecordError: Another kind's job record, or a run it names and settles with it, does not validate
-            under this build's model.
+    :param host: The host whose store holds the job's record.
+    :ptype host: OpsHost
+    :param job_id: The id the start returned.
+    :ptype job_id: str
+    :param scope_id: The scope the work's record lives in.
+    :ptype scope_id: str
+    :return: The job's status.
+    :rtype: JobStatus
+    :raises ValidationFailedError: The id names no job.
+    :raises NotFoundError: No record of the job in the scope (another scope's job reads so), or a generation's
+        attempt filed under another campaign than the id names.
+    :raises ConflictError: The record kept changing while its lapsed lease was being written lost; poll again.
+    :raises UnreadableRunError: The job's run, or a run its sweep or launch started, does not validate under this
+        build's model.
+    :raises UnreadableRecordError: Another kind's job record, or a run it names and settles with it, does not validate
+        under this build's model.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
     eval_host = host.eval_host
@@ -621,29 +615,29 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
 async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str | None = None) -> JobStatus:
     """Ask a running job to stop — from any process — then report where it stands.
 
-    The cancel is written on the job's record (:func:`~threetears.evals.kernel.job_leases.request_job_cancel`), which the
-    process running the job reads at its next lease renewal; when that process is this one, the job is cancelled
+    The cancel is written on the job's record (:func:`~threetears.evals.kernel.job_leases.request_job_cancel`), which
+    the process running the job reads at its next lease renewal; when that process is this one, the job is cancelled
     here at once as well. Request-then-converge: the work records ``cancelled`` as it unwinds, so the status
     returned may still read ``running`` for up to one renewal interval — poll to see it land.
 
-    Args:
-        host: The host whose store holds the job's record and whose job manager may run it.
-        job_id: The id the start returned.
-        scope_id: The scope the work's record lives in.
-        reason: Why, recorded on the record and on a cancelled run.
-
-    Returns:
-        The job's status after the request.
-
-    Raises:
-        ValidationFailedError: The id names no job, or the job has already ended — lost included, which this
-            read may have just written.
-        NotFoundError: No record of the job in the scope, or a generation's attempt filed under another campaign.
-        ConflictError: The record kept changing while its lapsed lease was being written lost; nothing was asked.
-        StorageError: The request could not be written.
-        UnreadableRunError: The job's run does not validate under this build's model, so whether it can be
-            cancelled cannot be read.
-        UnreadableRecordError: Another kind's job record does not validate under this build's model.
+    :param host: The host whose store holds the job's record and whose job manager may run it.
+    :ptype host: OpsHost
+    :param job_id: The id the start returned.
+    :ptype job_id: str
+    :param scope_id: The scope the work's record lives in.
+    :ptype scope_id: str
+    :param reason: Why, recorded on the record and on a cancelled run.
+    :ptype reason: str | None
+    :return: The job's status after the request.
+    :rtype: JobStatus
+    :raises ValidationFailedError: The id names no job, or the job has already ended — lost included, which this
+        read may have just written.
+    :raises NotFoundError: No record of the job in the scope, or a generation's attempt filed under another campaign.
+    :raises ConflictError: The record kept changing while its lapsed lease was being written lost; nothing was asked.
+    :raises StorageError: The request could not be written.
+    :raises UnreadableRunError: The job's run does not validate under this build's model, so whether it can be
+        cancelled cannot be read.
+    :raises UnreadableRecordError: Another kind's job record does not validate under this build's model.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
     manager, eval_host = host.launch.job_manager, host.eval_host
@@ -681,12 +675,11 @@ class AdmittedJob:
     What every model-calling operation's call half returns: the work (:class:`~threetears.evals.run.JobWork`), whose
     record the job writes, and the handle a start returns for it.
 
-    Attributes:
-        work: The admitted work.
-        kind: The job's kind.
-        target_id: What the job works on, for its handle.
-        label: A short line naming the work.
-        key: An exclusivity key the job holds while live; ``None`` for none.
+    :ivar work: The admitted work.
+    :ivar kind: The job's kind.
+    :ivar target_id: What the job works on, for its handle.
+    :ivar label: A short line naming the work.
+    :ivar key: An exclusivity key the job holds while live; ``None`` for none.
     """
 
     work: JobWork[Any]
@@ -706,16 +699,14 @@ async def start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted:
 
     The form every action's call takes, so the call returns at once and no transport waits on the work.
 
-    Args:
-        host: The host whose job manager runs the job and whose store holds its record.
-        admitted: The admitted operation.
-
-    Returns:
-        The job's one handle.
-
-    Raises:
-        ConflictError: A live job holds the admitted key.
-        StorageError: The record could not be written; nothing started.
+    :param host: The host whose job manager runs the job and whose store holds its record.
+    :ptype host: OpsHost
+    :param admitted: The admitted operation.
+    :ptype admitted: AdmittedJob
+    :return: The job's one handle.
+    :rtype: JobsStarted
+    :raises ConflictError: A live job holds the admitted key.
+    :raises StorageError: The record could not be written; nothing started.
     """
     eval_host = host.eval_host
     await start_job_work(
@@ -747,22 +738,25 @@ async def start_action_job(
     returns what this returns; ``job_poll`` on the job returns ``run``'s typed result as JSON once it completes. The
     action is declared ``long_running`` with result :class:`JobsStarted`.
 
-    Args:
-        host: The host whose job manager runs the job.
-        scope_id: The caller's scope, where the record lives.
-        action: The action's name.
-        run: The work: makes the calls and returns the action's typed result.
-        label: A short line naming the work.
-        budget_s: The work's wall-clock ceiling. Required: a forgotten budget is a ``TypeError`` here, never an hour
-            nobody chose (:data:`~threetears.evals.run.DEFAULT_ACTION_JOB_BUDGET_S` is the value to pass for that).
-        discard: Releases what the handler built for ``run`` when the work never runs.
-
-    Returns:
-        The job's one handle (``action:<id>``); its target is the action.
-
-    Raises:
-        ValueError: ``budget_s`` is not positive.
-        StorageError: The record could not be written; nothing started.
+    :param host: The host whose job manager runs the job.
+    :ptype host: OpsHost
+    :param scope_id: The caller's scope, where the record lives.
+    :ptype scope_id: str
+    :param action: The action's name.
+    :ptype action: str
+    :param run: The work: makes the calls and returns the action's typed result.
+    :ptype run: Callable[[], Awaitable[BaseModel]]
+    :param label: A short line naming the work.
+    :ptype label: str
+    :param budget_s: The work's wall-clock ceiling. Required: a forgotten budget is a ``TypeError`` here, never an hour
+        nobody chose (:data:`~threetears.evals.run.DEFAULT_ACTION_JOB_BUDGET_S` is the value to pass for that).
+    :ptype budget_s: float
+    :param discard: Releases what the handler built for ``run`` when the work never runs.
+    :ptype discard: Callable[[], Awaitable[None]] | None
+    :return: The job's one handle (``action:<id>``); its target is the action.
+    :rtype: JobsStarted
+    :raises ValueError: ``budget_s`` is not positive.
+    :raises StorageError: The record could not be written; nothing started.
     """
     work = action_job_work(scope_id, action=action, run=run, label=label, budget_s=budget_s, discard=discard)
     return await start_job(host, AdmittedJob(work=work, kind="action", target_id=action, label=label))
@@ -791,28 +785,36 @@ async def start_paid_call[R: BaseModel](
     is the work's from the moment it is built: released here if admission refuses, by the job's ``discard`` if
     the job never starts, and by ``make`` otherwise.
 
-    Args:
-        host: The host the action runs on; its client factory builds the client.
-        scope_id: The caller's scope, where the job's record lives.
-        action: The action's name, as the job records it.
-        role: The completion role the client is built for.
-        model: The model named, or ``None`` for the role's default as the host resolves it.
-        purpose: What the call is for, as the out-of-run ledger records it.
-        budget: The out-of-run budget that admits the call and ledgers it once made.
-        call: The call, as planned.
-        make: Makes the admitted call on the client (through ``budget``) and reads its result; owns the client's
-            release from the moment it is called.
-        label: What the job is, for a reader of ``job_poll``.
-        budget_s: The job's wall-clock ceiling. Required, as :func:`start_action_job`'s is: a call takes as long as
-            its model, and only the action knows what is too long.
-
-    Returns:
-        The started job; ``job_poll`` returns ``make``'s result once it completes.
-
-    Raises:
-        ValueError: The host supplies no completion clients, or ``budget_s`` is not positive.
-        ValidationFailedError: The cap cannot pay for the call, or an enforced cap cannot price it; nothing was made.
-        StorageError: The job's record could not be written; the client was released and nothing was made.
+    :param host: The host the action runs on; its client factory builds the client.
+    :ptype host: OpsHost
+    :param scope_id: The caller's scope, where the job's record lives.
+    :ptype scope_id: str
+    :param action: The action's name, as the job records it.
+    :ptype action: str
+    :param role: The completion role the client is built for.
+    :ptype role: CompletionRole
+    :param model: The model named, or ``None`` for the role's default as the host resolves it.
+    :ptype model: str | None
+    :param purpose: What the call is for, as the out-of-run ledger records it.
+    :ptype purpose: KnownOutOfRunPurpose
+    :param budget: The out-of-run budget that admits the call and ledgers it once made.
+    :ptype budget: OutOfRunBudget
+    :param call: The call, as planned.
+    :ptype call: PlannedCall
+    :param make: Makes the admitted call on the client (through ``budget``) and reads its result; owns the client's
+        release from the moment it is called.
+    :ptype make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]]
+    :param label: What the job is, for a reader of ``job_poll``.
+    :ptype label: str
+    :param budget_s: The job's wall-clock ceiling. Required, as :func:`start_action_job`'s is: a call takes as long as
+        its model, and only the action knows what is too long.
+    :ptype budget_s: float
+    :return: The started job; ``job_poll`` returns ``make``'s result once it completes.
+    :rtype: JobsStarted
+    :raises ValueError: The host supplies no completion clients, or ``budget_s`` is not positive.
+    :raises ValidationFailedError: The cap cannot pay for the call, or an enforced cap cannot price it; nothing was
+        made.
+    :raises StorageError: The job's record could not be written; the client was released and nothing was made.
     """
     eval_host = host.eval_host
     client = eval_host.completion_clients(label)(role, model)
@@ -846,16 +848,15 @@ async def await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[
     process: it waits as long as the work takes, which no transport call may. **Waiting here is owning**: a caller
     cancelled while it waits cancels the jobs it was waiting on, as a script interrupted would want, then re-raises.
 
-    Args:
-        host: The host whose job manager runs the jobs.
-        started: What the start returned.
-        scope_id: The scope the jobs' records live in.
-
-    Returns:
-        Each job's final status, in the order started.
-
-    Raises:
-        asyncio.CancelledError: The caller was cancelled; the jobs were asked to stop.
+    :param host: The host whose job manager runs the jobs.
+    :ptype host: OpsHost
+    :param started: What the start returned.
+    :ptype started: JobsStarted
+    :param scope_id: The scope the jobs' records live in.
+    :ptype scope_id: str
+    :return: Each job's final status, in the order started.
+    :rtype: list[JobStatus]
+    :raises asyncio.CancelledError: The caller was cancelled; the jobs were asked to stop.
     """
     manager = host.launch.job_manager
     record_ids = [_record_id(handle.job_id) for handle in started.jobs]

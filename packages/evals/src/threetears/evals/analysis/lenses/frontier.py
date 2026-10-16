@@ -134,15 +134,12 @@ def normalize_bar(value: float | str | None) -> float | None:
     than each parsing it and disagreeing about what a blank or a non-number means
     — the divergence class the parity gate exists to catch.
 
-    Args:
-        value: Raw bar from the caller. ``None`` or a blank string means the bar
-            was not supplied.
-
-    Returns:
-        The bar as a float, or ``None`` when it was not supplied.
-
-    Raises:
-        FrontierError: The value is present but not a number.
+    :param value: Raw bar from the caller. ``None`` or a blank string means the bar
+        was not supplied.
+    :ptype value: float | str | None
+    :return: The bar as a float, or ``None`` when it was not supplied.
+    :rtype: float | None
+    :raises FrontierError: The value is present but not a number.
     """
     if value is None:
         return None
@@ -197,16 +194,15 @@ def _template_span_entries(templates_by_run: Mapping[str, str | None]) -> list[s
     printing the sentence and a surface printing the sets cannot disagree about whether a
     point spans, or about which suites it spanned when it does.
 
-    Args:
-        templates_by_run: One ``template_id`` per contributing run, keyed by run id. A
-            ``None`` is a real observed state — an ad-hoc run assembled from explicit
-            test-case ids, per :attr:`~threetears.evals.schema.models.EvalRun.template_id` — so it
-            counts as its own suite rather than being dropped or merged into a neighbour.
-
-    Returns:
-        One entry per distinct template, ad-hoc last, or an empty list when fewer than two
+    :param templates_by_run: One ``template_id`` per contributing run, keyed by run id. A
+        ``None`` is a real observed state — an ad-hoc run assembled from explicit
+        test-case ids, per :attr:`~threetears.evals.schema.models.EvalRun.template_id` — so it
+        counts as its own suite rather than being dropped or merged into a neighbour.
+    :ptype templates_by_run: Mapping[str, str | None]
+    :return: One entry per distinct template, ad-hoc last, or an empty list when fewer than two
         runs contributed or every one of them ran the same template — "this point does not
         span", the same predicate the disclosure reports as ``None``.
+    :rtype: list[str]
     """
     if len(templates_by_run) < 2:
         return []
@@ -253,16 +249,15 @@ def _template_span_disclosure(span_entries: Sequence[str]) -> str | None:
     comparison is refused and no number is adjusted. Measuring one variant across several
     suites is a legitimate thing to do.
 
-    Args:
-        span_entries: This point's suites as :func:`_template_span_entries` renders them.
-            Taken rather than re-derived, so the sentence and the per-point list a surface
-            may print instead are one predicate over one grouping.
-
-    Returns:
-        The disclosure, rendered verbatim by a surface showing this point ALONE, or
+    :param span_entries: This point's suites as :func:`_template_span_entries` renders them.
+        Taken rather than re-derived, so the sentence and the per-point list a surface
+        may print instead are one predicate over one grouping.
+    :ptype span_entries: Sequence[str]
+    :return: The disclosure, rendered verbatim by a surface showing this point ALONE, or
         ``None`` when the point does not span. A surface rendering several marked points
         states this rule once and prints ``span_entries`` per point: the only thing that
         differs between two of these sentences is the parenthetical.
+    :rtype: str | None
     """
     if not span_entries:
         return None
@@ -710,53 +705,60 @@ def _frontier_point(
 
     Every axis aggregates over its own measured subset — pass^k reuses
     :func:`~threetears.evals.kernel.scoring.pool_pass_hat_k` (which drops infra-excluded
-    iterations, and pools a case's attempts across the runs of one cell), composite drops the nulls :func:`~threetears.evals.kernel.scoring.result_composite`
-    returns for infra-excluded and no-rubric results, cost sums only the
-    production-replicating roles per result and means over the results that
+    iterations, and pools a case's attempts across the runs of one cell), composite drops the nulls
+    :func:`~threetears.evals.kernel.scoring.result_composite` returns for infra-excluded and no-rubric results, cost
+    sums only the production-replicating roles per result and means over the results that
     reported one, and latency means over the results that harvested a total. The
     subsets can legitimately differ in size, so each carries its own denominator.
 
-    Args:
-        results: One contestant's observations (all sharing a model, and a
-            ``variant_key`` when captured). Never empty.
-        contestant: The :func:`_contestant_key` these results were grouped under. Passed
-            rather than re-derived off ``results[0]``: the key is what placed them
-            together, so reading the identity back out of it makes "no row in this pool
-            can disagree" structural instead of a claim a later change to the key could
-            silently falsify — the same reason the gate lives IN the group key rather than
-            beside it.
-        k: The subject's depth, at which ``pass_hat_k`` is read (:attr:`SubjectFrontier.k`).
-        cell_of_run: Run id → the cell its attempts are repeats of
-            (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell`), so two runs of one
-            configuration pool their attempts at a case and two configurations never do.
-        rubric_threshold: Pass threshold forwarded to pass^k.
-        cassette_modes_by_run: Every candidate run's recorded ``cassette_mode``, keyed by
-            run id; narrowed here to the runs these results came from. **Required and
-            deliberately without a default**, for the reason
-            :func:`~threetears.evals.kernel.usage_capture.production_replicating_cost` refuses one:
-            the map's absence and a genuinely uniform pool both yield no disclosure, so a
-            default would let a caller that never supplied it render a live-versus-replayed
-            pool as clean — the single failure this parameter exists to make impossible.
-        templates_by_run: Every candidate run's ``template_id``, keyed by run id; narrowed
-            here to the runs these results came from. **Required and deliberately without a
-            default**, for the reason its neighbour above is: an absent map and a genuinely
-            single-suite contestant both yield no disclosure, so a default would let a
-            caller that never supplied it render a mixed-difficulty pool as clean.
-        degraded_by_run: ``run_id -> DEGRADED sentence`` for the candidate runs that
-            measured less than their matrix, from :func:`degraded_run_disclosures`;
-            narrowed here to the runs these results came from. **Required and without a
-            default**, on the rule its two neighbours state: an unsupplied map and a pool
-            of genuinely complete runs both yield no disclosure, so a default would let a
-            caller that forgot it rank a truncated contestant as if it were whole.
-        footing_by_run: Each candidate run's production footing (``None`` for a run nobody could check), or
-            ``None`` when the frontier was given no host declarations to read one with; narrowed here to the
-            runs these results came from.
-
-    Returns:
-        A :class:`FrontierPoint` with quality (and its interval), cost, latency, and every
+    :param results: One contestant's observations (all sharing a model, and a
+        ``variant_key`` when captured). Never empty.
+    :ptype results: list[EvalResult]
+    :param contestant: The :func:`_contestant_key` these results were grouped under. Passed
+        rather than re-derived off ``results[0]``: the key is what placed them
+        together, so reading the identity back out of it makes "no row in this pool
+        can disagree" structural instead of a claim a later change to the key could
+        silently falsify — the same reason the gate lives IN the group key rather than
+        beside it.
+    :ptype contestant: ContestantKey
+    :param k: The subject's depth, at which ``pass_hat_k`` is read (:attr:`SubjectFrontier.k`).
+    :ptype k: int
+    :param cell_of_run: Run id → the cell its attempts are repeats of
+        (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell`), so two runs of one
+        configuration pool their attempts at a case and two configurations never do.
+    :ptype cell_of_run: Mapping[str, Hashable]
+    :param rubric_threshold: Pass threshold forwarded to pass^k.
+    :ptype rubric_threshold: int
+    :param cassette_modes_by_run: Every candidate run's recorded ``cassette_mode``, keyed by
+        run id; narrowed here to the runs these results came from. **Required and
+        deliberately without a default**, for the reason
+        :func:`~threetears.evals.kernel.usage_capture.production_replicating_cost` refuses one:
+        the map's absence and a genuinely uniform pool both yield no disclosure, so a
+        default would let a caller that never supplied it render a live-versus-replayed
+        pool as clean — the single failure this parameter exists to make impossible.
+    :ptype cassette_modes_by_run: Mapping[str, str]
+    :param templates_by_run: Every candidate run's ``template_id``, keyed by run id; narrowed
+        here to the runs these results came from. **Required and deliberately without a
+        default**, for the reason its neighbour above is: an absent map and a genuinely
+        single-suite contestant both yield no disclosure, so a default would let a
+        caller that never supplied it render a mixed-difficulty pool as clean.
+    :ptype templates_by_run: Mapping[str, str | None]
+    :param degraded_by_run: ``run_id -> DEGRADED sentence`` for the candidate runs that
+        measured less than their matrix, from :func:`degraded_run_disclosures`;
+        narrowed here to the runs these results came from. **Required and without a
+        default**, on the rule its two neighbours state: an unsupplied map and a pool
+        of genuinely complete runs both yield no disclosure, so a default would let a
+        caller that forgot it rank a truncated contestant as if it were whole.
+    :ptype degraded_by_run: Mapping[str, str]
+    :param footing_by_run: Each candidate run's production footing (``None`` for a run nobody could check), or
+        ``None`` when the frontier was given no host declarations to read one with; narrowed here to the
+        runs these results came from.
+    :ptype footing_by_run: Mapping[str, ProductionFooting | None] | None
+    :return: A :class:`FrontierPoint` with quality (and its interval), cost, latency, and every
         denominator, and the per-case values each axis averages, which a domination test pairs
         on. Domination and the bar are filled by the caller, which needs the subject's other
         points and the bar to decide them.
+    :rtype: tuple[FrontierPoint, _ContestantCases]
     """
     from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 
@@ -1005,17 +1007,19 @@ def _dominance_p(
     which is what lets a working variant dominate one that failed everywhere (measured pass^k, no turn
     taken, so no cost or latency to rescue it).
 
-    Args:
-        a: The candidate dominator.
-        a_cases: Its per-case values.
-        b: The point tested for being dominated.
-        b_cases: Its per-case values.
-
-    Returns:
-        The p: below α only when every axis ``b`` measured separates in ``a``'s favour, and 1.0 when an
+    :param a: The candidate dominator.
+    :ptype a: FrontierPoint
+    :param a_cases: Its per-case values.
+    :ptype a_cases: _ContestantCases
+    :param b: The point tested for being dominated.
+    :ptype b: FrontierPoint
+    :param b_cases: Its per-case values.
+    :ptype b_cases: _ContestantCases
+    :return: The p: below α only when every axis ``b`` measured separates in ``a``'s favour, and 1.0 when an
         axis was tested and did not — a tie, a separation the other way, or no separation. ``None`` when
         no test could decide: ``b`` measured no axis, ``a`` lacks one ``b`` measured, or an axis has no test
         that can decide (:func:`_axis_p`).
+    :rtype: float | None
     """
     measured = [(axis, higher) for axis, higher in _DOMINATION_AXES if getattr(b, axis) is not None]
     if not measured:
@@ -1056,16 +1060,18 @@ def _axis_p(
     and the axis reads 1.0, not separated in ``a``'s favour (the exact sign-flip test it once read asks about
     symmetry, not the mean — #597).
 
-    Args:
-        a_values: ``a``'s per-case values on the axis.
-        b_values: ``b``'s.
-        higher_is_better: Which way is better on the axis.
-        value_range: The axis's inclusive bounds, or None where it has none.
-
-    Returns:
-        The p — 1.0 where the means do not favour ``a``, or where there is no spread on an axis with no range —
+    :param a_values: ``a``'s per-case values on the axis.
+    :ptype a_values: Mapping[str, Fraction]
+    :param b_values: ``b``'s.
+    :ptype b_values: Mapping[str, Fraction]
+    :param higher_is_better: Which way is better on the axis.
+    :ptype higher_is_better: bool
+    :param value_range: The axis's inclusive bounds, or None where it has none.
+    :ptype value_range: tuple[float, float] | None
+    :return: The p — 1.0 where the means do not favour ``a``, or where there is no spread on an axis with no range —
         or ``None`` where no test can decide: fewer than two cases on a side, or a spread that vanishes in floating
         point (:func:`~threetears.evals.analysis.stats.separation_test`).
+    :rtype: float | None
     """
     if len(a_values) < 2 or len(b_values) < 2:
         return None
@@ -1101,9 +1107,10 @@ def _decide_dominance(points: list[FrontierPoint], cases: list[_ContestantCases]
     predicate, and testing it against the control would read the control against itself under another
     digest — "dominated by itself" — while testing it against the contestants would make it one.
 
-    Args:
-        points: The subject's points, in display order. Mutated.
-        cases: Each point's per-case values, aligned with ``points``.
+    :param points: The subject's points, in display order. Mutated.
+    :ptype points: list[FrontierPoint]
+    :param cases: Each point's per-case values, aligned with ``points``.
+    :ptype cases: list[_ContestantCases]
     """
     family: list[tuple[int, int, float]] = []
     tested: set[int] = set()
@@ -1157,14 +1164,16 @@ def _cost_ties(
     contestants every comparison already leans its way; requiring each to separate is what keeps a
     "cheapest" named on noise near α.
 
-    Args:
-        pick: The index of the lowest point cost among the cleared, priced points.
-        rivals: The other cleared, priced points' indices, ordered by point cost.
-        points: The subject's points.
-        cases: Each point's per-case values, aligned with ``points``.
-
-    Returns:
-        The decision and the rivals left in the set, each with its adjusted p (``None`` where untested).
+    :param pick: The index of the lowest point cost among the cleared, priced points.
+    :ptype pick: int
+    :param rivals: The other cleared, priced points' indices, ordered by point cost.
+    :ptype rivals: Sequence[int]
+    :param points: The subject's points.
+    :ptype points: Sequence[FrontierPoint]
+    :param cases: Each point's per-case values, aligned with ``points``.
+    :ptype cases: Sequence[_ContestantCases]
+    :return: The decision and the rivals left in the set, each with its adjusted p (``None`` where untested).
+    :rtype: tuple[FrontierCostDecision, list[FrontierCostTie]]
     """
     if not rivals:
         return "only_cleared", []
@@ -1246,8 +1255,8 @@ def _decide_boundary_pillar(
     The control's cells under an earlier identity predicate are the control, so they are held against nothing:
     holding them against the control would read the control against itself under another digest.
 
-    Returns:
-        The subject's boundary dimensions, sorted, and the sentence for :attr:`SubjectFrontier.boundary_pillar`.
+    :return: The subject's boundary dimensions, sorted, and the sentence for :attr:`SubjectFrontier.boundary_pillar`.
+    :rtype: tuple[list[str], str | None]
     """
     scales = _boundary_scales(result for group in members for result in group)
     dimensions = sorted(scales)
@@ -1388,48 +1397,57 @@ def compute_frontier(
     status:** a ``completed`` run with an infra-excluded cell is short too, and a
     surface that reasoned from ``status`` would pool it by default with nothing said.
 
-    Args:
-        runs: The runs supplying subject identity. Order is irrelevant.
-        results: The observations to rank.
-        bar: The pass^k threshold the verdict is made against, in ``[0, 1]``.
-            ``None`` computes the frontier without a verdict.
-        subject_id: When set, restrict to this subject; other subjects' results
-            are counted as ``n_filtered_out`` rather than dropped silently.
-        rubric_threshold: Forwarded to pass^k — a rubric score at or above it
-            counts as a passing dimension — and recorded on the answer
-            (:attr:`FrontierResult.rubric_threshold`). A campaign's bundle passes its
-            behavior's declared threshold.
-        known_run_ids: Every run id in the corpus, so a result excluded by the
-            caller's own run filter (in ``known_run_ids`` but not ``runs``) is
-            counted as filtered-on-request rather than unplaceable. See
-            :func:`project_score_records`.
-        archived_run_ids: The corpus run ids the operator has archived, so an
-            archival exclusion is counted as ``results_from_archived_runs``
-            rather than under the caller's ``status`` filter. See
-            :func:`place_results`.
-        profile: The host whose sweepable declarations each point's cost is read against: with it, every point
-            and verdict names what each of its runs set away from the subject's production configuration
-            (:attr:`FrontierPoint.production_footing`, #571). Read off the runs as given, so a run handed with its
-            host payload elided reads as unchecked. ``None`` leaves that field ``None`` — nobody checked.
-        control_variant_key: The variant every contestant's boundary dimensions are held against — the campaign's
-            control arm. ``None`` checks none, and says so.
-        earlier_control: The control's cells under an earlier identity predicate (``RealizedDesign.earlier_control``),
-            or None. The point they make up is marked (:attr:`FrontierPoint.earlier_control`) and is not a
-            contestant: in no dominance test, never the pick, never a cost tie, held against nothing.
-        guardrail_margins: The margin each boundary dimension is held to, by dimension name
-            (``CampaignDesign.guardrail_margins``); a dimension absent is held at zero change.
-        tiers: The evidence tiers of the judges behind the results' scores
-            (:func:`~threetears.evals.analysis.judge_profiles.judges_tiers`), which a verdict made on a judged pass^k
-            names (:attr:`FrontierVerdict.judge_evidence_tier`); a judge with no tier here is ``undetermined``.
-
-    Returns:
-        A :class:`FrontierResult` — one :class:`SubjectFrontier` per subject,
+    :param runs: The runs supplying subject identity. Order is irrelevant.
+    :ptype runs: list[EvalRun]
+    :param results: The observations to rank.
+    :ptype results: list[EvalResult]
+    :param bar: The pass^k threshold the verdict is made against, in ``[0, 1]``.
+        ``None`` computes the frontier without a verdict.
+    :ptype bar: float | None
+    :param subject_id: When set, restrict to this subject; other subjects' results
+        are counted as ``n_filtered_out`` rather than dropped silently.
+    :ptype subject_id: str | None
+    :param rubric_threshold: Forwarded to pass^k — a rubric score at or above it
+        counts as a passing dimension — and recorded on the answer
+        (:attr:`FrontierResult.rubric_threshold`). A campaign's bundle passes its
+        behavior's declared threshold.
+    :ptype rubric_threshold: int
+    :param known_run_ids: Every run id in the corpus, so a result excluded by the
+        caller's own run filter (in ``known_run_ids`` but not ``runs``) is
+        counted as filtered-on-request rather than unplaceable. See
+        :func:`project_score_records`.
+    :ptype known_run_ids: set[str] | None
+    :param archived_run_ids: The corpus run ids the operator has archived, so an
+        archival exclusion is counted as ``results_from_archived_runs``
+        rather than under the caller's ``status`` filter. See
+        :func:`place_results`.
+    :ptype archived_run_ids: set[str] | None
+    :param profile: The host whose sweepable declarations each point's cost is read against: with it, every point
+        and verdict names what each of its runs set away from the subject's production configuration
+        (:attr:`FrontierPoint.production_footing`, #571). Read off the runs as given, so a run handed with its
+        host payload elided reads as unchecked. ``None`` leaves that field ``None`` — nobody checked.
+    :ptype profile: HostProfile | None
+    :param control_variant_key: The variant every contestant's boundary dimensions are held against — the campaign's
+        control arm. ``None`` checks none, and says so.
+    :ptype control_variant_key: str | None
+    :param earlier_control: The control's cells under an earlier identity predicate
+        (``RealizedDesign.earlier_control``), or None. The point they make up is marked
+        (:attr:`FrontierPoint.earlier_control`) and is not a contestant: in no dominance test, never the pick, never a
+        cost tie, held against nothing.
+    :ptype earlier_control: EarlierControl | None
+    :param guardrail_margins: The margin each boundary dimension is held to, by dimension name
+        (``CampaignDesign.guardrail_margins``); a dimension absent is held at zero change.
+    :ptype guardrail_margins: Mapping[str, float] | None
+    :param tiers: The evidence tiers of the judges behind the results' scores
+        (:func:`~threetears.evals.analysis.judge_profiles.judges_tiers`), which a verdict made on a judged pass^k
+        names (:attr:`FrontierVerdict.judge_evidence_tier`); a judge with no tier here is ``undetermined``.
+    :ptype tiers: Sequence[JudgeEvidenceTier]
+    :return: A :class:`FrontierResult` — one :class:`SubjectFrontier` per subject,
         sorted by subject id, plus the corpus-level exclusion accounting and the
         completeness disclosures of every short run it ranked over.
-
-    Raises:
-        FrontierError: ``bar`` is outside ``[0, 1]`` — refused here so both
-            surfaces refuse identically rather than one clamping it.
+    :rtype: FrontierResult
+    :raises FrontierError: ``bar`` is outside ``[0, 1]`` — refused here so both
+        surfaces refuse identically rather than one clamping it.
     """
     if bar is not None and not (0.0 <= bar <= 1.0):
         raise FrontierError(

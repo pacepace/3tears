@@ -40,14 +40,15 @@ def reject_unknown_authoring_fields(
     a caller echoing back a record it just read — ``id``, ``created_at`` — is doing
     something reasonable that a refusal would break.
 
-    Args:
-        action: The action name, for the message.
-        fields: The caller's partial field map.
-        model: The model the merge will construct — the authority on what is declared.
-        server_fields: Names ignored without error.
-
-    Raises:
-        ValidationFailedError: ``fields`` names something the model does not declare.
+    :param action: The action name, for the message.
+    :ptype action: str
+    :param fields: The caller's partial field map.
+    :ptype fields: dict[str, Any]
+    :param model: The model the merge will construct — the authority on what is declared.
+    :ptype model: type[BaseModel]
+    :param server_fields: Names ignored without error.
+    :ptype server_fields: tuple[str, ...]
+    :raises ValidationFailedError: ``fields`` names something the model does not declare.
     """
     declared = set(model.model_fields)
     if unknown := sorted(set(fields) - declared - set(server_fields)):
@@ -76,18 +77,18 @@ def edited_core_document[M: CoreDocumentModel](
     a caller sent) is set as the strict check validated it, carrying nothing a newer build wrote, because nothing a
     caller sends is. Only the second validation's result is returned; the first only refuses.
 
-    Args:
-        model: The core document's model.
-        existing: The document as its stored read returned it.
-        changes: The fields to set, each to its new value: the caller's (already checked by name) and the
-            surface's own (``updated_at``, a re-stamped design).
-        drop: Fields to leave out of the result, so their defaults are taken (a new version's fresh ``id``).
-
-    Returns:
-        The edited document, ready to write.
-
-    Raises:
-        ValidationError: ``changes`` makes a document this build refuses.
+    :param model: The core document's model.
+    :ptype model: type[M]
+    :param existing: The document as its stored read returned it.
+    :ptype existing: M
+    :param changes: The fields to set, each to its new value: the caller's (already checked by name) and the
+        surface's own (``updated_at``, a re-stamped design).
+    :ptype changes: Mapping[str, Any]
+    :param drop: Fields to leave out of the result, so their defaults are taken (a new version's fresh ``id``).
+    :ptype drop: Collection[str]
+    :return: The edited document, ready to write.
+    :rtype: M
+    :raises ValidationError: ``changes`` makes a document this build refuses.
     """
     as_declared = {
         key: value.model_dump(mode="json") if isinstance(value, BaseModel) else value for key, value in changes.items()

@@ -179,9 +179,9 @@ def _generating_host(
     ``default_model`` is the model the launcher runs an arm naming none on; ``settings`` reads the host's
     launch settings (the toy host's own when ``None``) — the launcher's tail reads through the same host.
 
-    Returns:
-        The host, its store, the client factory (to see what was asked for), and every request the
+    :return: The host, its store, the client factory (to see what was asked for), and every request the
         launcher was handed — so a refusal made before it ran is distinguishable from one it made.
+    :rtype: tuple[LaunchHost, EvalStorage, _FakeClients, list[LaunchRequest]]
     """
     storage = EvalStorage(InMemoryDocumentStore())
     for template in templates:

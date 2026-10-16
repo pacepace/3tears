@@ -669,8 +669,8 @@ def _split_control_campaign() -> tuple[OpsFixture, EvalCampaign, str, str, str, 
     arm, a day later, carries the key this build stamps. The control is declared under the earlier predicate with
     its lever map, so it matches both.
 
-    Returns:
-        The fixture, the stored campaign, the earlier run, the re-keyed run, the stored key and the re-keyed key.
+    :return: The fixture, the stored campaign, the earlier run, the re-keyed run, the stored key and the re-keyed key.
+    :rtype: tuple[OpsFixture, EvalCampaign, str, str, str, str]
     """
     fixture = ops_fixture()
     storage = fixture.host.eval_host.storage

@@ -27,11 +27,10 @@ _LOADING_DIR: ContextVar[Path | None] = ContextVar("threetears_evals_loading_dir
 def loading_eval_file(path: Path) -> Iterator[None]:
     """Read every relative path built inside the block against ``path``'s directory.
 
-    Args:
-        path: The eval file being loaded.
-
-    Yields:
-        Nothing; the directory is unset when the block ends, however it ends.
+    :param path: The eval file being loaded.
+    :ptype path: Path
+    :yield: Nothing; the directory is unset when the block ends, however it ends.
+    :rtype: Iterator[None]
     """
     token = _LOADING_DIR.set(path.parent)
     try:
@@ -43,11 +42,10 @@ def loading_eval_file(path: Path) -> Iterator[None]:
 def beside_eval_file(path: str | os.PathLike[str]) -> Path:
     """A path as the eval file being loaded names it: relative to that file, else to the working directory.
 
-    Args:
-        path: The path as written.
-
-    Returns:
-        An absolute path unchanged; a relative one under the loading file's directory, or as given outside a load.
+    :param path: The path as written.
+    :ptype path: str | os.PathLike[str]
+    :return: An absolute path unchanged; a relative one under the loading file's directory, or as given outside a load.
+    :rtype: Path
     """
     given = Path(path)
     base = _LOADING_DIR.get()

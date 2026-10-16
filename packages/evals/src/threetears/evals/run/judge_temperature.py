@@ -105,20 +105,19 @@ log = get_logger(__name__)
 class JudgeTemperatureEstimate(EvalBaseModel):
     """What comparing a run's judge at the two temperatures would be priced at, against its cap — no call made.
 
-    Attributes:
-        run_id: The run.
-        judge_model: The run's judge pin.
-        selection: Which scored dims would be re-judged.
-        repeats: Calls per dim per setting.
-        results: The results that would be re-judged.
-        cases: The (result, dim) pairs that would be re-judged.
-        max_calls: The most calls it can make: both settings, every repeat, each attempt and parse retry.
-        ceiling_usd: The most those calls can cost together, as the clients price them; ``None`` when a client
-            cannot say.
-        cap_usd: The out-of-run cap it would be held to; ``None`` when the host enforces none.
-        would_start: Whether every call would be admitted.
-        refusal: Why it would not, when it would not.
-        skipped: The run's results that would not be re-judged, each with why.
+    :ivar run_id: The run.
+    :ivar judge_model: The run's judge pin.
+    :ivar selection: Which scored dims would be re-judged.
+    :ivar repeats: Calls per dim per setting.
+    :ivar results: The results that would be re-judged.
+    :ivar cases: The (result, dim) pairs that would be re-judged.
+    :ivar max_calls: The most calls it can make: both settings, every repeat, each attempt and parse retry.
+    :ivar ceiling_usd: The most those calls can cost together, as the clients price them; ``None`` when a client
+        cannot say.
+    :ivar cap_usd: The out-of-run cap it would be held to; ``None`` when the host enforces none.
+    :ivar would_start: Whether every call would be admitted.
+    :ivar refusal: Why it would not, when it would not.
+    :ivar skipped: The run's results that would not be re-judged, each with why.
     """
 
     run_id: str
@@ -170,11 +169,10 @@ def borderline_dims(result: EvalResult) -> set[str]:
     differently from the stored score, or could not tell. A pass/fail dim is therefore borderline only once something
     has disagreed on it: run a judge repeat first, or select every dim.
 
-    Args:
-        result: The result.
-
-    Returns:
-        The borderline dims, as their scores spell them.
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: The borderline dims, as their scores spell them.
+    :rtype: set[str]
     """
     chosen: set[str] = set()
     for score in result.judge_scores():
@@ -189,9 +187,8 @@ def _select(
 ) -> tuple[list[PlannedRepeat], list[TemperatureSkip]]:
     """Narrow each planned result to the dims ``selection`` takes, skipping a result left with none.
 
-    Raises:
-        ValidationFailedError: No result has a dim ``selection`` takes, or every one of their stored scores
-            records that its model was sent no temperature.
+    :raises ValidationFailedError: No result has a dim ``selection`` takes, or every one of their stored scores
+        records that its model was sent no temperature.
     """
     planned: list[PlannedRepeat] = []
     skipped = [TemperatureSkip(result_id=skip.result_id, reason=skip.reason) for skip in collected.skipped]
@@ -259,9 +256,8 @@ async def _prepare(
 
     The caller enters every service, which releases every client built here.
 
-    Raises:
-        ValidationFailedError: ``repeats`` is under :data:`MIN_TEMPERATURE_REPEATS`, or the run cannot be compared.
-        ValueError: The host supplies no completion clients.
+    :raises ValidationFailedError: ``repeats`` is under :data:`MIN_TEMPERATURE_REPEATS`, or the run cannot be compared.
+    :raises ValueError: The host supplies no completion clients.
     """
     if repeats < MIN_TEMPERATURE_REPEATS:
         raise ValidationFailedError(
@@ -356,22 +352,25 @@ async def estimate_judge_temperature_comparison(
     The same collection, selection, calls and admission :func:`judge_temperature_work` makes, so ``would_start``
     is its answer.
 
-    Args:
-        host: The host: the run's store and the judge clients.
-        run_id: The finished run.
-        scope_id: The scope it lives in.
-        out_of_run_cap_usd: The cap it would be held to; ``None`` when the host enforces none.
-        selection: ``borderline`` (the default) or ``all`` scored dims.
-        repeats: Calls per dim per setting, at least :data:`MIN_TEMPERATURE_REPEATS`.
-        result_ids: The results to draw from; ``None`` for every result of the run.
-
-    Returns:
-        The estimate.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The comparison cannot be made (see :func:`judge_temperature_work`).
-        ValueError: The host supplies no completion clients.
+    :param host: The host: the run's store and the judge clients.
+    :ptype host: EvalHost
+    :param run_id: The finished run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param out_of_run_cap_usd: The cap it would be held to; ``None`` when the host enforces none.
+    :ptype out_of_run_cap_usd: float | None
+    :param selection: ``borderline`` (the default) or ``all`` scored dims.
+    :ptype selection: TemperatureSelection
+    :param repeats: Calls per dim per setting, at least :data:`MIN_TEMPERATURE_REPEATS`.
+    :ptype repeats: int
+    :param result_ids: The results to draw from; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :return: The estimate.
+    :rtype: JudgeTemperatureEstimate
+    :raises NotFoundError: No run with that id, or a record it names does not load.
+    :raises ValidationFailedError: The comparison cannot be made (see :func:`judge_temperature_work`).
+    :raises ValueError: The host supplies no completion clients.
     """
     prepared = await _prepare(
         host,
@@ -495,26 +494,29 @@ async def judge_temperature_work(
     (:func:`~threetears.evals.run.run_job_work`), and read the record's answers with
     :func:`~threetears.evals.analysis.read_judge_temperatures`.
 
-    Args:
-        host: The host: the run's store, its judge clients — through the run-pinned resolution the run scored
-            through — and how a judge call that raised reads.
-        run_id: The finished run.
-        scope_id: The scope it lives in.
-        out_of_run_cap_usd: The most the calls may be priced at together; ``None`` when the host enforces none.
-        selection: ``borderline`` (the default: see :func:`borderline_dims`) or ``all`` scored dims.
-        repeats: Calls per dim per setting, at least :data:`~threetears.evals.kernel.MIN_TEMPERATURE_REPEATS`.
-        result_ids: The results to draw from; ``None`` for every result of the run.
-
-    Returns:
-        The admitted work; its record is the comparison.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The run is still running; its judging cannot be reproduced; ``result_ids`` names a
-            result outside it; ``repeats`` is under the floor; no result has a dim ``selection`` takes; every score to
-            re-judge records a model that refuses a temperature; or the calls cannot be priced under the enforced cap
-            or are priced above it. All before any call.
-        ValueError: The host supplies no completion clients.
+    :param host: The host: the run's store, its judge clients — through the run-pinned resolution the run scored
+        through — and how a judge call that raised reads.
+    :ptype host: EvalHost
+    :param run_id: The finished run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param out_of_run_cap_usd: The most the calls may be priced at together; ``None`` when the host enforces none.
+    :ptype out_of_run_cap_usd: float | None
+    :param selection: ``borderline`` (the default: see :func:`borderline_dims`) or ``all`` scored dims.
+    :ptype selection: TemperatureSelection
+    :param repeats: Calls per dim per setting, at least :data:`~threetears.evals.kernel.MIN_TEMPERATURE_REPEATS`.
+    :ptype repeats: int
+    :param result_ids: The results to draw from; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :return: The admitted work; its record is the comparison.
+    :rtype: JobWork[EvalJudgeTemperatureCheck]
+    :raises NotFoundError: No run with that id, or a record it names does not load.
+    :raises ValidationFailedError: The run is still running; its judging cannot be reproduced; ``result_ids`` names a
+        result outside it; ``repeats`` is under the floor; no result has a dim ``selection`` takes; every score to
+        re-judge records a model that refuses a temperature; or the calls cannot be priced under the enforced cap
+        or are priced above it. All before any call.
+    :raises ValueError: The host supplies no completion clients.
     """
     prepared = await _prepare(
         host,
@@ -567,16 +569,19 @@ async def _ask(
 ) -> JudgeTemperatureAnswers:
     """Make an admitted comparison's calls, and gather every answer per case and setting.
 
-    Args:
-        prepared: The admitted comparison.
-        selection: Which dims were selected.
-        repeats: Calls per dim per setting.
-        out_of_run_cap_usd: The cap the calls were admitted under.
-        keep: Records the answers so far, called as each call returns — what makes a comparison stopped part-way
-            keep what it paid for.
-
-    Returns:
-        Per case and setting every answer in call order, the case count and the spend.
+    :param prepared: The admitted comparison.
+    :ptype prepared: _Prepared
+    :param selection: Which dims were selected.
+    :ptype selection: TemperatureSelection
+    :param repeats: Calls per dim per setting.
+    :ptype repeats: int
+    :param out_of_run_cap_usd: The cap the calls were admitted under.
+    :ptype out_of_run_cap_usd: float | None
+    :param keep: Records the answers so far, called as each call returns — what makes a comparison stopped part-way
+        keep what it paid for.
+    :ptype keep: Callable[[JudgeTemperatureAnswers], Awaitable[None]]
+    :return: Per case and setting every answer in call order, the case count and the spend.
+    :rtype: JudgeTemperatureAnswers
     """
     answered: dict[tuple[str, str, TemperatureSetting], list[JudgeOutcome]] = {}
     stopped: str | None = None

@@ -80,19 +80,18 @@ def judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) 
     The template is loaded as every use of one is (:func:`~threetears.evals.run.get_template`), in the caller's
     scope, so a template or run of another scope does not resolve.
 
-    Args:
-        host: The host whose store holds the runs and receives the cases.
-        freeze: What to freeze.
-        scope_id: The scope the template and the runs live in, and the cases are stored in.
-
-    Returns:
-        The receipt.
-
-    Raises:
-        NotFoundError: The template or a run is not in the scope.
-        ValidationFailedError: The template is not of the judge kind, or nothing could be frozen (see
-            :func:`~threetears.evals.run.freeze_judge_cases`).
-        StorageError: A case or the set could not be persisted.
+    :param host: The host whose store holds the runs and receives the cases.
+    :ptype host: EvalHost
+    :param freeze: What to freeze.
+    :ptype freeze: JudgeCasesFreeze
+    :param scope_id: The scope the template and the runs live in, and the cases are stored in.
+    :ptype scope_id: str
+    :return: The receipt.
+    :rtype: JudgeCaseFreezeReport
+    :raises NotFoundError: The template or a run is not in the scope.
+    :raises ValidationFailedError: The template is not of the judge kind, or nothing could be frozen (see
+        :func:`~threetears.evals.run.freeze_judge_cases`).
+    :raises StorageError: A case or the set could not be persisted.
     """
     return freeze_judge_cases(
         host.storage,
@@ -154,20 +153,20 @@ def judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, a
     Authoring the same case again names the stored one. It mints no case set: a launch with none runs every live
     case of the template, and ``case_set_mint`` lists the ones a launch should run.
 
-    Args:
-        host: The host whose store holds both templates and receives the case.
-        case: What to author.
-        scope_id: The scope both templates live in, and the case is stored in.
-        author: Who is authoring it: the label's rater.
-
-    Returns:
-        The receipt, listing the one case.
-
-    Raises:
-        NotFoundError: Either template is not in the scope.
-        ValidationFailedError: The judge template is not of the judge kind, the criterion template has no such rubric
-            dimension, or the dimension's scale cannot hold the verdict (naming both).
-        StorageError: The case could not be persisted.
+    :param host: The host whose store holds both templates and receives the case.
+    :ptype host: EvalHost
+    :param case: What to author.
+    :ptype case: JudgeCaseAuthor
+    :param scope_id: The scope both templates live in, and the case is stored in.
+    :ptype scope_id: str
+    :param author: Who is authoring it: the label's rater.
+    :ptype author: str
+    :return: The receipt, listing the one case.
+    :rtype: JudgeCaseFreezeReport
+    :raises NotFoundError: Either template is not in the scope.
+    :raises ValidationFailedError: The judge template is not of the judge kind, the criterion template has no such
+        rubric dimension, or the dimension's scale cannot hold the verdict (naming both).
+    :raises StorageError: The case could not be persisted.
     """
     authored = author_judge_case(
         get_template(host, case.criterion_template_id, scope_id),
@@ -229,17 +228,16 @@ def judge_cases_list(host: EvalHost, template_id: str, scope_id: str) -> JudgeCa
     Reads only; spends and writes nothing. A case's name is stored with it (``EvalTestCase.name``, and a seeded
     case's corpus name as ``seed_name``) but is not part of this listing; ``cases_rename`` changes it.
 
-    Args:
-        host: The host whose store is read.
-        template_id: The judge template.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The listing.
-
-    Raises:
-        NotFoundError: No template with that id in the scope.
-        ValidationFailedError: The template is not of the judge kind.
+    :param host: The host whose store is read.
+    :ptype host: EvalHost
+    :param template_id: The judge template.
+    :ptype template_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The listing.
+    :rtype: JudgeCaseListing
+    :raises NotFoundError: No template with that id in the scope.
+    :raises ValidationFailedError: The template is not of the judge kind.
     """
     template = host.storage.load_template(template_id, scope_id)
     if template is None:
@@ -289,25 +287,25 @@ class JudgeTemplateCreate(EvalBaseModel):
 
 
 def judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: str) -> TemplateLine:
-    """Write a template of the judge kind — what :func:`judge_cases_freeze` freezes cases into and a judge campaign launches.
+    """Write a template of the judge kind — what :func:`judge_cases_freeze` freezes cases into and a judge campaign
+    launches.
 
     Wholly the package's: the judge kind, the name and the intent, and no field the judge kind would ignore — the
     dispatch refuses one (:attr:`~threetears.evals.run.LaunchableKind.ignored_template_fields`). So no host check
     has anything to read on it, and it is refused only where it could never run: on a host whose launch registry
     has no judge kind.
 
-    Args:
-        host: The launching host, whose registry must launch the judge kind and whose store receives the template.
-        create: What the template is called and measures.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The template as written.
-
-    Raises:
-        ValidationFailedError: The host launches no judge kind.
-        ConflictError: A template of that name is already in the scope.
-        StorageError: The template could not be written.
+    :param host: The launching host, whose registry must launch the judge kind and whose store receives the template.
+    :ptype host: OpsHost
+    :param create: What the template is called and measures.
+    :ptype create: JudgeTemplateCreate
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The template as written.
+    :rtype: TemplateLine
+    :raises ValidationFailedError: The host launches no judge kind.
+    :raises ConflictError: A template of that name is already in the scope.
+    :raises StorageError: The template could not be written.
     """
     if JUDGE_KIND not in host.launch.kinds:
         # The remedy is the host operator's, not the caller's: no action registers a kind. What the operator does is

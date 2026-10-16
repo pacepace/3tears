@@ -181,11 +181,10 @@ _PROSE_CELL = 40
 def report_html(report: Report) -> str:
     """Render a report as one standalone HTML page that needs no script.
 
-    Args:
-        report: The report.
-
-    Returns:
-        The page.
+    :param report: The report.
+    :ptype report: Report
+    :return: The page.
+    :rtype: str
     """
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     parts = [
@@ -411,8 +410,8 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float
     The scale holds every interval end, every point and every margin band of the group, and zero where any cell is a
     difference, padded a little at either end so no mark sits on the edge.
 
-    Returns:
-        ``{(column key, unit): (low, high)}``, for the columns with a cell carrying an interval.
+    :return: ``{(column key, unit): (low, high)}``, for the columns with a cell carrying an interval.
+    :rtype: dict[tuple[str, str], tuple[float, float]]
     """
     ends: dict[tuple[str, str], list[float]] = {}
     for row in block.rows:
@@ -559,11 +558,10 @@ def _slug(term: str) -> str:
 def _markdown(text: str) -> str:
     """The Markdown a memo uses — paragraphs, bullet lists, bold, code — over text escaped first.
 
-    Args:
-        text: An author's words.
-
-    Returns:
-        The HTML.
+    :param text: An author's words.
+    :ptype text: str
+    :return: The HTML.
+    :rtype: str
     """
     out: list[str] = []
     for paragraph in re.split(r"\n\s*\n", text.strip()):

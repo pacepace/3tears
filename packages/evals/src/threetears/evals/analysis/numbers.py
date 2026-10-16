@@ -64,13 +64,13 @@ def format_number(value: float | None, *, prefix: str = "") -> str:
     one that took the text apart to put it right would be restating the rule from the outside. An
     absent value stays :data:`ABSENT` with no prefix: there is no amount to carry it.
 
-    Args:
-        value: The number, or ``None`` when there is none.
-        prefix: Text written on the number itself, after any sign and inside a bound. Empty by default,
-            which leaves the text exactly as it is without one.
-
-    Returns:
-        Its text under the module's rule; :data:`ABSENT` for ``None``, NaN or an infinity.
+    :param value: The number, or ``None`` when there is none.
+    :ptype value: float | None
+    :param prefix: Text written on the number itself, after any sign and inside a bound. Empty by default,
+        which leaves the text exactly as it is without one.
+    :ptype prefix: str
+    :return: Its text under the module's rule; :data:`ABSENT` for ``None``, NaN or an infinity.
+    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return ABSENT
@@ -102,13 +102,12 @@ _WRITTEN_FROM_TEXT = f"{WRITTEN_FROM:.6f}"
 def format_signed(value: float | None) -> str:
     """Spell a change, carrying its sign — the direction is half of what a delta says.
 
-    Args:
-        value: The change, or ``None`` when there is none.
-
-    Returns:
-        :func:`format_number`'s text with a leading ``+`` on a positive value (a positive value below
+    :param value: The change, or ``None`` when there is none.
+    :ptype value: float | None
+    :return: :func:`format_number`'s text with a leading ``+`` on a positive value (a positive value below
         :data:`WRITTEN_FROM` reads ``< 0.000001``, which carries its direction already); a negative one carries
         its own ``-``, and zero carries neither.
+    :rtype: str
     """
     text = format_number(value)
     positive = value is not None and math.isfinite(value) and value > 0

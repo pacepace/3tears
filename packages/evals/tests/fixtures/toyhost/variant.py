@@ -53,15 +53,16 @@ def _payload(run: EvalRun) -> dict[str, Any]:
 def _interval(value: Any, *, unit: str | None, absent: str) -> SweepableValue:
     """Content-address a numeric level, keeping its spacing where it has one.
 
-    Args:
-        value: The recorded number, or ``None`` when the observation never recorded it.
-        unit: The unit the number is in, used to render the level. ``None`` for a dimensionless
-            count — an empty string there would be a unit that renders as nothing, which is a
-            different claim from having none.
-        absent: What to call the level an observation that recorded nothing sits at.
-
-    Returns:
-        The level. An unrecorded value is nominal, because there is no number to space it by.
+    :param value: The recorded number, or ``None`` when the observation never recorded it.
+    :ptype value: Any
+    :param unit: The unit the number is in, used to render the level. ``None`` for a dimensionless
+        count — an empty string there would be a unit that renders as nothing, which is a
+        different claim from having none.
+    :ptype unit: str | None
+    :param absent: What to call the level an observation that recorded nothing sits at.
+    :ptype absent: str
+    :return: The level. An unrecorded value is nominal, because there is no number to space it by.
+    :rtype: SweepableValue
     """
     if value is None:
         return SweepableValue.of(None, display=absent)
@@ -71,12 +72,11 @@ def _interval(value: Any, *, unit: str | None, absent: str) -> SweepableValue:
 def variant_levers(run: EvalRun) -> dict[str, SweepableValue]:
     """Resolve a toy-host run's level of every lever the toy host itself registers.
 
-    Args:
-        run: The run whose observations the levels describe.
-
-    Returns:
-        Lever name → the level carried, covering every fixed ``lever`` in the toy host's own
+    :param run: The run whose observations the levels describe.
+    :ptype run: EvalRun
+    :return: Lever name → the level carried, covering every fixed ``lever`` in the toy host's own
         registry. Every value is content-addressed, so nothing here needs a store the engine cannot see.
+    :rtype: dict[str, SweepableValue]
     """
     payload = _payload(run)
     schema = payload.get("extraction_schema")
@@ -103,11 +103,10 @@ def tunable_variant_levers(run: EvalRun) -> dict[str, SweepableValue]:
     coordinate of their own — an open family has no per-member reader — so everything an overlaid
     knob does to identity arrives through the resolved configuration it was merged into.
 
-    Args:
-        run: The run whose observations the levels describe.
-
-    Returns:
-        Lever name → level, covering every fixed lever the tunable registry declares.
+    :param run: The run whose observations the levels describe.
+    :ptype run: EvalRun
+    :return: Lever name → level, covering every fixed lever the tunable registry declares.
+    :rtype: dict[str, SweepableValue]
     """
     config = _payload(run).get("retrieval_config")
     return {

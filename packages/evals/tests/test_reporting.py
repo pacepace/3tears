@@ -136,13 +136,10 @@ def _catalog_name_of(row_name):
 def _run_with_results(*, subject_id="ent-maple", subject_label="Maple", **run_overrides):
     """Build one run plus a matching result, wired by run id.
 
-    Args:
-        subject_id: Subject id for the run's subject snapshot.
-        subject_label: Display name for the run's subject snapshot.
-        **run_overrides: Passed through to ``make_eval_run``.
-
-    Returns:
-        Tuple of (run, result).
+    :param subject_id: Subject id for the run's subject snapshot.
+    :param subject_label: Display name for the run's subject snapshot.
+    :param **run_overrides: Passed through to ``make_eval_run``.
+    :return: Tuple of (run, result).
     """
     snapshot = make_subject(subject_id, subject_label)
     run = make_eval_run(subject_snapshot=snapshot, **run_overrides)
@@ -153,11 +150,8 @@ def _run_with_results(*, subject_id="ent-maple", subject_label="Maple", **run_ov
 def _overlaid(**overlays):
     """The run fields a launch of the toy extractor stamps for ``overlays``: its kind and the frozen model.
 
-    Args:
-        **overlays: The knobs the launch turned, by field of the kind's overlay model.
-
-    Returns:
-        ``candidate_kind`` and ``overlays``, for ``make_eval_run``.
+    :param **overlays: The knobs the launch turned, by field of the kind's overlay model.
+    :return: ``candidate_kind`` and ``overlays``, for ``make_eval_run``.
     """
     validated = TOY_EXTRACTOR_CONTRACT.validate_overlays(overlays)
     return {"candidate_kind": TOY_EXTRACTOR_KIND, "overlays": freeze(validated)}
@@ -171,11 +165,8 @@ def _stamped_run(**run_overrides):
     re-derives it. Tests that want two runs to agree (or differ) on their measurement
     context have to go through the predicate to be testing anything.
 
-    Args:
-        **run_overrides: Passed through to ``make_eval_run``.
-
-    Returns:
-        The stamped run.
+    :param **run_overrides: Passed through to ``make_eval_run``.
+    :return: The stamped run.
     """
     run, _ = _run_with_results(judge_model="judge-x", simulator_model="sim-x", **run_overrides)
     identity = derive_context_identity(run, _JUDGED_HOST)
@@ -340,13 +331,10 @@ class TestCompositeIsPerObservation:
     def _scored(self, run, *, k_iteration, score):
         """Build a scored result for one k-iteration.
 
-        Args:
-            run: The run the result belongs to.
-            k_iteration: Which iteration this observation is.
-            score: Rubric score, 1-5.
-
-        Returns:
-            An `EvalResult` carrying a single rubric dim at `score`.
+        :param run: The run the result belongs to.
+        :param k_iteration: Which iteration this observation is.
+        :param score: Rubric score, 1-5.
+        :return: An `EvalResult` carrying a single rubric dim at `score`.
         """
         return make_eval_result(
             eval_run_id=run.id,
@@ -491,12 +479,9 @@ class TestPerDimensionRows:
     def _scored(self, run, **overrides):
         """Build a result belonging to ``run``.
 
-        Args:
-            run: The run the result belongs to.
-            **overrides: Passed through to ``make_eval_result``.
-
-        Returns:
-            An `EvalResult` wired to the run.
+        :param run: The run the result belongs to.
+        :param **overrides: Passed through to ``make_eval_result``.
+        :return: An `EvalResult` wired to the run.
         """
         return make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, **overrides)
 
@@ -720,11 +705,8 @@ class TestPerDimensionRows:
         exercised. The unscored result is here because a dimensionless null row
         must not enter either denominator.
 
-        Args:
-            run: The run the results belong to.
-
-        Returns:
-            A list of `EvalResult` — case means 5 and 2, observation mean 4.
+        :param run: The run the results belong to.
+        :return: A list of `EvalResult` — case means 5 and 2, observation mean 4.
         """
         return [
             self._scored(
@@ -1073,11 +1055,8 @@ class TestPerDimensionJudgeAttribution:
     def _run(self, **overrides):
         """Build a run pinned to `judge-pin`, with whatever attribution the test states.
 
-        Args:
-            **overrides: Passed through to ``make_eval_run``.
-
-        Returns:
-            The run.
+        :param **overrides: Passed through to ``make_eval_run``.
+        :return: The run.
         """
         run, _ = _run_with_results(judge_model="judge-pin", **overrides)
         return run
@@ -1085,12 +1064,9 @@ class TestPerDimensionJudgeAttribution:
     def _scored(self, run, *dims):
         """Build one result scoring each named dim.
 
-        Args:
-            run: The run to wire the result to.
-            *dims: Dimension names to score, each at 5.
-
-        Returns:
-            An ``EvalResult`` carrying one ``RubricScore`` per named dim.
+        :param run: The run to wire the result to.
+        :param *dims: Dimension names to score, each at 5.
+        :return: An ``EvalResult`` carrying one ``RubricScore`` per named dim.
         """
         return make_eval_result(
             eval_run_id=run.id,
@@ -1103,12 +1079,9 @@ class TestPerDimensionJudgeAttribution:
     def _score_rows(self, run, result):
         """Project one result and return its `score` rows.
 
-        Args:
-            run: The run supplying the coordinates.
-            result: The observation to project.
-
-        Returns:
-            The ``METRIC_SCORE`` rows, in projection order.
+        :param run: The run supplying the coordinates.
+        :param result: The observation to project.
+        :return: The ``METRIC_SCORE`` rows, in projection order.
         """
         return [
             r
@@ -1854,22 +1827,19 @@ def _record(
 ):
     """Build one score record, addressing the two axes the pivot tests use.
 
-    Args:
-        model: Value for the ``model`` coordinate.
-        template: Value for the ``template_id`` coordinate. Named for the
-            coordinate rather than for an axis, because which coordinate is the
-            row axis and which the column is the caller's choice per pivot.
-        case: Test-case id — the equal-per-scenario grouping key.
-        value: The observation's value; ``None`` marks it unmeasured.
-        metric: Which measure this row carries.
-        subject_id: The comparability partition key.
-        outcome: Scoring class carried from the taxonomy.
-        k: Iteration index, so repeats within one case stay distinct rows.
-        factors: Open dotted coordinates (run-scoped config / prompt overlays).
-        judge_model: The run-pinned judge role, a first-class axis.
-
-    Returns:
-        A `ScoreRecord`.
+    :param model: Value for the ``model`` coordinate.
+    :param template: Value for the ``template_id`` coordinate. Named for the
+        coordinate rather than for an axis, because which coordinate is the
+        row axis and which the column is the caller's choice per pivot.
+    :param case: Test-case id — the equal-per-scenario grouping key.
+    :param value: The observation's value; ``None`` marks it unmeasured.
+    :param metric: Which measure this row carries.
+    :param subject_id: The comparability partition key.
+    :param outcome: Scoring class carried from the taxonomy.
+    :param k: Iteration index, so repeats within one case stay distinct rows.
+    :param factors: Open dotted coordinates (run-scoped config / prompt overlays).
+    :param judge_model: The run-pinned judge role, a first-class axis.
+    :return: A `ScoreRecord`.
     """
     return ScoreRecord(
         subject_id=subject_id,
@@ -1894,11 +1864,8 @@ def _record(
 def _grid(records):
     """Index a pivot's cells by (row, column) for direct assertion.
 
-    Args:
-        records: A `PivotTable`.
-
-    Returns:
-        Dict of ``(row, column)`` → `PivotCell`.
+    :param records: A `PivotTable`.
+    :return: Dict of ``(row, column)`` → `PivotCell`.
     """
     return {(cell.row, cell.column): cell for cell in records.cells}
 
@@ -2052,8 +2019,7 @@ class TestPivotWeighting:
     def _unbalanced(self):
         """One case measured three times at 0.0, another once at 1.0.
 
-        Returns:
-            Records whose two weightings cannot coincide: equal-per-scenario
+        :return: Records whose two weightings cannot coincide: equal-per-scenario
             averages the case means (0.0 and 1.0) to 0.5, while sample-weighted
             averages four observations to 0.25.
         """
@@ -2159,8 +2125,7 @@ class TestSimpsonsGuard:
         m1 is measured mostly on the easy row and m2 mostly on the hard one, so
         pooling over rows reverses the within-row verdict.
 
-        Returns:
-            Records for a 2x2 pivot of template (rows) x model (columns).
+        :return: Records for a 2x2 pivot of template (rows) x model (columns).
         """
         return [
             # Easy template: both score high, m2 higher.
@@ -2176,8 +2141,7 @@ class TestSimpsonsGuard:
     def _table(self):
         """Pivot the reversal fixture with model on the compared (column) axis.
 
-        Returns:
-            The `PivotTable`.
+        :return: The `PivotTable`.
         """
         return compute_pivot(
             self._reversal(),
@@ -3654,8 +3618,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
     def _code_graded(cls):
         """A classifier-shaped run: no rubric dims, the grade on ``host_measures``.
 
-        Returns:
-            Tuple of (run, results) — one right cell and one wrong cell.
+        :return: Tuple of (run, results) — one right cell and one wrong cell.
         """
         run, _ = _run_with_results()
         right = make_eval_result(
@@ -3680,12 +3643,9 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
     def _exported_rows(cls, run, results):
         """Serialize through the real export seam and read the CSV back.
 
-        Args:
-            run: The run supplying coordinates.
-            results: The observations to project.
-
-        Returns:
-            The parsed CSV rows.
+        :param run: The run supplying coordinates.
+        :param results: The observations to project.
+        :return: The parsed CSV rows.
         """
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
         return list(csv.DictReader(io.StringIO(serialize_export(projection, fmt="csv"))))
@@ -4747,13 +4707,10 @@ class TestComparisonSetsScope:
 def _fr_run(*, subject_id="ent-maple", subject_label="Maple", **overrides):
     """Build a run for a named subject, for frontier tests.
 
-    Args:
-        subject_id: Subject id for the run's subject snapshot.
-        subject_label: Display name for the run's subject snapshot.
-        **overrides: Passed through to ``make_eval_run``.
-
-    Returns:
-        The constructed ``EvalRun``.
+    :param subject_id: Subject id for the run's subject snapshot.
+    :param subject_label: Display name for the run's subject snapshot.
+    :param **overrides: Passed through to ``make_eval_run``.
+    :return: The constructed ``EvalRun``.
     """
     snapshot = make_subject(subject_id, subject_label)
     return make_eval_run(subject_snapshot=snapshot, **overrides)
@@ -4776,30 +4733,27 @@ def _fr_result(
 ):
     """One result wired to ``run`` with pass, cost, and latency controlled.
 
-    Args:
-        run: The run this result belongs to.
-        model: Candidate model slug.
-        variant_key: Contestant identity, as the runner stamped it.
-        test_case_id: Which test case this observation is for.
-        passes: When true the goal passes and the rubric clears the threshold;
-            when false both fail, so the case does not fully pass.
-        roles: ``{role: cost_usd}`` for the result's usage rows, or ``None`` for no
-            rows — capture ran and attributed no roles, so no cost was observed.
-        total_ms: Harvested total latency, or ``None`` for no latency harvest.
-        candidate_error: When set, the result is a candidate failure (composite
-            0.0, never a pass), overriding ``passes``.
-        infra_error: When set, the harness broke rather than the candidate, so the
-            result classifies ``INFRA_EXCLUDE``. Distinct from ``candidate_error``
-            on purpose — a candidate failure is a measurement and stays in, an
-            apparatus fault is not one and comes out.
-        k_iteration: Which k-iteration this is.
-        substituted_delivery: When true the result carries a delivery a harness
-            supplied, which withholds its production-replicating cost.
-        identity_version: Which key-derivation predicate minted ``variant_key``.
-            ``None`` stamps the current one, as the runner does.
-
-    Returns:
-        The constructed ``EvalResult``.
+    :param run: The run this result belongs to.
+    :param model: Candidate model slug.
+    :param variant_key: Contestant identity, as the runner stamped it.
+    :param test_case_id: Which test case this observation is for.
+    :param passes: When true the goal passes and the rubric clears the threshold;
+        when false both fail, so the case does not fully pass.
+    :param roles: ``{role: cost_usd}`` for the result's usage rows, or ``None`` for no
+        rows — capture ran and attributed no roles, so no cost was observed.
+    :param total_ms: Harvested total latency, or ``None`` for no latency harvest.
+    :param candidate_error: When set, the result is a candidate failure (composite
+        0.0, never a pass), overriding ``passes``.
+    :param infra_error: When set, the harness broke rather than the candidate, so the
+        result classifies ``INFRA_EXCLUDE``. Distinct from ``candidate_error``
+        on purpose — a candidate failure is a measurement and stays in, an
+        apparatus fault is not one and comes out.
+    :param k_iteration: Which k-iteration this is.
+    :param substituted_delivery: When true the result carries a delivery a harness
+        supplied, which withholds its production-replicating cost.
+    :param identity_version: Which key-derivation predicate minted ``variant_key``.
+        ``None`` stamps the current one, as the runner does.
+    :return: The constructed ``EvalResult``.
     """
     overrides = dict(
         eval_run_id=run.id,
@@ -6539,25 +6493,22 @@ def _hist_run(
 ):
     """Build one run and a result per case, for the history series tests.
 
-    Args:
-        cases: The run's frozen ``test_case_ids`` — a change between two runs is a
-            suite-version boundary.
-        score: Rubric score 1-5 for every case (composite = (score-1)/4), or None
-            to leave the default so the composite lands at its fixture value.
-        cost: ``cost_usd`` written on every result.
-        latency_ms: ``total_ms`` written on every result, or None for no latency.
-        created_at: Run timestamp — orders the series.
-        subject_id: Subject id.
-        subject_label: Subject display name.
-        model: Candidate model, also the series label.
-        template_id: Template the run scored against.
-        variant_key: Resolved contestant key, or None to fall back to model.
-        transcript: Raw 1-5 ``__transcript__`` axis score on every result, or None to
-            leave the axis unjudged — which is what a result of an unjudged run carries.
-        outcome: Raw 1-5 ``__outcome__`` axis score on every result, or None as above.
-
-    Returns:
-        ``(run, results)``.
+    :param cases: The run's frozen ``test_case_ids`` — a change between two runs is a
+        suite-version boundary.
+    :param score: Rubric score 1-5 for every case (composite = (score-1)/4), or None
+        to leave the default so the composite lands at its fixture value.
+    :param cost: ``cost_usd`` written on every result.
+    :param latency_ms: ``total_ms`` written on every result, or None for no latency.
+    :param created_at: Run timestamp — orders the series.
+    :param subject_id: Subject id.
+    :param subject_label: Subject display name.
+    :param model: Candidate model, also the series label.
+    :param template_id: Template the run scored against.
+    :param variant_key: Resolved contestant key, or None to fall back to model.
+    :param transcript: Raw 1-5 ``__transcript__`` axis score on every result, or None to
+        leave the axis unjudged — which is what a result of an unjudged run carries.
+    :param outcome: Raw 1-5 ``__outcome__`` axis score on every result, or None as above.
+    :return: ``(run, results)``.
     """
     snapshot = make_subject(subject_id, subject_label)
     run = make_eval_run(
@@ -7655,20 +7606,17 @@ class TestCompletenessDisclosure:
 def _short_run(status, completeness, *, subject_id="ent-maple", model="sonnet", n_results=2, **run_overrides):
     """Build one run of a given status and completeness, plus the results it measured.
 
-    Args:
-        status: The run's terminal status.
-        completeness: Its :class:`RunCompleteness` record, or ``None`` for a run
-            carrying none.
-        subject_id: Subject id for the subject snapshot — the coordinate every
-            aggregator partitions on.
-        model: Candidate model; also the frontier/history grouping fallback, so two
-            runs sharing it become one contestant.
-        n_results: How many results to emit, each on its own test case so the
-            per-case aggregations have something to average.
-        **run_overrides: Passed through to ``make_eval_run``.
-
-    Returns:
-        ``(run, results)``.
+    :param status: The run's terminal status.
+    :param completeness: Its :class:`RunCompleteness` record, or ``None`` for a run
+        carrying none.
+    :param subject_id: Subject id for the subject snapshot — the coordinate every
+        aggregator partitions on.
+    :param model: Candidate model; also the frontier/history grouping fallback, so two
+        runs sharing it become one contestant.
+    :param n_results: How many results to emit, each on its own test case so the
+        per-case aggregations have something to average.
+    :param **run_overrides: Passed through to ``make_eval_run``.
+    :return: ``(run, results)``.
     """
     snapshot = make_subject(subject_id, "Maple")
     run = make_eval_run(

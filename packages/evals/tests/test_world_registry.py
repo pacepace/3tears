@@ -23,11 +23,10 @@ from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 def _sound_dimension(**overrides: object) -> WorldDimension:
     """A dimension that registers cleanly, so a test can break exactly one thing about it.
 
-    Args:
-        **overrides: Fields to replace.
-
-    Returns:
-        The dimension.
+    :param **overrides: Fields to replace.
+    :ptype overrides: object
+    :return: The dimension.
+    :rtype: WorldDimension
     """
     fields: dict[str, object] = {
         "name": "shelf_stock",

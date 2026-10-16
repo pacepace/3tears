@@ -88,11 +88,10 @@ def _per_case_measures(pooled: Mapping[str, _PooledMeasure]) -> _PerCaseMeasures
     exactly (:func:`~threetears.evals.analysis.stats.exact_decimal`) so a constant read at unequal repeats
     stays one constant rather than acquiring a float residue a test would read as spread.
 
-    Args:
-        pooled: The level's pooled observations, from :func:`_collect_measures`.
-
-    Returns:
-        ``{name: {case id: mean}}`` for every numeric measure; text, boolean and categorical measures are absent.
+    :param pooled: The level's pooled observations, from :func:`_collect_measures`.
+    :ptype pooled: Mapping[str, _PooledMeasure]
+    :return: ``{name: {case id: mean}}`` for every numeric measure; text, boolean and categorical measures are absent.
+    :rtype: _PerCaseMeasures
     """
     per_case: _PerCaseMeasures = {}
     for name, (descriptor, values, cases) in pooled.items():
@@ -115,14 +114,15 @@ def measure_movement(
     Public as the one reading the scope-divergence lens grades a whole, a part and each component by, so
     :func:`component_carrier` can be handed movements read the way the lens reads them.
 
-    Args:
-        descriptor: The measure's descriptor — its name, scope, better direction, and the materiality
-            threshold that is both the delta's label and the margin an equivalence test runs against.
-        at_a: Its per-case means at the first level.
-        at_b: Its per-case means at the second level.
-
-    Returns:
-        The movement, read by :func:`~threetears.evals.analysis.stats.level_difference`.
+    :param descriptor: The measure's descriptor — its name, scope, better direction, and the materiality
+        threshold that is both the delta's label and the margin an equivalence test runs against.
+    :ptype descriptor: MetricDescriptor
+    :param at_a: Its per-case means at the first level.
+    :ptype at_a: Mapping[str, Fraction]
+    :param at_b: Its per-case means at the second level.
+    :ptype at_b: Mapping[str, Fraction]
+    :return: The movement, read by :func:`~threetears.evals.analysis.stats.level_difference`.
+    :rtype: MeasureMovement
     """
     tested = level_difference(
         at_a, at_b, equivalence_margin=descriptor.materiality_threshold, value_range=descriptor.value_range
@@ -183,13 +183,14 @@ def _comparable_pairs(
     one level and not the other has no difference to grade, and one with no better direction
     cannot be said to have improved.
 
-    Args:
-        level_a: Measures at the first level.
-        level_b: Measures at the second level.
-        catalog: Descriptors by measure name — the source of each measure's unit.
-
-    Yields:
-        One tuple per comparable cross-scope pair.
+    :param level_a: Measures at the first level.
+    :ptype level_a: MeasureCollection
+    :param level_b: Measures at the second level.
+    :ptype level_b: MeasureCollection
+    :param catalog: Descriptors by measure name — the source of each measure's unit.
+    :ptype catalog: dict[str, MetricDescriptor]
+    :yield: One tuple per comparable cross-scope pair.
+    :rtype: Iterator[tuple[str, MeasureSummary, MeasureSummary, MeasureSummary, MeasureSummary]]
     """
     at_a = {m.name: m for m in level_a.measures}
     at_b = {m.name: m for m in level_b.measures}
@@ -243,15 +244,18 @@ def _unsound_subtraction(
     partition was not, which is why the sibling case (``async_wait_ms``, undeclared) was
     correctly withheld in the same analysis that got this one wrong.
 
-    Args:
-        whole: The end-to-end measure's summary at the first level.
-        part: The subsystem measure's summary at the first level.
-        catalog: Descriptors by measure name — the source of the containment declaration.
-        observation_units: Each compared level's measure → observation-unit map.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        A sentence naming the reason, or None when the difference is sound.
+    :param whole: The end-to-end measure's summary at the first level.
+    :ptype whole: MeasureSummary
+    :param part: The subsystem measure's summary at the first level.
+    :ptype part: MeasureSummary
+    :param catalog: Descriptors by measure name — the source of the containment declaration.
+    :ptype catalog: dict[str, MetricDescriptor]
+    :param observation_units: Each compared level's measure → observation-unit map.
+    :ptype observation_units: list[dict[str, str]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: A sentence naming the reason, or None when the difference is sound.
+    :rtype: str | None
     """
     if whole.higher_is_better != part.higher_is_better:
         return (
@@ -294,17 +298,22 @@ def _whole_swing(
     unsaid: the lens's own rule is to report the other components rather than a remainder, and a
     reader handed only that rule and no components has nothing to report.
 
-    Args:
-        lever: The lever whose levels are compared.
-        level_names: The two levels, in the order the divergences name them.
-        whole: The whole-run measure's movement.
-        level_a: Per-case measures at the first level.
-        level_b: Per-case measures at the second level.
-        catalog: Descriptors by measure name.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The swing, its carrier decided by :func:`component_carrier`.
+    :param lever: The lever whose levels are compared.
+    :ptype lever: str
+    :param level_names: The two levels, in the order the divergences name them.
+    :ptype level_names: tuple[str, str]
+    :param whole: The whole-run measure's movement.
+    :ptype whole: MeasureMovement
+    :param level_a: Per-case measures at the first level.
+    :ptype level_a: _PerCaseMeasures
+    :param level_b: Per-case measures at the second level.
+    :ptype level_b: _PerCaseMeasures
+    :param catalog: Descriptors by measure name.
+    :ptype catalog: dict[str, MetricDescriptor]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The swing, its carrier decided by :func:`component_carrier`.
+    :rtype: WholeSwing
     """
     components = [
         measure_movement(catalog[name], level_a[name], level_b[name])
@@ -342,15 +351,17 @@ def component_carrier(
     candidate and that component, tested between the levels, Holm-adjusted over the other components. Named on
     the largest delta alone, two components moved alike would hand the carrier to whichever noise favoured.
 
-    Args:
-        whole: The whole-run measure's movement.
-        components: Each component's movement.
-        level_a: Per-case measures at the first level.
-        level_b: Per-case measures at the second level.
-
-    Returns:
-        The carrier, or None when the whole's movement does not separate, no component moved its way, or the
+    :param whole: The whole-run measure's movement.
+    :ptype whole: MeasureMovement
+    :param components: Each component's movement.
+    :ptype components: Sequence[MeasureMovement]
+    :param level_a: Per-case measures at the first level.
+    :ptype level_a: Mapping[str, Mapping[str, Fraction]]
+    :param level_b: Per-case measures at the second level.
+    :ptype level_b: Mapping[str, Mapping[str, Fraction]]
+    :return: The carrier, or None when the whole's movement does not separate, no component moved its way, or the
         largest mover is not shown to move further than every other.
+    :rtype: MeasureMovement | None
     """
     if whole.direction not in ("improved", "regressed") or whole.delta == 0.0:
         return None
@@ -441,27 +452,35 @@ def _scope_divergences(
     (:func:`_whole_swing`), never once per part: one whole diverges from several parts at once, and
     the answer is the same for all of them.
 
-    Args:
-        runs: The campaign's resolved runs.
-        results_by_run: Each run's results, keyed by run id.
-        catalog: Descriptors by measure name, for the unit that makes a pair comparable.
-        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
-        design: The derived design, narrowing each lever's cohort the same way the coverage
-            map narrows it — a divergence read over pooled cells would disagree with the
-            coverage entry for the same lever, and a reader has no way to tell which is right.
-        folds: The campaign's :class:`_SurfaceFolds`. A resolved surface whose movement across
-            its cohort is its swept members' is not compared as a lever of its own, for the reason
-            the coverage map drops its row: its levels are the members' levels under another name,
-            so every divergence it produced would restate one a member already reports.
-        observations: The campaign's mechanism observations, compared across each divergence's two levels
-            for the observed-mechanism confounds it names.
-        served: Which model answered each result's candidate calls, for the served-model confound.
-        profile: The host whose vocabulary this reads.
-        declared_axes: The levers the campaign declared as axes, each a lever whatever its calls.
-
-    Returns:
-        The divergences to report (strongest first, capped); a :class:`WholeSwing` for each lever, level pair
+    :param runs: The campaign's resolved runs.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results, keyed by run id.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param catalog: Descriptors by measure name, for the unit that makes a pair comparable.
+    :ptype catalog: dict[str, MetricDescriptor]
+    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :ptype apparatus_levels: dict[str, dict[str, str | None]]
+    :param design: The derived design, narrowing each lever's cohort the same way the coverage
+        map narrows it — a divergence read over pooled cells would disagree with the
+        coverage entry for the same lever, and a reader has no way to tell which is right.
+    :ptype design: RealizedDesign
+    :param folds: The campaign's :class:`_SurfaceFolds`. A resolved surface whose movement across
+        its cohort is its swept members' is not compared as a lever of its own, for the reason
+        the coverage map drops its row: its levels are the members' levels under another name,
+        so every divergence it produced would restate one a member already reports.
+    :ptype folds: _SurfaceFolds
+    :param observations: The campaign's mechanism observations, compared across each divergence's two levels
+        for the observed-mechanism confounds it names.
+    :ptype observations: _MechanismObservations
+    :param served: Which model answered each result's candidate calls, for the served-model confound.
+    :ptype served: _ServedModels
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :param declared_axes: The levers the campaign declared as axes, each a lever whatever its calls.
+    :ptype declared_axes: Collection[str]
+    :return: The divergences to report (strongest first, capped); a :class:`WholeSwing` for each lever, level pair
         and whole among them; the count dropped by the cap; and how many pairs were tested and could not be.
+    :rtype: _Divergences
     """
     found: list[tuple[float, ScopeDivergence]] = []
     swings: dict[_SwingKey, WholeSwing] = {}

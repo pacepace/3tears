@@ -63,12 +63,12 @@ TREE_MARKERS: dict[str, str] = {
 def module_name(path: Path, root: Path) -> str:
     """Dotted module name of ``path`` relative to the directory holding the top-level package.
 
-    Args:
-        path: A ``.py`` file under ``root``.
-        root: The directory the dotted name is rooted at.
-
-    Returns:
-        The dotted name; a package's ``__init__`` is named by the package.
+    :param path: A ``.py`` file under ``root``.
+    :ptype path: Path
+    :param root: The directory the dotted name is rooted at.
+    :ptype root: Path
+    :return: The dotted name; a package's ``__init__`` is named by the package.
+    :rtype: str
     """
     parts = path.relative_to(root).with_suffix("").parts
     if parts[-1] == "__init__":
@@ -79,11 +79,10 @@ def module_name(path: Path, root: Path) -> str:
 def discover(root: Path) -> dict[str, Path]:
     """Every module under ``root / 'threetears' / 'evals'``, keyed by dotted name.
 
-    Args:
-        root: The directory holding the ``threetears`` namespace -- the package's ``src``.
-
-    Returns:
-        Dotted name -> file.
+    :param root: The directory holding the ``threetears`` namespace -- the package's ``src``.
+    :ptype root: Path
+    :return: Dotted name -> file.
+    :rtype: dict[str, Path]
     """
     return {module_name(path, root): path for path in sorted((root / "threetears" / "evals").rglob("*.py"))}
 
@@ -91,11 +90,10 @@ def discover(root: Path) -> dict[str, Path]:
 def eval_relative(module: str) -> str | None:
     """``module`` relative to ``threetears.evals`` ('' for the root), or None when outside it.
 
-    Args:
-        module: A dotted module name.
-
-    Returns:
-        The relative name, or None.
+    :param module: A dotted module name.
+    :ptype module: str
+    :return: The relative name, or None.
+    :rtype: str | None
     """
     if module == EVAL_PACKAGE:
         return ""
@@ -107,11 +105,10 @@ def eval_relative(module: str) -> str | None:
 def join(relative: str) -> str:
     """The absolute dotted name of a name relative to ``threetears.evals``.
 
-    Args:
-        relative: A name as :func:`eval_relative` returns it.
-
-    Returns:
-        The dotted module name.
+    :param relative: A name as :func:`eval_relative` returns it.
+    :ptype relative: str
+    :return: The dotted module name.
+    :rtype: str
     """
     return f"{EVAL_PACKAGE}.{relative}" if relative else EVAL_PACKAGE
 
@@ -119,12 +116,11 @@ def join(relative: str) -> str:
 def placement(module: str) -> str | None:
     """The package ``module`` belongs to, from its path.
 
-    Args:
-        module: A dotted module name.
-
-    Returns:
-        A package name from :data:`PACKAGE_DIRS`, such as ``"schema"`` or ``"run"``; ``"outside"`` for a module outside
-        ``threetears.evals``; None for a module under it that no package directory holds.
+    :param module: A dotted module name.
+    :ptype module: str
+    :return: A package name from :data:`PACKAGE_DIRS`, such as ``"schema"`` or ``"run"``; ``"outside"`` for a module
+        outside ``threetears.evals``; None for a module under it that no package directory holds.
+    :rtype: str | None
     """
     relative = eval_relative(module)
     if relative is None:
@@ -140,11 +136,10 @@ def placement(module: str) -> str | None:
 def eval_modules(root: Path) -> dict[str, Path]:
     """Every module under ``threetears/evals/``, keyed by its name relative to ``threetears.evals``.
 
-    Args:
-        root: The directory holding the ``threetears`` namespace.
-
-    Returns:
-        Relative name -> file.
+    :param root: The directory holding the ``threetears`` namespace.
+    :ptype root: Path
+    :return: Relative name -> file.
+    :rtype: dict[str, Path]
     """
     found = {}
     for module, path in discover(root).items():
@@ -157,12 +152,12 @@ def eval_modules(root: Path) -> dict[str, Path]:
 def modules_placed_in(root: Path, package: str) -> dict[str, Path]:
     """Every module under ``threetears/evals/`` whose path places it in ``package``.
 
-    Args:
-        root: The directory holding the ``threetears`` namespace.
-        package: A package name as :func:`placement` returns it.
-
-    Returns:
-        Relative name -> file, keyed like :func:`eval_modules`.
+    :param root: The directory holding the ``threetears`` namespace.
+    :ptype root: Path
+    :param package: A package name as :func:`placement` returns it.
+    :ptype package: str
+    :return: Relative name -> file, keyed like :func:`eval_modules`.
+    :rtype: dict[str, Path]
     """
     return {relative: path for relative, path in eval_modules(root).items() if placement(join(relative)) == package}
 
@@ -170,10 +165,9 @@ def modules_placed_in(root: Path, package: str) -> dict[str, Path]:
 def unplaced_modules(root: Path) -> set[str]:
     """Modules under ``threetears/evals/`` whose path places them in no package.
 
-    Args:
-        root: The directory holding the ``threetears`` namespace.
-
-    Returns:
-        Their names relative to ``threetears.evals``.
+    :param root: The directory holding the ``threetears`` namespace.
+    :ptype root: Path
+    :return: Their names relative to ``threetears.evals``.
+    :rtype: set[str]
     """
     return {relative for relative in eval_modules(root) if placement(join(relative)) is None}

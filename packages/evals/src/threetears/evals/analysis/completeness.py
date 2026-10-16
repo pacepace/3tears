@@ -52,12 +52,11 @@ def completeness_disclosure(completeness: RunCompleteness | None) -> str | None:
     and is deliberately not netted against one, so the printed causes are the
     reasons a cell went missing rather than a balancing identity.
 
-    Args:
-        completeness: The run's stored record, or ``None``.
-
-    Returns:
-        The disclosure, rendered verbatim by every surface, or ``None`` when
+    :param completeness: The run's stored record, or ``None``.
+    :ptype completeness: RunCompleteness | None
+    :return: The disclosure, rendered verbatim by every surface, or ``None`` when
         there is nothing a reader needs warning about.
+    :rtype: str | None
     """
     if completeness is None or not completeness.degraded:
         return None
@@ -100,15 +99,14 @@ def degraded_run_disclosures(runs: Iterable[EvalRun]) -> dict[str, str]:
     truncation from ``status`` alone would still pool it — which is exactly how
     a completed-but-short run reached all three aggregators by default.
 
-    Args:
-        runs: The runs behind an answer. Order is irrelevant; keying is by id.
-
-    Returns:
-        ``run_id -> disclosure`` for each degraded run, omitting every run that
+    :param runs: The runs behind an answer. Order is irrelevant; keying is by id.
+    :ptype runs: Iterable[EvalRun]
+    :return: ``run_id -> disclosure`` for each degraded run, omitting every run that
         delivered its whole matrix and every run carrying no completeness record
         (a record's absence is not evidence of a shortfall — see
         :func:`completeness_disclosure`). Empty means nothing needs disclosing,
         so a caller can use emptiness as the predicate rather than re-deriving it.
+    :rtype: dict[str, str]
     """
     return {run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None}
 

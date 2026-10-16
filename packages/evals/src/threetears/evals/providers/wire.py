@@ -50,13 +50,12 @@ class PriceSource(StrEnum):
     Each member is the string itself (a ``StrEnum``), so a stored ``price_source`` compares equal to it. A host reading
     spend back compares against these rather than spelling the words.
 
-    Attributes:
-        OPENROUTER_REPORTED: OpenRouter's own figure for the call (``usage.cost``).
-        OPENROUTER_REPORTED_UPSTREAM: Under bring-your-own-key, OpenRouter's fee plus the upstream's charge
-            (``usage.cost`` plus ``cost_details.upstream_inference_cost``).
-        OPENROUTER_CATALOGUE: A direct call's tokens priced by OpenRouter's catalogue row. Written as a prefix: the
-            source is ``openrouter-catalogue:<catalogue id>``, ending ``;cache-approximate`` when a cache read or
-            write was priced at a rate the row does not list for it.
+    :ivar OPENROUTER_REPORTED: OpenRouter's own figure for the call (``usage.cost``).
+    :ivar OPENROUTER_REPORTED_UPSTREAM: Under bring-your-own-key, OpenRouter's fee plus the upstream's charge
+        (``usage.cost`` plus ``cost_details.upstream_inference_cost``).
+    :ivar OPENROUTER_CATALOGUE: A direct call's tokens priced by OpenRouter's catalogue row. Written as a prefix: the
+        source is ``openrouter-catalogue:<catalogue id>``, ending ``;cache-approximate`` when a cache read or
+        write was priced at a rate the row does not list for it.
     """
 
     OPENROUTER_REPORTED = "openrouter:reported"
@@ -118,11 +117,10 @@ _ROUTERS: Final = "openrouter/"
 def declared_facts(model_id: str) -> SettingFacts:
     """What the client knows of a model before any request, whatever its route: a Claude 5.5 takes no temperature.
 
-    Args:
-        model_id: The model id.
-
-    Returns:
-        The facts; every one unknown but that.
+    :param model_id: The model id.
+    :ptype model_id: str
+    :return: The facts; every one unknown but that.
+    :rtype: SettingFacts
     """
     return SettingFacts(accepts_temperature=False) if _NO_TEMPERATURE.search(model_id.lower()) else SettingFacts()
 
@@ -131,11 +129,10 @@ def declared_facts(model_id: str) -> SettingFacts:
 class Directive:
     """A call's reply format, checked: its kind, and a schema's name, body and strictness.
 
-    Attributes:
-        kind: ``json_schema``, ``json_object``, or ``None`` for free text.
-        schema: The JSON schema a ``json_schema`` directive carries.
-        name: The schema's name.
-        strict: Whether the schema is to be enforced.
+    :ivar kind: ``json_schema``, ``json_object``, or ``None`` for free text.
+    :ivar schema: The JSON schema a ``json_schema`` directive carries.
+    :ivar name: The schema's name.
+    :ivar strict: Whether the schema is to be enforced.
     """
 
     kind: Literal["json_schema", "json_object"] | None
@@ -146,11 +143,10 @@ class Directive:
     def asks_strict(self, provider: Provider) -> bool:
         """Whether the call asks for enforcement: a strict schema, and on OpenRouter any schema.
 
-        Args:
-            provider: The provider.
-
-        Returns:
-            Whether the request is asked enforced.
+        :param provider: The provider.
+        :ptype provider: Provider
+        :return: Whether the request is asked enforced.
+        :rtype: bool
         """
         if provider == "openrouter":
             return self.kind == "json_schema"
@@ -160,15 +156,12 @@ class Directive:
 def directive_of(response_format: Mapping[str, Any] | None) -> Directive:  # Any: a JSON directive
     """The call's ``response_format``, checked.
 
-    Args:
-        response_format: ``None``, ``{"type": "json_object"}``, or ``{"type": "json_schema", "json_schema":
-            {"name", "strict", "schema"}}``.
-
-    Returns:
-        The directive.
-
-    Raises:
-        ValueError: Any other directive, or a ``json_schema`` one without its schema.
+    :param response_format: ``None``, ``{"type": "json_object"}``, or ``{"type": "json_schema", "json_schema":
+        {"name", "strict", "schema"}}``.
+    :ptype response_format: Mapping[str, Any] | None
+    :return: The directive.
+    :rtype: Directive
+    :raises ValueError: Any other directive, or a ``json_schema`` one without its schema.
     """
     if response_format is None:
         return Directive(None)
@@ -198,25 +191,30 @@ def request_body(
 ) -> dict[str, Any]:  # Any: a JSON body
     """The request body that carries ``sent`` for a call with ``directive``.
 
-    Args:
-        provider: The provider.
-        model: The model id.
-        system: The system message; an empty one is not sent.
-        user: The one user message.
-        sent: The settings the request carries (:func:`~threetears.evals.negotiation.closest_settings`).
-        facts: What was known of the model when they were chosen.
-        directive: The call's reply format.
-        direct_openai: The endpoint is OpenAI's own, which takes ``max_completion_tokens``.
-        json_mode: On OpenRouter, whether the model may be sent JSON mode when a schema cannot be enforced.
-
-    Returns:
-        The JSON body.
-
-    Raises:
-        ValueError: ``sent`` carries a reasoning budget the provider cannot take as built: one at or above
-            Anthropic's ``max_tokens`` (naming both), or one on OpenAI's chat completions, which have no budget
-            parameter. :func:`~threetears.evals.negotiation.closest_settings` never chooses either; refused here
-            rather than clamped or dropped.
+    :param provider: The provider.
+    :ptype provider: Provider
+    :param model: The model id.
+    :ptype model: str
+    :param system: The system message; an empty one is not sent.
+    :ptype system: str
+    :param user: The one user message.
+    :ptype user: str
+    :param sent: The settings the request carries (:func:`~threetears.evals.negotiation.closest_settings`).
+    :ptype sent: WireSettings
+    :param facts: What was known of the model when they were chosen.
+    :ptype facts: SettingFacts
+    :param directive: The call's reply format.
+    :ptype directive: Directive
+    :param direct_openai: The endpoint is OpenAI's own, which takes ``max_completion_tokens``.
+    :ptype direct_openai: bool
+    :param json_mode: On OpenRouter, whether the model may be sent JSON mode when a schema cannot be enforced.
+    :ptype json_mode: bool
+    :return: The JSON body.
+    :rtype: dict[str, Any]
+    :raises ValueError: ``sent`` carries a reasoning budget the provider cannot take as built: one at or above
+        Anthropic's ``max_tokens`` (naming both), or one on OpenAI's chat completions, which have no budget
+        parameter. :func:`~threetears.evals.negotiation.closest_settings` never chooses either; refused here
+        rather than clamped or dropped.
     """
     if provider == "anthropic":
         return _anthropic_body(model, system, user, sent, facts, directive)
@@ -291,21 +289,20 @@ def _anthropic_body(
 class Reply:
     """What a reply says, read off its body: text, counts, who served it, and why it stopped.
 
-    Attributes:
-        content: The reply's text: text blocks only, never a thinking block.
-        input_tokens: Prompt tokens, cache reads and writes included; ``None`` when unreported.
-        output_tokens: Completion tokens, reasoning included; ``None`` when unreported.
-        reasoning_tokens: The reasoning share of ``output_tokens``; ``None`` when unsplit.
-        cache_tokens: Prompt tokens read from or written to a cache (0 when none were reported).
-        cache_read_tokens: The share of ``cache_tokens`` read from a cache.
-        cache_write_tokens: The share of ``cache_tokens`` written to one, both lifetimes.
-        cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply wrote to a
-            cache without splitting it by lifetime.
-        served_model: The model the reply named; ``None`` when it named none, or named an alias back.
-        served_provider: The upstream OpenRouter routed to; ``None`` elsewhere.
-        stop_reason: Why it stopped, in the engine's words; an absent or unknown reason is ``truncated``.
-        provider_stop_reason: The reason as the provider named it, or ``None``.
-        usage: The reply's ``usage`` object, which OpenRouter's cost is read from.
+    :ivar content: The reply's text: text blocks only, never a thinking block.
+    :ivar input_tokens: Prompt tokens, cache reads and writes included; ``None`` when unreported.
+    :ivar output_tokens: Completion tokens, reasoning included; ``None`` when unreported.
+    :ivar reasoning_tokens: The reasoning share of ``output_tokens``; ``None`` when unsplit.
+    :ivar cache_tokens: Prompt tokens read from or written to a cache (0 when none were reported).
+    :ivar cache_read_tokens: The share of ``cache_tokens`` read from a cache.
+    :ivar cache_write_tokens: The share of ``cache_tokens`` written to one, both lifetimes.
+    :ivar cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply wrote to a
+        cache without splitting it by lifetime.
+    :ivar served_model: The model the reply named; ``None`` when it named none, or named an alias back.
+    :ivar served_provider: The upstream OpenRouter routed to; ``None`` elsewhere.
+    :ivar stop_reason: Why it stopped, in the engine's words; an absent or unknown reason is ``truncated``.
+    :ivar provider_stop_reason: The reason as the provider named it, or ``None``.
+    :ivar usage: The reply's ``usage`` object, which OpenRouter's cost is read from.
     """
 
     content: str
@@ -342,18 +339,18 @@ def _is_alias(model_id: str) -> bool:
 def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, Any]) -> Reply:  # Any: JSON
     """A successful reply's members.
 
-    Args:
-        provider: The provider that answered.
-        model: The model id the request named.
-        status: The HTTP status, for an error the body carries in place of a reply.
-        body: The parsed JSON body.
-
-    Returns:
-        The reply.
-
-    Raises:
-        ProviderError: The body carries an error in place of a reply (OpenRouter answers some failures with a 200),
-            or no choice.
+    :param provider: The provider that answered.
+    :ptype provider: Provider
+    :param model: The model id the request named.
+    :ptype model: str
+    :param status: The HTTP status, for an error the body carries in place of a reply.
+    :ptype status: int
+    :param body: The parsed JSON body.
+    :ptype body: Mapping[str, Any]
+    :return: The reply.
+    :rtype: Reply
+    :raises ProviderError: The body carries an error in place of a reply (OpenRouter answers some failures with a 200),
+        or no choice.
     """
     if isinstance(body.get("error"), Mapping):
         code = _count(body["error"].get("code"))
@@ -444,11 +441,10 @@ def reported_cost(usage: Mapping[str, Any]) -> tuple[float | None, str | None, s
     ``is_byok`` is ``False``, the cost is ``cost``; ``is_byok`` is absent (or not a bool), the reply cannot say whether
     ``cost`` is the whole price or the fee alone, so it is unpriced. A reply with no cost is unpriced, never ``0``.
 
-    Args:
-        usage: The reply's ``usage`` object.
-
-    Returns:
-        ``(cost, price_source, None)``, or ``(None, None, why)``.
+    :param usage: The reply's ``usage`` object.
+    :ptype usage: Mapping[str, Any]
+    :return: ``(cost, price_source, None)``, or ``(None, None, why)``.
+    :rtype: tuple[float | None, str | None, str | None]
     """
     cost = usage.get("cost")
     if not isinstance(cost, int | float) or isinstance(cost, bool):

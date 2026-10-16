@@ -56,13 +56,18 @@ async def record_model(
 ) -> None:
     """Record ``model`` (an OpenRouter ``vendor/model`` id) answering each prompt ``repeats`` times, afresh.
 
-    Args:
-        path: The recording to write; one already there is replaced.
-        model: The model's id.
-        prompts: Each prompt, as the program sends it.
-        answer: The reply to a prompt.
-        schema: The pydantic model ``Model.json`` is asked for; ``None`` for ``Model.text``.
-        repeats: How many times each prompt is asked: an eval's ``k``.
+    :param path: The recording to write; one already there is replaced.
+    :ptype path: Path
+    :param model: The model's id.
+    :ptype model: str
+    :param prompts: Each prompt, as the program sends it.
+    :ptype prompts: Sequence[str]
+    :param answer: The reply to a prompt.
+    :ptype answer: Callable[[str], str]
+    :param schema: The pydantic model ``Model.json`` is asked for; ``None`` for ``Model.text``.
+    :ptype schema: type[BaseModel] | None
+    :param repeats: How many times each prompt is asked: an eval's ``k``.
+    :ptype repeats: int
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.unlink(missing_ok=True)

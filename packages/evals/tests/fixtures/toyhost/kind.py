@@ -214,11 +214,10 @@ class ExtractorScript:
     def cost_of(self, document: ToyDocument) -> float:
         """What one extraction of ``document`` costs on this model — the figure every call reports.
 
-        Args:
-            document: The document extracted.
-
-        Returns:
-            The call's cost, in dollars.
+        :param document: The document extracted.
+        :ptype document: ToyDocument
+        :return: The call's cost, in dollars.
+        :rtype: float
         """
         completion_tokens = 20 * len(INVOICE_FIELDS)
         return round(self.usd_per_kilotoken * (document.prompt_tokens + completion_tokens) / 1000.0, 6)
@@ -267,8 +266,8 @@ class ScriptedExtractionClient:
     def __init__(self, scripts: tuple[ExtractorScript, ...] = TOY_SCRIPTS) -> None:
         """Bind the client to its scripts.
 
-        Args:
-            scripts: One per extractor model this client can serve.
+        :param scripts: One per extractor model this client can serve.
+        :ptype scripts: tuple[ExtractorScript, ...]
         """
         self._scripts = {script.model: script for script in scripts}
         #: Every call made, in order, as ``(model, document_id)``. The fixture's own record; the
@@ -281,26 +280,23 @@ class ScriptedExtractionClient:
     def models(self) -> tuple[str, ...]:
         """The models this client is scripted for.
 
-        Returns:
-            The model names, in declaration order.
+        :return: The model names, in declaration order.
+        :rtype: tuple[str, ...]
         """
         return tuple(self._scripts)
 
     async def extract(self, request: ExtractionRequest) -> ExtractionResult:
         """Run one extraction, reporting what it cost.
 
-        Args:
-            request: The request, as the product's one constructor
-                (:func:`~packages.evals.tests.fixtures.toyhost.product.extraction_request`) built it.
-
-        Returns:
-            The extracted fields and the call's own usage.
-
-        Raises:
-            KeyError: No script covers ``model``. Deliberately unguarded — a run whose models and
-                whose client disagree is misconfigured, and every cell of it would fail the same
-                way, which is the condition the engine's own ``UnknownCandidateKind`` refuses to
-                degrade into N identical excluded cells.
+        :param request: The request, as the product's one constructor
+            (:func:`~packages.evals.tests.fixtures.toyhost.product.extraction_request`) built it.
+        :ptype request: ExtractionRequest
+        :return: The extracted fields and the call's own usage.
+        :rtype: ExtractionResult
+        :raises KeyError: No script covers ``model``. Deliberately unguarded — a run whose models and
+            whose client disagree is misconfigured, and every cell of it would fail the same
+            way, which is the condition the engine's own ``UnknownCandidateKind`` refuses to
+            degrade into N identical excluded cells.
         """
         model, document = request.model, request.document
         script = self._scripts[model]
@@ -372,29 +368,35 @@ class ToyExtractorKind:
     ) -> None:
         """Wire the extractor's collaborators.
 
-        Args:
-            client: The scripted extraction client.
-            world: The world this kind seeds and reads through. The registry rather than the
-                state object: every write goes through a declared ``seed`` handle and every read
-                through a declared ``read`` handle, so the path a run takes is the path the
-                conformance kit proves.
-            documents: The corpus cases are drawn from.
-            judged: Whether each cell also hands a judge its evidence: the invoice as the material
-                the extraction was produced from, and the extraction as the artifact. A host renders
-                that evidence because only it knows its document's shape; the engine carries the two
-                strings to the judge without reading either. ``False`` is the standard matrix, which
-                wires no judge: the kind then declares itself unjudged, and the runner refuses a
-                judge wired to it.
-            graded_fields: The invoice fields ``field_accuracy`` is computed over — what a template's
-                ``kind_spec`` states (``contract.py``'s ``ExtractorSpec``). Every field, by default.
-            goal_checks: The template's goal checks (``template.goal_state_checks``), graded at each cell's
-                end against the call ledger this kind fills and the world it read back — through the
-                engine's :func:`~threetears.evals.run.grade_goal_checks`, the one evaluation every kind
-                uses. Required, with no default: a kind that grades none of them completes cells the
-                runner refuses, so the template's checks are a construction decision, never an omission.
-            max_concurrent_cells: The most cells this kind declares it drives at once; ``None`` (the default)
-                declares no limit of its own — a cell's state is its prepared instance and the world it binds
-                for itself, the scripted client is safe beside itself, and ``measures`` is keyed by the cell.
+        :param client: The scripted extraction client.
+        :ptype client: ScriptedExtractionClient
+        :param world: The world this kind seeds and reads through. The registry rather than the
+            state object: every write goes through a declared ``seed`` handle and every read
+            through a declared ``read`` handle, so the path a run takes is the path the
+            conformance kit proves.
+        :ptype world: WorldRegistry
+        :param documents: The corpus cases are drawn from.
+        :ptype documents: tuple[ToyDocument, ...]
+        :param judged: Whether each cell also hands a judge its evidence: the invoice as the material
+            the extraction was produced from, and the extraction as the artifact. A host renders
+            that evidence because only it knows its document's shape; the engine carries the two
+            strings to the judge without reading either. ``False`` is the standard matrix, which
+            wires no judge: the kind then declares itself unjudged, and the runner refuses a
+            judge wired to it.
+        :ptype judged: bool
+        :param graded_fields: The invoice fields ``field_accuracy`` is computed over — what a template's
+            ``kind_spec`` states (``contract.py``'s ``ExtractorSpec``). Every field, by default.
+        :ptype graded_fields: tuple[str, ...]
+        :param goal_checks: The template's goal checks (``template.goal_state_checks``), graded at each cell's
+            end against the call ledger this kind fills and the world it read back — through the
+            engine's :func:`~threetears.evals.run.grade_goal_checks`, the one evaluation every kind
+            uses. Required, with no default: a kind that grades none of them completes cells the
+            runner refuses, so the template's checks are a construction decision, never an omission.
+        :ptype goal_checks: tuple[str, ...]
+        :param max_concurrent_cells: The most cells this kind declares it drives at once; ``None`` (the default)
+            declares no limit of its own — a cell's state is its prepared instance and the world it binds
+            for itself, the scripted client is safe beside itself, and ``measures`` is keyed by the cell.
+        :ptype max_concurrent_cells: int | None
         """
         self._client = client
         #: The extraction is a document, judged against the invoice it was read from — or, unjudged,
@@ -421,11 +423,10 @@ class ToyExtractorKind:
         :meth:`~threetears.evals.kernel.host.world.WorldRegistry.place`, which needs the facts a run
         actually produced rather than a mode anybody declared.
 
-        Args:
-            seed: The template's world seed.
-
-        Returns:
-            The dimension names, sorted, covering every namespace the seed names.
+        :param seed: The template's world seed.
+        :ptype seed: WorldSeed
+        :return: The dimension names, sorted, covering every namespace the seed names.
+        :rtype: tuple[str, ...]
         """
         return tuple(sorted(name for namespace in seed.namespaces.values() for name in namespace))
 
@@ -443,32 +444,34 @@ class ToyExtractorKind:
 
         The refusals are the engine's, not this kind's: the session runs
         :func:`~threetears.evals.kernel.host.check_seed`, the one seed walk every host calls — a
-        carrier this kind does not attach, a key no dimension declares, a value under the wrong carrier, a dimension no run can set, and a value
-        its dimension's schema refuses. Any of them would leave the grader reading state the
+        carrier this kind does not attach, a key no dimension declares, a value under the wrong carrier, a dimension no
+        run can set, and a value its dimension's schema refuses. Any of them would leave the grader reading state the
         extractor never received, which is the candidate/judge divergence the seeding step exists to
         prevent. What is this kind's is what a refusal costs here — one excluded cell under
         ``seed_failed`` — and the carriers it attaches. Everything is checked before anything is
         written, so a refused seed leaves the world as it was.
 
-        Args:
-            subject_snapshot: The engine's view of the subject. Read only for the labels a
-                diagnostic names; the extractor's substance is its batch's recorded levers.
-            variant_config: The A/B'd stack this cell runs; its candidate model is the extractor.
-            world_seed: The world state this scenario presumes, keyed by carrier.
-            span_window: This cell's tracing windows, carried out on the instance.
-            cassettes: Unwired — the extractor calls no tool, so a cassette run of it is refused.
-            world: This cell's world session, over the same registry the kind was built with, which this
-                binds to a fresh toy world of its own before seeding. The toy host always declares a world,
-                so it is never ``None`` here.
-
-        Returns:
-            The prepared extractor.
-
-        Raises:
-            CandidatePreparationFailed: The seed named something this world cannot set, or set it
-                to a value its schema refuses. Recorded by the runner as one cleanly-excluded cell
-                under ``seed_failed``, which is the arm that sends an operator to the apparatus
-                rather than to the subject factory.
+        :param subject_snapshot: The engine's view of the subject. Read only for the labels a
+            diagnostic names; the extractor's substance is its batch's recorded levers.
+        :ptype subject_snapshot: SubjectSnapshot | None
+        :param variant_config: The A/B'd stack this cell runs; its candidate model is the extractor.
+        :ptype variant_config: VariantConfig
+        :param world_seed: The world state this scenario presumes, keyed by carrier.
+        :ptype world_seed: WorldSeed
+        :param span_window: This cell's tracing windows, carried out on the instance.
+        :ptype span_window: CellSpanWindow
+        :param cassettes: Unwired — the extractor calls no tool, so a cassette run of it is refused.
+        :ptype cassettes: CellCassettes | None
+        :param world: This cell's world session, over the same registry the kind was built with, which this
+            binds to a fresh toy world of its own before seeding. The toy host always declares a world,
+            so it is never ``None`` here.
+        :ptype world: WorldSession | None
+        :return: The prepared extractor.
+        :rtype: ToyExtractorInstance
+        :raises CandidatePreparationFailed: The seed named something this world cannot set, or set it
+            to a value its schema refuses. Recorded by the runner as one cleanly-excluded cell
+            under ``seed_failed``, which is the arm that sends an operator to the apparatus
+            rather than to the subject factory.
         """
         assert world is not None and world.registry is self._world, "the cell's world is the one this kind seeds"
         # One world per cell: the profile's registry is the declaration, and its table is the conformance
@@ -502,20 +505,19 @@ class ToyExtractorKind:
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Extract one document's fields, grade them against the key, and report both.
 
-        Args:
-            instance: Whatever :meth:`prepare` returned.
-            test_case: The cell's stimulus. Its ``variation_params`` names the document.
-            sink: This cell's sink. No progress reading is registered: the cell makes one call,
-                and a deadline that cuts it off cuts off the only spend there is to report.
-
-        Returns:
-            The extracted record as the judged artifact, the mechanical tier, and the cell's
+        :param instance: Whatever :meth:`prepare` returned.
+        :ptype instance: ToyExtractorInstance
+        :param test_case: The cell's stimulus. Its ``variation_params`` names the document.
+        :ptype test_case: EvalTestCase
+        :param sink: This cell's sink. No progress reading is registered: the cell makes one call,
+            and a deadline that cuts it off cuts off the only spend there is to report.
+        :ptype sink: CellSink
+        :return: The extracted record as the judged artifact, the mechanical tier, and the cell's
             telemetry.
-
-        Raises:
-            ApparatusError: The case names a document the corpus does not carry — the case bank
-                is broken, not the extractor. The engine records it as this one cell excluded under
-                ``apparatus_failed`` and goes on; any other exception out of ``invoke`` ends the run.
+        :rtype: CandidateOutput
+        :raises ApparatusError: The case names a document the corpus does not carry — the case bank
+            is broken, not the extractor. The engine records it as this one cell excluded under
+            ``apparatus_failed`` and goes on; any other exception out of ``invoke`` ends the run.
         """
         scopes = instance.span_window
         with scopes.identity():
@@ -641,11 +643,10 @@ def render_invoice(document: ToyDocument) -> str:
     The toy corpus carries no page image, so its adjudicated key stands in for the page — which
     makes a judge able to check an extraction against it, the one thing the evidence is for.
 
-    Args:
-        document: The invoice.
-
-    Returns:
-        The page, as text.
+    :param document: The invoice.
+    :ptype document: ToyDocument
+    :return: The page, as text.
+    :rtype: str
     """
     return "\n".join([f"Invoice {document.document_id}", *(f"{name}: {document.key[name]}" for name in INVOICE_FIELDS)])
 

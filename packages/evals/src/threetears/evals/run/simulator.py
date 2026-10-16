@@ -218,11 +218,10 @@ SIMULATED_USER_RESPONSE_FORMAT: dict[str, Any] = _response_format("simulated_use
 def next_speaker_response_format(choices: list[str]) -> dict[str, Any]:
     """The ``response_format`` one scheduling call sends: :class:`NextSpeakerReply` with ``next`` narrowed.
 
-    Args:
-        choices: The answers legal at this pick, in the order they are offered.
-
-    Returns:
-        The strict directive, its ``next`` property an ``enum`` of ``choices``.
+    :param choices: The answers legal at this pick, in the order they are offered.
+    :ptype choices: list[str]
+    :return: The strict directive, its ``next`` property an ``enum`` of ``choices``.
+    :rtype: dict[str, Any]
     """
     directive = _response_format("next_speaker", NextSpeakerReply)
     directive["json_schema"]["schema"]["properties"]["next"]["enum"] = list(choices)
@@ -360,8 +359,8 @@ class TurnDriver:
     def stop(self, cause: ConversationStopCause) -> None:
         """Halt the conversation under ``cause``. Idempotent: the first cause recorded stands.
 
-        Args:
-            cause: Why the conversation stopped.
+        :param cause: Why the conversation stopped.
+        :ptype cause: ConversationStopCause
         """
         if self._stop_cause is None:
             self._stop_cause = cause
@@ -400,8 +399,7 @@ class TurnDriver:
         utterance of the first round. Returns ``None`` when the first actor has no template — the kind
         then asks :meth:`next_speaker` for the opener.
 
-        Raises:
-            ValueError: The conversation has already taken a turn; an opener opens.
+        :raises ValueError: The conversation has already taken a turn; an opener opens.
         """
         if self.user_turns or self.candidate_turns:
             raise ValueError("initial_utterance opens a conversation, and this one has already taken turns")
@@ -428,16 +426,13 @@ class TurnDriver:
         nothing for the candidate to answer, so it starts over rather than ending: every such call
         removes an actor, so this is bounded by the actor count.
 
-        Args:
-            llm: The simulator-role client; called only by ``llm_decided``, and only when more than one
-                answer is legal.
-
-        Returns:
-            The actor to hand to :meth:`next_user_turn`, or ``None``.
-
-        Raises:
-            SimulatorReplyInvalid: The scheduler's reply and its repair both broke the schema.
-            ValueError: The conversation has already stopped.
+        :param llm: The simulator-role client; called only by ``llm_decided``, and only when more than one
+            answer is legal.
+        :ptype llm: SimulatorLLM
+        :return: The actor to hand to :meth:`next_user_turn`, or ``None``.
+        :rtype: ActorPolicy | None
+        :raises SimulatorReplyInvalid: The scheduler's reply and its repair both broke the schema.
+        :raises ValueError: The conversation has already stopped.
         """
         if self._stop_cause is not None:
             raise ValueError(f"the conversation stopped ({self._stop_cause.value}); nobody speaks next")
@@ -504,18 +499,16 @@ class TurnDriver:
         the conversation and is not appended to the transcript: it is the actor leaving, not a line
         the candidate is asked to answer. The last actor leaving stops the driver ``user_done``.
 
-        Args:
-            llm: An object satisfying :class:`SimulatorLLM` — needs only
-                ``await llm.generate(system=..., user=..., response_format=...)`` returning
-                an object with a ``content`` attribute.
-            actor: The speaker, as :meth:`next_speaker` named it.
-
-        Returns:
-            A :class:`SimulatorTurn`.
-
-        Raises:
-            SimulatorReplyInvalid: The reply was not the structured shape it was sent.
-            ValueError: ``actor`` is not one of this conversation's actors, or has already left.
+        :param llm: An object satisfying :class:`SimulatorLLM` — needs only
+            ``await llm.generate(system=..., user=..., response_format=...)`` returning
+            an object with a ``content`` attribute.
+        :ptype llm: SimulatorLLM
+        :param actor: The speaker, as :meth:`next_speaker` named it.
+        :ptype actor: ActorPolicy
+        :return: A :class:`SimulatorTurn`.
+        :rtype: SimulatorTurn
+        :raises SimulatorReplyInvalid: The reply was not the structured shape it was sent.
+        :raises ValueError: ``actor`` is not one of this conversation's actors, or has already left.
         """
         if not any(actor is candidate for candidate in self.conversation.actors):
             raise ValueError(f"actor {actor.id!r} is not one of this conversation's actors")
@@ -574,15 +567,13 @@ class TurnDriver:
         It is not delivered through ``post_user_turn``: the host's fire handle already moved the candidate's
         world. The transcript records it, so an actor speaking in a later round reads that it happened.
 
-        Args:
-            world_round: The current round, as :meth:`world_round` named it.
-            event: What the world session recorded when it fired.
-
-        Returns:
-            The round's turn.
-
-        Raises:
-            ValueError: ``world_round`` is not the current round.
+        :param world_round: The current round, as :meth:`world_round` named it.
+        :ptype world_round: WorldRound
+        :param event: What the world session recorded when it fired.
+        :ptype event: WorldEvent
+        :return: The round's turn.
+        :rtype: SimulatorTurn
+        :raises ValueError: ``world_round`` is not the current round.
         """
         if world_round != self.world_round():
             raise ValueError(f"turn {world_round.turn} is not the current round's world event")
@@ -638,24 +629,24 @@ class TurnDriver:
         return sum(call.usage.cost_usd or 0.0 for call in self.calls)
 
     def _usage_of(self, response: Any, purpose: KnownSimulatorPurpose, actor_id: str | None) -> CallUsage:
-        """The spend and sent settings one simulator-role response reports; a field the client did not report is ``None``.
+        """The spend and sent settings one simulator-role response reports; a field the client did not report is
+        ``None``.
 
         A response whose ``sent_settings`` is refused (the host's completion type fills it wrong) was billed all the
         same, so the call goes into :attr:`calls` with its spend, unverified, before the refusal leaves: the
         driver's calls stay complete whichever way the conversation ended.
 
-        Args:
-            response: The simulator call's completion.
-            purpose: Whether the call was an ``utterance`` or a ``schedule`` pick, for the record of a refused one.
-            actor_id: The actor it spoke for, for the record of a refused one; ``None`` for a pick, whose choice
-                is unread.
-
-        Returns:
-            The call's usage.
-
-        Raises:
-            CompletionProtocolDefect: The response's ``sent_settings`` is neither ``None`` nor request settings; the
-                call is recorded first.
+        :param response: The simulator call's completion.
+        :ptype response: Any
+        :param purpose: Whether the call was an ``utterance`` or a ``schedule`` pick, for the record of a refused one.
+        :ptype purpose: KnownSimulatorPurpose
+        :param actor_id: The actor it spoke for, for the record of a refused one; ``None`` for a pick, whose choice
+            is unread.
+        :ptype actor_id: str | None
+        :return: The call's usage.
+        :rtype: CallUsage
+        :raises CompletionProtocolDefect: The response's ``sent_settings`` is neither ``None`` nor request settings; the
+            call is recorded first.
         """
         try:
             return CallUsage.of(response)
@@ -670,12 +661,10 @@ class TurnDriver:
         ``schedule``), so the stored rows say what each actor and the scheduler spent; a pick that chose
         nobody (``round_done``, a refused reply) lands under no actor.
 
-        Args:
-            ledger: The cell's simulator-role ledger.
-
-        Raises:
-            ValueError: ``ledger`` is another role's. Simulator spend is the program's cost and never
-                the candidate's, so landing it on another role would misstate what the candidate costs.
+        :param ledger: The cell's simulator-role ledger.
+        :ptype ledger: RoleUsageLedger
+        :raises ValueError: ``ledger`` is another role's. Simulator spend is the program's cost and never
+            the candidate's, so landing it on another role would misstate what the candidate costs.
         """
         if ledger.role != "simulator":
             raise ValueError(f"simulator calls fold into the simulator ledger, not the {ledger.role!r} one")
@@ -763,11 +752,10 @@ def smallest_utterance_prompts(actor: ActorPolicy) -> tuple[str, str]:
     inserted, never removed; it is sent with :data:`SIMULATED_USER_RESPONSE_FORMAT`. What a launch prices a
     simulated user's floor by (:func:`~threetears.evals.run.price_subject_call_floor`).
 
-    Args:
-        actor: One of the conversation's actors.
-
-    Returns:
-        The system prompt and the user prompt.
+    :param actor: One of the conversation's actors.
+    :ptype actor: ActorPolicy
+    :return: The system prompt and the user prompt.
+    :rtype: tuple[str, str]
     """
     return _actor_system_prompt(actor.policy, ""), _actor_user_prompt(actor.intent, "")
 
@@ -841,14 +829,11 @@ def _parse_reply(content: str | None) -> SimulatedUserReply:
     A protocol parse of a JSON answer, not a reading of prose: the only thing inspected is
     whether the object has the two declared fields.
 
-    Args:
-        content: The completion's text.
-
-    Returns:
-        The validated reply.
-
-    Raises:
-        SimulatorReplyInvalid: The text is not JSON, or does not match the model.
+    :param content: The completion's text.
+    :ptype content: str | None
+    :return: The validated reply.
+    :rtype: SimulatedUserReply
+    :raises SimulatorReplyInvalid: The text is not JSON, or does not match the model.
     """
     try:
         # Strict: ``"done": "yes"`` is a broken reply, not a truthy one.

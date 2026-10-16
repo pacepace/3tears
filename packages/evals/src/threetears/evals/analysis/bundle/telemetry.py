@@ -72,11 +72,10 @@ def _token_count_unreported(row: RoleUsage) -> bool:
     token-metered too, explicitly: a count it left out then reads the sums as "at least this much", which is true
     whatever the role meters, where reading it as unmetered would claim sums complete that may not be.
 
-    Args:
-        row: One usage row.
-
-    Returns:
-        ``True`` when the row's prompt or completion count is missing from the sums.
+    :param row: One usage row.
+    :ptype row: RoleUsage
+    :return: ``True`` when the row's prompt or completion count is missing from the sums.
+    :rtype: bool
     """
     if row.role == "external":
         return False
@@ -117,11 +116,10 @@ def _measured_prod_costs(run_results: list[EvalResult]) -> list[float]:
     (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`), as every cost reading is: a
     billed refusal's dollars are no turn's spend, and averaged in they made a refusing configuration cheap.
 
-    Args:
-        run_results: The run's results.
-
-    Returns:
-        One float per turn that measured a production-replicating cost, in input order.
+    :param run_results: The run's results.
+    :ptype run_results: list[EvalResult]
+    :return: One float per turn that measured a production-replicating cost, in input order.
+    :rtype: list[float]
     """
     measured: list[float] = []
     for result in run_results:
@@ -138,17 +136,19 @@ def _run_summary(
 ) -> RunSummary:
     """Digest one run + its results into a :class:`RunSummary`.
 
-    Args:
-        run: The run.
-        run_results: That run's results.
-        reportable: The levers the campaign's coverage map names — see
-            :func:`_reportable_levers`. ``config`` is narrowed to these so the two surfaces
-            cannot name different levers for one campaign, and so a contestant property nobody
-            swept does not arrive as a config value the generator reads as a departure.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The summary.
+    :param run: The run.
+    :ptype run: EvalRun
+    :param run_results: That run's results.
+    :ptype run_results: list[EvalResult]
+    :param reportable: The levers the campaign's coverage map names — see
+        :func:`_reportable_levers`. ``config`` is narrowed to these so the two surfaces
+        cannot name different levers for one campaign, and so a contestant property nobody
+        swept does not arrive as a config value the generator reads as a departure.
+    :ptype reportable: set[str]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The summary.
+    :rtype: RunSummary
     """
     effective = {
         lever: eff for lever, eff in _effective_config(run, run_results, profile=profile).items() if lever in reportable

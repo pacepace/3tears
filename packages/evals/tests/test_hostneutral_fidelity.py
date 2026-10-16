@@ -88,8 +88,8 @@ _MODULES = {
 def package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """Write the throwaway package, put it on the path, and forget it afterwards.
 
-    Yields:
-        The package's unique top-level name.
+    :yield: The package's unique top-level name.
+    :rtype: Iterator[str]
     """
     name = f"hostneutral_fidelity_{uuid.uuid4().hex[:12]}"
     root = tmp_path / name

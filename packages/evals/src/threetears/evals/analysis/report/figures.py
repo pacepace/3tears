@@ -56,11 +56,10 @@ PER_THOUSAND_LABEL = "($/1,000 replies)"
 def surface_order_sentence(*, has_control_row: bool) -> str:
     """The row-order sentence for a table laid out by :func:`~threetears.evals.analysis.arms.surface_order`.
 
-    Args:
-        has_control_row: Whether the table holds a row of the declared control.
-
-    Returns:
-        :data:`SURFACE_ORDER` or :data:`SURFACE_ORDER_NO_CONTROL`.
+    :param has_control_row: Whether the table holds a row of the declared control.
+    :ptype has_control_row: bool
+    :return: :data:`SURFACE_ORDER` or :data:`SURFACE_ORDER_NO_CONTROL`.
+    :rtype: str
     """
     return SURFACE_ORDER if has_control_row else SURFACE_ORDER_NO_CONTROL
 
@@ -68,13 +67,12 @@ def surface_order_sentence(*, has_control_row: bool) -> str:
 class MeasureRuler(NamedTuple):
     """The one unit a measure's figures are stated in across a report, and the factor that restates a stored value.
 
-    Attributes:
-        factor: Multiply a value in the measure's own unit by this to state it in :attr:`unit`.
-        unit: The unit stated, after restatement (``s`` for a latency stored in ``ms`` that reaches a second, ``%``
-            for a share on 0–1); empty when the measure declares none, since restating an unknown unit would be
-            inventing one.
-        per: The words a heading adds when the factor restates a per-reply figure onto a larger count of replies
-            (``per 1,000 replies``); empty when the figure is stated as measured.
+    :ivar factor: Multiply a value in the measure's own unit by this to state it in :attr:`unit`.
+    :ivar unit: The unit stated, after restatement (``s`` for a latency stored in ``ms`` that reaches a second, ``%``
+        for a share on 0–1); empty when the measure declares none, since restating an unknown unit would be
+        inventing one.
+    :ivar per: The words a heading adds when the factor restates a per-reply figure onto a larger count of replies
+        (``per 1,000 replies``); empty when the figure is stated as measured.
     """
 
     factor: float
@@ -121,13 +119,14 @@ def measure_rulers(
     own descriptions otherwise: a core measure's declared range, a classifier's precision, recall and F1, a goal
     check's pass rate.
 
-    Args:
-        surface: The decision surface.
-        catalog: The bundle's ``measure_catalog``, when the caller has the bundle; None reads the engine's
-            descriptions alone.
-
-    Returns:
-        Every measure the surface describes, by name, to its ruler; a measure absent here has none (:data:`UNITLESS`).
+    :param surface: The decision surface.
+    :ptype surface: DecisionSurface
+    :param catalog: The bundle's ``measure_catalog``, when the caller has the bundle; None reads the engine's
+        descriptions alone.
+    :ptype catalog: Mapping[str, MetricDescriptor] | None
+    :return: Every measure the surface describes, by name, to its ruler; a measure absent here has none
+        (:data:`UNITLESS`).
+    :rtype: dict[str, MeasureRuler]
     """
     values: dict[str, list[float]] = {name: [] for name in surface.measures}
     for cell in surface.cells:
@@ -166,11 +165,10 @@ def _money_ruler(amounts: Iterable[float | None]) -> MeasureRuler:
 def reply_cost_ruler(costs: Iterable[float | None]) -> MeasureRuler:
     """The ruler the scoreboard's cost per reply is stated on, by the one rule a cost measure's ruler follows.
 
-    Args:
-        costs: Each arm's cost per reply; None for an arm whose cost was not measured.
-
-    Returns:
-        Money per reply, or per 1,000 replies when every measured cost is under :data:`REPLY_COST_FLOOR`.
+    :param costs: Each arm's cost per reply; None for an arm whose cost was not measured.
+    :ptype costs: Iterable[float | None]
+    :return: Money per reply, or per 1,000 replies when every measured cost is under :data:`REPLY_COST_FLOOR`.
+    :rtype: MeasureRuler
     """
     return _money_ruler(costs)
 
@@ -184,12 +182,12 @@ class Rulers(NamedTuple):
     def of(self, name: str, reading: str) -> MeasureRuler:
         """The ruler of one reading: a measure's, a judged dimension's, or :data:`SHARE` for the trials' pass rate.
 
-        Args:
-            name: The measure's key, or the judged dimension's name.
-            reading: ``measure``, ``judged`` or ``trial``.
-
-        Returns:
-            The ruler; :data:`UNITLESS` for a reading the report knows no unit for.
+        :param name: The measure's key, or the judged dimension's name.
+        :ptype name: str
+        :param reading: ``measure``, ``judged`` or ``trial``.
+        :ptype reading: str
+        :return: The ruler; :data:`UNITLESS` for a reading the report knows no unit for.
+        :rtype: MeasureRuler
         """
         if reading == "trial":
             return SHARE
@@ -204,12 +202,12 @@ def report_rulers(surface: DecisionSurface, catalog: Mapping[str, MetricDescript
     A judged dimension's ruler is read off the surface's own facts for it: a dimension scored on a 0–1 scale is a
     share, and a 1–5 score is stated as scored.
 
-    Args:
-        surface: The decision surface.
-        catalog: The bundle's ``measure_catalog``, when the caller has the bundle (see :func:`measure_rulers`).
-
-    Returns:
-        The rulers.
+    :param surface: The decision surface.
+    :ptype surface: DecisionSurface
+    :param catalog: The bundle's ``measure_catalog``, when the caller has the bundle (see :func:`measure_rulers`).
+    :ptype catalog: Mapping[str, MetricDescriptor] | None
+    :return: The rulers.
+    :rtype: Rulers
     """
     dimensions = {
         name: SHARE if facts.value_range == (0.0, 1.0) else UNITLESS for name, facts in surface.dimensions.items()
@@ -220,11 +218,10 @@ def report_rulers(surface: DecisionSurface, catalog: Mapping[str, MetricDescript
 def analysis_rulers(analysis: EvalAnalysis) -> Rulers:
     """Every ruler a stored analysis's readings are stated on, over the surface and catalog frozen with it.
 
-    Args:
-        analysis: The analysis.
-
-    Returns:
-        The rulers, chosen as :func:`report_rulers` chooses them over the bundle the analysis was written over.
+    :param analysis: The analysis.
+    :ptype analysis: EvalAnalysis
+    :return: The rulers, chosen as :func:`report_rulers` chooses them over the bundle the analysis was written over.
+    :rtype: Rulers
     """
     frozen: Mapping[str, Any] = analysis.bundle
     entries = frozen.get("measure_catalog") or {}

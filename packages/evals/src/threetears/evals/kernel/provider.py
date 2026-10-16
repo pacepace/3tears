@@ -53,14 +53,13 @@ def withhold_failure_detail(exc: BaseException) -> ProviderFailure:
     ProviderFailureDescriber was supplied" knows what is unwired. An operator
     reading a plausible provider message does not, and neither does a test.
 
-    Args:
-        exc: The raised exception.
-
-    Returns:
-        The exception's class name and a statement of what was withheld, with
+    :param exc: The raised exception.
+    :ptype exc: BaseException
+    :return: The exception's class name and a statement of what was withheld, with
         ``payload_withheld`` set — so the caller drops the traceback too, whose
         last line is the text this declined to repeat — and ``account_refused``
         unset, since telling an account's refusal apart needs the host's types.
+    :rtype: ProviderFailure
     """
     return ProviderFailure(
         f"{type(exc).__name__}: ({_NO_DESCRIBER_NOTICE})", payload_withheld=True, account_refused=False
@@ -79,14 +78,16 @@ def describe_failure(
     described, whose ``str`` may be the provider envelope — and the failure is then described by
     :func:`withhold_failure_detail`.
 
-    Args:
-        describer: The host's describer.
-        exc: What the call raised.
-        logger: The caller's logger, so the line lands with the caller's other records.
-        where: What was being described, named in that line.
-
-    Returns:
-        The describer's answer, or the withheld description when the describer raised.
+    :param describer: The host's describer.
+    :ptype describer: ProviderFailureDescriber
+    :param exc: What the call raised.
+    :ptype exc: BaseException
+    :param logger: The caller's logger, so the line lands with the caller's other records.
+    :ptype logger: logging.Logger
+    :param where: What was being described, named in that line.
+    :ptype where: str
+    :return: The describer's answer, or the withheld description when the describer raised.
+    :rtype: ProviderFailure
     """
     try:
         return describer(exc)
@@ -121,13 +122,18 @@ def log_provider_failure(
     the description and no traceback; an honest description keeps the traceback, which is then
     the cheapest diagnosis there is.
 
-    Args:
-        logger: The caller's logger, so the line lands with the caller's other records.
-        failure: What :func:`describe_failure` returned for ``exc``.
-        exc: The exception that was described.
-        message: A %-format naming what failed; ``": <description>"`` is appended to it.
-        *args: Arguments for ``message``.
-        level: The level to log at.
+    :param logger: The caller's logger, so the line lands with the caller's other records.
+    :ptype logger: logging.Logger
+    :param failure: What :func:`describe_failure` returned for ``exc``.
+    :ptype failure: ProviderFailure
+    :param exc: The exception that was described.
+    :ptype exc: BaseException
+    :param message: A %-format naming what failed; ``": <description>"`` is appended to it.
+    :ptype message: str
+    :param *args: Arguments for ``message``.
+    :ptype args: object
+    :param level: The level to log at.
+    :ptype level: int
     """
     logger.log(
         level, message + ": %s", *args, failure.description, exc_info=exc if traceback_is_safe(failure) else None
@@ -141,11 +147,10 @@ def traceback_is_safe(failure: ProviderFailure) -> bool:
     traceback, and a caller deciding whether to let the exception propagate to a layer that logs
     tracebacks (a web server) asks the same question, since that layer prints ``str(exc)`` too.
 
-    Args:
-        failure: What :func:`describe_failure` returned for the exception.
-
-    Returns:
-        ``True`` when the description withheld nothing a traceback would print.
+    :param failure: What :func:`describe_failure` returned for the exception.
+    :ptype failure: ProviderFailure
+    :return: ``True`` when the description withheld nothing a traceback would print.
+    :rtype: bool
     """
     return not failure.payload_withheld
 
@@ -165,17 +170,22 @@ def describe_and_log_failure(
     For a caller whose log line does not depend on what the description says; one that chooses
     its message or level from the failure (an account's refusal read apart) calls the two halves.
 
-    Args:
-        describer: The host's describer.
-        exc: What the call raised.
-        logger: The caller's logger.
-        where: What was being described, named if the describer itself raises.
-        message: A %-format naming what failed; ``": <description>"`` is appended to it.
-        args: Arguments for ``message``.
-        level: The level to log at.
-
-    Returns:
-        The failure, as :func:`describe_failure` returned it.
+    :param describer: The host's describer.
+    :ptype describer: ProviderFailureDescriber
+    :param exc: What the call raised.
+    :ptype exc: BaseException
+    :param logger: The caller's logger.
+    :ptype logger: logging.Logger
+    :param where: What was being described, named if the describer itself raises.
+    :ptype where: str
+    :param message: A %-format naming what failed; ``": <description>"`` is appended to it.
+    :ptype message: str
+    :param args: Arguments for ``message``.
+    :ptype args: tuple[object, ...]
+    :param level: The level to log at.
+    :ptype level: int
+    :return: The failure, as :func:`describe_failure` returned it.
+    :rtype: ProviderFailure
     """
     failure = describe_failure(describer, exc, logger=logger, where=where)
     log_provider_failure(logger, failure, exc, message, *args, level=level)
@@ -241,12 +251,11 @@ def describe_incomplete_completion(result: CompletionResult) -> str | None:
     ``None`` for unknown and ``0`` for a reported zero; collapsing those would invent
     a fact.
 
-    Args:
-        result: The completed call to describe.
-
-    Returns:
-        A sentence naming the stop reason and the token counts behind it, or ``None``
+    :param result: The completed call to describe.
+    :ptype result: CompletionResult
+    :return: A sentence naming the stop reason and the token counts behind it, or ``None``
         when the call finished normally.
+    :rtype: str | None
     """
     if result.stop_reason not in INCOMPLETE_STOP_REASONS:
         return None
@@ -275,12 +284,11 @@ def sum_optional_tokens(*values: int | None) -> int | None:
     This mirrors how cost is already accumulated (sum the observed, remember
     whether anything was).
 
-    Args:
-        *values: Token counts, each either an observation or ``None`` for
-            "the provider reported nothing".
-
-    Returns:
-        The sum of the observed values, or ``None`` if none were observed.
+    :param *values: Token counts, each either an observation or ``None`` for
+        "the provider reported nothing".
+    :ptype values: int | None
+    :return: The sum of the observed values, or ``None`` if none were observed.
+    :rtype: int | None
     """
     observed = [v for v in values if v is not None]
     return sum(observed) if observed else None
@@ -327,14 +335,11 @@ def extract_json(content: str) -> dict[str, Any]:
     carry it when it leaves; the host's own LLM callers (its scoring stages and its
     other generators) import it from here, the allowed direction.
 
-    Args:
-        content: The raw model output to scrape an object out of.
-
-    Returns:
-        The parsed JSON object.
-
-    Raises:
-        ValueError: If no valid JSON object can be extracted.
+    :param content: The raw model output to scrape an object out of.
+    :ptype content: str
+    :return: The parsed JSON object.
+    :rtype: dict[str, Any]
+    :raises ValueError: If no valid JSON object can be extracted.
     """
     text = _strip_code_fence(content)
 
@@ -382,14 +387,11 @@ def extract_json_array(text: str) -> list[dict[str, Any]]:
     It is the array half of the reply parsing every provider caller shares with
     :func:`extract_json`, and nothing in it knows what the array holds.
 
-    Args:
-        text: The raw model output to scrape an array out of.
-
-    Returns:
-        The parsed array.
-
-    Raises:
-        ValueError: No JSON array (or object) could be extracted from ``text``.
+    :param text: The raw model output to scrape an array out of.
+    :ptype text: str
+    :return: The parsed array.
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: No JSON array (or object) could be extracted from ``text``.
     """
     text = _strip_code_fence(text)
 

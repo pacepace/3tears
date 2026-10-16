@@ -112,12 +112,11 @@ def blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[KnownUsage
     number". When action-seam dollars become expressible — which needs the cassette withholding
     widened to that seam first — the resolution widens with them.
 
-    Args:
-        rate_table: The run's rate table, resolved once at launch, or None when it declared
-            no usable rates at all.
-
-    Returns:
-        The role tuple to stamp on each of the run's results.
+    :param rate_table: The run's rate table, resolved once at launch, or None when it declared
+        no usable rates at all.
+    :ptype rate_table: ExternalRateTable | None
+    :return: The role tuple to stamp on each of the run's results.
+    :rtype: tuple[KnownUsageRole, ...]
     """
     if rate_table is not None and rate_table.rates:
         return (*BLENDED_COST_ROLES, "external")
@@ -174,11 +173,10 @@ class CallUsage:
         :meth:`of` and :meth:`RoleUsageLedger.add_llm_result` cannot read different names; an attribute the
         completion lacks reads as unreported, never zero.
 
-        Args:
-            completion: A :class:`~threetears.evals.schema.completion.CompletionResult`-shaped object.
-
-        Returns:
-            One call's usage, with no sent settings.
+        :param completion: A :class:`~threetears.evals.schema.completion.CompletionResult`-shaped object.
+        :ptype completion: Any
+        :return: One call's usage, with no sent settings.
+        :rtype: CallUsage
         """
         read: dict[str, Any] = {name: getattr(completion, name, None) for name in USAGE_LEDGER_ATTRIBUTES}
         read["model"] = read["model"] or None
@@ -193,16 +191,13 @@ class CallUsage:
         keeps one per call): :meth:`billed`, and the settings the request was sent with as
         :func:`~threetears.evals.schema.completion.sent_settings_of` reads them.
 
-        Args:
-            completion: A :class:`~threetears.evals.schema.completion.CompletionResult`-shaped object.
-
-        Returns:
-            One call's usage.
-
-        Raises:
-            CompletionProtocolDefect: The completion's ``sent_settings`` is neither ``None`` nor a
-                :class:`~threetears.evals.schema.ClientRequestSettings`. The call was billed all the same, so a
-                caller that counts it reads :meth:`billed` on its way out (see there).
+        :param completion: A :class:`~threetears.evals.schema.completion.CompletionResult`-shaped object.
+        :ptype completion: Any
+        :return: One call's usage.
+        :rtype: CallUsage
+        :raises CompletionProtocolDefect: The completion's ``sent_settings`` is neither ``None`` nor a
+            :class:`~threetears.evals.schema.ClientRequestSettings`. The call was billed all the same, so a
+            caller that counts it reads :meth:`billed` on its way out (see there).
         """
         return replace(cls.billed(completion), sent_settings=sent_settings_of(completion))
 
@@ -291,11 +286,10 @@ class RoleUsageLedger:
         unpriced external row looks like. A table prices each contribution at its own
         provider's rate, so the provenance is per row and is named where the pricing happens.
 
-        Args:
-            rate_table: The run's rate table, or None when it declared no usable rates.
-
-        Returns:
-            A ledger that prices each reported spend at its own ``(provider, unit)`` rate.
+        :param rate_table: The run's rate table, or None when it declared no usable rates.
+        :ptype rate_table: ExternalRateTable | None
+        :return: A ledger that prices each reported spend at its own ``(provider, unit)`` rate.
+        :rtype: RoleUsageLedger
         """
         return cls(role="external", rate_table=rate_table)
 
@@ -358,8 +352,7 @@ class RoleUsageLedger:
         API). It is not part of the key: the row keeps every distinct value, and one ``None`` makes the row's
         record unverified.
 
-        Raises:
-            ValueError: ``actor_id`` or ``purpose`` was given to a role other than ``simulator``.
+        :raises ValueError: ``actor_id`` or ``purpose`` was given to a role other than ``simulator``.
         """
         if (actor_id is not None or purpose is not None) and self.role != "simulator":
             raise ValueError(f"actor_id and purpose attribute simulator calls, not the {self.role!r} role's")
@@ -399,18 +392,18 @@ class RoleUsageLedger:
         ``served_model`` is read off the completion and never off ``model``: a client may fill
         ``model`` from the request, which for a floating alias names the pointer rather than the model
         that answered. ``sent_settings``, the optional member, is read through
-        :func:`~threetears.evals.schema.completion.sent_settings_of` on the judge and simulator roles only (every other role's row carries its spend alone): absent reads as unverified, and a value of
-        the wrong type is refused.
+        :func:`~threetears.evals.schema.completion.sent_settings_of` on the judge and simulator roles only (every other
+        role's row carries its spend alone): absent reads as unverified, and a value of the wrong type is refused.
 
-        Args:
-            result: The response, or a :class:`CallUsage` standing for one.
-            actor_id: The simulated actor the call spoke for or chose; simulator role only.
-            purpose: Whether the simulator call was an ``utterance`` or a ``schedule`` pick; simulator
-                role only.
-
-        Raises:
-            CompletionProtocolDefect: The result's ``sent_settings`` is neither ``None`` nor a
-                :class:`~threetears.evals.schema.ClientRequestSettings`.
+        :param result: The response, or a :class:`CallUsage` standing for one.
+        :ptype result: Any
+        :param actor_id: The simulated actor the call spoke for or chose; simulator role only.
+        :ptype actor_id: str | None
+        :param purpose: Whether the simulator call was an ``utterance`` or a ``schedule`` pick; simulator
+            role only.
+        :ptype purpose: KnownSimulatorPurpose | None
+        :raises CompletionProtocolDefect: The result's ``sent_settings`` is neither ``None`` nor a
+            :class:`~threetears.evals.schema.ClientRequestSettings`.
         """
         # Only the judge and the simulator are read for what was sent (the roles pooling and disclosure cover); any
         # other role's row carries its spend alone, so no candidate row can ever read as verified.
@@ -439,8 +432,8 @@ class RoleUsageLedger:
 
         **The caller supplies the volume; this only prices it.** Nothing here derives units
         from a provider parameter, which is what let a cheap call be billed at a dearer
-        call's rate: the code doing the arithmetic was not the code that knew the call. Pricing goes through the run's table at this spend's exact
-        ``(provider, unit)``, never at another provider's rate and never at a default
+        call's rate: the code doing the arithmetic was not the code that knew the call. Pricing goes through the run's
+        table at this spend's exact ``(provider, unit)``, never at another provider's rate and never at a default
         standing in for a rate nobody set — an undeclared rate leaves the calls counted and
         honestly unpriced. The conversion lives here rather than at the call site so it has
         exactly one home: a per-caller conversion is how a second caller would come to
@@ -449,8 +442,8 @@ class RoleUsageLedger:
         Tokens stay ``None`` rather than 0: these are not LLM calls, so zero would be a
         claim about a quantity that does not apply.
 
-        Args:
-            spend: What the caller reports having consumed at one provider.
+        :param spend: What the caller reports having consumed at one provider.
+        :ptype spend: ExternalSpend
         """
         money = self.rate_table.money_for(spend) if self.rate_table is not None else spend.money
         self.add(
@@ -494,8 +487,8 @@ class RoleUsageLedger:
         is a measurement decision rather than an accounting fix. The signature holds that
         line: this method takes no rate and has no path to one.
 
-        Args:
-            spend: What the dispatcher counted at one provider.
+        :param spend: What the dispatcher counted at one provider.
+        :ptype spend: ExternalSpend
         """
         self.add(
             model=None,
@@ -524,9 +517,9 @@ class RoleUsageLedger:
         there is nowhere for a cross-provider sum to happen — a rule downstream code cannot
         forget because it never gets the chance.
 
-        Returns:
-            One :class:`~threetears.evals.schema.models.RoleUsage` per distinct key, or an empty list
+        :return: One :class:`~threetears.evals.schema.models.RoleUsage` per distinct key, or an empty list
             when the role never ran.
+        :rtype: list[RoleUsage]
         """
         rows: list[RoleUsage] = []
         for (
@@ -583,12 +576,12 @@ def async_delivery_usage(
     rate for each ``(provider, unit)`` (:meth:`RoleUsageLedger.add_external`), and left counted and
     unpriced — unknown, never zero — where neither exists.
 
-    Args:
-        deliveries: The cell's background work, as its kind reported it; ``None`` when it watched none.
-        rate_table: The run's rate table, or ``None`` when it priced nothing.
-
-    Returns:
-        The inner-agent rows, then the external rows — empty when nothing reported spend.
+    :param deliveries: The cell's background work, as its kind reported it; ``None`` when it watched none.
+    :ptype deliveries: Sequence[AsyncDelivery] | None
+    :param rate_table: The run's rate table, or ``None`` when it priced nothing.
+    :ptype rate_table: ExternalRateTable | None
+    :return: The inner-agent rows, then the external rows — empty when nothing reported spend.
+    :rtype: list[RoleUsage]
     """
     inner = RoleUsageLedger(role="inner_agent")
     external = RoleUsageLedger.for_external(rate_table)
@@ -639,12 +632,12 @@ def blended_cost(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) -> f
     calls in a run with declared rates — is held to the unpriced rule by :func:`cell_cost` before the
     rows are summed, because once folded into a row the two cannot be told apart.
 
-    Args:
-        usage: The rows to sum.
-        cost_roles: The roles the total sums (``EvalResult.cost_roles``).
-
-    Returns:
-        The total at full float precision, or ``None`` when a model call in those roles went unpriced.
+    :param usage: The rows to sum.
+    :ptype usage: list[RoleUsage]
+    :param cost_roles: The roles the total sums (``EvalResult.cost_roles``).
+    :ptype cost_roles: Collection[UsageRole]
+    :return: The total at full float precision, or ``None`` when a model call in those roles went unpriced.
+    :rtype: float | None
     """
     rows = [row for row in usage if row.role in cost_roles]
     if any(row.cost_usd is None and row.role != "external" for row in rows):
@@ -663,12 +656,12 @@ def spend_observed(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) ->
     asks this first, on the rule :func:`production_replicating_cost` already keeps: a zero nobody observed,
     averaged in, ranks the least-measured configuration the cheapest.
 
-    Args:
-        usage: The result's rows.
-        cost_roles: The roles its total sums (``EvalResult.cost_roles``).
-
-    Returns:
-        True when at least one row in those roles carries a ``cost_usd``.
+    :param usage: The result's rows.
+    :ptype usage: list[RoleUsage]
+    :param cost_roles: The roles its total sums (``EvalResult.cost_roles``).
+    :ptype cost_roles: Collection[UsageRole]
+    :return: True when at least one row in those roles carries a ``cost_usd``.
+    :rtype: bool
     """
     return any(row.role in cost_roles and row.cost_usd is not None for row in usage)
 
@@ -687,18 +680,19 @@ def cell_cost(
     out. A provider-reported charge prices its calls whatever the table holds, and wins over a rate
     it does hold. A run that declared no rates claims no external dollars, so its external calls are
     volume only in this total — a reported charge still lands on its ``external`` row, but the
-    composition stamped on the result (``cost_roles``) does not sum that role. A substituted delivery reports no spend at all
-    (:class:`~threetears.evals.schema.models.AsyncDelivery` refuses one that does), so a replayed or
+    composition stamped on the result (``cost_roles``) does not sum that role. A substituted delivery reports no spend
+    at all (:class:`~threetears.evals.schema.models.AsyncDelivery` refuses one that does), so a replayed or
     seeded payload can make the cost neither larger nor unknown.
 
-    Args:
-        usage: The cell's rows — the kind's, its background work's (:func:`async_delivery_usage`)
-            and the judge's.
-        async_deliveries: The cell's background work, as its kind reported it.
-        rate_table: The run's rate table, or ``None`` when it declared none.
-
-    Returns:
-        The blended spend, or ``None`` when part of it could not be priced.
+    :param usage: The cell's rows — the kind's, its background work's (:func:`async_delivery_usage`)
+        and the judge's.
+    :ptype usage: list[RoleUsage]
+    :param async_deliveries: The cell's background work, as its kind reported it.
+    :ptype async_deliveries: Sequence[AsyncDelivery] | None
+    :param rate_table: The run's rate table, or ``None`` when it declared none.
+    :ptype rate_table: ExternalRateTable | None
+    :return: The blended spend, or ``None`` when part of it could not be priced.
+    :rtype: float | None
     """
     cost_roles = blended_cost_roles(rate_table)
     if "external" in cost_roles and rate_table is not None:
@@ -784,15 +778,15 @@ def production_replicating_cost(usage: list[RoleUsage], *, substituted_deliverie
     :func:`count_substituted_deliveries` derives it from a result;
     :attr:`ResolvedUsage.substituted_deliveries` carries it on the resolved view.
 
-    Args:
-        usage: The per-role rows to sum.
-        substituted_deliveries: How many of this result's async deliveries were supplied
-            by a harness rather than produced by a background run. Any non-zero value
-            withholds the figure.
-
-    Returns:
-        The observed production-role dollars, or ``None`` when the figure is unknown
+    :param usage: The per-role rows to sum.
+    :ptype usage: list[RoleUsage]
+    :param substituted_deliveries: How many of this result's async deliveries were supplied
+        by a harness rather than produced by a background run. Any non-zero value
+        withholds the figure.
+    :ptype substituted_deliveries: int
+    :return: The observed production-role dollars, or ``None`` when the figure is unknown
         rather than free.
+    :rtype: float | None
     """
     if substituted_deliveries:
         return None
@@ -889,13 +883,12 @@ def count_substituted_deliveries(result: EvalResult) -> int:
     is not a substituted *delivery* and this function rightly reports 0 for it — see
     :func:`production_replicating_cost` for why that leaves the figure honest.
 
-    Args:
-        result: The result to inspect. Never mutated.
-
-    Returns:
-        How many deliveries a harness supplied. Any non-zero count is enough to withhold the
+    :param result: The result to inspect. Never mutated.
+    :ptype result: EvalResult
+    :return: How many deliveries a harness supplied. Any non-zero count is enough to withhold the
         production-replicating cost; the number is kept rather than a bool because it is the
         more informative disclosure at no extra cost.
+    :rtype: int
     """
     return count_substituted(result.async_deliveries)
 
@@ -908,12 +901,11 @@ def count_substituted(deliveries: Sequence[AsyncDelivery] | None) -> int:
     deliveries its cell collected, which has no :class:`~threetears.evals.schema.models.EvalResult`
     to hand over (and would otherwise build a partial one just to ask).
 
-    Args:
-        deliveries: The cell's async-delivery record — ``EvalResult.async_deliveries``, or a candidate
-            output's ``async_deliveries`` — or ``None`` when nothing watched for background work.
-
-    Returns:
-        How many entries a harness supplied; 0 when nothing was watched.
+    :param deliveries: The cell's async-delivery record — ``EvalResult.async_deliveries``, or a candidate
+        output's ``async_deliveries`` — or ``None`` when nothing watched for background work.
+    :ptype deliveries: Sequence[AsyncDelivery] | None
+    :return: How many entries a harness supplied; 0 when nothing was watched.
+    :rtype: int
     """
     if deliveries is None:
         # Nothing watched for background work — the candidate kind starts none — so there was no
@@ -948,12 +940,11 @@ def resolve_result_usage(result: EvalResult) -> ResolvedUsage:
     It reads the runner's recorded ``termination``, which is the branch that cut the capture
     short rather than a consequence of it.
 
-    Args:
-        result: The result to resolve.
-
-    Returns:
-        The captured rows — including the empty list, which means capture ran and attributed
+    :param result: The result to resolve.
+    :ptype result: EvalResult
+    :return: The captured rows — including the empty list, which means capture ran and attributed
         no roles — or the ``lost`` view (the rows kept, marked partial) for a cut-short cell.
+    :rtype: ResolvedUsage
     """
     # Substitution is a property of the deliveries, not of how the rows were obtained, so
     # it is read once here and attached to whichever arm answers — including `captured`,

@@ -178,17 +178,16 @@ def analysis_gen_request_settings_for(
     ``response_format``, and a provider that ignores it returns free text the generator refuses after
     paying for it, then pays for a repair.
 
-    Args:
-        answer_budget_tokens: Output room for the memo itself.
-        reasoning_effort: How hard the generator reasons, as an effort word.
-        reasoning_headroom_tokens: Output room left for reasoning, which sizes the cap; at least
-            :data:`MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS`.
-
-    Returns:
-        The settings to build the client with.
-
-    Raises:
-        ValueError: ``reasoning_headroom_tokens`` is below :data:`MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS`.
+    :param answer_budget_tokens: Output room for the memo itself.
+    :ptype answer_budget_tokens: int
+    :param reasoning_effort: How hard the generator reasons, as an effort word.
+    :ptype reasoning_effort: KnownReasoningEffort
+    :param reasoning_headroom_tokens: Output room left for reasoning, which sizes the cap; at least
+        :data:`MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS`.
+    :ptype reasoning_headroom_tokens: int
+    :return: The settings to build the client with.
+    :rtype: ClientRequestSettings
+    :raises ValueError: ``reasoning_headroom_tokens`` is below :data:`MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS`.
     """
     if reasoning_headroom_tokens < MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS:
         raise ValueError(
@@ -271,13 +270,12 @@ def refuse_an_unlisted_writer(profile: HostProfile, model: str) -> None:
     Named ``_refuse_`` for the reason :func:`refuse_an_undescribable_arm_table` is: it is not a member of the
     validation chain.
 
-    Args:
-        profile: The host whose allowed writers this reads.
-        model: The writer model id, as requested or as the host's client resolved its default.
-
-    Raises:
-        GenerationError: The host declares a writer list and ``model`` is not on it. Not
-            :class:`SoundnessRefusal`, because that class buys a repair this must never buy.
+    :param profile: The host whose allowed writers this reads.
+    :ptype profile: HostProfile
+    :param model: The writer model id, as requested or as the host's client resolved its default.
+    :ptype model: str
+    :raises GenerationError: The host declares a writer list and ``model`` is not on it. Not
+        :class:`SoundnessRefusal`, because that class buys a repair this must never buy.
     """
     if (refusal := profile.analysis_writer_refusal(model)) is not None:
         raise GenerationError(refusal)
@@ -307,12 +305,10 @@ def refuse_an_undescribable_arm_table(bundle: AnalysisContextBundle) -> None:
     dark on a paid generation. This is a PRECONDITION on the caller's evidence, checked before
     anything is sent, so it is deliberately not a chain member and says so in its name.
 
-    Args:
-        bundle: The assembled evidence, before the provider is called.
-
-    Raises:
-        GenerationError: Not one indexed arm carries levels. Not :class:`SoundnessRefusal`,
-            because that class buys the repair this must never buy.
+    :param bundle: The assembled evidence, before the provider is called.
+    :ptype bundle: AnalysisContextBundle
+    :raises GenerationError: Not one indexed arm carries levels. Not :class:`SoundnessRefusal`,
+        because that class buys the repair this must never buy.
     """
     index = bundle.variant_index
     if not index or any(entry.levels_unavailable is None for entry in index):
@@ -355,64 +351,71 @@ async def generate_analysis(
     analysis (``generation.repair_attempts`` / ``.repaired_refusal``) and its cost is added
     to ``generation.token_cost``, so nothing about it is invisible to a later reader.
 
-    Args:
-        bundle: The pre-assembled context bundle — the closed system's evidence.
-        prompt: The resolved ``eval_analysis_gen`` system prompt (the caller reads
-            it from the prompt registry, so an operator's edits reach here).
-        model: The generator model id, recorded as provenance. Resolved by the caller from
-            the Analysis Generator system role, or from a per-call override — named here
-            by the role rather than by a model id, which would be dated evidence.
-        client: The injected model-provider client. The caller builds it (bound to
-            ``model``); the generator never constructs one.
-        prompt_id: Provenance id for the prompt — the registry key the caller resolved
-            ``prompt`` under. Required rather than defaulted: the caller is the one that
-            read the registry, so it is the only party that KNOWS which entry produced
-            this text, and a default here would record a guess as provenance.
-        bundle_assembled_at: When the caller assembled ``bundle`` (ISO-8601), stamped
-            immediately before assembly. Recorded on the provenance as the cutoff a re-assembly
-            reads the insight ledger as of. Required for the reason ``prompt_id`` is: the bundle
-            arrives assembled, so only the caller saw the instant its ledger was read, and
-            anything stamped here would be later than that read by however long the caller took
-            to reach this call.
-        prompt_version: Provenance version; when ``None``, a content hash of the ASSEMBLED
-            system prompt — so two edits of the preset are distinguishable in an A/B, and so are
-            two hosts whose style picked different registers. Hashing the registry text alone
-            would report one version for two prompts that differ in what they told the model.
-        tally: A caller-owned record of what this generation sent, spent and was refused, written as
-            it goes so it is exact however the call ends — return, raise or cancellation. The
-            caller's record of a FAILED attempt is read from it, since a failure returns nothing.
-        admit: Asked with each call's system prompt, user message and contract BEFORE the call is counted
-            or sent — the repair round-trip's included, whose prompt exists only once the first output is
-            refused. It raises to refuse the call, and the refusal propagates with nothing sent and nothing
-            counted for that call. ``None`` admits every call; a caller that prices calls against a cap
-            (:func:`~threetears.evals.analysis.service.run_analysis_generation`) passes its budget's.
-        profile: The host whose vocabulary this reads, and whose allowed writer models
-            (:attr:`~threetears.evals.kernel.host.profile.HostProfile.analysis_writer_models`) ``model`` is
-            checked against before anything is sent.
-        measuring_writers: True only for a reporter run, which measures writer models to learn which belong on
-            that list, so it is not held to it.
-
-    Returns:
-        The schema-valid :class:`EvalAnalysis` and the list of
+    :param bundle: The pre-assembled context bundle — the closed system's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param prompt: The resolved ``eval_analysis_gen`` system prompt (the caller reads
+        it from the prompt registry, so an operator's edits reach here).
+    :ptype prompt: str
+    :param model: The generator model id, recorded as provenance. Resolved by the caller from
+        the Analysis Generator system role, or from a per-call override — named here
+        by the role rather than by a model id, which would be dated evidence.
+    :ptype model: str
+    :param client: The injected model-provider client. The caller builds it (bound to
+        ``model``); the generator never constructs one.
+    :ptype client: CompletionGenerator
+    :param prompt_id: Provenance id for the prompt — the registry key the caller resolved
+        ``prompt`` under. Required rather than defaulted: the caller is the one that
+        read the registry, so it is the only party that KNOWS which entry produced
+        this text, and a default here would record a guess as provenance.
+    :ptype prompt_id: str
+    :param bundle_assembled_at: When the caller assembled ``bundle`` (ISO-8601), stamped
+        immediately before assembly. Recorded on the provenance as the cutoff a re-assembly
+        reads the insight ledger as of. Required for the reason ``prompt_id`` is: the bundle
+        arrives assembled, so only the caller saw the instant its ledger was read, and
+        anything stamped here would be later than that read by however long the caller took
+        to reach this call.
+    :ptype bundle_assembled_at: str
+    :param prompt_version: Provenance version; when ``None``, a content hash of the ASSEMBLED
+        system prompt — so two edits of the preset are distinguishable in an A/B, and so are
+        two hosts whose style picked different registers. Hashing the registry text alone
+        would report one version for two prompts that differ in what they told the model.
+    :ptype prompt_version: str | None
+    :param tally: A caller-owned record of what this generation sent, spent and was refused, written as
+        it goes so it is exact however the call ends — return, raise or cancellation. The
+        caller's record of a FAILED attempt is read from it, since a failure returns nothing.
+    :ptype tally: GenerationTally | None
+    :param admit: Asked with each call's system prompt, user message and contract BEFORE the call is counted
+        or sent — the repair round-trip's included, whose prompt exists only once the first output is
+        refused. It raises to refuse the call, and the refusal propagates with nothing sent and nothing
+        counted for that call. ``None`` admits every call; a caller that prices calls against a cap
+        (:func:`~threetears.evals.analysis.service.run_analysis_generation`) passes its budget's.
+    :ptype admit: CallAdmission | None
+    :param profile: The host whose vocabulary this reads, and whose allowed writer models
+        (:attr:`~threetears.evals.kernel.host.profile.HostProfile.analysis_writer_models`) ``model`` is
+        checked against before anything is sent.
+    :ptype profile: HostProfile
+    :param measuring_writers: True only for a reporter run, which measures writer models to learn which belong on
+        that list, so it is not held to it.
+    :ptype measuring_writers: bool
+    :return: The schema-valid :class:`EvalAnalysis` and the list of
         :class:`EvalInsight` objects it minted (each traced back to this analysis).
-
-    Raises:
-        GenerationError: ``model`` is not a writer the host allows (:func:`refuse_an_unlisted_writer`), or the
-            bundle describes no arm at all (:func:`refuse_an_undescribable_arm_table`) — nothing is spent, because
-            each is knowable from what the caller already holds.
-            Or the provider cut the call short (an output-cap
-            truncation or a content filter). Not repaired — see :class:`SoundnessRefusal` for
-            the boundary and why a truncation in particular must not buy a second charge.
-            Note what is NOT in this list any more: a parse failure and a schema failure are
-            things a FINISHED call did, so they raise the subclass and buy their repair.
-        SoundnessRefusal: The generator's output was refused BOTH times — on the initial call
-            and on its repair. Reached from the payload steps (not JSON, a missing or
-            wrong-shaped field, a position or reading that points nowhere) as well as from
-            the post-generation validators. The causes are deliberately not re-enumerated here, because an
-            enumeration drifts every time one is added and this list already had; read the
-            chain in :func:`_assemble_and_validate`, where each ``_reject_*`` function
-            documents its own. Every one reads a structured field; the null-claim check on a
-            finding's title also matches a short phrase list (:func:`_reject_unestablished_nulls`).
+    :rtype: tuple[EvalAnalysis, list[EvalInsight]]
+    :raises GenerationError: ``model`` is not a writer the host allows (:func:`refuse_an_unlisted_writer`), or the
+        bundle describes no arm at all (:func:`refuse_an_undescribable_arm_table`) — nothing is spent, because
+        each is knowable from what the caller already holds.
+        Or the provider cut the call short (an output-cap
+        truncation or a content filter). Not repaired — see :class:`SoundnessRefusal` for
+        the boundary and why a truncation in particular must not buy a second charge.
+        Note what is NOT in this list any more: a parse failure and a schema failure are
+        things a FINISHED call did, so they raise the subclass and buy their repair.
+    :raises SoundnessRefusal: The generator's output was refused BOTH times — on the initial call
+        and on its repair. Reached from the payload steps (not JSON, a missing or
+        wrong-shaped field, a position or reading that points nowhere) as well as from
+        the post-generation validators. The causes are deliberately not re-enumerated here, because an
+        enumeration drifts every time one is added and this list already had; read the
+        chain in :func:`_assemble_and_validate`, where each ``_reject_*`` function
+        documents its own. Every one reads a structured field; the null-claim check on a
+        finding's title also matches a short phrase list (:func:`_reject_unestablished_nulls`).
     """
     tally = tally if tally is not None else GenerationTally()
     if not measuring_writers:
@@ -585,14 +588,13 @@ def _prompt_provenance_clause(prompt: str) -> str:
     a trailing newline and a one-byte difference would report a retuned prompt where there is
     none.
 
-    Args:
-        prompt: The resolved registry prompt, as :func:`generate_analysis` received it — the
-            body BEFORE the host's style register and caveat kinds are appended, so it is comparable to
-            the seed.
-
-    Returns:
-        A clause to append to the failure summary, beginning with punctuation. Empty when the
+    :param prompt: The resolved registry prompt, as :func:`generate_analysis` received it — the
+        body BEFORE the host's style register and caveat kinds are appended, so it is comparable to
+        the seed.
+    :ptype prompt: str
+    :return: A clause to append to the failure summary, beginning with punctuation. Empty when the
         prompt is the shipped default, so the summary says nothing where there is nothing to say.
+    :rtype: str
     """
     if prompt.strip() == EVAL_ANALYSIS_GEN_DEFAULT.strip():
         return ""
@@ -661,22 +663,20 @@ def _reject_incomplete_generation(result: CompletionResult) -> None:
     repair boundary having been an unenforced assumption, and on the caller being owed the
     reason for a generation it was billed for.
 
-    Args:
-        result: The completed generator call to check.
+    :param result: The completed generator call to check.
+    :ptype result: CompletionResult
+    :raises GenerationError: The provider reported the call did not finish. Deliberately the
+        BARE class and never :class:`SoundnessRefusal` — the call did not finish, so
+        there is nothing to feed back that would change the outcome, and the second
+        attempt would run into the identical fixed cap.
 
-    Raises:
-        GenerationError: The provider reported the call did not finish. Deliberately the
-            BARE class and never :class:`SoundnessRefusal` — the call did not finish, so
-            there is nothing to feed back that would change the outcome, and the second
-            attempt would run into the identical fixed cap.
-
-            **This is now the ONLY thing the bare class means on a call that was made**, and
-            this check is the only place that raises it after one. Every other way a
-            generation can fail — output that is not JSON, a missing field, an insight
-            element that will not build, any ``_reject_*`` validator — is something a
-            finished call DID, and raises the repairable subclass. The boundary is
-            therefore no longer "which step complained" but "did the call finish", and this
-            function is the single place that answers it.
+        **This is now the ONLY thing the bare class means on a call that was made**, and
+        this check is the only place that raises it after one. Every other way a
+        generation can fail — output that is not JSON, a missing field, an insight
+        element that will not build, any ``_reject_*`` validator — is something a
+        finished call DID, and raises the repairable subclass. The boundary is
+        therefore no longer "which step complained" but "did the call finish", and this
+        function is the single place that answers it.
     """
     incomplete = describe_incomplete_completion(result)
     if incomplete is None:
@@ -760,13 +760,14 @@ def _repair_user_message(user_message: str, refusal: str, previous: str) -> str:
     this; an earlier version of this docstring claimed the instruction was inside the stable
     prefix, which would have been a reason to order the two fields that does not exist.
 
-    Args:
-        user_message: The original bundle message, reused verbatim.
-        refusal: The refusal text, which the instruction interpolates.
-        previous: The output that was refused.
-
-    Returns:
-        The repair call's user message.
+    :param user_message: The original bundle message, reused verbatim.
+    :ptype user_message: str
+    :param refusal: The refusal text, which the instruction interpolates.
+    :ptype refusal: str
+    :param previous: The output that was refused.
+    :ptype previous: str
+    :return: The repair call's user message.
+    :rtype: str
     """
     return user_message + _REPAIR_INSTRUCTION.format(refusal=refusal, previous=previous)
 
@@ -791,12 +792,11 @@ def _assemble_and_validate(
     or a reference's grammar; the null-claim check on a finding's title also matches a short phrase list
     (:func:`_reject_unestablished_nulls`).
 
-    Raises:
-        GenerationError: The provider cut the call short (not repaired).
-        SoundnessRefusal: The output does not match the contract, a position, reading or trial points nowhere,
-            the question answers do not match the declaration, a recommendation rests on no finding, one adopts
-            anything in an exploratory campaign or an arm no reading separated from the control, or a finding's
-            title states a null it established nowhere (repaired once).
+    :raises GenerationError: The provider cut the call short (not repaired).
+    :raises SoundnessRefusal: The output does not match the contract, a position, reading or trial points nowhere,
+        the question answers do not match the declaration, a recommendation rests on no finding, one adopts
+        anything in an exploratory campaign or an arm no reading separated from the control, or a finding's
+        title states a null it established nowhere (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
@@ -819,19 +819,19 @@ def _resolved_analysis(
 ) -> tuple[EvalAnalysis, list[EvalInsight]]:
     """Resolve a validated document's cells and figures against the surface, and build the stored analysis.
 
-    Args:
-        document: The validated authored document.
-        bundle: The bundle it was generated from, stored with the analysis.
-        generation: The generation's provenance.
-        surface: The decision surface its readings resolve against.
-
-    Returns:
-        The stored analysis and the insights it mints.
-
-    Raises:
-        SoundnessRefusal: A cell, reading or position points nowhere, one arm is both adopted and
-            rejected, a decision adopts an arm no reading separated from the control, or a finding's title
-            states a null it established nowhere (repaired once).
+    :param document: The validated authored document.
+    :ptype document: AuthoredAnalysis
+    :param bundle: The bundle it was generated from, stored with the analysis.
+    :ptype bundle: AnalysisContextBundle
+    :param generation: The generation's provenance.
+    :ptype generation: GenerationProvenance
+    :param surface: The decision surface its readings resolve against.
+    :ptype surface: DecisionSurface
+    :return: The stored analysis and the insights it mints.
+    :rtype: tuple[EvalAnalysis, list[EvalInsight]]
+    :raises SoundnessRefusal: A cell, reading or position points nowhere, one arm is both adopted and
+        rejected, a decision adopts an arm no reading separated from the control, or a finding's title
+        states a null it established nowhere (repaired once).
     """
     document = _with_cell_refs(document, surface)
     _reject_contradicted_arms(document, bundle)
@@ -884,8 +884,7 @@ def _with_cell_refs(document: AuthoredAnalysis, surface: DecisionSurface) -> Aut
     below this point — and :func:`render_prose_figures`, whose references go through the same
     :func:`~threetears.evals.analysis.references.cell_of_alias` — works on full refs.
 
-    Raises:
-        UnresolvableReference: A structured cell field names no cell's alias.
+    :raises UnresolvableReference: A structured cell field names no cell's alias.
     """
 
     def ref(alias: str, where: str) -> str:
@@ -921,8 +920,7 @@ def _reject_mismatched_question_answers(document: AuthoredAnalysis, bundle: Anal
     verdicts over one body of evidence, and an answer to a question the campaign does not ask has
     nothing to attach to. Retired and superseded questions are not live.
 
-    Raises:
-        SoundnessRefusal: The answers are not one per live declared question.
+    :raises SoundnessRefusal: The answers are not one per live declared question.
     """
     live = bundle.declared_design.live_questions() if bundle.declared_design else []
     declared = {question.id for question in live}
@@ -954,8 +952,7 @@ def _reject_contradicted_arms(document: AuthoredAnalysis, bundle: AnalysisContex
     like any other. Runs after cells are translated from aliases, so the refusal names a full ref,
     which the repair round renders back into the writer's alias.
 
-    Raises:
-        SoundnessRefusal: Some arm is named by an ``adopted`` and a ``rejected`` decision.
+    :raises SoundnessRefusal: Some arm is named by an ``adopted`` and a ``rejected`` decision.
     """
     contradicted = contradicted_arms(document.decisions)
     if not contradicted:
@@ -1002,9 +999,8 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
     from aliases, so it reads full refs; the refusal names them, and the repair round renders them
     back into the writer's aliases.
 
-    Raises:
-        SoundnessRefusal: An adopted decision names a non-control arm with a breached guardrail, or with no
-            ``improved`` reading.
+    :raises SoundnessRefusal: An adopted decision names a non-control arm with a breached guardrail, or with no
+        ``improved`` reading.
     """
     # The control as the realized design matched it, as every lens reads it: the declaration's own key can name
     # the arm by a key its cells do not carry, and exempting that one would exempt nothing — or another arm.
@@ -1053,8 +1049,7 @@ def _reject_unpinned_recommendations(document: AuthoredAnalysis) -> None:
     (and the cases their trials show), so one resting on nothing is advice the evidence never reached. A position past
     the findings is refused here rather than by the stored model, so the refusal can say which recommendation it was.
 
-    Raises:
-        SoundnessRefusal: A recommendation's ``rests_on`` is empty or names a position past the findings.
+    :raises SoundnessRefusal: A recommendation's ``rests_on`` is empty or names a position past the findings.
     """
     count = len(document.findings)
     complaints = []
@@ -1078,8 +1073,7 @@ def _reject_unknown_trials(document: AuthoredAnalysis, bundle: AnalysisContextBu
     A finding's ``trials`` are what the report links it to, so an id the bundle's ``trials`` does not carry is a link
     to nothing.
 
-    Raises:
-        SoundnessRefusal: A finding names a trial id the bundle does not hold.
+    :raises SoundnessRefusal: A finding names a trial id the bundle does not hold.
     """
     known = {trial.trial_id for trial in bundle.trials}
     stray = [
@@ -1100,8 +1094,7 @@ def _reject_exploratory_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
     decision nothing was designed to make — keeping the control included, which reads as a verdict on the arms it
     was never tested against. The structural fact is the bundle's ``question_declared``; nothing is read off prose.
 
-    Raises:
-        SoundnessRefusal: The campaign is exploratory and a recommendation is ``adopted``.
+    :raises SoundnessRefusal: The campaign is exploratory and a recommendation is ``adopted``.
     """
     if bundle.question_declared:
         return
@@ -1137,9 +1130,8 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
     Runs after cells are translated from aliases, so it joins on full refs; the refusal names them, and the repair
     round renders them back into the writer's aliases.
 
-    Raises:
-        SoundnessRefusal: A finding's title makes a null claim and the finding cites no reading the bundle
-            established alike.
+    :raises SoundnessRefusal: A finding's title makes a null claim and the finding cites no reading the bundle
+        established alike.
     """
     established = _established_nulls(bundle)
     said = [
@@ -1221,8 +1213,7 @@ def _no_separation(against: list[FamilyComparison], *, withheld: str | None) -> 
 def _resolution_of(finding: AuthoredFinding, surface: DecisionSurface, *, where: str) -> FindingResolution:
     """Fill one finding's numbers.
 
-    Raises:
-        UnresolvableReference: A reading names nothing the surface holds.
+    :raises UnresolvableReference: A reading names nothing the surface holds.
     """
     evidence = []
     for index, reading in enumerate(finding.evidence):
@@ -1292,13 +1283,14 @@ def first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfi
     send (the capture-replay loop keys its recordings on this), so the two cannot drift. The contract
     is SENT, not described: the provider enforces the shape, and the same models check what comes back.
 
-    Args:
-        bundle: The assembled evidence.
-        prompt: The resolved generator prompt.
-        profile: The host profile the generation runs under.
-
-    Returns:
-        ``(system, user, response_format)``.
+    :param bundle: The assembled evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param prompt: The resolved generator prompt.
+    :ptype prompt: str
+    :param profile: The host profile the generation runs under.
+    :ptype profile: HostProfile
+    :return: ``(system, user, response_format)``.
+    :rtype: tuple[str, str, dict[str, Any]]
     """
     contract = response_format(_caveat_kinds(profile))
     return assemble_system_prompt(prompt, profile), build_user_message(bundle), contract
@@ -1322,11 +1314,10 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
     audit, but a figure the writer can see is a figure it can quote, and a verdict quoted on the raw
     p of a ten-comparison family is the chance finding the correction exists to stop.
 
-    Args:
-        bundle: The assembled context bundle.
-
-    Returns:
-        The user message.
+    :param bundle: The assembled context bundle.
+    :ptype bundle: AnalysisContextBundle
+    :return: The user message.
+    :rtype: str
     """
     payload = bundle.to_dict()
     del payload["variant_index"]
@@ -1365,11 +1356,10 @@ def user_message_digest(message: str) -> str:
     same way. The message is text, not a structure: its UTF-8 bytes are hashed as they are, since a
     JSON encoding would address the quoting of the text rather than the text.
 
-    Args:
-        message: The user message, exactly as sent (or as about to be frozen).
-
-    Returns:
-        A 64-character lowercase hex digest.
+    :param message: The user message, exactly as sent (or as about to be frozen).
+    :ptype message: str
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
     """
     return bytes_digest(message.encode("utf-8"))
 
@@ -1384,13 +1374,12 @@ def _name_cells_by_alias(payload: dict[str, Any], aliases: dict[str, str]) -> No
     on a short token rather than on two digests. Found by shape rather than by a list of paths, so
     a per-cell record added to the bundle later is named the same way without an edit here.
 
-    Args:
-        payload: The bundle as the writer is shown it.
-        aliases: The bundle's cell aliases (:func:`~threetears.evals.analysis.references.cell_aliases`).
-
-    Raises:
-        RuntimeError: A cell is named that has no ``cell_measures`` entry — the bundle was built
-            inconsistently, and the writer could not name that cell at all.
+    :param payload: The bundle as the writer is shown it.
+    :ptype payload: dict[str, Any]
+    :param aliases: The bundle's cell aliases (:func:`~threetears.evals.analysis.references.cell_aliases`).
+    :ptype aliases: dict[str, str]
+    :raises RuntimeError: A cell is named that has no ``cell_measures`` entry — the bundle was built
+        inconsistently, and the writer could not name that cell at all.
     """
     alias_of = {ref: alias for alias, ref in aliases.items()}
     legend = {id(entry) for entry in payload["cell_measures"]}
@@ -1445,12 +1434,12 @@ def assemble_system_prompt(prompt: str, profile: HostProfile) -> str:
     The analysis's substance — the memo shape, the gates, the posture model, what a caveat
     attaches to — is engine-owned and identical for every host.
 
-    Args:
-        prompt: The resolved ``eval_analysis_gen`` system prompt, from the registry.
-        profile: The host's profile, for its style's register and its caveat kinds.
-
-    Returns:
-        The assembled system prompt.
+    :param prompt: The resolved ``eval_analysis_gen`` system prompt, from the registry.
+    :ptype prompt: str
+    :param profile: The host's profile, for its style's register and its caveat kinds.
+    :ptype profile: HostProfile
+    :return: The assembled system prompt.
+    :rtype: str
     """
     assembled = f"{prompt}\n\n{reference_grammar()}\n\nVOICE: {prompt_fragment(profile.style)}"
     if profile.caveat_kinds:
@@ -1472,12 +1461,12 @@ def prompt_content_version(prompt: str, profile: HostProfile) -> str:
     the registry text alone: two hosts whose styles picked different registers told the model
     different things, and so do two builds whose schemas differ under one prompt.
 
-    Args:
-        prompt: The resolved ``eval_analysis_gen`` system prompt, from the registry.
-        profile: The host's profile, whose register and caveat kinds the assembly adds.
-
-    Returns:
-        A stable, edit-sensitive 12-character version tag.
+    :param prompt: The resolved ``eval_analysis_gen`` system prompt, from the registry.
+    :ptype prompt: str
+    :param profile: The host's profile, whose register and caveat kinds the assembly adds.
+    :ptype profile: HostProfile
+    :return: A stable, edit-sensitive 12-character version tag.
+    :rtype: str
     """
     contract = json.dumps(response_format(_caveat_kinds(profile)), sort_keys=True, separators=(",", ":"))
     told = assemble_system_prompt(prompt, profile) + "\n" + contract
@@ -1500,14 +1489,12 @@ def _parse_payload(result: CompletionResult) -> dict[str, Any]:
     prompt when the fix is the model, while the ``stop_reason="max_tokens"`` sat unread on
     the result. It is now read before the parse, not after it.
 
-    Args:
-        result: The completed generator call, known to have finished normally.
-
-    Raises:
-        SoundnessRefusal: The content is not a JSON object. Repairable, because the decoder's
-            own message names the line and column that broke — an instruction the generator
-            can act on. That it is repairable rests on the call having FINISHED, which is the
-            guarantee the paragraph above records.
+    :param result: The completed generator call, known to have finished normally.
+    :ptype result: CompletionResult
+    :raises SoundnessRefusal: The content is not a JSON object. Repairable, because the decoder's
+        own message names the line and column that broke — an instruction the generator
+        can act on. That it is repairable rests on the call having FINISHED, which is the
+        guarantee the paragraph above records.
     """
     try:
         return extract_json(result.content or "")
@@ -1522,17 +1509,17 @@ def _resolve(surface: DecisionSurface, ref: str, reading: ReadingRef, *, where: 
     needs; this adds which of possibly dozens of references it was about, so the model corrects
     that one rather than guessing.
 
-    Args:
-        surface: The analysis's decision surface.
-        ref: The reading's ``cell_ref``, translated from the writer's alias.
-        reading: The authored reading, already parsed.
-        where: Where the reference sits in the output, e.g. ``finding 'f-1' evidence.rows[0]``.
-
-    Returns:
-        The resolved reading.
-
-    Raises:
-        UnresolvableReference: The reference names nothing the surface holds.
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param ref: The reading's ``cell_ref``, translated from the writer's alias.
+    :ptype ref: str
+    :param reading: The authored reading, already parsed.
+    :ptype reading: ReadingRef
+    :param where: Where the reference sits in the output, e.g. ``finding 'f-1' evidence.rows[0]``.
+    :ptype where: str
+    :return: The resolved reading.
+    :rtype: ResolvedReading
+    :raises UnresolvableReference: The reference names nothing the surface holds.
     """
     try:
         return resolve_reading(surface, ref, reading.measure_id, reading.reading)
@@ -1581,11 +1568,10 @@ def _comparable_measures(summaries: list[RunSummary]) -> set[str]:
     varies and every measure becomes a candidate — ranked and capped by the same rule, here
     rather than in the caller, so the ceiling cannot be routed around by the fallback.
 
-    Args:
-        summaries: Every run summary in the campaign.
-
-    Returns:
-        The names worth a column, at most ``_MAX_RUN_INDEX_MEASURES`` of them.
+    :param summaries: Every run summary in the campaign.
+    :ptype summaries: list[RunSummary]
+    :return: The names worth a column, at most ``_MAX_RUN_INDEX_MEASURES`` of them.
+    :rtype: set[str]
     """
     seen: dict[str, set[str]] = {}
     numeric: dict[str, list[float]] = {}

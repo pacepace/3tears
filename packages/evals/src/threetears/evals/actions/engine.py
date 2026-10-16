@@ -706,10 +706,9 @@ class JudgeDriftParams(EvalBaseModel):
     def judge(self) -> SecondJudge:
         """The second judge these parameters name.
 
-        Raises:
-            ValidationFailedError: The judge does not validate — a dimension in ``second_judge_config_ids`` not named
-                as ``<context>.<dim>``, say. Raised as a refusal: a model's own error would leave the handler as a
-                defect, which the call is not.
+        :raises ValidationFailedError: The judge does not validate — a dimension in ``second_judge_config_ids`` not
+            named as ``<context>.<dim>``, say. Raised as a refusal: a model's own error would leave the handler as a
+            defect, which the call is not.
         """
         try:
             return SecondJudge(
@@ -1422,8 +1421,8 @@ CURATE = "Curate"
 def engine_actions() -> tuple[Action, ...]:
     """The engine's actions, in the order help lists them.
 
-    Returns:
-        The actions.
+    :return: The actions.
+    :rtype: tuple[Action, ...]
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
     insight_id = "0193a1b2-insight"
@@ -2455,15 +2454,12 @@ def engine_actions() -> tuple[Action, ...]:
 def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
     """The engine's catalogue, with the host's own actions after the engine's.
 
-    Args:
-        host_actions: Actions the host contributes — its kinds' own, its curation — each named, classed and
-            rendered like the engine's.
-
-    Returns:
-        The catalogue.
-
-    Raises:
-        ValueError: A host action takes a name the engine's catalogue already has.
+    :param host_actions: Actions the host contributes — its kinds' own, its curation — each named, classed and
+        rendered like the engine's.
+    :ptype host_actions: tuple[Action, ...]
+    :return: The catalogue.
+    :rtype: ActionCatalogue
+    :raises ValueError: A host action takes a name the engine's catalogue already has.
     """
     return ActionCatalogue(engine_actions()).extended(host_actions)
 

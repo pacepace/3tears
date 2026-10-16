@@ -76,8 +76,8 @@ class FixturedClient:
     def __init__(self, body: str) -> None:
         """Prepare the completion.
 
-        Args:
-            body: The JSON the generator will parse.
+        :param body: The JSON the generator will parse.
+        :ptype body: str
         """
         self.completion = FixturedCompletion(content=body)
         self.calls: list[dict[str, str]] = []
@@ -123,12 +123,12 @@ def cell_at(bundle: Any, level: int) -> str:
     Joined through the arm's run, because the run summary is where the width is recorded and the
     cell is where the run was pooled.
 
-    Args:
-        bundle: The assembled context.
-        level: The chunk width, in tokens.
-
-    Returns:
-        The cell's ``<variant_key>:<apparatus_class_id>``.
+    :param bundle: The assembled context.
+    :ptype bundle: Any
+    :param level: The chunk width, in tokens.
+    :ptype level: int
+    :return: The cell's ``<variant_key>:<apparatus_class_id>``.
+    :rtype: str
     """
     (run_id,) = [summary.run_id for summary in bundle.run_summaries if summary.config[TOYHOST_AXIS] == str(level)]
     (cell,) = [cell for cell in bundle.cell_measures if run_id in cell.run_ids]
@@ -138,12 +138,12 @@ def cell_at(bundle: Any, level: int) -> str:
 def alias_at(bundle: Any, level: int) -> str:
     """The alias the writer names the cell at one chunk width by -- what an authored memo carries.
 
-    Args:
-        bundle: The assembled context.
-        level: The chunk width, in tokens.
-
-    Returns:
-        The cell's alias, which the generator stores as :func:`cell_at`'s ``cell_ref``.
+    :param bundle: The assembled context.
+    :ptype bundle: Any
+    :param level: The chunk width, in tokens.
+    :ptype level: int
+    :return: The cell's alias, which the generator stores as :func:`cell_at`'s ``cell_ref``.
+    :rtype: str
     """
     (alias,) = [alias for alias, ref in cell_aliases(bundle.cell_measures).items() if ref == cell_at(bundle, level)]
     return alias
@@ -156,11 +156,10 @@ def memo_payload(bundle: Any) -> dict[str, Any]:
     resting on that finding by position. Every reading names a cell and a measure and carries no
     number -- code fills it.
 
-    Args:
-        bundle: The assembled context. Its cells are the only ones a reading or a decision may name.
-
-    Returns:
-        The payload.
+    :param bundle: The assembled context. Its cells are the only ones a reading or a decision may name.
+    :ptype bundle: Any
+    :return: The payload.
+    :rtype: dict[str, Any]
     """
     narrow, wide = alias_at(bundle, TOYHOST_NARROW), alias_at(bundle, TOYHOST_WIDE)
     return {

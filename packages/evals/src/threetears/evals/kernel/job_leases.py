@@ -78,14 +78,14 @@ SHUTDOWN_CAUSE = "process shut down"
 class LeasedJobKind[R: EvalDocumentModel]:
     """One type of job record, as the lease machinery reads and ends it.
 
-    Attributes:
-        name: The job kind's name, for a message.
-        model: The record's model; it declares the five lease fields (:class:`~threetears.evals.schema.LeasedRecord`).
-        ended: Whether the record says, by its own status, that the job has ended.
-        end_lost: The record as it is written lost: its own ending set and ``loss`` recorded on it. Given the store
-            because a run's ending reconstructs its completeness from its stored results.
-        named_runs: The runs the record names as its own (a launch's, a sweep's arms'), which are settled with it
-            when it is written lost (:func:`settle_job_record`); none by default.
+    :ivar name: The job kind's name, for a message.
+    :ivar model: The record's model; it declares the five lease fields (:class:`~threetears.evals.schema.LeasedRecord`).
+    :ivar ended: Whether the record says, by its own status, that the job has ended.
+    :ivar end_lost: The record as it is written lost: its own ending set and ``loss`` recorded on it. Given the store
+        because a run's ending reconstructs its completeness from its stored results.
+    :ivar named_runs: The runs the record names as its own (a launch's, a sweep's arms'), which are settled with it
+        when it is written lost (:func:`settle_job_record`); none by default.
+
 
     Every kind constructed is registered by its model, so every store read of a record of that model settles it
     (:func:`leased_kind_of`, :meth:`~threetears.evals.kernel.EvalStorage.load_eval_run` and every other read) — a
@@ -110,12 +110,11 @@ _KIND_OF_MODEL: dict[type[EvalDocumentModel], LeasedJobKind[Any]] = {}
 def leased_kind_of(model: type[EvalDocumentModel]) -> LeasedJobKind[Any] | None:
     """The leased kind whose records are ``model``'s, or ``None`` for a model no job records itself in.
 
-    Args:
-        model: A stored model.
-
-    Returns:
-        Its kind, once a :class:`LeasedJobKind` of it has been constructed — at the import of the module that
+    :param model: A stored model.
+    :ptype model: type[EvalDocumentModel]
+    :return: Its kind, once a :class:`LeasedJobKind` of it has been constructed — at the import of the module that
         defines the model's kind, which a reader of the model has already imported.
+    :rtype: LeasedJobKind[Any] | None
     """
     return _KIND_OF_MODEL.get(model)
 
@@ -206,8 +205,7 @@ def _leased(record: EvalDocumentModel) -> LeasedRecord:
 def _document(record: EvalDocumentModel) -> dict[str, Any]:
     """A record as it is written: whole, never a run a listing left payload out of, which would delete it.
 
-    Raises:
-        ValueError: A run read by a listing that left payload paths out.
+    :raises ValueError: A run read by a listing that left payload paths out.
     """
     if isinstance(record, EvalRun) and record.elided_payload_paths:
         raise ValueError(
@@ -225,12 +223,12 @@ def lease_lapsed(record: LeasedRecord, now: datetime) -> bool:
     started — and nothing will ever renew it. A grace measured from when it was written would only delay the same
     answer, so the rule is stated rather than guessed at: a lease-less record that has not ended is lost.
 
-    Args:
-        record: A job record.
-        now: The time to read it at, in the store's time when the store keeps one.
-
-    Returns:
-        ``True`` when the record carries no lease or its expiry is at or before ``now``.
+    :param record: A job record.
+    :ptype record: LeasedRecord
+    :param now: The time to read it at, in the store's time when the store keeps one.
+    :ptype now: datetime
+    :return: ``True`` when the record carries no lease or its expiry is at or before ``now``.
+    :rtype: bool
     """
     return record.lease is None or record.lease.expires() <= now
 
@@ -257,19 +255,19 @@ def settle_job_record[R: EvalDocumentModel](
     race — to another reader, or to the holder's renewal — re-reads and answers from what won. Idempotent: a record
     already ended, lost or otherwise, is returned as it is.
 
-    Args:
-        store: Where the record lives.
-        kind: Its type.
-        record_id: Its id.
-        scope_id: The scope it is read in; a record in another scope reads absent.
-
-    Returns:
-        ``(record, wrote_lost)``: the record as it now stands, or None when there is none; and whether THIS call
+    :param store: Where the record lives.
+    :ptype store: LeaseStore
+    :param kind: Its type.
+    :ptype kind: LeasedJobKind[R]
+    :param record_id: Its id.
+    :ptype record_id: str
+    :param scope_id: The scope it is read in; a record in another scope reads absent.
+    :ptype scope_id: str
+    :return: ``(record, wrote_lost)``: the record as it now stands, or None when there is none; and whether THIS call
         wrote it lost.
-
-    Raises:
-        ConflictError: Every attempt to write the lapse lost its race; nothing was decided, read it again.
-        StorageError: A read or write failed.
+    :rtype: tuple[R | None, bool]
+    :raises ConflictError: Every attempt to write the lapse lost its race; nothing was decided, read it again.
+    :raises StorageError: A read or write failed.
     """
     for _ in range(LEASE_WRITE_ATTEMPTS):
         record, etag = store.load_job_record(kind.model, record_id, scope_id)
@@ -325,20 +323,20 @@ def settle_tolerantly[R: EvalDocumentModel](
     record's, and a record this build cannot read, or cannot write lost (``ValidationError``), raises here as every
     other read of it does: left as stored, it read as a job still running, with nothing saying it was unreadable.
 
-    Args:
-        store: Where the record lives.
-        kind: Its type.
-        record_id: Its id.
-        scope_id: Its scope.
-
-    Returns:
-        The record as it now stands, or ``None`` where another writer kept moving it (or there is none): the caller
+    :param store: Where the record lives.
+    :ptype store: LeaseStore
+    :param kind: Its type.
+    :ptype kind: LeasedJobKind[R]
+    :param record_id: Its id.
+    :ptype record_id: str
+    :param scope_id: Its scope.
+    :ptype scope_id: str
+    :return: The record as it now stands, or ``None`` where another writer kept moving it (or there is none): the caller
         keeps what it read.
-
-    Raises:
-        StorageError: A read or write failed.
-        ValidationError: The record cannot be read under the current model, or a model refused a value while it was
-            written lost.
+    :rtype: R | None
+    :raises StorageError: A read or write failed.
+    :raises ValidationError: The record cannot be read under the current model, or a model refused a value while it was
+        written lost.
     """
     try:
         current, _ = settle_job_record(store, kind, record_id, scope_id)
@@ -360,18 +358,21 @@ def require_held[R: EvalDocumentModel](
     So it asks first: the record is read as every process reads it (:func:`settle_job_record`, which writes it lost
     when its lease has lapsed), and one that has ended is refused. A record never stored is not refused.
 
-    Args:
-        store: Where the record lives.
-        kind: Its type.
-        record_id: Its id.
-        scope_id: Its scope.
-        leases: The leases of the process asking; a record it has let go of is refused (see :func:`write_held_record`).
-
-    Raises:
-        JobFenced: The record has ended — written lost by a reader, by a shutdown, or here because its lease lapsed —
-            or this process let go of it.
-        ConflictError: The record kept changing while its lapse was being written; nothing was decided.
-        StorageError: A read or write failed.
+    :param store: Where the record lives.
+    :ptype store: LeaseStore
+    :param kind: Its type.
+    :ptype kind: LeasedJobKind[R]
+    :param record_id: Its id.
+    :ptype record_id: str
+    :param scope_id: Its scope.
+    :ptype scope_id: str
+    :param leases: The leases of the process asking; a record it has let go of is refused (see
+        :func:`write_held_record`).
+    :ptype leases: JobLeases | None
+    :raises JobFenced: The record has ended — written lost by a reader, by a shutdown, or here because its lease lapsed
+        — or this process let go of it.
+    :raises ConflictError: The record kept changing while its lapse was being written; nothing was decided.
+    :raises StorageError: A read or write failed.
     """
     _refuse_let_go(leases, kind, record_id)
     record, _ = settle_job_record(store, kind, record_id, scope_id)
@@ -383,8 +384,7 @@ def require_held[R: EvalDocumentModel](
 def _refuse_let_go(leases: JobLeases | None, kind: LeasedJobKind[Any], record_id: str) -> None:
     """Refuse a job's own write or spend once its process has let go of its lease — the one rule every kind keeps.
 
-    Raises:
-        JobFenced: ``leases`` has let go of ``record_id``.
+    :raises JobFenced: ``leases`` has let go of ``record_id``.
     """
     if leases is not None and leases.fenced(record_id):
         raise JobFenced(
@@ -398,17 +398,17 @@ def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reas
     The holder reads it at its next renewal and ends the job ``cancelled``; the write is unconditional and mints a
     new etag, so a holder mid-write re-reads and sees it.
 
-    Args:
-        store: Where the record lives.
-        record_id: The job's record.
-        scope_id: Its scope.
-        reason: Why, when the asker said; recorded on the record and on a run's ``cancellation_reason``.
-
-    Returns:
-        Whether the record was written (False: there is no such document).
-
-    Raises:
-        StorageError: The write failed.
+    :param store: Where the record lives.
+    :ptype store: LeaseStore
+    :param record_id: The job's record.
+    :ptype record_id: str
+    :param scope_id: Its scope.
+    :ptype scope_id: str
+    :param reason: Why, when the asker said; recorded on the record and on a run's ``cancellation_reason``.
+    :ptype reason: str | None
+    :return: Whether the record was written (False: there is no such document).
+    :rtype: bool
+    :raises StorageError: The write failed.
     """
     fields: dict[str, Any] = {"cancel_requested_at": store.store_time().isoformat(), "cancel_request_reason": reason}
     return store.merge_job_record_fields(record_id, scope_id, fields)
@@ -426,22 +426,22 @@ def write_held_record[R: EvalDocumentModel](
     or by a shutdown — refuses the write: the job writes nothing more. A record never stored (a generation run
     inline, which records its attempt only as it ends) is written as it is.
 
-    Args:
-        store: Where the record lives.
-        kind: Its type.
-        record: The record as the job would write it.
-        leases: The leases of the process writing it. A record this process has let go of
-            (:meth:`JobLeases.fenced`) is refused here before anything is read: the store may not say so yet — no
-            reader has written the loss, or the store's clock has not reached the expiry — and the process that
-            let go is the one that knows. ``None`` for a write no process holds a lease for.
-
-    Returns:
-        The record as written.
-
-    Raises:
-        JobFenced: The stored record has already ended, or this process let go of it; nothing was written.
-        ConflictError: Every attempt lost its race.
-        StorageError: A read or write failed.
+    :param store: Where the record lives.
+    :ptype store: JobRecordStore
+    :param kind: Its type.
+    :ptype kind: LeasedJobKind[R]
+    :param record: The record as the job would write it.
+    :ptype record: R
+    :param leases: The leases of the process writing it. A record this process has let go of
+        (:meth:`JobLeases.fenced`) is refused here before anything is read: the store may not say so yet — no
+        reader has written the loss, or the store's clock has not reached the expiry — and the process that
+        let go is the one that knows. ``None`` for a write no process holds a lease for.
+    :ptype leases: JobLeases | None
+    :return: The record as written.
+    :rtype: R
+    :raises JobFenced: The stored record has already ended, or this process let go of it; nothing was written.
+    :raises ConflictError: Every attempt lost its race.
+    :raises StorageError: A read or write failed.
     """
     _refuse_let_go(leases, kind, _leased(record).id)
     for _ in range(LEASE_WRITE_ATTEMPTS):
@@ -480,9 +480,8 @@ def _note_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, sco
     is not moved, so a store refusing only renewals takes it. ``False`` for a record that is gone. A lost race
     re-reads and re-applies.
 
-    Raises:
-        ConflictError: Every attempt lost its race.
-        StorageError: A read or write failed.
+    :raises ConflictError: Every attempt lost its race.
+    :raises StorageError: A read or write failed.
     """
     for _ in range(LEASE_WRITE_ATTEMPTS):
         record, etag = store.load_job_record(kind.model, record_id, scope_id)
@@ -552,13 +551,13 @@ class JobLeases:
     ) -> None:
         """Bind the leases to the store the records live in.
 
-        Args:
-            store: Where every held record lives.
-            lease_s: How long a lease lasts unless renewed, in seconds; renewed every third of it.
-            blocking_executor: Where the store round-trips run; ``None`` for the loop's default executor.
-
-        Raises:
-            ValueError: ``lease_s`` is not positive.
+        :param store: Where every held record lives.
+        :ptype store: LeaseStore
+        :param lease_s: How long a lease lasts unless renewed, in seconds; renewed every third of it.
+        :ptype lease_s: float
+        :param blocking_executor: Where the store round-trips run; ``None`` for the loop's default executor.
+        :ptype blocking_executor: Executor | None
+        :raises ValueError: ``lease_s`` is not positive.
         """
         if not lease_s > 0:
             raise ValueError(f"a job lease lasts some time; lease_s must be positive, got {lease_s!r}")
@@ -592,8 +591,8 @@ class JobLeases:
 
         Blocking: it reads the store's time.
 
-        Returns:
-            The lease.
+        :return: The lease.
+        :rtype: JobLease
         """
         return JobLease(holder=self._holder_id, expires_at=self._expiry(self._store.store_time()))
 
@@ -617,14 +616,18 @@ class JobLeases:
 
         Called on the event loop, which the renewal task runs on.
 
-        Args:
-            kind: The record's type.
-            record_id: The record — also the job's id in the manager.
-            scope_id: Its scope.
-            cancel: Ends the job ``cancelled``, given the reason asked; called once, when a renewal finds a cancel
-                asked of it.
-            stop: Stops the job at once; called when a renewal finds its record ended by another or its lease
-                lapsed, after which the job's writes are refused.
+        :param kind: The record's type.
+        :ptype kind: LeasedJobKind[Any]
+        :param record_id: The record — also the job's id in the manager.
+        :ptype record_id: str
+        :param scope_id: Its scope.
+        :ptype scope_id: str
+        :param cancel: Ends the job ``cancelled``, given the reason asked; called once, when a renewal finds a cancel
+            asked of it.
+        :ptype cancel: Callable[[str | None], object]
+        :param stop: Stops the job at once; called when a renewal finds its record ended by another or its lease
+            lapsed, after which the job's writes are refused.
+        :ptype stop: Callable[[], object]
         """
         self._held[record_id] = _Held(kind=kind, record_id=record_id, scope_id=scope_id, cancel=cancel, stop=stop)
         if self._renewer is None or self._renewer.done():
@@ -643,8 +646,8 @@ class JobLeases:
         held record's write (:func:`write_held_record`), a check before spending (:func:`require_held`) — are
         refused by it. Idempotent.
 
-        Args:
-            record_id: The record.
+        :param record_id: The record.
+        :ptype record_id: str
         """
         self._held.pop(record_id, None)
         self._let_go.add(record_id)
@@ -768,16 +771,14 @@ class JobLeases:
         away, when the process knows exactly why. Written as a shutdown writes it (the record's own lost ending,
         no lease, conditionally), so a record the work did end keeps that ending.
 
-        Args:
-            record_id: The record — the job's id in the manager.
-            cause: The loss's cause, in a poll's words.
-
-        Returns:
-            Whether it was written; ``False`` for a record this process does not hold, or one already ended.
-
-        Raises:
-            ConflictError: The record kept changing while it was being written.
-            StorageError: A read or write failed.
+        :param record_id: The record — the job's id in the manager.
+        :ptype record_id: str
+        :param cause: The loss's cause, in a poll's words.
+        :ptype cause: str
+        :return: Whether it was written; ``False`` for a record this process does not hold, or one already ended.
+        :rtype: bool
+        :raises ConflictError: The record kept changing while it was being written.
+        :raises StorageError: A read or write failed.
         """
         held = self._held.pop(record_id, None)
         if held is None:
@@ -820,8 +821,8 @@ class JobLeases:
     def _renew(self, held: _Held) -> tuple[RenewalVerdict, str | None]:
         """Renew one held lease: the blocking half of a renewal, one worker hop.
 
-        Returns:
-            The verdict, and the cancel's reason when one was asked.
+        :return: The verdict, and the cancel's reason when one was asked.
+        :rtype: tuple[RenewalVerdict, str | None]
         """
         for _ in range(LEASE_WRITE_ATTEMPTS):
             record, etag = self._store.load_job_record(held.kind.model, held.record_id, held.scope_id)
@@ -859,11 +860,10 @@ class JobLeases:
         once, in every process, rather than ``running`` until its lease lapses, and the jobs' own endings, written
         as they unwind, are refused.
 
-        Args:
-            cause: The loss's cause.
-
-        Returns:
-            The records written lost; one already ended, or whose write failed (logged), is not among them.
+        :param cause: The loss's cause.
+        :ptype cause: str
+        :return: The records written lost; one already ended, or whose write failed (logged), is not among them.
+        :rtype: list[str]
         """
         if self._renewer is not None:
             self._renewer.cancel()

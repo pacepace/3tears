@@ -49,8 +49,8 @@ class _PricesItsCalls(Protocol):
 async def refresh_prices(client: object) -> None:
     """Bring ``client``'s prices up to date before its calls are priced: await its ``refresh_prices()``, if it has one.
 
-    Args:
-        client: The client whose calls are about to be priced.
+    :param client: The client whose calls are about to be priced.
+    :ptype client: object
     """
     refresh = getattr(client, "refresh_prices", None)
     if callable(refresh):
@@ -67,20 +67,21 @@ def call_ceiling(
 ) -> float | None:
     """The most ``attempts`` requests of one prompt pair on ``client`` can cost, or ``None`` when it cannot say.
 
-    Args:
-        client: The client the call will be made on.
-        system: The system prompt the call sends.
-        user: The user message the call sends.
-        response_format: The provider directive the call sends, or ``None``.
-        attempts: How many requests the call can become in the engine's own hands — a judge's parse retry
-            (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`) re-sends the same pair. The client's
-            own re-sends are already inside its ceiling.
-
-    Returns:
-        The ceiling in dollars; ``None`` for a client with no ``price_ceiling``, or one that answered ``None``.
-
-    Raises:
-        ValueError: ``attempts`` is below 1, or the client answered an amount that is negative or not finite.
+    :param client: The client the call will be made on.
+    :ptype client: object
+    :param system: The system prompt the call sends.
+    :ptype system: str
+    :param user: The user message the call sends.
+    :ptype user: str
+    :param response_format: The provider directive the call sends, or ``None``.
+    :ptype response_format: dict[str, Any] | None
+    :param attempts: How many requests the call can become in the engine's own hands — a judge's parse retry
+        (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`) re-sends the same pair. The client's
+        own re-sends are already inside its ceiling.
+    :ptype attempts: int
+    :return: The ceiling in dollars; ``None`` for a client with no ``price_ceiling``, or one that answered ``None``.
+    :rtype: float | None
+    :raises ValueError: ``attempts`` is below 1, or the client answered an amount that is negative or not finite.
     """
     if attempts < 1:
         raise ValueError(f"a call is at least one request; got attempts={attempts}")
@@ -107,11 +108,13 @@ class CappedCompletion:
     def __init__(self, inner: CompletionGenerator, *, sink: CellSink, source: CellPending) -> None:
         """Bind the client, the cell's sink, and whose spend its calls are.
 
-        Args:
-            inner: The client every call is forwarded to.
-            sink: The cell's sink, which holds each call against the cap.
-            source: Whose spend the calls are — ``simulator`` for the simulated user's, ``candidate`` for a
-                candidate's own.
+        :param inner: The client every call is forwarded to.
+        :ptype inner: CompletionGenerator
+        :param sink: The cell's sink, which holds each call against the cap.
+        :ptype sink: CellSink
+        :param source: Whose spend the calls are — ``simulator`` for the simulated user's, ``candidate`` for a
+            candidate's own.
+        :ptype source: CellPending
         """
         self._inner = inner
         self._sink = sink
@@ -120,16 +123,15 @@ class CappedCompletion:
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         """Reserve the call's ceiling, make it, and settle the reservation to what it cost.
 
-        Args:
-            system: The system prompt.
-            user: The user message.
-            response_format: The provider directive, or ``None``.
-
-        Returns:
-            The client's completion, unchanged.
-
-        Raises:
-            CostCapReached: The cap has no room for the call, which is not made.
+        :param system: The system prompt.
+        :ptype system: str
+        :param user: The user message.
+        :ptype user: str
+        :param response_format: The provider directive, or ``None``.
+        :ptype response_format: dict[str, Any] | None
+        :return: The client's completion, unchanged.
+        :rtype: Any
+        :raises CostCapReached: The cap has no room for the call, which is not made.
         """
         await refresh_prices(self._inner)
         held = self._sink.reserve(

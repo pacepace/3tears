@@ -205,13 +205,13 @@ _GUARDRAILS_DISCLOSURE = (
 def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report:
     """Lay one stored analysis out as the campaign's page, over the bundle frozen with it at generation.
 
-    Args:
-        analysis: The analysis.
-        campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
-            campaign by its id.
-
-    Returns:
-        The report, ``basis="analysis"``.
+    :param analysis: The analysis.
+    :ptype analysis: EvalAnalysis
+    :param campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
+        campaign by its id.
+    :ptype campaign_name: str | None
+    :return: The report, ``basis="analysis"``.
+    :rtype: Report
     """
     generation = analysis.generation
     bundle = analysis_bundle(analysis)
@@ -276,15 +276,16 @@ def build_code_only_report(
     Everything here is code's, and the methods say no analysis was written. The report model refuses an author's
     words on a code-only report.
 
-    Args:
-        bundle: The campaign's evidence, as :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
-            assembled it.
-        assembled_at: When the bundle was assembled (ISO-8601), stated as the report's date.
-        campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
-            campaign by its id.
-
-    Returns:
-        The report, ``basis="code_only"``.
+    :param bundle: The campaign's evidence, as
+        :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle` assembled it.
+    :ptype bundle: AnalysisContextBundle
+    :param assembled_at: When the bundle was assembled (ISO-8601), stated as the report's date.
+    :ptype assembled_at: str
+    :param campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
+        campaign by its id.
+    :ptype campaign_name: str | None
+    :return: The report, ``basis="code_only"``.
+    :rtype: Report
     """
     source = ReportSource(
         campaign_id=bundle.campaign_id,
@@ -301,11 +302,10 @@ def build_code_only_report(
 def analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle:
     """The evidence bundle a stored analysis was written over, read back from the analysis.
 
-    Args:
-        analysis: The analysis.
-
-    Returns:
-        The bundle, as frozen at generation.
+    :param analysis: The analysis.
+    :ptype analysis: EvalAnalysis
+    :return: The bundle, as frozen at generation.
+    :rtype: AnalysisContextBundle
     """
     return AnalysisContextBundle.from_dict(dict(analysis.bundle))
 
@@ -313,11 +313,10 @@ def analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle:
 def analysis_verdict(analysis: EvalAnalysis) -> str:
     """The verdict line a stored analysis's report opens with, written by code over its frozen bundle.
 
-    Args:
-        analysis: The analysis.
-
-    Returns:
-        The verdict line.
+    :param analysis: The analysis.
+    :ptype analysis: EvalAnalysis
+    :return: The verdict line.
+    :rtype: str
     """
     bundle = analysis_bundle(analysis)
     names = _arm_names(bundle)
@@ -2145,15 +2144,14 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
     and interval in points), a cost on the scale its ``reading`` names, a time in the unit the page states it in. A
     program that wants the measure's own units reads :attr:`Report.verdicts` or the bundle, never these rows.
 
-    Args:
-        bundle: The campaign's evidence.
-
-    Returns:
-        One row per contrast, keyed ``question`` (in the words it was asked, or ``(campaign-wide)``), ``reading``,
+    :param bundle: The campaign's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: One row per contrast, keyed ``question`` (in the words it was asked, or ``(campaign-wide)``), ``reading``,
         ``unit`` (the unit ``control_mean``, ``arm_mean`` and ``delta`` are in; a percent's delta is in points),
         ``contrast`` and ``control`` (each arm as the page names it), ``control_mean``, ``arm_mean``, ``delta`` and
         ``change`` (the delta with its interval, in words), ``interval`` (with the level it holds at), ``hedges_g``,
         ``pairing_r``, ``p_adjusted``, ``verdict`` (in words) and ``cases``.
+    :rtype: list[dict[str, CellValue]]
     """
     surface = bundle_decision_surface(bundle)
     verdicts = iter(contrast_verdicts(bundle, surface))
@@ -2199,11 +2197,10 @@ def contrast_rows(bundle: AnalysisContextBundle) -> list[dict[str, CellValue]]:
 def report_cell_labels(bundle: AnalysisContextBundle) -> dict[str, str]:
     """Each cell's arm as the page names it, by cell reference: its label, with its test setup where it ran under two.
 
-    Args:
-        bundle: The campaign's evidence.
-
-    Returns:
-        ``cell_ref -> name`` for every cell on the bundle's surface.
+    :param bundle: The campaign's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: ``cell_ref -> name`` for every cell on the bundle's surface.
+    :rtype: dict[str, str]
     """
     surface = bundle_decision_surface(bundle)
     name = _cell_namer(surface, _arm_names(bundle))

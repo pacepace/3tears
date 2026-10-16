@@ -173,13 +173,16 @@ class CompletionProtocolDefect(TypeError):
     def __init__(self, completion: object, member: str, why: str, *, optional: bool = False) -> None:
         """Name the completion's type, the member it lacks or fills wrong, and why the engine reads that member.
 
-        Args:
-            completion: The completion as the client returned it.
-            member: The :class:`CompletionResult` member it does not carry, or the optional member
-                (:data:`OPTIONAL_COMPLETION_ATTRIBUTES`) it holds a value of the wrong type in.
-            why: What the engine reads the member for, or what is wrong with its value, as a clause.
-            optional: ``member`` is an optional member the completion carries with a wrong value, not a protocol
-                member it lacks.
+        :param completion: The completion as the client returned it.
+        :ptype completion: object
+        :param member: The :class:`CompletionResult` member it does not carry, or the optional member
+            (:data:`OPTIONAL_COMPLETION_ATTRIBUTES`) it holds a value of the wrong type in.
+        :ptype member: str
+        :param why: What the engine reads the member for, or what is wrong with its value, as a clause.
+        :ptype why: str
+        :param optional: ``member`` is an optional member the completion carries with a wrong value, not a protocol
+            member it lacks.
+        :ptype optional: bool
         """
         self.completion_type = type(completion).__name__
         self.member = member
@@ -216,15 +219,12 @@ def sent_settings_of(completion: object) -> ClientRequestSettings | None:
     the member and fills it wrong, and every call through its client would, so it is refused by name, as a missing
     protocol member is.
 
-    Args:
-        completion: A completion, as a client returned it (or a usage record standing for one).
-
-    Returns:
-        The settings the request was sent with, or ``None`` when the client does not report them.
-
-    Raises:
-        CompletionProtocolDefect: ``sent_settings`` is present and is neither ``None`` nor a
-            :class:`~threetears.evals.schema.ClientRequestSettings`.
+    :param completion: A completion, as a client returned it (or a usage record standing for one).
+    :ptype completion: object
+    :return: The settings the request was sent with, or ``None`` when the client does not report them.
+    :rtype: ClientRequestSettings | None
+    :raises CompletionProtocolDefect: ``sent_settings`` is present and is neither ``None`` nor a
+        :class:`~threetears.evals.schema.ClientRequestSettings`.
     """
     sent = getattr(completion, "sent_settings", None)
     if sent is None or isinstance(sent, ClientRequestSettings):
@@ -389,13 +389,14 @@ class PricedCompletion(Protocol):
         ``None`` is "this client cannot bound the call" — no rate for its model — and an out-of-run
         call under an enforced cap is then refused rather than made, since unknown is not $0.
 
-        Args:
-            system: The system prompt the call would send.
-            user: The user message the call would send.
-            response_format: The provider directive the call would send, or ``None``.
-
-        Returns:
-            The ceiling in dollars, or ``None``.
+        :param system: The system prompt the call would send.
+        :ptype system: str
+        :param user: The user message the call would send.
+        :ptype user: str
+        :param response_format: The provider directive the call would send, or ``None``.
+        :ptype response_format: dict[str, Any] | None
+        :return: The ceiling in dollars, or ``None``.
+        :rtype: float | None
         """
         ...
 

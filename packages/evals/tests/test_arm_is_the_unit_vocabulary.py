@@ -43,8 +43,8 @@ _SELF = Path(__file__).resolve().relative_to(_REPO).as_posix()
 def _sources() -> list[Path]:
     """Every scanned source file, build output excluded.
 
-    Returns:
-        The paths, sorted.
+    :return: The paths, sorted.
+    :rtype: list[Path]
     """
     found: list[Path] = []
     for tree, globs in (
@@ -63,8 +63,8 @@ def _sources() -> list[Path]:
 def _hits() -> list[tuple[str, str]]:
     """Every (path, line) carrying a retired phrase, this file excluded.
 
-    Returns:
-        The hits, in path order.
+    :return: The hits, in path order.
+    :rtype: list[tuple[str, str]]
     """
     hits: list[tuple[str, str]] = []
     for path in _sources():

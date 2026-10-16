@@ -73,9 +73,9 @@ class ToySpan:
     def duration_ms(self) -> float | None:
         """How long the span took, or ``None`` while it is still open.
 
-        Returns:
-            Milliseconds, or ``None`` for a span whose scope has not closed — which a finished
+        :return: Milliseconds, or ``None`` for a span whose scope has not closed — which a finished
             recorder should not hold, and which is skipped rather than counted as zero.
+        :rtype: float | None
         """
         if self.end_ns is None:
             return None
@@ -84,8 +84,8 @@ class ToySpan:
     def as_json(self) -> dict[str, Any]:
         """The span as the engine stores it — opaque JSON in the host's own shape.
 
-        Returns:
-            A JSON-safe dict.
+        :return: A JSON-safe dict.
+        :rtype: dict[str, Any]
         """
         return {
             "name": self.name,
@@ -121,8 +121,8 @@ def active_cell() -> CellIdentity | None:
     extents is a measurement decision the port's docstring rests on, and a fixture that could
     not see it would be taking that on trust.
 
-    Returns:
-        The cell, or ``None`` outside every identity scope.
+    :return: The cell, or ``None`` outside every identity scope.
+    :rtype: CellIdentity | None
     """
     return _CELL.get()
 
@@ -131,15 +131,16 @@ def active_cell() -> CellIdentity | None:
 def toy_span(name: str, *, operation: str, **attributes: Any) -> Iterator[ToySpan]:
     """Record one span of the toy host's work, if anything is collecting.
 
-    Args:
-        name: What the span covers, in the host's own words.
-        operation: The operation kind — :data:`OP_TURN_ROOT` or :data:`OP_MODEL_CALL` for the two
-            the buckets read, or anything else for a span that contributes to no bucket.
-        **attributes: Further attributes, carried verbatim into the stored JSON.
-
-    Yields:
-        The span record. A caller needs nothing from it; it is yielded so a test can read what
+    :param name: What the span covers, in the host's own words.
+    :ptype name: str
+    :param operation: The operation kind — :data:`OP_TURN_ROOT` or :data:`OP_MODEL_CALL` for the two
+        the buckets read, or anything else for a span that contributes to no bucket.
+    :ptype operation: str
+    :param **attributes: Further attributes, carried verbatim into the stored JSON.
+    :ptype attributes: Any
+    :yield: The span record. A caller needs nothing from it; it is yielded so a test can read what
         was recorded without reaching into the recorder.
+    :rtype: Iterator[ToySpan]
     """
     span = ToySpan(
         name=name,
@@ -168,11 +169,10 @@ def summarize(spans: list[ToySpan]) -> dict[str, float | None]:
     been excluded from. ``tool_ms`` is always ``None`` here, and legitimately — the extractor
     calls no tool, so there is nothing to have measured.
 
-    Args:
-        spans: Every span one cell's collection scope recorded.
-
-    Returns:
-        ``{"total_ms", "llm_ms", "tool_ms"}``, each a sum or ``None``.
+    :param spans: Every span one cell's collection scope recorded.
+    :ptype spans: list[ToySpan]
+    :return: ``{"total_ms", "llm_ms", "tool_ms"}``, each a sum or ``None``.
+    :rtype: dict[str, float | None]
     """
     totals: dict[str, float | None] = {OP_TURN_ROOT: None, OP_MODEL_CALL: None}
     for span in spans:
@@ -206,11 +206,10 @@ class ToyTraceSink:
     def cell_identity(self, cell: CellIdentity) -> Iterator[None]:
         """Mark everything inside as this cell's work, apparatus included.
 
-        Args:
-            cell: The execution the scope belongs to.
-
-        Yields:
-            Nothing. The identity travels on a ContextVar, so work the scope spawns carries it.
+        :param cell: The execution the scope belongs to.
+        :ptype cell: CellIdentity
+        :yield: Nothing. The identity travels on a ContextVar, so work the scope spawns carries it.
+        :rtype: Iterator[None]
         """
         self.identified.append(cell)
         token = _CELL.set(cell)
@@ -223,13 +222,12 @@ class ToyTraceSink:
     def cell_spans(self, cell: CellIdentity) -> Iterator[CellTrace]:
         """Collect the spans this cell's own work emits.
 
-        Args:
-            cell: The execution being collected.
-
-        Yields:
-            The record, filled as the scope closes. A body that raises leaves it holding the
+        :param cell: The execution being collected.
+        :ptype cell: CellIdentity
+        :yield: The record, filled as the scope closes. A body that raises leaves it holding the
             empty answer and the engine's read unreached, which is the same answer as a cell
             that never ran.
+        :rtype: Iterator[CellTrace]
         """
         collected = CellTrace()
         recorder = _Recorder()

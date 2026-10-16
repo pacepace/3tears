@@ -41,8 +41,8 @@ RETIRED = "retired_knob: Extra inputs are not permitted"
 def _fixture() -> tuple[OpsFixture, str, str]:
     """The toy operations host with one of its campaign's runs rewritten as no model would, and the other intact.
 
-    Returns:
-        The fixture, the unreadable run's id, and the readable one's.
+    :return: The fixture, the unreadable run's id, and the readable one's.
+    :rtype: tuple[OpsFixture, str, str]
     """
     store = InMemoryDocumentStore()
     fixture = ops_fixture(store=store)

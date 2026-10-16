@@ -204,21 +204,23 @@ def results_list(
     The run is read first, so a run that is not in the scope is refused as not found rather than listed
     as empty — an empty page would say the run produced nothing.
 
-    Args:
-        host: The host whose store holds the run.
-        run_id: The run.
-        scope_id: The scope it lives in.
-        condition: List only results in this condition; ``None`` lists every one.
-        offset: How many rows of the order to skip.
-        limit: The most rows to return; ``None`` returns every row from ``offset``. A surface that hands
-            the page to an agent bounds it (the ``results_list`` action does).
-
-    Returns:
-        The page.
-
-    Raises:
-        NotFoundError: No run with that id in the scope.
-        ValidationFailedError: ``offset`` is negative, or ``limit`` is below 1.
+    :param host: The host whose store holds the run.
+    :ptype host: EvalHost
+    :param run_id: The run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param condition: List only results in this condition; ``None`` lists every one.
+    :ptype condition: ResultOutcome | None
+    :param offset: How many rows of the order to skip.
+    :ptype offset: int
+    :param limit: The most rows to return; ``None`` returns every row from ``offset``. A surface that hands
+        the page to an agent bounds it (the ``results_list`` action does).
+    :ptype limit: int | None
+    :return: The page.
+    :rtype: ResultListing
+    :raises NotFoundError: No run with that id in the scope.
+    :raises ValidationFailedError: ``offset`` is negative, or ``limit`` is below 1.
     """
     if offset < 0:
         raise ValidationFailedError(f"offset is {offset}", remedy="pass an offset of 0 or more")
@@ -254,17 +256,17 @@ def result_get(host: EvalHost, result_id: str, scope_id: str, *, part: ResultPar
     else. The whole trace document is read whichever part is asked for: the bound is on what is
     returned, which is what a reader's context pays for.
 
-    Args:
-        host: The host whose store holds the result.
-        result_id: The result.
-        scope_id: The scope it lives in.
-        part: The part of the trace to return (:data:`ResultPart`).
-
-    Returns:
-        The result, its condition and the part asked for.
-
-    Raises:
-        NotFoundError: No result with that id in the scope — another type's id among them.
+    :param host: The host whose store holds the result.
+    :ptype host: EvalHost
+    :param result_id: The result.
+    :ptype result_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param part: The part of the trace to return (:data:`ResultPart`).
+    :ptype part: ResultPart
+    :return: The result, its condition and the part asked for.
+    :rtype: ResultDetail
+    :raises NotFoundError: No result with that id in the scope — another type's id among them.
     """
     result = get_result(host.storage, result_id, scope_id)
     trace = get_result_trace(host.storage, result) if result.has_trace else None

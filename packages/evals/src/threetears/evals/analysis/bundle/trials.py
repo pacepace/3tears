@@ -83,13 +83,14 @@ def trial_order(case_id: str, arm_position: int, repeat: int) -> tuple[str, int,
     A case id ending in ``-<number>`` sorts by that number under its prefix, so a generated ``{template}-2``
     precedes ``{template}-10``; any other id sorts as its text.
 
-    Args:
-        case_id: The trial's stored test case id.
-        arm_position: Its arm's place among the arms as the bundle lists them.
-        repeat: Which repeat of the case it is.
-
-    Returns:
-        The sort key.
+    :param case_id: The trial's stored test case id.
+    :ptype case_id: str
+    :param arm_position: Its arm's place among the arms as the bundle lists them.
+    :ptype arm_position: int
+    :param repeat: Which repeat of the case it is.
+    :ptype repeat: int
+    :return: The sort key.
+    :rtype: tuple[str, int, str, int, int]
     """
     numbered = _NUMBERED_ID.fullmatch(case_id)
     if numbered is None:
@@ -110,13 +111,14 @@ class TrialReading:
 def read_trial(result: EvalResult, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]) -> TrialReading:
     """Decide how one trial ended: lost, failed or passed, and why.
 
-    Args:
-        result: The stored result.
-        rubric_threshold: The 1–5 level a judged dimension must reach to pass, as pass^k reads it.
-        catalog: The bundle's measure catalog, which names each check and says which scorers are pass/fail.
-
-    Returns:
-        The trial's reading.
+    :param result: The stored result.
+    :ptype result: EvalResult
+    :param rubric_threshold: The 1–5 level a judged dimension must reach to pass, as pass^k reads it.
+    :ptype rubric_threshold: int
+    :param catalog: The bundle's measure catalog, which names each check and says which scorers are pass/fail.
+    :ptype catalog: Mapping[str, MetricDescriptor]
+    :return: The trial's reading.
+    :rtype: TrialReading
     """
     checks = _failed_checks(result, catalog)
     below = [score for score in capability_scores(result) if not score.clears(rubric_threshold)]
@@ -189,22 +191,28 @@ def trials_and_census(
 ) -> TrialsAndCensus:
     """Every trial's row and every arm's census, over the campaign's results.
 
-    Args:
-        results: Every result of the resolved member runs, after the bundle's own rewrites (a classifier's failure
-            read as a miss).
-        arm_order: The arms' variant keys in the order the bundle lists them; an arm absent here is listed after,
-            by key.
-        strata: Each test case's declared stratum, by case id.
-        names: The name each test case's author gave it, by case id, for the cases that have one.
-        criteria: Each judged dimension's rubric criterion as the judge was asked it, by dimension name.
-        rubric_threshold: The 1–5 level a judged dimension must reach to pass.
-        catalog: The bundle's measure catalog.
-        load_trace: Reads one result's stored trace, or None; called only for a result that has one and is kept.
-
-    Returns:
-        The census, the kept rows and how many were left out. The losses by cause and the differential-loss flag are
-        the bundle's ``exclusions`` and ``differential_exclusions``, which the assembler counts off the same
+    :param results: Every result of the resolved member runs, after the bundle's own rewrites (a classifier's failure
+        read as a miss).
+    :ptype results: Sequence[EvalResult]
+    :param arm_order: The arms' variant keys in the order the bundle lists them; an arm absent here is listed after,
+        by key.
+    :ptype arm_order: Sequence[str]
+    :param strata: Each test case's declared stratum, by case id.
+    :ptype strata: Mapping[str, str | None]
+    :param names: The name each test case's author gave it, by case id, for the cases that have one.
+    :ptype names: Mapping[str, str] | None
+    :param criteria: Each judged dimension's rubric criterion as the judge was asked it, by dimension name.
+    :ptype criteria: Mapping[str, str]
+    :param rubric_threshold: The 1–5 level a judged dimension must reach to pass.
+    :ptype rubric_threshold: int
+    :param catalog: The bundle's measure catalog.
+    :ptype catalog: Mapping[str, MetricDescriptor]
+    :param load_trace: Reads one result's stored trace, or None; called only for a result that has one and is kept.
+    :ptype load_trace: Callable[[EvalResult], EvalTrace | None]
+    :return: The census, the kept rows and how many were left out. The losses by cause and the differential-loss flag
+        are the bundle's ``exclusions`` and ``differential_exclusions``, which the assembler counts off the same
         :func:`~threetears.evals.kernel.result_condition.trial_exclusion`, never counted again here.
+    :rtype: TrialsAndCensus
     """
     readings = {result.id: read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog) for result in results}
     position = {variant: index for index, variant in enumerate(arm_order)}

@@ -93,11 +93,10 @@ PROSE_WHOLE_FROM = 10.0
 def prose_number(value: float | None) -> str:
     """Spell a number for a sentence: whole from :data:`PROSE_WHOLE_FROM` up, two figures below, never an exponent.
 
-    Args:
-        value: The number, or ``None`` when there is none.
-
-    Returns:
-        Its text; :data:`~threetears.evals.analysis.numbers.ABSENT` for ``None``, NaN or an infinity.
+    :param value: The number, or ``None`` when there is none.
+    :ptype value: float | None
+    :return: Its text; :data:`~threetears.evals.analysis.numbers.ABSENT` for ``None``, NaN or an infinity.
+    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return ABSENT
@@ -118,13 +117,13 @@ def state_in_prose(value: float, ruler: MeasureRuler) -> str:
     (:func:`~threetears.evals.analysis.report.figures.measure_rulers`): a figure in a sentence choosing its unit over
     itself alone read ``950 ms`` beside a table stating the same latency in s.
 
-    Args:
-        value: The value, in the unit it was measured in.
-        ruler: Its measure's ruler; :data:`~threetears.evals.analysis.report.figures.UNITLESS` for a judged score.
-
-    Returns:
-        The value's text: money as ``$0.012`` (``$3.1 per 1,000 replies`` on that ruler), a share as ``99%``,
+    :param value: The value, in the unit it was measured in.
+    :ptype value: float
+    :param ruler: Its measure's ruler; :data:`~threetears.evals.analysis.report.figures.UNITLESS` for a judged score.
+    :ptype ruler: MeasureRuler
+    :return: The value's text: money as ``$0.012`` (``$3.1 per 1,000 replies`` on that ruler), a share as ``99%``,
         anything else joined to its unit where one is known.
+    :rtype: str
     """
     scaled = value * ruler.factor
     if is_money(ruler.unit):
@@ -139,15 +138,12 @@ def state_in_prose(value: float, ruler: MeasureRuler) -> str:
 def parse_reference(inner: str) -> tuple[str, str, str, str]:
     """Split one reference's inside into its four fields, or refuse it.
 
-    Args:
-        inner: The text between the braces.
-
-    Returns:
-        ``(cell, measure_id, reading, stat)``.
-
-    Raises:
-        UnresolvableReference: It is not four non-empty fields, the reading is neither kind, or the
-            statistic is not one that reading carries.
+    :param inner: The text between the braces.
+    :ptype inner: str
+    :return: ``(cell, measure_id, reading, stat)``.
+    :rtype: tuple[str, str, str, str]
+    :raises UnresolvableReference: It is not four non-empty fields, the reading is neither kind, or the
+        statistic is not one that reading carries.
     """
     fields = [field.strip() for field in inner.split("|")]
     if len(fields) != 4 or not all(fields):
@@ -181,19 +177,18 @@ def render_reference(
 ) -> str:
     """Resolve one reference against the surface and state its value.
 
-    Args:
-        surface: The analysis's decision surface.
-        inner: The text between the braces.
-        catalog: The bundle's ``measure_catalog``, which says which measures are shares stated as percents
-            (:func:`~threetears.evals.analysis.report.figures.report_rulers`); None reads the engine's own
-            descriptions alone.
-
-    Returns:
-        The value as a reader sees it: a count bare, a check's pass rate as ``<passed> of <evaluated>``,
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param inner: The text between the braces.
+    :ptype inner: str
+    :param catalog: The bundle's ``measure_catalog``, which says which measures are shares stated as percents
+        (:func:`~threetears.evals.analysis.report.figures.report_rulers`); None reads the engine's own
+        descriptions alone.
+    :ptype catalog: Mapping[str, MetricDescriptor] | None
+    :return: The value as a reader sees it: a count bare, a check's pass rate as ``<passed> of <evaluated>``,
         anything else in its display unit (:func:`state_in_prose`).
-
-    Raises:
-        UnresolvableReference: The reference is malformed, or names nothing the surface holds.
+    :rtype: str
+    :raises UnresolvableReference: The reference is malformed, or names nothing the surface holds.
     """
     cell, measure_id, reading, stat = parse_reference(inner)
     cell_ref = cell_of_alias(surface, cell)
@@ -234,9 +229,8 @@ def _summary(surface: DecisionSurface, cell_ref: str, measure_id: str) -> Measur
 def _category_counts(surface: DecisionSurface, inner: str, cell_ref: str, measure_id: str, stat: str) -> str | None:
     """State a categorical measure's ``n`` or one category's count; None for a numeric measure's point stat.
 
-    Raises:
-        UnresolvableReference: A category count named on a numeric measure, a category the measure
-            never recorded, or a point statistic named on a categorical measure.
+    :raises UnresolvableReference: A category count named on a numeric measure, a category the measure
+        never recorded, or a point statistic named on a categorical measure.
     """
     summary = next((m for m in require_cell(surface, cell_ref).measures.measures if m.name == measure_id), None)
     wants_count = stat.startswith(CATEGORY_COUNT_PREFIX)
@@ -271,17 +265,17 @@ def render_text(
 ) -> str:
     """Replace every figure reference in one piece of prose with its value.
 
-    Args:
-        surface: The analysis's decision surface.
-        text: The prose as the model wrote it.
-        where: Where it sits in the document, for the refusal.
-        catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it.
-
-    Returns:
-        The prose with each reference rendered.
-
-    Raises:
-        UnresolvableReference: A reference in it is malformed or names nothing the surface holds.
+    :param surface: The analysis's decision surface.
+    :ptype surface: DecisionSurface
+    :param text: The prose as the model wrote it.
+    :ptype text: str
+    :param where: Where it sits in the document, for the refusal.
+    :ptype where: str
+    :param catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it.
+    :ptype catalog: Mapping[str, MetricDescriptor] | None
+    :return: The prose with each reference rendered.
+    :rtype: str
+    :raises UnresolvableReference: A reference in it is malformed or names nothing the surface holds.
     """
 
     def render(match: re.Match[str]) -> str:
@@ -302,16 +296,15 @@ def render_prose_figures(
     the next free-text field someone adds. An id, a cell or a vocabulary word holds no reference,
     so rendering it is a no-op.
 
-    Args:
-        document: The validated authored document.
-        surface: The decision surface its references resolve against.
-        catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it.
-
-    Returns:
-        The document with every reference replaced by its value.
-
-    Raises:
-        UnresolvableReference: A reference is malformed or names nothing the surface holds.
+    :param document: The validated authored document.
+    :ptype document: AuthoredAnalysis
+    :param surface: The decision surface its references resolve against.
+    :ptype surface: DecisionSurface
+    :param catalog: The bundle's ``measure_catalog``, as :func:`render_reference` reads it.
+    :ptype catalog: Mapping[str, MetricDescriptor] | None
+    :return: The document with every reference replaced by its value.
+    :rtype: AuthoredAnalysis
+    :raises UnresolvableReference: A reference is malformed or names nothing the surface holds.
     """
 
     def walk(value: object, where: str) -> object:
@@ -405,12 +398,10 @@ def reference_grammar() -> str:
     refused), and disclosing it only on a failed generation reports the cost after it is paid;
     saying here which description holds is what makes the stale text harmless.
 
-    Returns:
-        The section, heading first.
-
-    Raises:
-        UnresolvableReference: An example no longer renders — the grammar changed under this
-            function, and every generation would share the break, so it fails loudly here.
+    :return: The section, heading first.
+    :rtype: str
+    :raises UnresolvableReference: An example no longer renders — the grammar changed under this
+        function, and every generation would share the break, so it fails loudly here.
     """
     surface = _example_surface()
     aliases = list(cell_aliases(surface.cells))

@@ -50,12 +50,11 @@ DriftState = Literal["current", "stale", "customized"]
 def seed_digest(seed: SeedTemplate | str) -> str:
     """The canonical digest of a seed's content: what a host records when it seeds a slot from it.
 
-    Args:
-        seed: A text seed's string, or a sectioned template — a shipped constant, or a stored copy rebuilt with
-            :meth:`SeedTemplate.from_dict`.
-
-    Returns:
-        The full sha256 hex digest; equal for equal content whatever the template's revision number.
+    :param seed: A text seed's string, or a sectioned template — a shipped constant, or a stored copy rebuilt with
+        :meth:`SeedTemplate.from_dict`.
+    :ptype seed: SeedTemplate | str
+    :return: The full sha256 hex digest; equal for equal content whatever the template's revision number.
+    :rtype: str
     """
     if isinstance(seed, str):
         return canonical_digest({"text": seed})
@@ -68,15 +67,14 @@ def seed_digest(seed: SeedTemplate | str) -> str:
 class PromptDrift:
     """How one stored prompt reads against the package's shipped default.
 
-    Attributes:
-        prompt_type: The catalogue id of the slot.
-        state: ``current``, ``stale`` or ``customized`` (the module docstring).
-        shipped_digest: The digest of the package's default.
-        stored_digest: The digest of the stored copy.
-        remedy: What to do about a stale copy, or one a call refuses for its contract; empty otherwise.
-        contract: Which output contract the stored copy was written for, against the one the shipped default states:
-            ``current``, ``outdated``, ``undeclared``, or ``unbound`` for a prompt with no contract.
-        expected_contract: The contract line the shipped default carries; empty for an unbound prompt.
+    :ivar prompt_type: The catalogue id of the slot.
+    :ivar state: ``current``, ``stale`` or ``customized`` (the module docstring).
+    :ivar shipped_digest: The digest of the package's default.
+    :ivar stored_digest: The digest of the stored copy.
+    :ivar remedy: What to do about a stale copy, or one a call refuses for its contract; empty otherwise.
+    :ivar contract: Which output contract the stored copy was written for, against the one the shipped default states:
+        ``current``, ``outdated``, ``undeclared``, or ``unbound`` for a prompt with no contract.
+    :ivar expected_contract: The contract line the shipped default carries; empty for an unbound prompt.
     """
 
     prompt_type: str
@@ -124,25 +122,27 @@ def prompt_drift(
 ) -> PromptDrift:
     """Read a stored copy of a catalogue prompt against the package's shipped default.
 
-    Args:
-        entry: The catalogue entry the slot was seeded from.
-        shipped: The package's default, resolved from ``entry.seed_ref`` by import.
-        stored: The copy the host's registry holds now, in the entry's kind: a string for a text seed, a
-            :class:`SeedTemplate` (rebuilt from its payload) for a template seed.
-        seeded_digest: :func:`seed_digest` of what the host seeded the slot with, as it recorded it then; ``None``
-            when it recorded nothing.
-        reset: How an operator of this host resets the slot to the shipped default — an action or a command,
-            such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry is the host's, so the
-            engine cannot name it; the remedy does.
-        customized: Whether the host holds the stored copy as deliberately its own — then it is never stale.
-
-    Returns:
-        The reading, with the output contract the stored copy was written for read against the one the shipped
+    :param entry: The catalogue entry the slot was seeded from.
+    :ptype entry: SeedPrompt
+    :param shipped: The package's default, resolved from ``entry.seed_ref`` by import.
+    :ptype shipped: SeedTemplate | str
+    :param stored: The copy the host's registry holds now, in the entry's kind: a string for a text seed, a
+        :class:`SeedTemplate` (rebuilt from its payload) for a template seed.
+    :ptype stored: SeedTemplate | str
+    :param seeded_digest: :func:`seed_digest` of what the host seeded the slot with, as it recorded it then; ``None``
+        when it recorded nothing.
+    :ptype seeded_digest: str | None
+    :param reset: How an operator of this host resets the slot to the shipped default — an action or a command,
+        such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry is the host's, so the
+        engine cannot name it; the remedy does.
+    :ptype reset: str
+    :param customized: Whether the host holds the stored copy as deliberately its own — then it is never stale.
+    :ptype customized: bool
+    :return: The reading, with the output contract the stored copy was written for read against the one the shipped
         default states.
-
-    Raises:
-        TypeError: ``shipped`` or ``stored`` is not of the entry's kind.
-        ValueError: ``shipped`` declares more than one output contract, or ``reset`` is blank.
+    :rtype: PromptDrift
+    :raises TypeError: ``shipped`` or ``stored`` is not of the entry's kind.
+    :raises ValueError: ``shipped`` declares more than one output contract, or ``reset`` is blank.
     """
     reset = require_reset(reset)
     wanted: type = SeedTemplate if entry.kind == KIND_TEMPLATE else str

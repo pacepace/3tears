@@ -80,8 +80,8 @@ class _RecordingKind:
 async def _runner_cells() -> tuple[EvalHost, EvalRun, list[EvalTestCase], list[tuple[EvalResult, CandidateOutput]]]:
     """Run the toy host's arming template on one model through the real runner, keeping each cell's output.
 
-    Returns:
-        The host, the run, its cases, and each stored result beside the output its kind returned.
+    :return: The host, the run, its cases, and each stored result beside the output its kind returned.
+    :rtype: tuple[EvalHost, EvalRun, list[EvalTestCase], list[tuple[EvalResult, CandidateOutput]]]
     """
     host = toyhost_host()
     world = host.profile.world

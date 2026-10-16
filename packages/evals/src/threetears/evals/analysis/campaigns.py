@@ -173,8 +173,8 @@ def create_campaign(
 ) -> EvalCampaign:
     """Create and persist a campaign from an authoring definition.
 
-    A name the model does not declare is refused; server-owned identity/lifecycle fields in ``definition`` are ignored — a
-    fresh ``id`` and ``created_at`` are always assigned, and ``scope_id`` and ``created_by`` come
+    A name the model does not declare is refused; server-owned identity/lifecycle fields in ``definition`` are ignored —
+    a fresh ``id`` and ``created_at`` are always assigned, and ``scope_id`` and ``created_by`` come
     from the surface rather than from the caller. ``name`` / ``subject_id`` /
     ``behavior`` are required (non-empty); the rest default per
     :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
@@ -199,33 +199,36 @@ def create_campaign(
     (:func:`update_campaign`) ends it without a second flag to clear. Its report and analysis bundle say so once,
     and its analysis reads a design inferred from the runs.
 
-    Args:
-        storage: The campaign store.
-        definition: Campaign fields. Any ``run_ids`` it carries must live in ``scope_id``.
-        scope_id: The scope the campaign lives in — the one its member runs live in.
-        created_by: Who is creating it, as the calling surface knows them. Keyword-only and
-            required, so a new surface cannot reach this function without deciding what it
-            records — which is the whole defect: the field existed for the campaign's entire
-            life and neither surface ever wrote it.
-        profile: The host whose vocabulary this reads.
-        control_from_run_id: One of ``definition``'s runs whose variant becomes the declared control, or
-            None. Requires a ``declared_design``, and one that does not type ``control`` itself.
-        exploratory: True to create the campaign with no design, saying so; required when ``definition``
-            declares none, and refused beside one.
-
-    Returns:
-        The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-
-    Raises:
-        ValidationFailedError: ``definition`` declares no design and ``exploratory`` is False, or declares one
-            and ``exploratory`` is True; fails campaign validation, names a run that does
-            not exist in ``scope_id``, or declares a design this host cannot honour; or
-            ``control_from_run_id`` is given with no design, beside a typed ``control``, or names a run
-            the campaign does not hold; or the design sends a control pre-image the server would not store.
-        LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
-            map disagrees with its own registry.
-        StorageError: The campaign failed to persist (a failed write must not
-            read back as a created 201 for an id ``campaign_get`` then 404s).
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param definition: Campaign fields. Any ``run_ids`` it carries must live in ``scope_id``.
+    :ptype definition: dict[str, Any]
+    :param scope_id: The scope the campaign lives in — the one its member runs live in.
+    :ptype scope_id: str
+    :param created_by: Who is creating it, as the calling surface knows them. Keyword-only and
+        required, so a new surface cannot reach this function without deciding what it
+        records — which is the whole defect: the field existed for the campaign's entire
+        life and neither surface ever wrote it.
+    :ptype created_by: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :param control_from_run_id: One of ``definition``'s runs whose variant becomes the declared control, or
+        None. Requires a ``declared_design``, and one that does not type ``control`` itself.
+    :ptype control_from_run_id: str | None
+    :param exploratory: True to create the campaign with no design, saying so; required when ``definition``
+        declares none, and refused beside one.
+    :ptype exploratory: bool
+    :return: The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+    :rtype: EvalCampaign
+    :raises ValidationFailedError: ``definition`` declares no design and ``exploratory`` is False, or declares one
+        and ``exploratory`` is True; fails campaign validation, names a run that does
+        not exist in ``scope_id``, or declares a design this host cannot honour; or
+        ``control_from_run_id`` is given with no design, beside a typed ``control``, or names a run
+        the campaign does not hold; or the design sends a control pre-image the server would not store.
+    :raises LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
+        map disagrees with its own registry.
+    :raises StorageError: The campaign failed to persist (a failed write must not
+        read back as a created 201 for an id ``campaign_get`` then 404s).
     """
     from pydantic import ValidationError
 
@@ -299,12 +302,11 @@ _THE_TWO_KINDS = (
 def _refuse_an_unsaid_kind(*, declared: bool, exploratory: bool) -> None:
     """Refuse a create that does not say, or contradicts itself about, whether the campaign is declared.
 
-    Args:
-        declared: Whether the definition carries a design.
-        exploratory: The caller's assertion that it carries none.
-
-    Raises:
-        ValidationFailedError: Neither was said, or both were.
+    :param declared: Whether the definition carries a design.
+    :ptype declared: bool
+    :param exploratory: The caller's assertion that it carries none.
+    :ptype exploratory: bool
+    :raises ValidationFailedError: Neither was said, or both were.
     """
     if declared and exploratory:
         raise ValidationFailedError(
@@ -325,15 +327,13 @@ def _campaign_template(storage: CampaignStore, campaign: EvalCampaign) -> str | 
     so a campaign whose runs all ran one template is over that template whether or not its author typed the id —
     typing it was the only way to declare such a bar, and the action that creates a campaign did not take it.
 
-    Args:
-        storage: The campaign store.
-        campaign: The campaign as defined, its runs already held to its scope.
-
-    Returns:
-        The template's id, or None when it names none and its runs ran more than one template, or none.
-
-    Raises:
-        NotFoundError: The campaign names a template its scope does not hold.
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign: The campaign as defined, its runs already held to its scope.
+    :ptype campaign: EvalCampaign
+    :return: The template's id, or None when it names none and its runs ran more than one template, or none.
+    :rtype: str | None
+    :raises NotFoundError: The campaign names a template its scope does not hold.
     """
     if campaign.template_id:
         if storage.load_template(campaign.template_id, campaign.scope_id) is None:
@@ -356,8 +356,7 @@ def _templates_run(storage: CampaignStore, campaign: EvalCampaign) -> list[str]:
 def _refuse_pooled_revisions(storage: CampaignStore, run_ids: Sequence[str], scope_id: str, *, what: str) -> None:
     """Refuse membership that would hold runs of two revisions of one template (:mod:`.revisions`).
 
-    Raises:
-        ValidationFailedError: Naming the template and its revisions; nothing was written.
+    :raises ValidationFailedError: Naming the template and its revisions; nothing was written.
     """
     ran = (run.template_id for run_id in run_ids if (run := storage.load_eval_run(run_id, scope_id)) is not None)
     refuse_pooled_revisions(ran, lambda template_id: storage.load_template(template_id, scope_id), what=what)
@@ -372,13 +371,13 @@ def _refuse_runs_outside_scope(storage: CampaignStore, run_ids: Sequence[str], s
     claims and no analysis of the campaign can see. Refused all-or-nothing, naming every id, so a
     partly-wrong request leaves the campaign as the caller last saw it.
 
-    Args:
-        storage: The campaign store.
-        run_ids: The runs to be held.
-        scope_id: The campaign's scope.
-
-    Raises:
-        ValidationFailedError: One or more of ``run_ids`` does not resolve in ``scope_id``.
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param run_ids: The runs to be held.
+    :ptype run_ids: Sequence[str]
+    :param scope_id: The campaign's scope.
+    :ptype scope_id: str
+    :raises ValidationFailedError: One or more of ``run_ids`` does not resolve in ``scope_id``.
     """
     if not run_ids:
         return
@@ -401,12 +400,12 @@ def _stamp_declaration(design: CampaignDesign, declared_by: str) -> CampaignDesi
     move is the per-question history, which is why ``asked_at`` lives on the question and is
     preserved by :func:`~threetears.evals.kernel.declaration.reconcile_question_edits`.
 
-    Args:
-        design: The declaration being written.
-        declared_by: Who is writing it, as the calling surface knows them.
-
-    Returns:
-        The declaration with its authorship stamped.
+    :param design: The declaration being written.
+    :ptype design: CampaignDesign
+    :param declared_by: Who is writing it, as the calling surface knows them.
+    :ptype declared_by: str
+    :return: The declaration with its authorship stamped.
+    :rtype: CampaignDesign
     """
     from threetears.evals.schema.models import utc_now_iso
 
@@ -430,22 +429,23 @@ def _gate_declaration(
     storage rather than through the service's ``get_template``, whose own refusals are about
     launching runs from it and have nothing to say about what it declares.
 
-    Args:
-        storage: The campaign store.
-        campaign: The campaign the declaration is written on. Its ``behavior`` is what a registered
-            bar is keyed under; its ``template_id`` is read in the campaign's scope, and may be
-            blank or dangle — ``EvalCampaign.template_id`` is a reference, not a foreign key.
-            Either way no rubric dimension or goal-state check is known, and a bar naming one is
-            refused saying so.
-        design: The declaration to check.
-        profile: The host whose vocabulary this reads.
-
-    Raises:
-        ValidationFailedError: An axis the host will not accept — neither a registered
-            lever nor a recognised open-family member, pointing at :func:`declarable_axes` — a bar naming neither a described
-            measure nor a rubric dimension or goal-state check of the campaign's template, a
-            bar is looser than the registered incumbent, a bar contradicts the better-direction
-            of what it names.
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign: The campaign the declaration is written on. Its ``behavior`` is what a registered
+        bar is keyed under; its ``template_id`` is read in the campaign's scope, and may be
+        blank or dangle — ``EvalCampaign.template_id`` is a reference, not a foreign key.
+        Either way no rubric dimension or goal-state check is known, and a bar naming one is
+        refused saying so.
+    :ptype campaign: EvalCampaign
+    :param design: The declaration to check.
+    :ptype design: CampaignDesign
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :raises ValidationFailedError: An axis the host will not accept — neither a registered
+        lever nor a recognised open-family member, pointing at :func:`declarable_axes` — a bar naming neither a
+        described measure nor a rubric dimension or goal-state check of the campaign's template, a
+        bar is looser than the registered incumbent, a bar contradicts the better-direction
+        of what it names.
     """
     from threetears.evals.kernel.declaration import NO_TEMPLATE_REMEDY, DesignRefused, refuse_an_undeclarable_design
 
@@ -472,12 +472,11 @@ def declarable_axes(profile: HostProfile) -> DeclarableAxes:
     (:func:`~threetears.evals.kernel.declaration.refuse_an_undeclarable_design`) is handed: an
     offer drawn from any other registry could promise an axis the gate then refuses.
 
-    Args:
-        profile: The host whose registry the campaign is declared against.
-
-    Returns:
-        The fixed levers, the open families whose members are declarable, and the remedy
+    :param profile: The host whose registry the campaign is declared against.
+    :ptype profile: HostProfile
+    :return: The fixed levers, the open families whose members are declarable, and the remedy
         sentence a refused declaration carries.
+    :rtype: DeclarableAxes
     """
     registry = profile.sweepables
     return DeclarableAxes(
@@ -549,37 +548,42 @@ def update_campaign(
     keeps the stored lever map and identity version (an echoed declaration is not re-dated), any other typed
     key has none and is dated this build's, and either one sent with another value is refused.
 
-    Args:
-        storage: The campaign store.
-        campaign_id: The campaign to amend.
-        scope_id: The scope it lives in.
-        updates: Partial field map; every key must be updatable.
-        updated_by: Who is amending it, as the calling surface knows them. Recorded on the
-            declaration when this update writes one; it never becomes ``created_by``, since
-            a later editor is not the author.
-        profile: The host whose vocabulary this reads.
-        exploratory: True to say the campaign this update leaves declares no design; required to set
-            ``declared_design`` to None.
-        control_from_run_id: One of the campaign's runs whose variant becomes the declared control, or None.
-        clear_control: True to clear the declared control; a campaign declaring no design has none to clear.
-
-    Returns:
-        The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
-        ConflictError: The campaign holds a run, and the update writes ``declared_design``, clears its control, or
-            names a control where one is already declared (:func:`_refuse_frozen_design`).
-        ValidationFailedError: ``updates`` is empty and no control is named or cleared, names a field that is
-            not updatable, drops a stored question, fails campaign validation, or declares a design this
-            host cannot honour; sets ``declared_design`` to None without ``exploratory``;
-            ``exploratory`` is True beside a design, or on a declared campaign this update leaves declared;
-            or ``control_from_run_id`` is given beside ``clear_control``, with no declaration to hold it, beside a
-            design typing ``control``, or naming a run the campaign does not hold; or the design sends a control
-            pre-image the server would not store.
-        LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
-            map disagrees with its own registry.
-        StorageError: The updated campaign failed to persist.
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: The campaign to amend.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param updates: Partial field map; every key must be updatable.
+    :ptype updates: dict[str, Any]
+    :param updated_by: Who is amending it, as the calling surface knows them. Recorded on the
+        declaration when this update writes one; it never becomes ``created_by``, since
+        a later editor is not the author.
+    :ptype updated_by: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :param exploratory: True to say the campaign this update leaves declares no design; required to set
+        ``declared_design`` to None.
+    :ptype exploratory: bool
+    :param control_from_run_id: One of the campaign's runs whose variant becomes the declared control, or None.
+    :ptype control_from_run_id: str | None
+    :param clear_control: True to clear the declared control; a campaign declaring no design has none to clear.
+    :ptype clear_control: bool
+    :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    :raises ConflictError: The campaign holds a run, and the update writes ``declared_design``, clears its control, or
+        names a control where one is already declared (:func:`_refuse_frozen_design`).
+    :raises ValidationFailedError: ``updates`` is empty and no control is named or cleared, names a field that is
+        not updatable, drops a stored question, fails campaign validation, or declares a design this
+        host cannot honour; sets ``declared_design`` to None without ``exploratory``;
+        ``exploratory`` is True beside a design, or on a declared campaign this update leaves declared;
+        or ``control_from_run_id`` is given beside ``clear_control``, with no declaration to hold it, beside a
+        design typing ``control``, or naming a run the campaign does not hold; or the design sends a control
+        pre-image the server would not store.
+    :raises LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
+        map disagrees with its own registry.
+    :raises StorageError: The updated campaign failed to persist.
     """
     from pydantic import ValidationError
 
@@ -728,16 +732,15 @@ def update_campaign(
 def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> EvalCampaign:
     """Load a campaign by id.
 
-    Args:
-        storage: The campaign store.
-        campaign_id: The campaign to load.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The campaign.
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: The campaign to load.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The campaign.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
@@ -765,17 +768,16 @@ def get_campaign_view(storage: CampaignStore, campaign_id: str, scope_id: str) -
     Every surface that reads one campaign reaches this, so they all answer
     with the same facts.
 
-    Args:
-        storage: The campaign store.
-        campaign_id: Campaign to load.
-        scope_id: The scope the campaign and its member runs live in.
-
-    Returns:
-        A :class:`~threetears.evals.kernel.campaign.CampaignView` — the campaign
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: Campaign to load.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign and its member runs live in.
+    :ptype scope_id: str
+    :return: A :class:`~threetears.evals.kernel.campaign.CampaignView` — the campaign
         plus its derived window (or ``None``).
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
+    :rtype: CampaignView
+    :raises NotFoundError: No campaign with that id in the scope.
     """
     from threetears.evals.kernel.campaign import CampaignView, derive_window
 
@@ -824,15 +826,18 @@ def list_campaigns(
     ``subject_id`` / ``behavior`` / ``archived`` are optional
     equality filters; all ``None`` returns every campaign.
 
-    Args:
-        storage: The campaign store.
-        scope_id: The scope to list.
-        subject_id: Only campaigns over this subject.
-        behavior: Only campaigns measuring this behavior.
-        archived: Only archived (``True``) or only active (``False``) campaigns.
-
-    Returns:
-        The matching campaigns, newest first.
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param scope_id: The scope to list.
+    :ptype scope_id: str
+    :param subject_id: Only campaigns over this subject.
+    :ptype subject_id: str | None
+    :param behavior: Only campaigns measuring this behavior.
+    :ptype behavior: str | None
+    :param archived: Only archived (``True``) or only active (``False``) campaigns.
+    :ptype archived: bool | None
+    :return: The matching campaigns, newest first.
+    :rtype: list[EvalCampaign]
     """
     return storage.list_campaigns(
         scope_id,
@@ -853,19 +858,19 @@ def add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str
     belong to more than one campaign, but not twice to the same one. A run that
     does not resolve in the campaign's scope is refused, as at creation.
 
-    Args:
-        storage: The campaign store.
-        campaign_id: Campaign to attach to.
-        scope_id: The scope the campaign and the runs live in.
-        run_ids: Run ids to add; already-attached ids are ignored.
-
-    Returns:
-        The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
-        ValidationFailedError: A run does not exist in the scope; nothing was attached.
-        StorageError: The updated campaign failed to persist.
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: Campaign to attach to.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign and the runs live in.
+    :ptype scope_id: str
+    :param run_ids: Run ids to add; already-attached ids are ignored.
+    :ptype run_ids: list[str]
+    :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    :raises ValidationFailedError: A run does not exist in the scope; nothing was attached.
+    :raises StorageError: The updated campaign failed to persist.
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
@@ -900,19 +905,19 @@ def remove_runs_from_campaign(
     The refusal is all-or-nothing, so a partly-wrong request leaves the
     campaign exactly as the caller last saw it.
 
-    Args:
-        storage: The campaign store.
-        campaign_id: Campaign to detach from.
-        scope_id: The scope it lives in.
-        run_ids: Run ids to remove; every one must currently be attached.
-
-    Returns:
-        The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
-        ValidationFailedError: One or more ids are not attached to this campaign.
-        StorageError: The updated campaign failed to persist.
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: Campaign to detach from.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param run_ids: Run ids to remove; every one must currently be attached.
+    :ptype run_ids: list[str]
+    :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    :raises ValidationFailedError: One or more ids are not attached to this campaign.
+    :raises StorageError: The updated campaign failed to persist.
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
@@ -985,31 +990,33 @@ def set_campaign_control(
     put them would render, directly above the control on the campaign page, the name and date
     of somebody who did not designate it.
 
-    Args:
-        storage: The campaign store.
-        campaign_id: Campaign to designate on.
-        scope_id: The scope the campaign and its runs live in.
-        run_id: An attached run whose variant becomes the control, or None to clear.
-        set_by: Who is designating, as the calling surface knows them. Keyword-only and
-            required for the same reason :func:`create_campaign`'s ``created_by`` is: this
-            writes the declaration, and a surface that reaches the write path without deciding
-            what it records is how authorship went unwritten for a field's entire life.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign` — or the
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign_id: Campaign to designate on.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign and its runs live in.
+    :ptype scope_id: str
+    :param run_id: An attached run whose variant becomes the control, or None to clear.
+    :ptype run_id: str | None
+    :param set_by: Who is designating, as the calling surface knows them. Keyword-only and
+        required for the same reason :func:`create_campaign`'s ``created_by`` is: this
+        writes the declaration, and a surface that reaches the write path without deciding
+        what it records is how authorship went unwritten for a field's entire life.
+    :ptype set_by: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign` — or the
         campaign untouched when CLEARING a control on one that declares no design, since
         there is nothing to clear and a refusal would answer the request with its opposite.
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
-        ConflictError: The campaign holds a run and already declares a control, which a designation would re-point
-            or a clear would remove: a control is addressed once (:func:`_refuse_frozen_design`).
-        ValidationFailedError: A DESIGNATION was asked for and the campaign declares no
-            design; or ``run_id`` is not attached or does not resolve in the scope.
-        LeverCoordinateError: The run recorded no lever map, and the host's variant map disagrees
-            with its own registry.
-        StorageError: The updated campaign failed to persist.
+    :rtype: EvalCampaign
+    :raises NotFoundError: No campaign with that id in the scope.
+    :raises ConflictError: The campaign holds a run and already declares a control, which a designation would re-point
+        or a clear would remove: a control is addressed once (:func:`_refuse_frozen_design`).
+    :raises ValidationFailedError: A DESIGNATION was asked for and the campaign declares no
+        design; or ``run_id`` is not attached or does not resolve in the scope.
+    :raises LeverCoordinateError: The run recorded no lever map, and the host's variant map disagrees
+        with its own registry.
+    :raises StorageError: The updated campaign failed to persist.
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
@@ -1069,14 +1076,15 @@ def _refuse_frozen_design(
     addressed for the first time, while the design declares none, is allowed. ``name`` and ``description`` are never
     asked about here.
 
-    Args:
-        campaign: The stored campaign.
-        writes_design: Whether the change writes ``declared_design``.
-        clears_control: Whether it clears the declared control.
-        names_control: Whether it addresses a control from a run.
-
-    Raises:
-        ConflictError: The campaign holds a run and the change does one of the refused things.
+    :param campaign: The stored campaign.
+    :ptype campaign: EvalCampaign
+    :param writes_design: Whether the change writes ``declared_design``.
+    :ptype writes_design: bool
+    :param clears_control: Whether it clears the declared control.
+    :ptype clears_control: bool
+    :param names_control: Whether it addresses a control from a run.
+    :ptype names_control: bool
+    :raises ConflictError: The campaign holds a run and the change does one of the refused things.
     """
     if not campaign.run_ids:
         return
@@ -1119,22 +1127,22 @@ def _address_control(
     ANOTHER predicate is kept, because it is what that predicate digested — holding it to this build's
     arithmetic is the version coupling the map exists to remove.
 
-    Args:
-        storage: The campaign store.
-        campaign: The campaign being designated on.
-        run_id: The member run to address, read in the campaign's scope.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The 64-hex variant key, the lever map it was digested from (None where none reproduces it), and
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param campaign: The campaign being designated on.
+    :ptype campaign: EvalCampaign
+    :param run_id: The member run to address, read in the campaign's scope.
+    :ptype run_id: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The 64-hex variant key, the lever map it was digested from (None where none reproduces it), and
         the identity version it was computed under.
-
-    Raises:
-        ValidationFailedError: The run is not attached, or does not resolve in the campaign's
-            scope.
-        LeverCoordinateError: The run recorded no lever map (its host assembled it without the launch),
-            and the host's variant map disagrees with its own registry — as assembling a bundle over the
-            run would refuse too.
+    :rtype: _AddressedControl
+    :raises ValidationFailedError: The run is not attached, or does not resolve in the campaign's
+        scope.
+    :raises LeverCoordinateError: The run recorded no lever map (its host assembled it without the launch),
+        and the host's variant map disagrees with its own registry — as assembling a bundle over the
+        run would refuse too.
     """
     from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
 
@@ -1172,12 +1180,12 @@ def _with_control(design: CampaignDesign, addressed: _AddressedControl | None) -
     The three fields are written together and only together: a key left beside the map of the control
     it replaced would re-key, under the next predicate, onto the old control's arm.
 
-    Args:
-        design: The declaration the control lives on.
-        addressed: The control a member run addresses, or None to clear it.
-
-    Returns:
-        The declaration, unstamped; the caller stamps it as it does every declaration write.
+    :param design: The declaration the control lives on.
+    :ptype design: CampaignDesign
+    :param addressed: The control a member run addresses, or None to clear it.
+    :ptype addressed: _AddressedControl | None
+    :return: The declaration, unstamped; the caller stamps it as it does every declaration write.
+    :rtype: CampaignDesign
     """
     if addressed is None:
         return design.model_copy(update={"control": None, "control_levers": None, "control_identity_version": None})
@@ -1213,17 +1221,16 @@ def _with_server_owned_pre_image(
     sends a lever map believes it set one; a value equal to the server's (a read echoed back whole) is
     accepted, so round-tripping a declaration stays possible, and a null is no value.
 
-    Args:
-        supplied: The declaration as the caller sent it — a mapping, whose keys say what was sent, or a model,
-            whose lever map is compared and whose version is replaced.
-        design: That declaration, validated.
-        stored: The declaration the campaign holds now, or None (a create, or a campaign that declared none).
-
-    Returns:
-        ``design`` with the server's pre-image.
-
-    Raises:
-        ValidationFailedError: ``supplied`` sends a lever map or an identity version the server would not store.
+    :param supplied: The declaration as the caller sent it — a mapping, whose keys say what was sent, or a model,
+        whose lever map is compared and whose version is replaced.
+    :ptype supplied: CampaignDesign | Mapping[str, Any]
+    :param design: That declaration, validated.
+    :ptype design: CampaignDesign
+    :param stored: The declaration the campaign holds now, or None (a create, or a campaign that declared none).
+    :ptype stored: CampaignDesign | None
+    :return: ``design`` with the server's pre-image.
+    :rtype: CampaignDesign
+    :raises ValidationFailedError: ``supplied`` sends a lever map or an identity version the server would not store.
     """
     from threetears.evals.kernel.identity import IDENTITY_VERSION
 

@@ -46,20 +46,19 @@ class SeedSection:
     first host that adopted the engine, and are kept or removed by whether a second host's adoption uses them
     (``docs/adopting-a-host.md``, "Provisional mechanisms").
 
-    Attributes:
-        section_name: Stable identifier for the section within its template.
-        zone: Ordering zone — ``primacy``, ``reference`` or ``recency``.
-        order: Rank within the zone; non-negative.
-        condition: ``always`` to include unconditionally, ``has_data`` to include
-            only when ``data_key`` resolves.
-        formatter: Name of the host-registered function that renders the section.
-            ``text_template`` renders ``content_template`` literally.
-        cache_class: ``stable`` or ``dynamic`` — whether the rendered text is
-            expected to change between calls.
-        content_template: The literal body, for a ``text_template`` section.
-        data_key: The context key a ``has_data`` condition tests.
-        description: One line about what the section carries, shown to an operator.
-        formatter_params: Extra arguments for a parameterised formatter.
+    :ivar section_name: Stable identifier for the section within its template.
+    :ivar zone: Ordering zone — ``primacy``, ``reference`` or ``recency``.
+    :ivar order: Rank within the zone; non-negative.
+    :ivar condition: ``always`` to include unconditionally, ``has_data`` to include
+        only when ``data_key`` resolves.
+    :ivar formatter: Name of the host-registered function that renders the section.
+        ``text_template`` renders ``content_template`` literally.
+    :ivar cache_class: ``stable`` or ``dynamic`` — whether the rendered text is
+        expected to change between calls.
+    :ivar content_template: The literal body, for a ``text_template`` section.
+    :ivar data_key: The context key a ``has_data`` condition tests.
+    :ivar description: One line about what the section carries, shown to an operator.
+    :ivar formatter_params: Extra arguments for a parameterised formatter.
     """
 
     section_name: str
@@ -76,8 +75,8 @@ class SeedSection:
     def to_dict(self) -> dict[str, Any]:
         """Return the section as the payload a host template model validates.
 
-        Returns:
-            Every field, by its declared name, with no host types in it.
+        :return: Every field, by its declared name, with no host types in it.
+        :rtype: dict[str, Any]
         """
         return {
             "section_name": self.section_name,
@@ -96,14 +95,11 @@ class SeedSection:
     def from_dict(cls, data: dict[str, Any]) -> SeedSection:
         """Rebuild a section from :meth:`to_dict`'s payload.
 
-        Args:
-            data: A payload carrying at least the required fields.
-
-        Returns:
-            The section.
-
-        Raises:
-            KeyError: When a required field is absent.
+        :param data: A payload carrying at least the required fields.
+        :ptype data: dict[str, Any]
+        :return: The section.
+        :rtype: SeedSection
+        :raises KeyError: When a required field is absent.
         """
         return cls(
             section_name=data["section_name"],
@@ -123,13 +119,12 @@ class SeedSection:
 class SeedTemplate:
     """A seeded prompt template: an ordered set of sections and its identity.
 
-    Attributes:
-        template_name: Preset name within the type — ``default`` for a shipped seed.
-        template_type: The registry type this seeds, as its wire value.
-        scope: ``base``; a shipped seed is never a per-subject override.
-        description: Catalog blurb shown where an operator picks a preset.
-        sections: The sections, in declaration order.
-        version: Revision of the shipped text, bumped by a promotion.
+    :ivar template_name: Preset name within the type — ``default`` for a shipped seed.
+    :ivar template_type: The registry type this seeds, as its wire value.
+    :ivar scope: ``base``; a shipped seed is never a per-subject override.
+    :ivar description: Catalog blurb shown where an operator picks a preset.
+    :ivar sections: The sections, in declaration order.
+    :ivar version: Revision of the shipped text, bumped by a promotion.
     """
 
     template_name: str
@@ -142,10 +137,10 @@ class SeedTemplate:
     def to_dict(self) -> dict[str, Any]:
         """Return the template as the payload a host template model validates.
 
-        Returns:
-            The declared fields, with ``sections`` flattened to payload dicts.
+        :return: The declared fields, with ``sections`` flattened to payload dicts.
             Timestamps and provenance are deliberately absent — a shipped
             constant has neither, and a host fills its own defaults.
+        :rtype: dict[str, Any]
         """
         return {
             "template_name": self.template_name,
@@ -164,14 +159,11 @@ class SeedTemplate:
         preset leaves an operator's store as a payload, and the constant it
         replaces is re-emitted as ``SeedTemplate.from_dict({...})``.
 
-        Args:
-            data: A payload carrying the declared fields.
-
-        Returns:
-            The template.
-
-        Raises:
-            KeyError: When a required field is absent.
+        :param data: A payload carrying the declared fields.
+        :ptype data: dict[str, Any]
+        :return: The template.
+        :rtype: SeedTemplate
+        :raises KeyError: When a required field is absent.
         """
         return cls(
             template_name=data["template_name"],
@@ -192,12 +184,11 @@ class SeedPrompt:
     is the point of the declaration: a prompt that moves within the engine moves
     its own entry with it, and no host edit is required.
 
-    Attributes:
-        kind: :data:`KIND_TEMPLATE` or :data:`KIND_TEXT` — which registry seeds it.
-        prompt_type: The registry type's wire value.
-        seed_module: Importable module holding the constant. A host's registry
-            imports this to SEED a fresh deployment.
-        constant: The constant's name in that module.
+    :ivar kind: :data:`KIND_TEMPLATE` or :data:`KIND_TEXT` — which registry seeds it.
+    :ivar prompt_type: The registry type's wire value.
+    :ivar seed_module: Importable module holding the constant. A host's registry
+        imports this to SEED a fresh deployment.
+    :ivar constant: The constant's name in that module.
     """
 
     kind: str
@@ -211,8 +202,7 @@ class SeedPrompt:
         Checked where the declaration is written, because a host registers its own prompts through this
         type too, and a typo here otherwise surfaces as a slot a fresh deployment silently never seeds.
 
-        Raises:
-            ValueError: ``kind`` is neither :data:`KIND_TEMPLATE` nor :data:`KIND_TEXT`, or a field is blank.
+        :raises ValueError: ``kind`` is neither :data:`KIND_TEMPLATE` nor :data:`KIND_TEXT`, or a field is blank.
         """
         if self.kind not in (KIND_TEMPLATE, KIND_TEXT):
             raise ValueError(

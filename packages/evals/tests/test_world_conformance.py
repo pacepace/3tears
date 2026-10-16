@@ -46,13 +46,14 @@ from packages.evals.tests.fixtures.toyhost.world import (
 def _verdict(results: tuple[ConformanceResult, ...], check: CheckName, dimension: str | None) -> ConformanceResult:
     """The one result for a check and dimension, so a test names what it is asserting on.
 
-    Args:
-        results: A report's results.
-        check: The check.
-        dimension: The dimension, or None for a registry-wide check.
-
-    Returns:
-        The single matching result.
+    :param results: A report's results.
+    :ptype results: tuple[ConformanceResult, ...]
+    :param check: The check.
+    :ptype check: CheckName
+    :param dimension: The dimension, or None for a registry-wide check.
+    :ptype dimension: str | None
+    :return: The single matching result.
+    :rtype: ConformanceResult
     """
     matches = [result for result in results if result.check == check and result.dimension == dimension]
     assert len(matches) == 1, f"expected exactly one {check} verdict for {dimension}, got {matches}"
@@ -62,11 +63,10 @@ def _verdict(results: tuple[ConformanceResult, ...], check: CheckName, dimension
 async def _report(**kwargs: Any) -> tuple[ConformanceResult, ...]:
     """Run the kit over a freshly built toy world.
 
-    Args:
-        **kwargs: Passed to :func:`~packages.evals.tests.fixtures.toyhost.world.toyhost_world`.
-
-    Returns:
-        The report's results.
+    :param **kwargs: Passed to :func:`~packages.evals.tests.fixtures.toyhost.world.toyhost_world`.
+    :ptype kwargs: Any
+    :return: The report's results.
+    :rtype: tuple[ConformanceResult, ...]
     """
     registry, _state = toyhost_world(**kwargs)
     return (await check_world_conformance(registry)).results
@@ -1146,12 +1146,11 @@ def _shelf_world(*, summary: str) -> tuple[WorldRegistry, dict[str, Any]]:
     generated pair is two non-empty values, and only the schema's empty boundary can move a summary
     that says whether anything is there.
 
-    Args:
-        summary: How the summary surface renders — ``"wired"`` reads the seeded value (``none`` or
-            ``some``), ``"stuck"`` shows a fresh component's default whatever was seeded.
-
-    Returns:
-        The registry and the state it seeds into.
+    :param summary: How the summary surface renders — ``"wired"`` reads the seeded value (``none`` or
+        ``some``), ``"stuck"`` shows a fresh component's default whatever was seeded.
+    :ptype summary: str
+    :return: The registry and the state it seeds into.
+    :rtype: tuple[WorldRegistry, dict[str, Any]]
     """
     state: dict[str, Any] = {"featured": {"title": "a"}}
 
@@ -1313,12 +1312,12 @@ class TestPerceptionStillness:
 def _mirror_world(*, leak: bool = False, third: bool = True) -> WorldRegistry:
     """Three dimensions on three surfaces, where seeding ``a`` also writes ``b`` — a shared write path.
 
-    Args:
-        leak: Whether the ``c`` surface also shows ``a``.
-        third: Whether ``c`` is declared at all; without it, ``b_view`` is ``a``'s only other surface.
-
-    Returns:
-        The registry.
+    :param leak: Whether the ``c`` surface also shows ``a``.
+    :ptype leak: bool
+    :param third: Whether ``c`` is declared at all; without it, ``b_view`` is ``a``'s only other surface.
+    :ptype third: bool
+    :return: The registry.
+    :rtype: WorldRegistry
     """
     state = {"a": "x", "b": "x", "c": "x"}
 
@@ -1409,12 +1408,12 @@ def _deck_world(*, base: bool, coherent: bool) -> tuple[WorldRegistry, dict[str,
     over an idle deck reads back one short, and a deck idled under a queue reads back busy — a coupling
     the host's own production has, not a defect in either seeder.
 
-    Args:
-        base: Whether the host names the base world a check composes over (something on the deck).
-        coherent: Whether the host binds the coherence handle saying it does not hold a queue over an idle deck.
-
-    Returns:
-        The registry and the state it moves.
+    :param base: Whether the host names the base world a check composes over (something on the deck).
+    :ptype base: bool
+    :param coherent: Whether the host binds the coherence handle saying it does not hold a queue over an idle deck.
+    :ptype coherent: bool
+    :return: The registry and the state it moves.
+    :rtype: tuple[WorldRegistry, dict[str, Any]]
     """
     state: dict[str, Any] = {"deck": "", "queue": [], "seeded": {"deck": "", "queue": []}}
 
@@ -1699,12 +1698,12 @@ class TestAnAmbientRigThatSaysWhatItMoved:
 def _flag_world(stores: Any, *, perceived: bool = True) -> tuple[WorldRegistry, dict[str, Any]]:
     """One boolean dimension whose seeder stores ``stores(value)`` — the identity, or ``int`` for a lossy one.
 
-    Args:
-        stores: What the seeder writes for the value it is handed.
-        perceived: Whether a surface renders it.
-
-    Returns:
-        The registry and its state.
+    :param stores: What the seeder writes for the value it is handed.
+    :ptype stores: Any
+    :param perceived: Whether a surface renders it.
+    :ptype perceived: bool
+    :return: The registry and its state.
+    :rtype: tuple[WorldRegistry, dict[str, Any]]
     """
     state: dict[str, Any] = {"value": True}
     registry = WorldRegistry(
@@ -1825,8 +1824,8 @@ class TestEveryComparisonIsJSONEquality:
         The generated pair is ``(False, -1)`` and the integer branch's edge is ``0``, which Python's ``==``
         takes for ``False``.
 
-        Returns:
-            The registry, and every value its seeder was handed.
+        :return: The registry, and every value its seeder was handed.
+        :rtype: tuple[WorldRegistry, list[Any]]
         """
         state: dict[str, Any] = {"value": True}
         handed: list[Any] = []
@@ -1904,8 +1903,8 @@ def _tray_world() -> WorldRegistry:
     Its coherence handle refuses a tray holding two elements under one id, as a keyed host does, so a
     value that covered both shapes by repeating a key would not be one the kit may try.
 
-    Returns:
-        The registry.
+    :return: The registry.
+    :rtype: WorldRegistry
     """
     state: dict[str, Any] = {"tray": []}
 

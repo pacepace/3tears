@@ -84,11 +84,10 @@ _EMPHASIS = re.compile(r"[*_`]")
 def null_claims(text: str) -> list[str]:
     """The null claims ``text`` makes, as matched, in the order they appear; empty when it makes none.
 
-    Args:
-        text: A headline, or one summary bullet.
-
-    Returns:
-        Each matched phrase once, lower-cased with its spacing collapsed, as a refusal quotes it.
+    :param text: A headline, or one summary bullet.
+    :ptype text: str
+    :return: Each matched phrase once, lower-cased with its spacing collapsed, as a refusal quotes it.
+    :rtype: list[str]
     """
     plain = " ".join(_EMPHASIS.sub("", text.replace("’", "'")).split())
     found = sorted(

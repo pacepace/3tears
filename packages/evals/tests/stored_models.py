@@ -65,8 +65,8 @@ __all__ = ["doc_type_of", "sampled_model_names", "stored_models", "stored_sample
 def stored_models() -> list[type[EvalBaseModel]]:
     """Every package model that declares a ``doc_type``, after importing all of ``threetears.evals``.
 
-    Returns:
-        The models, sorted by name so a parametrised test has stable ids.
+    :return: The models, sorted by name so a parametrised test has stable ids.
+    :rtype: list[type[EvalBaseModel]]
     """
     for module in pkgutil.walk_packages(threetears.evals.__path__, prefix="threetears.evals."):
         importlib.import_module(module.name)
@@ -90,11 +90,10 @@ def stored_models() -> list[type[EvalBaseModel]]:
 def doc_type_of(model: type[EvalBaseModel]) -> str:
     """The ``doc_type`` value a stored model writes.
 
-    Args:
-        model: A stored model.
-
-    Returns:
-        Its ``doc_type`` default — the discriminator every document of it carries.
+    :param model: A stored model.
+    :ptype model: type[EvalBaseModel]
+    :return: Its ``doc_type`` default — the discriminator every document of it carries.
+    :rtype: str
     """
     default = model.model_fields["doc_type"].default
     assert isinstance(default, str), f"{model.__name__}.doc_type has no string default"
@@ -308,11 +307,10 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
 def stored_sample(model: type[EvalBaseModel]) -> dict[str, Any]:
     """A stored document of ``model``, as the store hands it back, after checking it loads untampered.
 
-    Args:
-        model: A stored model (one :func:`stored_models` returns).
-
-    Returns:
-        A valid document of it, as ``to_dict`` writes one.
+    :param model: A stored model (one :func:`stored_models` returns).
+    :ptype model: type[EvalBaseModel]
+    :return: A valid document of it, as ``to_dict`` writes one.
+    :rtype: dict[str, Any]
     """
     sample = _SAMPLES[model.__name__]()
     assert type(sample) is model, f"the sample for {model.__name__} is a {type(sample).__name__}"
@@ -324,7 +322,7 @@ def stored_sample(model: type[EvalBaseModel]) -> dict[str, Any]:
 def sampled_model_names() -> list[str]:
     """The names of the stored models :func:`stored_sample` has a sample for, sorted.
 
-    Returns:
-        The model names.
+    :return: The model names.
+    :rtype: list[str]
     """
     return sorted(_SAMPLES)

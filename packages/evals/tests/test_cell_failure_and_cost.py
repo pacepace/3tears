@@ -148,21 +148,26 @@ def _drive(
     are stored and the run records the judge attribution the launch's own judge build makes, so a
     re-judge of what it stored is the one an operator would make.
 
-    Args:
-        kind_for: Builds the kind from the host's world; ``None`` is the shipped toy extractor,
-            judged when ``judge`` is.
-        judge: A judge client — the host's judge for this drive and for any re-judge after it — or
-            ``None`` for no judging.
-        n_cases: How many of the three invoices to run.
-        cell_timeout_s: The cell deadline; ``None`` keeps the runner's default.
-        template: The template; ``None`` is the toy template, with its rubric when judged.
-        cap: The run's cost cap, gating each cell and recording each result's cost as a launch
-            wires it; ``None`` for none.
-        max_concurrent_cells: How many cells run at once.
-
-    Returns:
-        The drive, and the no-argument coroutine function that runs it — and, however it ends,
+    :param kind_for: Builds the kind from the host's world; ``None`` is the shipped toy extractor,
+        judged when ``judge`` is.
+    :ptype kind_for: KindFor | None
+    :param judge: A judge client — the host's judge for this drive and for any re-judge after it — or
+        ``None`` for no judging.
+    :ptype judge: Any
+    :param n_cases: How many of the three invoices to run.
+    :ptype n_cases: int
+    :param cell_timeout_s: The cell deadline; ``None`` keeps the runner's default.
+    :ptype cell_timeout_s: float | None
+    :param template: The template; ``None`` is the toy template, with its rubric when judged.
+    :ptype template: EvalTemplate | None
+    :param cap: The run's cost cap, gating each cell and recording each result's cost as a launch
+        wires it; ``None`` for none.
+    :ptype cap: EvalRunCostCap | None
+    :param max_concurrent_cells: How many cells run at once.
+    :ptype max_concurrent_cells: int
+    :return: The drive, and the no-argument coroutine function that runs it — and, however it ends,
         marks the run ``completed`` as the job manager would.
+    :rtype: tuple[_Drive, Callable[[], Any]]
     """
     host = toyhost_host(clients=(lambda _role, _model, *, temperature=None: judge) if judge is not None else None)
     world = host.profile.world
@@ -260,13 +265,14 @@ class _ScriptedJudge:
     ) -> ToyJudgeCompletion:
         """Answer the dim the prompt asks for.
 
-        Args:
-            system: The system prompt, which names the dim.
-            user: Ignored.
-            response_format: Ignored.
-
-        Returns:
-            The dim's reply.
+        :param system: The system prompt, which names the dim.
+        :ptype system: str
+        :param user: Ignored.
+        :ptype user: str
+        :param response_format: Ignored.
+        :ptype response_format: dict[str, str] | None
+        :return: The dim's reply.
+        :rtype: ToyJudgeCompletion
         """
         dim = _dim_of(system)
         self.calls.append(dim)

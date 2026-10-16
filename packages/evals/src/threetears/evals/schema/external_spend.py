@@ -55,33 +55,32 @@ class ExternalSpend:
     publishes no weighted unit contributes calls and leaves :attr:`provider_units` ``None``,
     which is a different fact from reporting zero.
 
-    Attributes:
-        provider: Who was called — ``"search_api"``, ``"video_api"``. ``None`` only when
-            the caller genuinely could not say, and it carries no default, so every
-            construction states one or the other rather than inheriting an answer. A unit
-            count that cannot name whose it is may not be summed with one that can and
-            cannot be priced from a per-provider table; both of those follow from the value
-            being ``None`` rather than from the field being mandatory, which is why the
-            absent case is expressible instead of being spelled ``""`` by whichever caller
-            met it first.
-        calls: How many provider calls this covers. A tool describing ONE of its own calls
-            reports 1; a delivery reporting a batch reports the batch.
-        provider_units: The provider's own weighted metering, where the caller can state
-            it. ``None`` means no countable unit applies or none was observed — never 0,
-            which would claim the calls consumed nothing.
-        provider_unit: The **bare** name of that unit, as the provider calls it —
-            ``"credits"``, ``"quota_units"``. ``None`` whenever ``provider_units`` is.
-            Bare here and qualified by :attr:`qualified_unit`, mirroring the split between
-            what a provider declares and what is safe to compare across providers.
-        money: What the provider actually charged, in USD, where it reports a charge.
-            ``None`` means unreported — which is NOT the same as ``0.0``. A self-hosted
-            backend costs a real, observed zero; an unpriced paid provider is a real cost
-            nobody declared a rate for. One bucket cannot say which is which, so this field
-            has three states and all of them mean something. **Only the delivery seam sets
-            it**: background work reports a provider's charge on
-            ``AsyncExternalSpend.money``, which reaches here through
-            ``AsyncExternalSpend.as_external_spend``. The action seam is dollar-free by rule
-            (a replay would report spend it never incurred), and drops it.
+    :ivar provider: Who was called — ``"search_api"``, ``"video_api"``. ``None`` only when
+        the caller genuinely could not say, and it carries no default, so every
+        construction states one or the other rather than inheriting an answer. A unit
+        count that cannot name whose it is may not be summed with one that can and
+        cannot be priced from a per-provider table; both of those follow from the value
+        being ``None`` rather than from the field being mandatory, which is why the
+        absent case is expressible instead of being spelled ``""`` by whichever caller
+        met it first.
+    :ivar calls: How many provider calls this covers. A tool describing ONE of its own calls
+        reports 1; a delivery reporting a batch reports the batch.
+    :ivar provider_units: The provider's own weighted metering, where the caller can state
+        it. ``None`` means no countable unit applies or none was observed — never 0,
+        which would claim the calls consumed nothing.
+    :ivar provider_unit: The **bare** name of that unit, as the provider calls it —
+        ``"credits"``, ``"quota_units"``. ``None`` whenever ``provider_units`` is.
+        Bare here and qualified by :attr:`qualified_unit`, mirroring the split between
+        what a provider declares and what is safe to compare across providers.
+    :ivar money: What the provider actually charged, in USD, where it reports a charge.
+        ``None`` means unreported — which is NOT the same as ``0.0``. A self-hosted
+        backend costs a real, observed zero; an unpriced paid provider is a real cost
+        nobody declared a rate for. One bucket cannot say which is which, so this field
+        has three states and all of them mean something. **Only the delivery seam sets
+        it**: background work reports a provider's charge on
+        ``AsyncExternalSpend.money``, which reaches here through
+        ``AsyncExternalSpend.as_external_spend``. The action seam is dollar-free by rule
+        (a replay would report spend it never incurred), and drops it.
     """
 
     provider: str | None
@@ -99,10 +98,10 @@ class ExternalSpend:
         provider would then refuse to combine — the failure the qualification exists to
         prevent, reintroduced by the fix for it.
 
-        Returns:
-            ``"<provider>:<unit>"``, or ``None`` when no weighted unit was consumed or no
+        :return: ``"<provider>:<unit>"``, or ``None`` when no weighted unit was consumed or no
             provider could be named. An unattributed unit is not comparable to anything, so
             there is no safe qualified form of it to hand out.
+        :rtype: str | None
         """
         if self.provider_unit is None or self.provider is None:
             return None

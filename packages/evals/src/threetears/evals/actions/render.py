@@ -204,11 +204,10 @@ def raised(status: int) -> bool:
     which a host recording its candidate's refused calls (``CallLedger.record_refusal``) must not record as one;
     every other status is the call turned away.
 
-    Args:
-        status: The error's HTTP-style status (``status_code``).
-
-    Returns:
-        Whether it raised.
+    :param status: The error's HTTP-style status (``status_code``).
+    :ptype status: int
+    :return: Whether it raised.
+    :rtype: bool
     """
     return status >= _RAISED_FROM
 
@@ -323,13 +322,13 @@ def _result_line(line: ResultLine) -> str:
 def render_results(listing: ResultListing, *, default_limit: int | None = None) -> str:
     """One page of a run's results, and how to read the next page and one result.
 
-    Args:
-        listing: The page.
-        default_limit: The page size the calling surface uses when none is named; the next-page hint names
-            ``limit`` whenever this page's differs, so following the hint reads a page of the same size.
-
-    Returns:
-        The text.
+    :param listing: The page.
+    :ptype listing: ResultListing
+    :param default_limit: The page size the calling surface uses when none is named; the next-page hint names
+        ``limit`` whenever this page's differs, so following the hint reads a page of the same size.
+    :ptype default_limit: int | None
+    :return: The text.
+    :rtype: str
     """
     narrowed = "" if listing.condition_filter is None else f" {listing.condition_filter.value}"
     end = listing.offset + len(listing.results)

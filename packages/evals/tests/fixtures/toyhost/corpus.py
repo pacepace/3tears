@@ -116,12 +116,12 @@ TOYHOST_INSTANT = "2026-03-14T09:30:00+00:00"
 def _offset(instant: str, *, seconds: int) -> str:
     """``instant`` moved forward, so a fixture span is a span.
 
-    Args:
-        instant: ISO-8601 base.
-        seconds: How far forward.
-
-    Returns:
-        ISO-8601, same offset as the input.
+    :param instant: ISO-8601 base.
+    :ptype instant: str
+    :param seconds: How far forward.
+    :ptype seconds: int
+    :return: ISO-8601, same offset as the input.
+    :rtype: str
     """
     return (datetime.fromisoformat(instant) + timedelta(seconds=seconds)).isoformat()
 
@@ -166,12 +166,11 @@ def toyhost_observation(**toyhost_values: Any) -> EvalRun:
     The carrier is the engine's own :class:`~threetears.evals.schema.EvalRun`, and the toy host's
     vocabulary rides in its opaque ``host_payload`` slot, where the host's readers find it.
 
-    Args:
-        **toyhost_values: The toy host's keys for this observation. A key omitted is a key this
-            observation never recorded, which is a different fact from a key recorded as empty.
-
-    Returns:
-        A constructed observation. Nothing is mocked.
+    :param **toyhost_values: The toy host's keys for this observation. A key omitted is a key this
+        observation never recorded, which is a different fact from a key recorded as empty.
+    :ptype toyhost_values: Any
+    :return: A constructed observation. Nothing is mocked.
+    :rtype: EvalRun
     """
     return EvalRun(
         scope_id=TOYHOST_SCOPE,
@@ -275,15 +274,19 @@ class ToyhostStorage:
     ) -> None:
         """Hold one campaign's observations.
 
-        Args:
-            runs: The batches.
-            results_by_run: Each batch's observations, keyed by batch id.
-            insights: The prior ledger. Empty by default — the toy host has generated nothing
-                before — and supplied by a test that needs a ledger to read as of an instant.
-            analyses: The stored analyses those insights were minted by, for a test that needs
-                one archived. Empty by default, so an insight's source resolves to nothing.
-            templates: The templates the batches were judged against. Empty by default — the toy
-                batches name none — so no judged criterion is known and no judge profile is read.
+        :param runs: The batches.
+        :ptype runs: Sequence[EvalRun]
+        :param results_by_run: Each batch's observations, keyed by batch id.
+        :ptype results_by_run: Mapping[str, list[EvalResult]]
+        :param insights: The prior ledger. Empty by default — the toy host has generated nothing
+            before — and supplied by a test that needs a ledger to read as of an instant.
+        :ptype insights: Sequence[EvalInsight]
+        :param analyses: The stored analyses those insights were minted by, for a test that needs
+            one archived. Empty by default, so an insight's source resolves to nothing.
+        :ptype analyses: Sequence[EvalAnalysis]
+        :param templates: The templates the batches were judged against. Empty by default — the toy
+            batches name none — so no judged criterion is known and no judge profile is read.
+        :ptype templates: Sequence[EvalTemplate]
         """
         self._runs = list(runs)
         self._results_by_run = dict(results_by_run)
@@ -398,11 +401,10 @@ def toyhost_batch(**toyhost_values: Any) -> EvalRun:
     bundle needs on top — a scope, the documents, and the repeat count the coverage floor reads —
     without which every measure arrives with n=1 and nothing can be compared.
 
-    Args:
-        **toyhost_values: The toy host's keys for this batch.
-
-    Returns:
-        The batch.
+    :param **toyhost_values: The toy host's keys for this batch.
+    :ptype toyhost_values: Any
+    :return: The batch.
+    :rtype: EvalRun
     """
     return toyhost_observation(**toyhost_values).model_copy(
         update={
@@ -465,24 +467,29 @@ def toyhost_measurements(
     through ``profile`` from the batch, exactly as the run loop resolves it — because a result
     is only ever written stamped, and the bundle reads the stamp rather than deriving one.
 
-    Args:
-        batch: The batch these belong to.
-        profile: The host the batch ran under, whose variant-lever reader keys its observations.
-        cost_usd: Spend per document at this batch's setting.
-        total_ms: Wall-clock per document at this batch's setting, before the per-repeat spread.
-        field_accuracy: Share of fields extracted exactly right at this setting, before the
-            per-repeat spread. The host declares this one; the engine has never heard of it.
-        layout_fidelity: The reviewer pool's 1-5 score for how faithfully the extracted record
-            keeps the invoice's line-item structure, before a third repeat's one-point lift —
-            a JUDGED dimension, scored by people rather than computed, which the engine carries
-            off the ranking surface. ``None`` means the pool scored nothing, which is the state
-            a batch nobody reviewed is in.
-        covariates: The measurement-condition covariates every observation of this batch recorded,
-            by the engine's covariate names (``context_tokens_in``, ``reasoning_ratio``). ``None``
-            records none, which says nothing was measured rather than that anything was zero.
-
-    Returns:
-        Thirty-six observations — three repeats × twelve documents.
+    :param batch: The batch these belong to.
+    :ptype batch: EvalRun
+    :param profile: The host the batch ran under, whose variant-lever reader keys its observations.
+    :ptype profile: HostProfile
+    :param cost_usd: Spend per document at this batch's setting.
+    :ptype cost_usd: float
+    :param total_ms: Wall-clock per document at this batch's setting, before the per-repeat spread.
+    :ptype total_ms: float
+    :param field_accuracy: Share of fields extracted exactly right at this setting, before the
+        per-repeat spread. The host declares this one; the engine has never heard of it.
+    :ptype field_accuracy: float
+    :param layout_fidelity: The reviewer pool's 1-5 score for how faithfully the extracted record
+        keeps the invoice's line-item structure, before a third repeat's one-point lift —
+        a JUDGED dimension, scored by people rather than computed, which the engine carries
+        off the ranking surface. ``None`` means the pool scored nothing, which is the state
+        a batch nobody reviewed is in.
+    :ptype layout_fidelity: int | None
+    :param covariates: The measurement-condition covariates every observation of this batch recorded,
+        by the engine's covariate names (``context_tokens_in``, ``reasoning_ratio``). ``None``
+        records none, which says nothing was measured rather than that anything was zero.
+    :ptype covariates: Mapping[str, float] | None
+    :return: Thirty-six observations — three repeats × twelve documents.
+    :rtype: list[EvalResult]
     """
     variant = resolve_variant_identity(run=batch, profile=profile)
     return [

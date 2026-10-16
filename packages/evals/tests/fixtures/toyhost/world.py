@@ -221,16 +221,15 @@ class ToyWorld:
         subject faces depends on what that subject has attached, and conformance varies a
         dimension against the surface its own ``perceived_by`` names.
 
-        Args:
-            surfaces: The surfaces attached for this subject.
-
-        Returns:
-            ``{surface: rendered text}`` for each attached surface. ``vendor_template`` and
+        :param surfaces: The surfaces attached for this subject.
+        :ptype surfaces: tuple[str, ...]
+        :return: ``{surface: rendered text}`` for each attached surface. ``vendor_template`` and
             ``supervisor_signoff`` appear in neither, which is what makes them ``judge_only``.
             For ``vendor_template`` that is checked: the ``perception_stillness`` conformance check
             moves it and requires both surfaces to hold still. ``supervisor_signoff`` only a person
             can move, so the same check records it ``unavailable`` (``not_instantiable_unattended``)
             and its judge-only claim stays a declaration.
+        :rtype: dict[str, str]
         """
         rendered: dict[str, str] = {}
         if _DOCUMENT_SURFACE in surfaces:
@@ -267,17 +266,17 @@ def toyhost_world(
     A fresh state each call, so a test that seeds one cannot leak into the next through a
     module-level singleton.
 
-    Args:
-        optional_capabilities: When False, register the same dimensions with none of the optional
-            host capabilities — no way to perturb the witnessed dimension, no way to fire the
-            triggered one, no ambient perturbation. This is the *hosts-without* half of the
-            obligations table, and it is a real shape rather than a degraded one:
-            a host driving a physical display can never perturb the display itself. What it
-            must produce is ``unavailable`` records, never silence.
-        faults: Which defects this world is suffering from. See :class:`ToyWorldFaults`.
-
-    Returns:
-        The registry and the world its handles move.
+    :param optional_capabilities: When False, register the same dimensions with none of the optional
+        host capabilities — no way to perturb the witnessed dimension, no way to fire the
+        triggered one, no ambient perturbation. This is the *hosts-without* half of the
+        obligations table, and it is a real shape rather than a degraded one:
+        a host driving a physical display can never perturb the display itself. What it
+        must produce is ``unavailable`` records, never silence.
+    :ptype optional_capabilities: bool
+    :param faults: Which defects this world is suffering from. See :class:`ToyWorldFaults`.
+    :ptype faults: ToyWorldFaults
+    :return: The registry and the world its handles move.
+    :rtype: tuple[WorldRegistry, ToyWorld]
     """
     state = ToyWorld(faults=faults)
 

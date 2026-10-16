@@ -97,18 +97,22 @@ def _within_level_dispersion(
     level clears that bar the spread is unestimable and the field reads ``"unscored"``
     (honest, not a fabricated 0).
 
-    Args:
-        composite_records: Score records for the composite metric, ``value`` present.
-        lever: The lever to group by.
-        effective_by_run: Each run's resolved levers, keyed by run id.
+    :param composite_records: Score records for the composite metric, ``value`` present.
+    :ptype composite_records: list[ScoreRecord]
+    :param lever: The lever to group by.
+    :ptype lever: str
+    :param effective_by_run: Each run's resolved levers, keyed by run id.
+    :ptype effective_by_run: dict[str, dict[str, EffectiveLever]]
+
 
     **A ragged pool says so in the text** (#638): where the composites behind the spread were meaned over
     different dimension sets (:func:`~threetears.evals.analysis.reporting.pooled_composite_basis`), the spread
     is partly the difference between those sets, and the text carries the sets beside the number.
 
-    Returns:
-        ``"±"`` and the mean within-level SEM in :func:`~threetears.evals.analysis.numbers.format_number`'s spelling,
-        followed by the ragged-composite disclosure in parentheses where the pool is ragged, or ``"unscored"``.
+    :return: ``"±"`` and the mean within-level SEM in :func:`~threetears.evals.analysis.numbers.format_number`'s
+        spelling, followed by the ragged-composite disclosure in parentheses where the pool is ragged, or
+        ``"unscored"``.
+    :rtype: str
     """
     by_level: dict[str, tuple[list[float], list[str]]] = {}
     pooled: list[ScoreRecord] = []
@@ -154,15 +158,18 @@ def _lever_k_floor(
     the change removes is *spurious* coupling: a run can no longer degrade a lever it says
     nothing about.
 
-    Args:
-        lever: A lever name or a declared coordinate name.
-        records: The projected score records (they carry the level and the run).
-        k_by_arm: Repeats per case per arm group, keyed as :meth:`_CampaignArms.groups` keys them.
-        group_of_run: Run id → the arm group it belongs to.
-        effective_by_run: Each run's resolved levers, keyed by run id.
-
-    Returns:
-        The binding repeat depth, or 0 when no record carries a resolvable run.
+    :param lever: A lever name or a declared coordinate name.
+    :ptype lever: str
+    :param records: The projected score records (they carry the level and the run).
+    :ptype records: list[ScoreRecord]
+    :param k_by_arm: Repeats per case per arm group, keyed as :meth:`_CampaignArms.groups` keys them.
+    :ptype k_by_arm: dict[str, int]
+    :param group_of_run: Run id → the arm group it belongs to.
+    :ptype group_of_run: dict[str, str]
+    :param effective_by_run: Each run's resolved levers, keyed by run id.
+    :ptype effective_by_run: dict[str, dict[str, EffectiveLever]]
+    :return: The binding repeat depth, or 0 when no record carries a resolvable run.
+    :rtype: int
     """
     best_at_level: dict[str, int] = {}
     for record in records:
@@ -219,15 +226,18 @@ def _reportable_levers(
     departed from ten things it never touched. They reappear the moment one of them actually
     moves, which is the case worth seeing.
 
-    Args:
-        resolved: Every lever any run resolved, plus the candidate model where records disagree.
-        records: The projected score records — the levels are read over these.
-        effective_by_run: Each run's resolved levers, keyed by run id.
-        declared_design: What the campaign SET OUT to sweep, or None when it declared nothing.
-        engaged: Levers the launch named or observation recovered, across every run.
-
-    Returns:
-        The levers to build rows for.
+    :param resolved: Every lever any run resolved, plus the candidate model where records disagree.
+    :ptype resolved: set[str]
+    :param records: The projected score records — the levels are read over these.
+    :ptype records: list[ScoreRecord]
+    :param effective_by_run: Each run's resolved levers, keyed by run id.
+    :ptype effective_by_run: dict[str, dict[str, EffectiveLever]]
+    :param declared_design: What the campaign SET OUT to sweep, or None when it declared nothing.
+    :ptype declared_design: CampaignDesign | None
+    :param engaged: Levers the launch named or observation recovered, across every run.
+    :ptype engaged: set[str]
+    :return: The levers to build rows for.
+    :rtype: set[str]
     """
     declared = {axis.axis_id for axis in declared_design.axes} if declared_design else set()
     moved = {
@@ -247,14 +257,16 @@ def _run_axis_identities(
     Its variant coordinate where it has one (the engine's own and the host's), else the value the host's registry
     resolves for it, as its canonical digest and, for a string that may itself be a digest, as itself.
 
-    Args:
-        axis_id: The declared axis.
-        run: The run.
-        results: The run's results.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The identities, or None when the run's level on the axis cannot be established.
+    :param axis_id: The declared axis.
+    :ptype axis_id: str
+    :param run: The run.
+    :ptype run: EvalRun
+    :param results: The run's results.
+    :ptype results: list[EvalResult]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The identities, or None when the run's level on the axis cannot be established.
+    :rtype: set[str] | None
     """
     coordinates = {
         **profile.engine_levels(run),
@@ -283,15 +295,17 @@ def _declared_crossing(
     and is never a gap; an unrun cell it meant to run is ``not_run``, unless some run's level on an axis cannot
     be established, when it may be sitting there and the cell is ``undetermined``.
 
-    Args:
-        design: The campaign's declaration.
-        runs: The campaign's resolved runs.
-        results_by_run: Each run's results.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The crossing, or None when there is no design or it says nothing about combinations — today's reading,
+    :param design: The campaign's declaration.
+    :ptype design: CampaignDesign | None
+    :param runs: The campaign's resolved runs.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The crossing, or None when there is no design or it says nothing about combinations — today's reading,
         where an unrun combination is neither skipped nor missing.
+    :rtype: DeclaredCrossing | None
     """
     if design is None or not design.declares_cells():
         return None
@@ -371,14 +385,16 @@ def _declared_level_coverage(
     compared as one. A run whose level cannot be established (no coordinate, nothing resolved)
     blocks a ``not_run`` claim on every level no other run matched: it may be sitting at one.
 
-    Args:
-        axis: The declared axis.
-        runs: The campaign's resolved runs.
-        results_by_run: Each run's results.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        One entry per declared level, in the declaration's order.
+    :param axis: The declared axis.
+    :ptype axis: SweptAxis
+    :param runs: The campaign's resolved runs.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: One entry per declared level, in the declaration's order.
+    :rtype: list[DeclaredLevelCoverage]
     """
     observed: set[str] = set()
     unestablished = False
@@ -448,33 +464,43 @@ def _coverage_map(
     Deterministic: levers and their levels are sorted, so identical inputs give an
     identical map (and fingerprint).
 
-    Args:
-        runs: The campaign's resolved runs (for each run's ``k_runs`` and case set, counted per arm by :func:`_arm_repeats`).
-        records: The projected score records (for levels, n, and composite spread).
-        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
-        design: The derived design — what each lever's comparison is drawn from. Without a
-            control every lever is read over the whole campaign, which is the marginal
-            comparison this map has always reported.
-        results_by_run: Each run's results, keyed by run id — the observation side of
-            effective-config resolution.
-        declared_design: What the campaign SET OUT to sweep. A declared axis earns a row even
-            when nothing resolved it — see :func:`_reportable_levers`.
-        folds: The campaign's :class:`_SurfaceFolds`. A resolved surface earns no row of its own
-            where its movement across its cohort is its swept members' movement — the member rows
-            already report that change, and a second row levelled by content hash would count one
-            override as two swept levers (and the same for a fixed knob's surface that moved only
-            where the knob did). It keeps its row where the residuals disagree or cannot be read, or a
-            fixed knob held at one level saw it differ, because then it carries something no knob's
-            row does. A declared axis is never
-            dropped this way: the completeness check needs its row whatever it resolved to.
-        observations: The campaign's mechanism observations, which each row's ``mechanism`` check and its
-            observed-mechanism confounds compare across the row's levels.
-        served: Which model answered each result's candidate calls, for the served-model confound.
-        arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        One :class:`LeverCoverageInput` per reportable lever, sorted by lever name.
+    :param runs: The campaign's resolved runs (for each run's ``k_runs`` and case set, counted per arm by
+        :func:`_arm_repeats`).
+    :ptype runs: list[EvalRun]
+    :param records: The projected score records (for levels, n, and composite spread).
+    :ptype records: list[ScoreRecord]
+    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :ptype apparatus_levels: dict[str, dict[str, str | None]]
+    :param design: The derived design — what each lever's comparison is drawn from. Without a
+        control every lever is read over the whole campaign, which is the marginal
+        comparison this map has always reported.
+    :ptype design: RealizedDesign
+    :param results_by_run: Each run's results, keyed by run id — the observation side of
+        effective-config resolution.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param declared_design: What the campaign SET OUT to sweep. A declared axis earns a row even
+        when nothing resolved it — see :func:`_reportable_levers`.
+    :ptype declared_design: CampaignDesign | None
+    :param folds: The campaign's :class:`_SurfaceFolds`. A resolved surface earns no row of its own
+        where its movement across its cohort is its swept members' movement — the member rows
+        already report that change, and a second row levelled by content hash would count one
+        override as two swept levers (and the same for a fixed knob's surface that moved only
+        where the knob did). It keeps its row where the residuals disagree or cannot be read, or a
+        fixed knob held at one level saw it differ, because then it carries something no knob's
+        row does. A declared axis is never
+        dropped this way: the completeness check needs its row whatever it resolved to.
+    :ptype folds: _SurfaceFolds
+    :param observations: The campaign's mechanism observations, which each row's ``mechanism`` check and its
+        observed-mechanism confounds compare across the row's levels.
+    :ptype observations: _MechanismObservations
+    :param served: Which model answered each result's candidate calls, for the served-model confound.
+    :ptype served: _ServedModels
+    :param arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
+    :ptype arms: _CampaignArms | None
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: One :class:`LeverCoverageInput` per reportable lever, sorted by lever name.
+    :rtype: list[LeverCoverageInput]
     """
     if not records:
         return []
@@ -606,13 +632,14 @@ def _factor_aliasing(
     pivot), with every combination no run sat at as ``not_run``. Only interactions go unchecked
     (:data:`INTERACTION_ALIASING_UNCHECKED`).
 
-    Args:
-        run_ids: The campaign's resolved runs.
-        lever_levels: Lever → level → run ids, from :func:`_lever_levels`.
-        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
-
-    Returns:
-        The lockstep groups (sorted by their first factor), and the pair scan.
+    :param run_ids: The campaign's resolved runs.
+    :ptype run_ids: list[str]
+    :param lever_levels: Lever → level → run ids, from :func:`_lever_levels`.
+    :ptype lever_levels: dict[str, dict[str, list[str]]]
+    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :ptype apparatus_levels: dict[str, dict[str, str | None]]
+    :return: The lockstep groups (sorted by their first factor), and the pair scan.
+    :rtype: tuple[list[AliasedFactors], FactorPairScan]
     """
     by_factor: dict[str, dict[str, str]] = {}
     for lever, by_level in lever_levels.items():

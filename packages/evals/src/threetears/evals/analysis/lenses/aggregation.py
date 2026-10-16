@@ -115,15 +115,14 @@ _OBSERVATION_OF_AGGREGATE = {aggregate: observation for observation, aggregate i
 def resolve_measure_name(metric: str) -> str:
     """Resolve a catalog (aggregate) measure name to the observation name rows carry.
 
-    Args:
-        metric: A measure name as an operator supplied it — either the
-            observation-level row name (``composite``) or the registry name of its
-            aggregate as ``list_metrics`` publishes it (``mean_composite``).
-
-    Returns:
-        The observation-level name, unchanged for anything this table does not
+    :param metric: A measure name as an operator supplied it — either the
+        observation-level row name (``composite``) or the registry name of its
+        aggregate as ``list_metrics`` publishes it (``mean_composite``).
+    :ptype metric: str
+    :return: The observation-level name, unchanged for anything this table does not
         cover — an unknown name must reach its surface's own refusal so the caller
         is told what IS accepted, rather than being rewritten into something else.
+    :rtype: str
     """
     return _OBSERVATION_OF_AGGREGATE.get(metric, metric)
 
@@ -131,13 +130,12 @@ def resolve_measure_name(metric: str) -> str:
 def _metric_vocabulary(accepted: frozenset[str]) -> str:
     """Render an accepted-measure set naming each row name beside its catalog name.
 
-    Args:
-        accepted: The observation-level names a surface accepts.
-
-    Returns:
-        A sorted, comma-joined list in which every measure that has a published
+    :param accepted: The observation-level names a surface accepts.
+    :ptype accepted: frozenset[str]
+    :return: A sorted, comma-joined list in which every measure that has a published
         aggregate name shows it too — a refusal that named only the row names is
         what sent an operator reading ``list_metrics`` in a circle.
+    :rtype: str
     """
     return ", ".join(
         f"{name} (or {_AGGREGATE_OF_OBSERVATION[name]})" if name in _AGGREGATE_OF_OBSERVATION else name
@@ -168,11 +166,10 @@ def metric_help(accepted: frozenset[str]) -> str:
     The one producer of that list for the pivot and history help on REST and MCP alike, so a help
     text cannot name a metric its surface refuses or leave out one it accepts.
 
-    Args:
-        accepted: The observation-level names the surface accepts.
-
-    Returns:
-        A semicolon-joined list, in name order.
+    :param accepted: The observation-level names the surface accepts.
+    :ptype accepted: frozenset[str]
+    :return: A semicolon-joined list, in name order.
+    :rtype: str
     """
     return "; ".join(
         f"'{name}' ({_METRIC_GLOSS[name]}"
@@ -185,13 +182,13 @@ def metric_help(accepted: frozenset[str]) -> str:
 def _describe_aggregate(metric: str, *, profile: HostProfile) -> MetricDescriptor:
     """Describe what a pivot CELL holds, which is an aggregate over rows.
 
-    Args:
-        metric: The observation-level metric name carried on the rows.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The aggregate's descriptor when one is registered, else the honest
+    :param metric: The observation-level metric name carried on the rows.
+    :ptype metric: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: The aggregate's descriptor when one is registered, else the honest
         unclassified answer for the observation name itself.
+    :rtype: MetricDescriptor
     """
     return describe_measure(_AGGREGATE_OF_OBSERVATION.get(metric, metric), profile.measures)
 
@@ -210,16 +207,17 @@ def _effective_formula(metric: str, weighting: str, *, scoped: bool = True) -> s
     unqualified formula beside a qualified number is how a reader checks the
     wrong arithmetic and concludes the table is right.
 
-    Args:
-        metric: The observation-level metric being aggregated.
-        weighting: The weighting mode the value was computed under.
-        scoped: Whether the metric's scope coordinate (:data:`SCOPED_METRICS`) is pinned by an axis or
-            filter. Only meaningful for a scoped metric; every other measure is whole-result and has
-            nothing to pool. Both pinnings count here because both scope the cell, but only the axis is
-            reachable from the REST and MCP surfaces — see the emitted caveat below.
-
-    Returns:
-        A one-line formula an operator can read at point of use.
+    :param metric: The observation-level metric being aggregated.
+    :ptype metric: str
+    :param weighting: The weighting mode the value was computed under.
+    :ptype weighting: str
+    :param scoped: Whether the metric's scope coordinate (:data:`SCOPED_METRICS`) is pinned by an axis or
+        filter. Only meaningful for a scoped metric; every other measure is whole-result and has
+        nothing to pool. Both pinnings count here because both scope the cell, but only the axis is
+        reachable from the REST and MCP surfaces — see the emitted caveat below.
+    :ptype scoped: bool
+    :return: A one-line formula an operator can read at point of use.
+    :rtype: str
     """
     if weighting == WEIGHTING_EQUAL_PER_SCENARIO:
         formula = f"mean over test cases of the per-case mean of {metric} (each case weighted equally)"
@@ -265,16 +263,16 @@ def _effective_formula(metric: str, weighting: str, *, scoped: bool = True) -> s
 def _aggregate(values_by_case: dict[str, list[float]], weighting: str) -> tuple[float, float | None]:
     """Roll one cell's observations into a value plus its dispersion.
 
-    Args:
-        values_by_case: Observed values grouped by test case.
-        weighting: Which of :data:`WEIGHTINGS` to apply.
-
-    Returns:
-        ``(value, sem)``. The SEM is over whatever the value averages, so the
+    :param values_by_case: Observed values grouped by test case.
+    :ptype values_by_case: dict[str, list[float]]
+    :param weighting: Which of :data:`WEIGHTINGS` to apply.
+    :ptype weighting: str
+    :return: ``(value, sem)``. The SEM is over whatever the value averages, so the
         two always describe the same estimate, and it counts cases, not observations:
         under ``sample_weighted`` the flat mean takes the cluster-robust SEM over the
         cases (:func:`~threetears.evals.analysis.stats.clustered_standard_error`), since
         a case's repeats are not independent draws.
+    :rtype: tuple[float, float | None]
     """
     from threetears.evals.analysis.stats import clustered_standard_error, standard_error_of_mean
 

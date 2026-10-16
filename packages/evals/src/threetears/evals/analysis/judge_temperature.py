@@ -111,24 +111,24 @@ class TemperatureSettingRead(EvalBaseModel):
 class JudgeTemperatureComparison(EvalBaseModel):
     """The measurement: a run's borderline cases re-judged at the pinned temperature and at the provider's default.
 
-    Attributes:
-        run_id: The run.
-        judge_model: The run's judge pin.
-        selection: Which scored dims were re-judged.
-        repeats: Calls per dim per setting.
-        results: The results re-judged.
-        cases: The (result, dim) pairs re-judged.
-        dimensions: Per dimension, the two settings side by side.
-        settings: Per setting, every case and the full self-agreement read.
-        comparable: Whether every score on each side was recorded at that side's temperature, and each side answered
-            some case at least twice on every dimension. False means the figures do not compare the two settings as
-            named — or compare nothing, as when every call failed — and ``incomparable`` says why.
-        incomparable: Why not, when not.
-        skipped: The run's results not re-judged, each with why — decided before anything was spent.
-        stopped: Why the comparison stopped before its last result, when it did.
-        calls_made: Judge calls made, ledgered under purpose ``judge``, and one whose ledger row could not be written counted all the same.
-        cost_usd: What they cost together; ``None`` when any went unpriced.
-        cap_usd: The out-of-run cap they were admitted under; ``None`` when the host enforces none.
+    :ivar run_id: The run.
+    :ivar judge_model: The run's judge pin.
+    :ivar selection: Which scored dims were re-judged.
+    :ivar repeats: Calls per dim per setting.
+    :ivar results: The results re-judged.
+    :ivar cases: The (result, dim) pairs re-judged.
+    :ivar dimensions: Per dimension, the two settings side by side.
+    :ivar settings: Per setting, every case and the full self-agreement read.
+    :ivar comparable: Whether every score on each side was recorded at that side's temperature, and each side answered
+        some case at least twice on every dimension. False means the figures do not compare the two settings as
+        named — or compare nothing, as when every call failed — and ``incomparable`` says why.
+    :ivar incomparable: Why not, when not.
+    :ivar skipped: The run's results not re-judged, each with why — decided before anything was spent.
+    :ivar stopped: Why the comparison stopped before its last result, when it did.
+    :ivar calls_made: Judge calls made, ledgered under purpose ``judge``, and one whose ledger row could not be written
+        counted all the same.
+    :ivar cost_usd: What they cost together; ``None`` when any went unpriced.
+    :ivar cap_usd: The out-of-run cap they were admitted under; ``None`` when the host enforces none.
     """
 
     run_id: str
@@ -284,12 +284,11 @@ def read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatur
 
     Spends nothing and reads nothing but ``answers``, so the same answers always read the same.
 
-    Args:
-        answers: What :func:`~threetears.evals.run.judge_temperature_work` asked and was answered.
-
-    Returns:
-        The comparison: per dimension the two settings side by side, per setting every case, whether the two sides
+    :param answers: What :func:`~threetears.evals.run.judge_temperature_work` asked and was answered.
+    :ptype answers: JudgeTemperatureAnswers
+    :return: The comparison: per dimension the two settings side by side, per setting every case, whether the two sides
         compare the settings as named, and the case count and spend carried over.
+    :rtype: JudgeTemperatureComparison
     """
     reads: list[TemperatureSettingRead] = []
     cases_by: dict[TemperatureSetting, list[TemperatureCase]] = {}

@@ -59,12 +59,12 @@ async def start_tracked(
     ``start_group`` finishes its saves before it creates a task and creates exactly one task per
     member, so the tasks running after it returns that were not running before are the group's.
 
-    Args:
-        manager: The manager to start the group on.
-        members: ``(run, work, job_timeout_s)`` per run, as ``start_group`` takes them.
-
-    Returns:
-        The group's job tasks.
+    :param manager: The manager to start the group on.
+    :ptype manager: EvalJobManager
+    :param members: ``(run, work, job_timeout_s)`` per run, as ``start_group`` takes them.
+    :ptype members: Sequence[tuple[EvalRun, WorkFn, float | None]]
+    :return: The group's job tasks.
+    :rtype: set[asyncio.Task[Any]]
     """
     before = asyncio.all_tasks()
     await manager.start_group(members)
@@ -76,10 +76,12 @@ async def start_tracked(
 async def settled(manager: EvalJobManager, job_id: str, *, timeout: float = 5.0) -> None:
     """Wait until the manager no longer reports ``job_id`` active, failing after ``timeout`` seconds.
 
-    Args:
-        manager: The manager running the job.
-        job_id: The job's run id.
-        timeout: Seconds to wait before failing.
+    :param manager: The manager running the job.
+    :ptype manager: EvalJobManager
+    :param job_id: The job's run id.
+    :ptype job_id: str
+    :param timeout: Seconds to wait before failing.
+    :ptype timeout: float
     """
     async with asyncio.timeout(timeout):
         while manager.is_active(job_id):

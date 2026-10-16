@@ -37,16 +37,16 @@ def _short_cells(cells: list[Cell], design: CampaignDesign | None) -> list[Short
     A cell is counted by its least-repeated case, since that case is the cell's weakest replication
     and pooling more of the others does not repair it.
 
-    Args:
-        cells: The pooled cells, in coordinate order.
-        design: The campaign's declaration, or None.
-
-    Returns:
-        One entry per short cell, in coordinate order. Empty when nothing was declared — an unstated
+    :param cells: The pooled cells, in coordinate order.
+    :ptype cells: list[Cell]
+    :param design: The campaign's declaration, or None.
+    :ptype design: CampaignDesign | None
+    :return: One entry per short cell, in coordinate order. Empty when nothing was declared — an unstated
         intention cannot be fallen short of — or when every cell met it. A cell with no case count
         has no repetitions to compare and is not listed: its own facts already say its cases were
         unrecorded, which is the honest answer (unknown, not short). The bundle's observations all
         name their case, since ``EvalResult.test_case_id`` is required.
+    :rtype: list[ShortCell]
     """
     intended = design.intended_repetitions if design is not None else None
     if intended is None:
@@ -92,11 +92,10 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
     listed: it has no cost because every call failed, which :func:`_all_failed` says, and "nobody reported
     spend" would be the wrong reason.
 
-    Args:
-        results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-
-    Returns:
-        The unmeasured cells in coordinate order, and the sentence — None when there are none.
+    :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
+    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :return: The unmeasured cells in coordinate order, and the sentence — None when there are none.
+    :rtype: tuple[list[CellCoordinate], str | None]
     """
     unmeasured: list[CellCoordinate] = []
     for (variant_key, apparatus_class_id), members in sorted(results_by_cell.items()):
@@ -125,15 +124,16 @@ def _latency_contended(
 ) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell whose latency read under concurrency was left out, with the one sentence that says so.
 
-    Args:
-        results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-        contended_ids: The results whose latency :func:`~threetears.evals.analysis.contention.withhold_contended_latency`
-            removed before anything read them.
-        declared: The campaign's design declares latency under test, so a run read under concurrency is one it
-            cannot read its question from — said, with the remedy, rather than left to a reader to infer.
-
-    Returns:
-        The cells in coordinate order, and the sentence — None when nothing was left out.
+    :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
+    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :param contended_ids: The results whose latency
+        :func:`~threetears.evals.analysis.contention.withhold_contended_latency` removed before anything read them.
+    :ptype contended_ids: Collection[str]
+    :param declared: The campaign's design declares latency under test, so a run read under concurrency is one it
+        cannot read its question from — said, with the remedy, rather than left to a reader to infer.
+    :ptype declared: bool
+    :return: The cells in coordinate order, and the sentence — None when nothing was left out.
+    :rtype: tuple[list[CellCoordinate], str | None]
     """
     cells: list[CellCoordinate] = []
     withheld = 0
@@ -155,12 +155,11 @@ def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | Non
     list and the surface cannot disagree about which cell took no turn. Such a cell has no cost or latency
     reading, and without this the absence reads as "not measured" beside the arms that were.
 
-    Args:
-        cells: The decision surface's cells, from :func:`_cell_measures`.
-
-    Returns:
-        The cells in coordinate order, and the sentence
+    :param cells: The decision surface's cells, from :func:`_cell_measures`.
+    :ptype cells: list[CellFacts]
+    :return: The cells in coordinate order, and the sentence
         (:func:`~threetears.evals.kernel.surface.all_failed_sentence`) — None when there are none.
+    :rtype: tuple[list[CellCoordinate], str | None]
     """
     failed = [
         CellCoordinate(variant_key=cell.variant_key, apparatus_class_id=cell.apparatus_class_id)
@@ -175,14 +174,14 @@ def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | Non
 def _held_fixed_reading(runs: list[EvalRun], design: CampaignDesign | None) -> HeldFixedReading:
     """Compare what the campaign declared held fixed with the provenance every resolved run recorded.
 
-    Args:
-        runs: The resolved member runs.
-        design: The campaign's declaration, or None.
-
-    Returns:
-        The reading. Its disclosure is composed from the branches actually taken: a declared apparatus
+    :param runs: The resolved member runs.
+    :ptype runs: list[EvalRun]
+    :param design: The campaign's declaration, or None.
+    :ptype design: CampaignDesign | None
+    :return: The reading. Its disclosure is composed from the branches actually taken: a declared apparatus
         the runs contradict, a mix of provenances nobody declared, and an uncontrolled stimulus each
         add their own sentence, and none of them adds one that did not happen.
+    :rtype: HeldFixedReading
     """
     provenance = {run.id: run.apparatus_provenance for run in sorted(runs, key=lambda r: r.id)}
     held_fixed = design.held_fixed if design is not None else None

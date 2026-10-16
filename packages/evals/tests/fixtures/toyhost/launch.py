@@ -85,14 +85,11 @@ def plan_toyhost_arm(request: LaunchRequest) -> ArmPlan:
     be priced", or at the tail after the launcher built its rig. The extractor is graded mechanically and
     simulates nobody, so the plan names no judge and no simulator.
 
-    Args:
-        request: The arm.
-
-    Returns:
-        The plan.
-
-    Raises:
-        ValidationFailedError: The arm names no model.
+    :param request: The arm.
+    :ptype request: LaunchRequest
+    :return: The plan.
+    :rtype: ArmPlan
+    :raises ValidationFailedError: The arm names no model.
     """
     return ArmPlan(
         case_count=len(request.cases_or(toyhost_test_cases(request.template))),
@@ -108,11 +105,10 @@ def price_toyhost_arm(quote: ArmQuote) -> ArmPrice:
     Its upper bound is every cell at the dearest document's price — the figure the launch holds to the
     arm's cap. A model no script covers is unpriceable, which the engine reads as unknown, never $0.
 
-    Args:
-        quote: The arm.
-
-    Returns:
-        The prediction, or none for a model the rate card does not cover.
+    :param quote: The arm.
+    :ptype quote: ArmQuote
+    :return: The prediction, or none for a model the rate card does not cover.
+    :rtype: ArmPrice
     """
     script = next((script for script in TOY_SCRIPTS if script.model == quote.candidate_model), None)
     if script is None:
@@ -144,23 +140,31 @@ def toyhost_launch_host(
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
     """The toy host as a launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, plus its launch registry.
 
-    Args:
-        profile: The vocabulary; ``None`` is the toy host's own.
-        storage: Where documents live; ``None`` is a fresh in-memory store.
-        trace_sink: The host's tracing, or ``None``.
-        settings: Reads the launch settings; a callable because a host's settings hot-reload.
-        clients: The completion-client factory, for a drive that also analyses what it launched. The
-            extractor itself calls no model.
-        client: The scripted client the extractor calls; ``None`` is a fresh one with the toy scripts.
-        cell_executor: What runs each run's cells; ``None`` is the engine's in-process default.
-        kind_cell_timeout_s: The per-cell deadline the launcher wires for its kind
-            (``KindWiring.cell_timeout_s``); ``None`` leaves the engine's default.
-        job_lease_s: How long the host's job leases last unless renewed.
-        kind_max_concurrent_cells: The width the extractor declares it is safe at, which the launcher hands
-            the launch (``KindWiring.max_concurrent_cells``); ``None`` declares no limit of its own.
-
-    Returns:
-        The host, and the scripted client its extractor calls — so a caller can see what was asked.
+    :param profile: The vocabulary; ``None`` is the toy host's own.
+    :ptype profile: HostProfile | None
+    :param storage: Where documents live; ``None`` is a fresh in-memory store.
+    :ptype storage: EvalStorage | None
+    :param trace_sink: The host's tracing, or ``None``.
+    :ptype trace_sink: TraceSink | None
+    :param settings: Reads the launch settings; a callable because a host's settings hot-reload.
+    :ptype settings: Callable[[], LaunchSettings]
+    :param clients: The completion-client factory, for a drive that also analyses what it launched. The
+        extractor itself calls no model.
+    :ptype clients: CompletionClients | None
+    :param client: The scripted client the extractor calls; ``None`` is a fresh one with the toy scripts.
+    :ptype client: ScriptedExtractionClient | None
+    :param cell_executor: What runs each run's cells; ``None`` is the engine's in-process default.
+    :ptype cell_executor: CellExecutor | None
+    :param kind_cell_timeout_s: The per-cell deadline the launcher wires for its kind
+        (``KindWiring.cell_timeout_s``); ``None`` leaves the engine's default.
+    :ptype kind_cell_timeout_s: float | None
+    :param job_lease_s: How long the host's job leases last unless renewed.
+    :ptype job_lease_s: float
+    :param kind_max_concurrent_cells: The width the extractor declares it is safe at, which the launcher hands
+        the launch (``KindWiring.max_concurrent_cells``); ``None`` declares no limit of its own.
+    :ptype kind_max_concurrent_cells: int | None
+    :return: The host, and the scripted client its extractor calls — so a caller can see what was asked.
+    :rtype: tuple[LaunchHost, ScriptedExtractionClient]
     """
     eval_host = toyhost_host(profile=profile, storage=storage, trace_sink=trace_sink, clients=clients)
     world = eval_host.profile.world

@@ -79,10 +79,9 @@ log = get_logger(__name__)
 class Dimension:
     """One piece of the world's state, as the engine declares it: one field of the state model.
 
-    Attributes:
-        name: What a case seeds and a goal check reads it as (``state.<name>``).
-        schema: The JSON Schema every value of it satisfies; a seed outside it is refused.
-        matters: Why the state is worth seeding — the field's ``description``.
+    :ivar name: What a case seeds and a goal check reads it as (``state.<name>``).
+    :ivar schema: The JSON Schema every value of it satisfies; a seed outside it is refused.
+    :ivar matters: Why the state is worth seeding — the field's ``description``.
     """
 
     name: str
@@ -116,13 +115,12 @@ class WorldTool:
     def __init__(self, act: Callable[..., Any], *, state: type[BaseModel] | None) -> None:
         """Declare ``act`` as a tool, its parameters read from its type hints.
 
-        Args:
-            act: The function. With a ``state`` model, its first parameter is the state.
-            state: The world's state model, or ``None`` for a world of lookups.
-
-        Raises:
-            ValueError: ``act`` has no name a tool can carry, takes no state where the world has one, or has a
-                parameter with no type annotation, a default, or a type no JSON Schema describes.
+        :param act: The function. With a ``state`` model, its first parameter is the state.
+        :ptype act: Callable[..., Any]
+        :param state: The world's state model, or ``None`` for a world of lookups.
+        :ptype state: type[BaseModel] | None
+        :raises ValueError: ``act`` has no name a tool can carry, takes no state where the world has one, or has a
+            parameter with no type annotation, a default, or a type no JSON Schema describes.
         """
         name = getattr(act, "__name__", "")
         if not name.isidentifier():
@@ -178,10 +176,9 @@ class ToolRefused(ValueError):
 class WorldOutcome(BaseModel):
     """What a world runner's graders see: the agent's answer, the state it left, and the calls it made.
 
-    Attributes:
-        answer: What the agent returned.
-        state: The world's state when the agent was done, as the state model; ``None`` for a world of lookups.
-        calls: Every call that succeeded, in order (``tool`` is the world's name, ``action`` the tool's).
+    :ivar answer: What the agent returned.
+    :ivar state: The world's state when the agent was done, as the state model; ``None`` for a world of lookups.
+    :ivar calls: Every call that succeeded, in order (``tool`` is the world's name, ``action`` the tool's).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -195,9 +192,8 @@ class WorldOutcome(BaseModel):
 class WorldRunner:
     """A runner that hosts an agent on a world: ``World(...)(agent)``.
 
-    Attributes:
-        world: The world every cell binds afresh.
-        agent: ``agent(case, tools)``, called with each case and the tools on its cell's world; async.
+    :ivar world: The world every cell binds afresh.
+    :ivar agent: ``agent(case, tools)``, called with each case and the tools on its cell's world; async.
     """
 
     world: World
@@ -207,8 +203,7 @@ class WorldRunner:
 def _dimensions(state: type[BaseModel]) -> list[Dimension]:
     """Each field of the state model as a dimension: its schema from the model's, its reason its description.
 
-    Raises:
-        ValueError: A field with no description, which is what the engine asks of every dimension.
+    :raises ValueError: A field with no description, which is what the engine asks of every dimension.
     """
     schema = state.model_json_schema()
     defs = schema.get("$defs")
@@ -234,12 +229,11 @@ class World:
     lookups, with no state. Calling it on an agent gives the runner (:class:`WorldRunner`). :attr:`registry` is the
     engine's declaration of a world with state, which the run's host carries on its profile.
 
-    Attributes:
-        state: The state model, or ``None``.
-        name: The carrier its state reaches the agent through and the prefix its tools are recorded under
-            (``calls("room.switch")``): the state model's name in snake case, ``tools`` for a world of lookups.
-        tools: Its tools, by name.
-        recording: Where a world of lookups records its answers and replays them from, or ``None``.
+    :ivar state: The state model, or ``None``.
+    :ivar name: The carrier its state reaches the agent through and the prefix its tools are recorded under
+        (``calls("room.switch")``): the state model's name in snake case, ``tools`` for a world of lookups.
+    :ivar tools: Its tools, by name.
+    :ivar recording: Where a world of lookups records its answers and replays them from, or ``None``.
     """
 
     def __init__(
@@ -252,20 +246,20 @@ class World:
     ) -> None:
         """Declare the world.
 
-        Args:
-            state: The state, a pydantic model: each field one dimension a case seeds and a goal check reads, its
-                ``Field(description=...)`` why it matters. ``None`` for a world of lookups.
-            tools: What the agent can do: functions of the state and their typed parameters, or, with no state,
-                functions of their keyword arguments returning JSON.
-            recording: For a world of lookups: a file their answers are recorded to on the first run and replayed
-                from after (``RECORD=1`` records it again). A world with state takes none: its tools move the state
-                they are graded on, so they run in every cell. A relative path is read beside the eval file being
-                loaded, else in the working directory.
-
-        Raises:
-            ValueError: A state that is not a pydantic model, a field with no description, no tools for a world of
-                lookups, two tools of one name, a recording for a world with state, or a declaration the engine's
-                registry refuses.
+        :param state: The state, a pydantic model: each field one dimension a case seeds and a goal check reads, its
+            ``Field(description=...)`` why it matters. ``None`` for a world of lookups.
+        :ptype state: type[BaseModel] | None
+        :param tools: What the agent can do: functions of the state and their typed parameters, or, with no state,
+            functions of their keyword arguments returning JSON.
+        :ptype tools: Sequence[Callable[..., Any]]
+        :param recording: For a world of lookups: a file their answers are recorded to on the first run and replayed
+            from after (``RECORD=1`` records it again). A world with state takes none: its tools move the state
+            they are graded on, so they run in every cell. A relative path is read beside the eval file being
+            loaded, else in the working directory.
+        :ptype recording: str | os.PathLike[str] | None
+        :raises ValueError: A state that is not a pydantic model, a field with no description, no tools for a world of
+            lookups, two tools of one name, a recording for a world with state, or a declaration the engine's
+            registry refuses.
         """
         if state is not None and not (isinstance(state, type) and issubclass(state, BaseModel)):
             raise ValueError(f"a world's state is a pydantic model class, not {state!r}")
@@ -317,14 +311,11 @@ class World:
     def __call__(self, agent: Callable[[Mapping[str, Any], Any], Awaitable[Any]]) -> WorldRunner:
         """The runner hosting ``agent`` on this world.
 
-        Args:
-            agent: ``async def agent(case, tools)``, handed each case and the tools on its cell's world.
-
-        Returns:
-            The runner.
-
-        Raises:
-            ValueError: ``agent`` is not callable.
+        :param agent: ``async def agent(case, tools)``, handed each case and the tools on its cell's world.
+        :ptype agent: Callable[[Mapping[str, Any], Any], Awaitable[Any]]
+        :return: The runner.
+        :rtype: WorldRunner
+        :raises ValueError: ``agent`` is not callable.
         """
         if not callable(agent):
             raise ValueError(f"a world hosts an agent, a callable (case, tools) -> answer, not {agent!r}")
@@ -338,13 +329,14 @@ class World:
     def outcome(self, answer: Any, state: Mapping[str, Any] | None, calls: Sequence[RecordedCall]) -> WorldOutcome:
         """What graders see of one cell: the answer, the state as the state model, and the calls.
 
-        Args:
-            answer: The agent's answer.
-            state: The cell's end state, by dimension; ``None`` for a world of lookups.
-            calls: The calls that succeeded.
-
-        Returns:
-            The outcome.
+        :param answer: The agent's answer.
+        :ptype answer: Any
+        :param state: The cell's end state, by dimension; ``None`` for a world of lookups.
+        :ptype state: Mapping[str, Any] | None
+        :param calls: The calls that succeeded.
+        :ptype calls: Sequence[RecordedCall]
+        :return: The outcome.
+        :rtype: WorldOutcome
         """
         model = None if self.state is None or state is None else self.state.model_construct(**dict(state))
         return WorldOutcome(answer=answer, state=model, calls=list(calls))
@@ -384,15 +376,13 @@ class World:
         A field the case leaves out takes its default; one with no default must be given, since a dimension left
         unset would read back as ``None`` — a value nobody seeded, which a goal check would grade as though one had.
 
-        Args:
-            values: The case's ``world``.
-            case: What the refusal calls the case: its name, or its position.
-
-        Returns:
-            The state, every field as JSON.
-
-        Raises:
-            ValueError: The state is not a mapping, the state model refuses it, or the seed walk refuses it.
+        :param values: The case's ``world``.
+        :ptype values: Any
+        :param case: What the refusal calls the case: its name, or its position.
+        :ptype case: int | str
+        :return: The state, every field as JSON.
+        :rtype: dict[str, Any]
+        :raises ValueError: The state is not a mapping, the state model refuses it, or the seed walk refuses it.
         """
         assert self.state is not None, "only a world with state is seeded"
         if not isinstance(values, Mapping):
@@ -422,12 +412,12 @@ class World:
         baseline. A check with no baseline is left out, never counted as passed or failed: its summary line then
         states no do-nothing figure, and the warning logged here names the check and why.
 
-        Args:
-            checks: The goal checks.
-            cases: Per case, its starting state and its variation parameters (``variation.*``).
-
-        Returns:
-            Check -> cases passed, for every check evaluable against every case's starting state.
+        :param checks: The goal checks.
+        :ptype checks: Sequence[str]
+        :param cases: Per case, its starting state and its variation parameters (``variation.*``).
+        :ptype cases: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]
+        :return: Check -> cases passed, for every check evaluable against every case's starting state.
+        :rtype: dict[str, int]
         """
         assert self.registry is not None, "only a world with state has goal checks"
         passes = dict.fromkeys(checks, 0)
@@ -462,12 +452,12 @@ class World:
         over an ``enum``-, ``const``- or ``pattern``-closed parameter is a check of structure, and one over a free
         string is a reading of what the model wrote, refused as authoring refuses it.
 
-        Args:
-            tool: The carrier a check names, this world's name for one of its tools.
-            action: The tool's name.
-
-        Returns:
-            The tool's ``input_schema``, or None.
+        :param tool: The carrier a check names, this world's name for one of its tools.
+        :ptype tool: str
+        :param action: The tool's name.
+        :ptype action: str
+        :return: The tool's ``input_schema``, or None.
+        :rtype: Mapping[str, Any] | None
         """
         declared = self.tools.get(action) if tool == self.name else None
         return None if declared is None else declared.input_schema
@@ -477,11 +467,10 @@ class World:
 
         The host's :attr:`~threetears.evals.kernel.host.HostProfile.tool_actions` reader for a quick world.
 
-        Args:
-            tool: The carrier a check names.
-
-        Returns:
-            The tools' names; empty for a carrier that is not this world.
+        :param tool: The carrier a check names.
+        :ptype tool: str
+        :return: The tools' names; empty for a carrier that is not this world.
+        :rtype: frozenset[str]
         """
         return frozenset(self.tools) if tool == self.name else frozenset()
 
@@ -491,9 +480,8 @@ class World:
         Left to the run, either would grade *not established* or *never called* on every cell — a typo
         measured as the candidate's failure.
 
-        Raises:
-            ValueError: A check reads an undeclared dimension or names an unknown tool.
-            DSLError: A check is not an expression of the goal language.
+        :raises ValueError: A check reads an undeclared dimension or names an unknown tool.
+        :raises DSLError: A check is not an expression of the goal language.
         """
         if self.registry is None:
             raise ValueError(
@@ -562,9 +550,8 @@ class WorldTools(Mapping[str, Callable[..., Awaitable[Any]]]):
     async def call(self, tool: str, /, **params: Any) -> Any:
         """Call one tool on this cell's world and record the call; returns what the tool says.
 
-        Raises:
-            ToolRefused: No such tool, or parameters its schema refuses. Nothing changed; the refusal is recorded
-                on the ledger's refusal record, never among its calls, before it is raised.
+        :raises ToolRefused: No such tool, or parameters its schema refuses. Nothing changed; the refusal is recorded
+            on the ledger's refusal record, never among its calls, before it is raised.
         """
         declared = self.world.tools.get(tool)
         if declared is None:
@@ -591,8 +578,7 @@ class WorldTools(Mapping[str, Callable[..., Awaitable[Any]]]):
     def _refuse(self, tool: str, params: dict[str, Any], reason: str) -> NoReturn:
         """Record a refused call on the ledger, then refuse it: the record is written before the candidate hears no.
 
-        Raises:
-            ToolRefused: Always, carrying ``reason``.
+        :raises ToolRefused: Always, carrying ``reason``.
         """
         self.ledger.record_refusal(self.world.name, tool, params, reason=reason)
         raise ToolRefused(reason)
@@ -631,12 +617,15 @@ class WorldCellKind:
     ) -> None:
         """Bind the world, the candidate, and the cell.
 
-        Args:
-            world: The world every cell seeds.
-            candidate: The world candidate.
-            inner: Builds the callable kind over a one-argument candidate — the scorers, the expected
-                labels and the judge, exactly as a world-less run grades.
-            cell: The cell this kind drives.
+        :param world: The world every cell seeds.
+        :ptype world: World
+        :param candidate: The world candidate.
+        :ptype candidate: WorldAgent
+        :param inner: Builds the callable kind over a one-argument candidate — the scorers, the expected
+            labels and the judge, exactly as a world-less run grades.
+        :ptype inner: Callable[[Callable[[Mapping[str, Any]], Awaitable[Any]]], Any]
+        :param cell: The cell this kind drives.
+        :ptype cell: CellContext
         """
         self._world = world
         self._cell = cell

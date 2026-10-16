@@ -56,14 +56,11 @@ def _say(line: str) -> None:
 def load_evals(path: Path) -> list[Eval]:
     """Every eval a file declares: a TOML file's one, or a Python module's module-level ones, in order.
 
-    Args:
-        path: The ``.py`` or ``.toml`` file.
-
-    Returns:
-        The evals, not yet run.
-
-    Raises:
-        ValueError: A file that is not there, declares no eval, or that the eval refuses.
+    :param path: The ``.py`` or ``.toml`` file.
+    :ptype path: Path
+    :return: The evals, not yet run.
+    :rtype: list[Eval]
+    :raises ValueError: A file that is not there, declares no eval, or that the eval refuses.
     """
     if not path.is_file():
         raise ValueError(f"{path} is not there")
@@ -89,12 +86,12 @@ def report_dir(name: str) -> Path:
 def run_file(path: Path, *, verbose: bool = False) -> int:
     """Run every eval ``path`` declares, print each result, write each report, and return the exit code.
 
-    Args:
-        path: The ``.py`` or ``.toml`` file.
-        verbose: Print each result whole rather than quietly.
-
-    Returns:
-        The worst exit code of the evals' (see the module docstring).
+    :param path: The ``.py`` or ``.toml`` file.
+    :ptype path: Path
+    :param verbose: Print each result whole rather than quietly.
+    :ptype verbose: bool
+    :return: The worst exit code of the evals' (see the module docstring).
+    :rtype: int
     """
     try:
         evals = load_evals(path)
@@ -123,11 +120,10 @@ def run_file(path: Path, *, verbose: bool = False) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     """``python -m threetears.evals``: an eval file, or the host command line.
 
-    Args:
-        argv: The arguments after the program name; ``None`` reads ``sys.argv``.
-
-    Returns:
-        The exit code.
+    :param argv: The arguments after the program name; ``None`` reads ``sys.argv``.
+    :ptype argv: Sequence[str] | None
+    :return: The exit code.
+    :rtype: int
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if args and Path(args[0]).suffix in EVAL_FILES:

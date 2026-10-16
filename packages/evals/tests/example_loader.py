@@ -30,9 +30,8 @@ RUNGS = ("1-triage", "2-replies", "3-invoices", "4-booking")
 class Replay:
     """What an example's clients served from its recording while a test ran it.
 
-    Attributes:
-        calls: One ``(settings, system, user)`` per call served, in the order asked.
-        refusals: Each refusal a replay raised mid-run (a prompt the recording does not hold), in the order raised.
+    :ivar calls: One ``(settings, system, user)`` per call served, in the order asked.
+    :ivar refusals: Each refusal a replay raised mid-run (a prompt the recording does not hold), in the order raised.
     """
 
     calls: list[tuple[ClientRequestSettings, str, str]] = field(default_factory=list)
@@ -41,8 +40,8 @@ class Replay:
     def served(self) -> int:
         """How many calls were served, after failing the test by name on any refusal met mid-run.
 
-        Returns:
-            The number of calls served.
+        :return: The number of calls served.
+        :rtype: int
         """
         if self.refusals:
             pytest.fail(f"the recording no longer serves the example: {self.refusals[0]}")
@@ -52,12 +51,12 @@ class Replay:
 def replaying(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Replay:
     """Run ``module`` against its recording: no key, no live client, and every served call counted.
 
-    Args:
-        module: A loaded model-calling example.
-        monkeypatch: The test's monkeypatch.
-
-    Returns:
-        The record of what its clients serve once its ``main`` runs.
+    :param module: A loaded model-calling example.
+    :ptype module: ModuleType
+    :param monkeypatch: The test's monkeypatch.
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: The record of what its clients serve once its ``main`` runs.
+    :rtype: Replay
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("RECORD", raising=False)

@@ -404,8 +404,8 @@ class CellSpanWindow(Protocol):
     def identity(self) -> AbstractContextManager[None]:
         """Mark everything inside as this cell's work, apparatus included.
 
-        Returns:
-            The identity scope — a no-op when nothing is watching.
+        :return: The identity scope — a no-op when nothing is watching.
+        :rtype: AbstractContextManager[None]
         """
         ...  # pragma: no cover — protocol
 
@@ -416,8 +416,8 @@ class CellSpanWindow(Protocol):
         produces are what the cost-vs-latency comparison reads, so apparatus work inside it
         is time the candidate is charged for and did not spend.
 
-        Returns:
-            The collection scope — a no-op when nothing is watching.
+        :return: The collection scope — a no-op when nothing is watching.
+        :rtype: AbstractContextManager[None]
         """
         ...  # pragma: no cover — protocol
 
@@ -456,8 +456,8 @@ class CostCapReached(Exception):
     def __init__(self, detail: str = "the run's cost cap has no room for another paid call") -> None:
         """Say what the cap refused.
 
-        Args:
-            detail: What was refused, for a log line; the cell's record names the cap's own numbers.
+        :param detail: What was refused, for a log line; the cell's record names the cap's own numbers.
+        :ptype detail: str
         """
         super().__init__(detail)
         self.detail = detail
@@ -477,12 +477,10 @@ class CellReservation(Protocol):
         The cost lands on the reservation's source as :meth:`CellSink.add_spend` would add it, and the ceiling
         stops being held, with no moment between in which the call's spend is counted nowhere.
 
-        Args:
-            cost_usd: What the call cost, its every attempt included; ``None`` when the provider priced none,
-                which leaves the source unpriced for the rest of the cell.
-
-        Raises:
-            ValueError: The reservation was already closed, or ``cost_usd`` is negative or not finite.
+        :param cost_usd: What the call cost, its every attempt included; ``None`` when the provider priced none,
+            which leaves the source unpriced for the rest of the cell.
+        :ptype cost_usd: float | None
+        :raises ValueError: The reservation was already closed, or ``cost_usd`` is negative or not finite.
         """
         ...  # pragma: no cover — protocol
 
@@ -525,8 +523,8 @@ class CellSink(Protocol):
         ``finally``: a cancel unwinds through those, and the write would replace the answer with
         whatever the unwind was doing.
 
-        Args:
-            pending: The component the next await is waiting for.
+        :param pending: The component the next await is waiting for.
+        :ptype pending: CellPending
         """
         ...  # pragma: no cover — protocol
 
@@ -546,8 +544,8 @@ class CellSink(Protocol):
         and a kind that registers none reported nothing — a call in flight at the deadline has
         no response to report, so a kind whose only call is that one has nothing to register.
 
-        Args:
-            read: The candidate side so far.
+        :param read: The candidate side so far.
+        :ptype read: Callable[[], CandidateOutput]
         """
         ...  # pragma: no cover — protocol
 
@@ -565,13 +563,12 @@ class CellSink(Protocol):
         Not the cell's record: what the cell stores is what :meth:`CandidateKind.invoke` returns, or at a
         deadline what :meth:`report_progress` reads. This is the cap's view of the cell while it runs.
 
-        Args:
-            source: Whose spend it is.
-            cost_usd: What it cost; ``None`` when part of it could not be priced, which leaves the source
-                unpriced for the rest of the cell — an enforcing cap is then reached, since unknown is not $0.
-
-        Raises:
-            ValueError: ``cost_usd`` is negative or not finite.
+        :param source: Whose spend it is.
+        :ptype source: CellPending
+        :param cost_usd: What it cost; ``None`` when part of it could not be priced, which leaves the source
+            unpriced for the rest of the cell — an enforcing cap is then reached, since unknown is not $0.
+        :ptype cost_usd: float | None
+        :raises ValueError: ``cost_usd`` is negative or not finite.
         """
         ...  # pragma: no cover — protocol
 
@@ -587,18 +584,16 @@ class CellSink(Protocol):
         nothing and is admitted only while the cap is not yet reached, so such calls can still pass the cap by
         about one call per running cell.
 
-        Args:
-            source: Whose call it is; its cost lands on that source's total when the reservation settles.
-            ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded.
-
-        Returns:
-            The reservation, to settle once the call returns or release if it does not.
-
-        Raises:
-            CostCapReached: The cap has no room for the call: it would take the run past its cap, or the cap
-                was already reached. The breach is recorded, so the runner excludes the cell for the cap and
-                stops the run ``budget_stopped`` once it is saved. Make no call.
-            ValueError: ``ceiling_usd`` is negative or not finite.
+        :param source: Whose call it is; its cost lands on that source's total when the reservation settles.
+        :ptype source: CellPending
+        :param ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded.
+        :ptype ceiling_usd: float | None
+        :return: The reservation, to settle once the call returns or release if it does not.
+        :rtype: CellReservation
+        :raises CostCapReached: The cap has no room for the call: it would take the run past its cap, or the cap
+            was already reached. The breach is recorded, so the runner excludes the cell for the cap and
+            stops the run ``budget_stopped`` once it is saved. Make no call.
+        :raises ValueError: ``ceiling_usd`` is negative or not finite.
         """
         ...  # pragma: no cover — protocol
 
@@ -612,9 +607,9 @@ class CellSink(Protocol):
         cap is never reached. Once it says ``True`` a kind makes no further paid call; inside
         :func:`~threetears.evals.run.conversation.drive_conversation` it raises :class:`CostCapReached` to stop.
 
-        Returns:
-            ``True`` once the run's cap is reached. The breach is recorded the first time, and the runner
+        :return: ``True`` once the run's cap is reached. The breach is recorded the first time, and the runner
             excludes the cell and stops the run ``budget_stopped`` once the cell is saved.
+        :rtype: bool
         """
         ...  # pragma: no cover — protocol
 
@@ -700,41 +695,43 @@ class CandidateKind(Protocol):
     ) -> Any:
         """Build one candidate, ready to be invoked.
 
-        Args:
-            subject_snapshot: The engine's view of the subject — key, label and content
-                hashes. ``None`` for a caller that resolved none, which is every ad-hoc
-                or fixture run. A kind that needs the subject's substance has it bound
-                into its factory by its host, never through this.
-            variant_config: The A/B'd stack this cell runs.
-            world_seed: The world state the scenario presumes, before any turn.
-            span_window: This cell's tracing windows, to open around the candidate's own
-                work in :meth:`invoke`. Keep it on the returned instance: it is the cell's,
-                not the kind's, and a kind wired for a run is reached for every cell.
-            cassettes: This cell's handle on the run's cassette lane, or ``None`` for a run with
-                cassettes off. Handed one, the kind calls its ``wire`` once with the candidate's
-                :class:`~threetears.evals.kernel.cassettes.CassetteSeams` before returning; the
-                engine refuses a cell whose kind does not, since its tools would run live under a
-                replay. The cell's, like ``span_window``: it already names the corpus and the case.
-            world: This cell's handle on the host's world, or ``None`` for a host that declares none. A
-                kind that seeds a world seeds it here (:meth:`~threetears.evals.kernel.world_session.WorldSession.seed`),
-                which settles each attached carrier before the first turn — after binding this cell's own
-                world first (:meth:`~threetears.evals.kernel.world_session.WorldSession.bind`) when its
-                host's world declares ``binds_per_cell``; it fires triggers and announces
-                turns through the same handle in :meth:`invoke`, so keep it on the returned instance. The
-                runner reads the world's end state back through it once ``invoke`` returns and records
-                what fired, so a kind that seeds beside it leaves the cell with neither. The cell's, like
-                ``span_window``.
-
-        Returns:
-            The kind's own prepared instance, opaque to the engine and handed straight
+        :param subject_snapshot: The engine's view of the subject — key, label and content
+            hashes. ``None`` for a caller that resolved none, which is every ad-hoc
+            or fixture run. A kind that needs the subject's substance has it bound
+            into its factory by its host, never through this.
+        :ptype subject_snapshot: SubjectSnapshot | None
+        :param variant_config: The A/B'd stack this cell runs.
+        :ptype variant_config: VariantConfig
+        :param world_seed: The world state the scenario presumes, before any turn.
+        :ptype world_seed: WorldSeed
+        :param span_window: This cell's tracing windows, to open around the candidate's own
+            work in :meth:`invoke`. Keep it on the returned instance: it is the cell's,
+            not the kind's, and a kind wired for a run is reached for every cell.
+        :ptype span_window: CellSpanWindow
+        :param cassettes: This cell's handle on the run's cassette lane, or ``None`` for a run with
+            cassettes off. Handed one, the kind calls its ``wire`` once with the candidate's
+            :class:`~threetears.evals.kernel.cassettes.CassetteSeams` before returning; the
+            engine refuses a cell whose kind does not, since its tools would run live under a
+            replay. The cell's, like ``span_window``: it already names the corpus and the case.
+        :ptype cassettes: CellCassettes | None
+        :param world: This cell's handle on the host's world, or ``None`` for a host that declares none. A
+            kind that seeds a world seeds it here (:meth:`~threetears.evals.kernel.world_session.WorldSession.seed`),
+            which settles each attached carrier before the first turn — after binding this cell's own
+            world first (:meth:`~threetears.evals.kernel.world_session.WorldSession.bind`) when its
+            host's world declares ``binds_per_cell``; it fires triggers and announces
+            turns through the same handle in :meth:`invoke`, so keep it on the returned instance. The
+            runner reads the world's end state back through it once ``invoke`` returns and records
+            what fired, so a kind that seeds beside it leaves the cell with neither. The cell's, like
+            ``span_window``.
+        :ptype world: WorldSession | None
+        :return: The kind's own prepared instance, opaque to the engine and handed straight
             back to :meth:`invoke`.
-
-        Raises:
-            CandidatePreparationFailed: The candidate could not be built. Carries the
-                termination arm that tells an operator which half of the apparatus to
-                look at; the runner records one cleanly-excluded cell and moves on.
-            ApparatusError: The rig failed while building it. One cell excluded under
-                ``apparatus_failed``; the runner moves on.
+        :rtype: Any
+        :raises CandidatePreparationFailed: The candidate could not be built. Carries the
+            termination arm that tells an operator which half of the apparatus to
+            look at; the runner records one cleanly-excluded cell and moves on.
+        :raises ApparatusError: The rig failed while building it. One cell excluded under
+            ``apparatus_failed``; the runner moves on.
         """
         ...  # pragma: no cover — protocol
 
@@ -746,22 +743,21 @@ class CandidateKind(Protocol):
         the only thing anything downstream sees on a cell that finishes; ``sink`` is what
         a cell cut off at its deadline is recorded from.
 
-        Args:
-            instance: Whatever :meth:`prepare` returned.
-            test_case: The concrete stimulus — variation parameters and, for a kind that
-                carries one, its own host payload.
-            sink: This cell's sink, for what the kind is waiting on, how to read the spend it has
-                billed so far, and holding each paid call against the run's cost cap as it is made
-                (:meth:`CellSink.reserve`, :meth:`CellSink.add_spend`). The cell's, like
-                ``span_window``, not the kind's.
-
-        Returns:
-            The candidate's output, its judge-free facts and its telemetry.
-
-        Raises:
-            ApparatusError: The rig failed under the candidate. One cell excluded under
-                ``apparatus_failed``, recorded with what the kind had reported through ``sink``;
-                the runner moves on.
+        :param instance: Whatever :meth:`prepare` returned.
+        :ptype instance: Any
+        :param test_case: The concrete stimulus — variation parameters and, for a kind that
+            carries one, its own host payload.
+        :ptype test_case: EvalTestCase
+        :param sink: This cell's sink, for what the kind is waiting on, how to read the spend it has
+            billed so far, and holding each paid call against the run's cost cap as it is made
+            (:meth:`CellSink.reserve`, :meth:`CellSink.add_spend`). The cell's, like
+            ``span_window``, not the kind's.
+        :ptype sink: CellSink
+        :return: The candidate's output, its judge-free facts and its telemetry.
+        :rtype: CandidateOutput
+        :raises ApparatusError: The rig failed under the candidate. One cell excluded under
+            ``apparatus_failed``, recorded with what the kind had reported through ``sink``;
+            the runner moves on.
         """
         ...  # pragma: no cover — protocol
 
@@ -788,13 +784,15 @@ class CandidatePreparationFailed(Exception):
     ) -> None:
         """Record what failed, and which half of the apparatus it was.
 
-        Args:
-            error: The message, already prefixed with what kind of fault it was —
-                it reaches an operator as ``EvalResult.runner_error`` verbatim.
-            termination: Which arm this is.
-            preconditions: The t=0 outcomes, for the arm that has them. ``None`` for the
-                arms that do not, which is not an empty set of assertions but an absence
-                of the question.
+        :param error: The message, already prefixed with what kind of fault it was —
+            it reaches an operator as ``EvalResult.runner_error`` verbatim.
+        :ptype error: str
+        :param termination: Which arm this is.
+        :ptype termination: CellTermination
+        :param preconditions: The t=0 outcomes, for the arm that has them. ``None`` for the
+            arms that do not, which is not an empty set of assertions but an absence
+            of the question.
+        :ptype preconditions: list[PreconditionOutcome] | None
         """
         super().__init__(error)
         self.error = error
@@ -815,10 +813,12 @@ class CandidateKindDefect(ValueError):
     def __init__(self, name: str, *, declared: JudgedArtifact, has_evidence: bool) -> None:
         """Name the kind, what it declared, and what its cell carried.
 
-        Args:
-            name: The template's ``candidate_kind``.
-            declared: The kind's ``judged_artifact``.
-            has_evidence: Whether the cell's output carried ``judge_evidence``.
+        :param name: The template's ``candidate_kind``.
+        :ptype name: str
+        :param declared: The kind's ``judged_artifact``.
+        :ptype declared: JudgedArtifact
+        :param has_evidence: Whether the cell's output carried ``judge_evidence``.
+        :ptype has_evidence: bool
         """
         carried = "carried judge evidence" if has_evidence else "carried no judge evidence"
         super().__init__(
@@ -842,9 +842,10 @@ class UnknownCandidateKind(ValueError):
     def __init__(self, name: str, *, known: list[str]) -> None:
         """Name the kind and what this host does have.
 
-        Args:
-            name: The unresolvable ``template.candidate_kind``.
-            known: Every kind name this host can build, for the message.
+        :param name: The unresolvable ``template.candidate_kind``.
+        :ptype name: str
+        :param known: Every kind name this host can build, for the message.
+        :ptype known: list[str]
         """
         super().__init__(
             f"no candidate kind {name!r} is wired on this host; known kinds: {', '.join(sorted(known)) or '(none)'}"

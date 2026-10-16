@@ -302,11 +302,10 @@ def _could_hold_a_host(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
 def module_state(root: Path) -> list[Finding]:
     """Every piece of module state under ``root``'s ``threetears`` tree, allowed or not.
 
-    Args:
-        root: The directory holding the ``threetears`` namespace.
-
-    Returns:
-        The findings, in module and line order.
+    :param root: The directory holding the ``threetears`` namespace.
+    :ptype root: Path
+    :return: The findings, in module and line order.
+    :rtype: list[Finding]
     """
     findings: list[Finding] = []
     for path in sorted((root / "threetears").rglob("*.py")):

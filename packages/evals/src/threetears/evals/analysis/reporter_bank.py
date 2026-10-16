@@ -88,18 +88,20 @@ def case_limits(
       per-arm claim is uncheckable. Stated rather than left as an empty list, because an empty
       list is also what a bundle with nothing wrong produces.
 
-    Args:
-        bundle: The bundle being frozen.
-        recorded_fingerprint: The pinned memo's ``generation.bundle_fingerprint``, or ``None`` when
-            the case pins no memo.
-        writer_message: The writer message the case freezes, or ``None`` when it freezes none.
-        recorded_message_digest: The pinned memo's ``generation.user_message_digest``, or ``None``
-            when the case pins no memo.
-
-    Returns:
-        The limits — the reproduction or rendering sentence first, then per arm in
+    :param bundle: The bundle being frozen.
+    :ptype bundle: AnalysisContextBundle
+    :param recorded_fingerprint: The pinned memo's ``generation.bundle_fingerprint``, or ``None`` when
+        the case pins no memo.
+    :ptype recorded_fingerprint: str | None
+    :param writer_message: The writer message the case freezes, or ``None`` when it freezes none.
+    :ptype writer_message: str | None
+    :param recorded_message_digest: The pinned memo's ``generation.user_message_digest``, or ``None``
+        when the case pins no memo.
+    :ptype recorded_message_digest: str | None
+    :return: The limits — the reproduction or rendering sentence first, then per arm in
         ``variant_index`` order; empty when the bundle and its rendering reproduce and every
         variant is described and has a cell.
+    :rtype: list[str]
     """
     limits: list[str] = []
     fingerprint = bundle.fingerprint()
@@ -160,12 +162,11 @@ def case_pair(case: ReporterCase) -> tuple[str | None, str | None]:
     A case pinning no memo is keyed on its campaign alone, on the same terms: a generating
     candidate over one campaign's evidence is one case per campaign, not one per re-assembly.
 
-    Args:
-        case: A reporter case.
-
-    Returns:
-        ``(campaign id the frozen bundle names, recorded analysis id)`` — either ``None`` when the
+    :param case: A reporter case.
+    :ptype case: ReporterCase
+    :return: ``(campaign id the frozen bundle names, recorded analysis id)`` — either ``None`` when the
         frozen document carries none.
+    :rtype: tuple[str | None, str | None]
     """
     return _str_or_none(case.bundle.get("campaign_id")), case.recorded_analysis_id
 
@@ -174,10 +175,9 @@ def case_pair(case: ReporterCase) -> tuple[str | None, str | None]:
 class AmbiguousPair:
     """A (campaign, recorded memo) pair holding more than one live case.
 
-    Attributes:
-        campaign_id: The campaign the pair's frozen bundles name, or ``None`` when they name none.
-        recorded_analysis_id: The pair's recorded memo, or ``None`` when it pins none.
-        live_case_ids: Every live case of the pair, sorted — each one a launch would run.
+    :ivar campaign_id: The campaign the pair's frozen bundles name, or ``None`` when they name none.
+    :ivar recorded_analysis_id: The pair's recorded memo, or ``None`` when it pins none.
+    :ivar live_case_ids: Every live case of the pair, sorted — each one a launch would run.
     """
 
     campaign_id: str | None
@@ -206,14 +206,13 @@ class ReporterCaseBank:
     readable for every run already measured against it. Its own ``supersedes`` still hold: retiring
     a revision does not bring back the labels it replaced.
 
-    Attributes:
-        cases: Every readable reporter case of the template, ``(stored case, reporter case)`` in
-            storage order, retired ones included. A stored case carrying no reporter case is not
-            here (a template repointed to this kind can hold cases written for another).
-        unreadable: ``(case id, why)`` for every stored case carrying a reporter case this build
-            cannot read, in storage order.
-        superseded_by: Case id -> the readable cases that list it in ``supersedes``, sorted.
-        archived: Case id -> the operator's reason (or ``None``) for every readable case retired.
+    :ivar cases: Every readable reporter case of the template, ``(stored case, reporter case)`` in
+        storage order, retired ones included. A stored case carrying no reporter case is not
+        here (a template repointed to this kind can hold cases written for another).
+    :ivar unreadable: ``(case id, why)`` for every stored case carrying a reporter case this build
+        cannot read, in storage order.
+    :ivar superseded_by: Case id -> the readable cases that list it in ``supersedes``, sorted.
+    :ivar archived: Case id -> the operator's reason (or ``None``) for every readable case retired.
     """
 
     cases: tuple[tuple[EvalTestCase, ReporterCase], ...]
@@ -224,12 +223,11 @@ class ReporterCaseBank:
     def is_live(self, case_id: str) -> bool:
         """Whether a launch runs ``case_id``: nothing readable supersedes it, and no operator retired it.
 
-        Args:
-            case_id: A stored case id.
-
-        Returns:
-            ``True`` when nothing supersedes it and it is not retired. Meaningful only while
+        :param case_id: A stored case id.
+        :ptype case_id: str
+        :return: ``True`` when nothing supersedes it and it is not retired. Meaningful only while
             ``unreadable`` is empty.
+        :rtype: bool
         """
         return case_id not in self.superseded_by and case_id not in self.archived
 
@@ -243,12 +241,12 @@ class ReporterCaseBank:
     ) -> list[tuple[EvalTestCase, ReporterCase]]:
         """Every readable case freezing one (campaign, recorded memo) pair, live or not, in storage order.
 
-        Args:
-            campaign_id: The pair's campaign.
-            recorded_analysis_id: The pair's recorded memo, or ``None``.
-
-        Returns:
-            The pair's cases, whichever bundle each was frozen from.
+        :param campaign_id: The pair's campaign.
+        :ptype campaign_id: str | None
+        :param recorded_analysis_id: The pair's recorded memo, or ``None``.
+        :ptype recorded_analysis_id: str | None
+        :return: The pair's cases, whichever bundle each was frozen from.
+        :rtype: list[tuple[EvalTestCase, ReporterCase]]
         """
         wanted = (campaign_id, recorded_analysis_id)
         return [(stored, case) for stored, case in self.cases if case_pair(case) == wanted]
@@ -269,12 +267,11 @@ class ReporterCaseBank:
 def reporter_case_bank(stored: Iterable[EvalTestCase]) -> ReporterCaseBank:
     """Derive which of a template's stored reporter cases is live — the one derivation of it.
 
-    Args:
-        stored: Every stored case of ONE template in one partition, in storage order. Cases
-            carrying no reporter case are skipped.
-
-    Returns:
-        The bank: readable cases, unreadable ones, and who supersedes whom.
+    :param stored: Every stored case of ONE template in one partition, in storage order. Cases
+        carrying no reporter case are skipped.
+    :ptype stored: Iterable[EvalTestCase]
+    :return: The bank: readable cases, unreadable ones, and who supersedes whom.
+    :rtype: ReporterCaseBank
     """
     cases: list[tuple[EvalTestCase, ReporterCase]] = []
     unreadable: list[tuple[str, str]] = []
@@ -314,16 +311,14 @@ def decidable_reporter_case_bank(stored: Iterable[EvalTestCase], *, template_id:
     a second live case of a pair. Such a case is this kind's own in a shape this build does not
     know — written by a newer build, or damaged — and the refusal names it.
 
-    Args:
-        stored: Every stored case of the template in one partition, in storage order.
-        template_id: The reporter template, named in the refusal.
-
-    Returns:
-        The bank, whose ``unreadable`` is empty.
-
-    Raises:
-        ValidationFailedError: A stored case of the template carries a reporter case this build
-            cannot read.
+    :param stored: Every stored case of the template in one partition, in storage order.
+    :ptype stored: Iterable[EvalTestCase]
+    :param template_id: The reporter template, named in the refusal.
+    :ptype template_id: str
+    :return: The bank, whose ``unreadable`` is empty.
+    :rtype: ReporterCaseBank
+    :raises ValidationFailedError: A stored case of the template carries a reporter case this build
+        cannot read.
     """
     bank = reporter_case_bank(stored)
     if bank.unreadable:
@@ -390,16 +385,13 @@ class FrozenReporterCase(BaseModel):
 def frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase:
     """Project a stored reporter case onto the receipt a freeze answers with.
 
-    Args:
-        test_case: The stored case a freeze returned.
-
-    Returns:
-        Its receipt.
-
-    Raises:
-        ValueError: ``test_case`` carries no reporter case, or carries one under no template. A freeze
-            stores and returns only cases it can read back, under the template it froze against, so
-            this is a defect in the caller rather than an input error.
+    :param test_case: The stored case a freeze returned.
+    :ptype test_case: EvalTestCase
+    :return: Its receipt.
+    :rtype: FrozenReporterCase
+    :raises ValueError: ``test_case`` carries no reporter case, or carries one under no template. A freeze
+        stores and returns only cases it can read back, under the template it froze against, so
+        this is a defect in the caller rather than an input error.
     """
     case = reporter_case_of(test_case)
     if case is None:
@@ -432,17 +424,15 @@ CriterionDrift = Literal["unchanged", "changed", "no_live_criterion"]
 def criterion_drift(label: ReporterLabel, live: Mapping[str, LabelCriterion] | None) -> CriterionDrift:
     """Compare the criterion a label was written against with the template's criterion today.
 
-    Args:
-        label: A stored label, carrying the criterion its freeze stamped.
-        live: The template's criteria by dimension today, or ``None`` when the template is gone.
-
-    Returns:
-        ``no_live_criterion`` when the template is gone or no longer scores the dimension; otherwise
+    :param label: A stored label, carrying the criterion its freeze stamped.
+    :ptype label: ReporterLabel
+    :param live: The template's criteria by dimension today, or ``None`` when the template is gone.
+    :ptype live: Mapping[str, LabelCriterion] | None
+    :return: ``no_live_criterion`` when the template is gone or no longer scores the dimension; otherwise
         ``unchanged`` or ``changed``.
-
-    Raises:
-        ValueError: ``label`` carries no criterion — a label as a caller submits it, never one a case
-            stores (``ReporterCase`` refuses that), so nothing says what it was written against.
+    :rtype: CriterionDrift
+    :raises ValueError: ``label`` carries no criterion — a label as a caller submits it, never one a case
+        stores (``ReporterCase`` refuses that), so nothing says what it was written against.
     """
     if label.criterion is None:
         raise ValueError(
@@ -616,15 +606,15 @@ class ReporterCalibration(BaseModel):
 def label_agrees(direction: LabelDirection, score: RubricScore) -> bool | None:
     """Whether a judge score falls inside a label direction's band.
 
-    Args:
-        direction: Where the label placed the memo.
-        score: The judge's score.
-
-    Returns:
-        ``True`` when the score is inside the direction's inclusive band; ``None`` for a pass/fail
+    :param direction: Where the label placed the memo.
+    :ptype direction: LabelDirection
+    :param score: The judge's score.
+    :ptype score: RubricScore
+    :return: ``True`` when the score is inside the direction's inclusive band; ``None`` for a pass/fail
         dimension. The bands are 1-5 levels, and mapping five directions onto two answers would be a
         calibration rule nobody ratified — and one pass/fail dimension must not abort the read of the
         rest, which a raise here would do after the run was paid for.
+    :rtype: bool | None
     """
     if score.scale != "ordinal":
         return None
@@ -650,30 +640,41 @@ def read_calibration(
 ) -> ReporterCalibration:
     """Set every labelled dimension's judge score beside its label, per case and per result.
 
-    Args:
-        run_id: The run.
-        template_id: Its template.
-        status: Its status when read.
-        dimensions: The rubric dimensions the run scores, in order. A label naming a dimension
-            outside this list is still read — the judge simply scored nothing there, which the
-            reading says with ``score=None``.
-        cases: ``(test_case_id, case)`` for every reporter case of the run, in run order.
-        results: Every stored result of the run. A result whose case is not among ``cases`` is
-            ignored.
-        superseded_by: Case id → the stored cases that replaced its labels since, for every case
-            of the template some stored case supersedes. A case absent from it is live.
-        archived: Case id → the operator's reason (or ``None``) for every case of the template
-            retired since.
-        live_criteria: The template's criteria by dimension as it reads now, or ``None`` when the
-            template is gone — what each label's frozen criterion is compared with.
-        judge_model: The run's judge pin, carried through so the read names its judge.
-        effective_judges: The run's recorded per-dimension judges, carried through likewise.
-        ratings: Every calibration rating of the run's results, read against ``results`` into
-            ``rating_agreement``.
-        missing_case_ids: Cases the run froze that did not load, carried through for disclosure.
-
-    Returns:
-        The calibration read.
+    :param run_id: The run.
+    :ptype run_id: str
+    :param template_id: Its template.
+    :ptype template_id: str
+    :param status: Its status when read.
+    :ptype status: str
+    :param dimensions: The rubric dimensions the run scores, in order. A label naming a dimension
+        outside this list is still read — the judge simply scored nothing there, which the
+        reading says with ``score=None``.
+    :ptype dimensions: Sequence[str]
+    :param cases: ``(test_case_id, case)`` for every reporter case of the run, in run order.
+    :ptype cases: Sequence[tuple[str, ReporterCase]]
+    :param results: Every stored result of the run. A result whose case is not among ``cases`` is
+        ignored.
+    :ptype results: Sequence[EvalResult]
+    :param superseded_by: Case id → the stored cases that replaced its labels since, for every case
+        of the template some stored case supersedes. A case absent from it is live.
+    :ptype superseded_by: Mapping[str, Sequence[str]]
+    :param archived: Case id → the operator's reason (or ``None``) for every case of the template
+        retired since.
+    :ptype archived: Mapping[str, str | None]
+    :param live_criteria: The template's criteria by dimension as it reads now, or ``None`` when the
+        template is gone — what each label's frozen criterion is compared with.
+    :ptype live_criteria: Mapping[str, LabelCriterion] | None
+    :param judge_model: The run's judge pin, carried through so the read names its judge.
+    :ptype judge_model: str | None
+    :param effective_judges: The run's recorded per-dimension judges, carried through likewise.
+    :ptype effective_judges: Mapping[str, str] | None
+    :param ratings: Every calibration rating of the run's results, read against ``results`` into
+        ``rating_agreement``.
+    :ptype ratings: Sequence[CalibrationRating]
+    :param missing_case_ids: Cases the run froze that did not load, carried through for disclosure.
+    :ptype missing_case_ids: Sequence[str]
+    :return: The calibration read.
+    :rtype: ReporterCalibration
     """
     by_case: dict[str, list[EvalResult]] = {}
     for result in results:
@@ -752,11 +753,10 @@ def read_calibration(
 def _termination_of(result: EvalResult) -> str | None:
     """Name how a cell ended, when it ended abnormally.
 
-    Args:
-        result: The stored result.
-
-    Returns:
-        The termination, or ``None`` for a cell that completed.
+    :param result: The stored result.
+    :ptype result: EvalResult
+    :return: The termination, or ``None`` for a cell that completed.
+    :rtype: str | None
     """
     return None if result.termination == "completed" else result.termination
 
@@ -764,11 +764,10 @@ def _termination_of(result: EvalResult) -> str | None:
 def _str_or_none(value: Any) -> str | None:
     """Pass a string through, and anything else as absent.
 
-    Args:
-        value: A value read off a frozen document.
-
-    Returns:
-        The string, or ``None``.
+    :param value: A value read off a frozen document.
+    :ptype value: Any
+    :return: The string, or ``None``.
+    :rtype: str | None
     """
     return value if isinstance(value, str) and value else None
 

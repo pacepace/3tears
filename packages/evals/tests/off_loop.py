@@ -24,13 +24,14 @@ __all__ = ["off_loop"]
 def off_loop[**P, T](fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
     """Call ``fn(*args, **kwargs)`` on a worker thread, in the caller's context, and return what it returned.
 
-    Args:
-        fn: The synchronous call: a store write or read.
-        *args: Its positional arguments.
-        **kwargs: Its keyword arguments.
-
-    Returns:
-        What ``fn`` returned; what it raised is raised here.
+    :param fn: The synchronous call: a store write or read.
+    :ptype fn: Callable[P, T]
+    :param *args: Its positional arguments.
+    :ptype args: P.args
+    :param **kwargs: Its keyword arguments.
+    :ptype kwargs: P.kwargs
+    :return: What ``fn`` returned; what it raised is raised here.
+    :rtype: T
     """
     context = contextvars.copy_context()
     with ThreadPoolExecutor(max_workers=1) as worker:

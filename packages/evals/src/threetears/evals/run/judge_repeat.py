@@ -99,18 +99,17 @@ class JudgeRepeatSkip(EvalBaseModel):
 class JudgeRepeatEstimate(EvalBaseModel):
     """What repeating a run's judge scores would be priced at, against the cap it would be held to — no call made.
 
-    Attributes:
-        run_id: The run.
-        judge_model: The run's judge pin.
-        results: The results that would be repeated.
-        dims: The judge calls a repeat would send, one per scored dim per result.
-        max_calls: The most calls it can make: each dim's first attempt and every parse retry.
-        ceiling_usd: The most those calls can cost together, as the clients price them; ``None`` when a
-            client cannot say.
-        cap_usd: The out-of-run cap the repeat would be held to; ``None`` when the host enforces none.
-        would_start: Whether every call would be admitted.
-        refusal: Why it would not, when it would not.
-        skipped: The run's results that would not be repeated, each with why.
+    :ivar run_id: The run.
+    :ivar judge_model: The run's judge pin.
+    :ivar results: The results that would be repeated.
+    :ivar dims: The judge calls a repeat would send, one per scored dim per result.
+    :ivar max_calls: The most calls it can make: each dim's first attempt and every parse retry.
+    :ivar ceiling_usd: The most those calls can cost together, as the clients price them; ``None`` when a
+        client cannot say.
+    :ivar cap_usd: The out-of-run cap the repeat would be held to; ``None`` when the host enforces none.
+    :ivar would_start: Whether every call would be admitted.
+    :ivar refusal: Why it would not, when it would not.
+    :ivar skipped: The run's results that would not be repeated, each with why.
     """
 
     run_id: str
@@ -128,20 +127,20 @@ class JudgeRepeatEstimate(EvalBaseModel):
 class JudgeRepeatReport(EvalBaseModel):
     """What a repeat did: which results it recorded a repeat on, what it spent, and what it left out.
 
-    Attributes:
-        run_id: The run.
-        judge_model: The run's judge pin.
-        repeated: The results a repeat was recorded on, in the order they were repeated.
-        scores_repeated: Dims the judge scored again.
-        scores_unanswered: Dims whose repeat failed or answered it could not tell.
-        skipped: The run's results not repeated, each with why — decided before anything was spent.
-        unwritten: Results repeated and paid for whose record did not land (deleted meanwhile, could not be
-            read back, or the write failed). Their spend is in the ledger.
-        stopped: Why the repeat stopped before its last result, when it did — the account behind the
-            judge refused a call, so every later call would be refused too.
-        calls_made: Judge calls made, each ledgered, and one whose ledger row could not be written counted all the same.
-        cost_usd: What they cost together, as reported; ``None`` when any call went unpriced.
-        cap_usd: The out-of-run cap the calls were admitted under; ``None`` when the host enforces none.
+    :ivar run_id: The run.
+    :ivar judge_model: The run's judge pin.
+    :ivar repeated: The results a repeat was recorded on, in the order they were repeated.
+    :ivar scores_repeated: Dims the judge scored again.
+    :ivar scores_unanswered: Dims whose repeat failed or answered it could not tell.
+    :ivar skipped: The run's results not repeated, each with why — decided before anything was spent.
+    :ivar unwritten: Results repeated and paid for whose record did not land (deleted meanwhile, could not be
+        read back, or the write failed). Their spend is in the ledger.
+    :ivar stopped: Why the repeat stopped before its last result, when it did — the account behind the
+        judge refused a call, so every later call would be refused too.
+    :ivar calls_made: Judge calls made, each ledgered, and one whose ledger row could not be written counted all the
+        same.
+    :ivar cost_usd: What they cost together, as reported; ``None`` when any call went unpriced.
+    :ivar cap_usd: The out-of-run cap the calls were admitted under; ``None`` when the host enforces none.
     """
 
     run_id: str
@@ -172,10 +171,12 @@ class BudgetedJudgeClient:
     ) -> None:
         """Wrap ``inner`` so its calls are made through ``budget``.
 
-        Args:
-            inner: The host's judge client, which this owns from here and releases.
-            budget: The budget the calls are admitted against.
-            purpose: The ledger purpose each call is admitted and written under.
+        :param inner: The host's judge client, which this owns from here and releases.
+        :ptype inner: BoundCompletionClient
+        :param budget: The budget the calls are admitted against.
+        :ptype budget: OutOfRunBudget
+        :param purpose: The ledger purpose each call is admitted and written under.
+        :ptype purpose: KnownOutOfRunPurpose
         """
         self._inner = inner
         self._budget = budget
@@ -195,8 +196,7 @@ class BudgetedJudgeClient:
     def admit(self, calls: Sequence[PlannedCall]) -> list[AdmittedCall]:
         """Price and admit ``calls`` against the budget, or refuse them all before any is made.
 
-        Raises:
-            ValidationFailedError: See :meth:`OutOfRunBudget.admit`.
+        :raises ValidationFailedError: See :meth:`OutOfRunBudget.admit`.
         """
         admitted = self._budget.admit(self._inner, self._purpose, calls)
         self._pending.extend(admitted)
@@ -207,8 +207,7 @@ class BudgetedJudgeClient:
     ) -> CompletionResult:
         """Make one admitted call through the budget.
 
-        Raises:
-            ValueError: No admission for exactly this prompt is waiting — a call that would go unpriced.
+        :raises ValueError: No admission for exactly this prompt is waiting — a call that would go unpriced.
         """
         call = PlannedCall(system=system, user=user, response_format=response_format)
         waiting = next((admitted for admitted in self._pending if admitted.call == call), None)
@@ -261,21 +260,23 @@ def collect_repeatable(
 ) -> CollectedRepeat:
     """Load the run and every result to repeat, refusing what cannot be reproduced — blocking, so off the loop.
 
-    Args:
-        storage: The store.
-        run_id: The run.
-        scope_id: The scope it lives in.
-        result_ids: The results to collect; ``None`` for every result of the run.
-        request_settings: ``"today"`` (a repeat: its answers pair with the run's first scores, so the run must have
-            been asked exactly as a call is asked now, at the temperature a call now asks) or ``"as_recorded"`` (a
-            judge temperature comparison, which forces its own temperature on both of its sides and pairs nothing
-            with the run's scores, so only an unrecorded apparatus is refused — see :data:`RequestSettingsPolicy`).
-
-    Raises:
-        NotFoundError: No run with that id, or the run's template does not load.
-        ValidationFailedError: The run is still running, its judging apparatus was not recorded (or, ``"today"``,
-            cannot be sent today), ``result_ids`` names a result not in the run, or no result of the run can be
-            repeated.
+    :param storage: The store.
+    :ptype storage: EvalStorage
+    :param run_id: The run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param result_ids: The results to collect; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :param request_settings: ``"today"`` (a repeat: its answers pair with the run's first scores, so the run must have
+        been asked exactly as a call is asked now, at the temperature a call now asks) or ``"as_recorded"`` (a
+        judge temperature comparison, which forces its own temperature on both of its sides and pairs nothing
+        with the run's scores, so only an unrecorded apparatus is refused — see :data:`RequestSettingsPolicy`).
+    :ptype request_settings: RequestSettingsPolicy
+    :raises NotFoundError: No run with that id, or the run's template does not load.
+    :raises ValidationFailedError: The run is still running, its judging apparatus was not recorded (or, ``"today"``,
+        cannot be sent today), ``result_ids`` names a result not in the run, or no result of the run can be
+        repeated.
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
@@ -421,20 +422,21 @@ async def estimate_judge_repeat(
     The same collection, the same calls and the same admission :func:`judge_repeat_work` makes, so
     ``would_start`` is its answer.
 
-    Args:
-        host: The host: the run's store and the judge clients.
-        run_id: The finished run.
-        scope_id: The scope it lives in.
-        out_of_run_cap_usd: The cap the repeat would be held to; ``None`` when the host enforces none.
-        result_ids: The results to repeat; ``None`` for every result of the run.
-
-    Returns:
-        The estimate.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The run cannot be repeated (see :func:`judge_repeat_work`).
-        ValueError: The host supplies no completion clients.
+    :param host: The host: the run's store and the judge clients.
+    :ptype host: EvalHost
+    :param run_id: The finished run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param out_of_run_cap_usd: The cap the repeat would be held to; ``None`` when the host enforces none.
+    :ptype out_of_run_cap_usd: float | None
+    :param result_ids: The results to repeat; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :return: The estimate.
+    :rtype: JudgeRepeatEstimate
+    :raises NotFoundError: No run with that id, or a record it names does not load.
+    :raises ValidationFailedError: The run cannot be repeated (see :func:`judge_repeat_work`).
+    :raises ValueError: The host supplies no completion clients.
     """
     prepared = await _prepare(host, run_id, scope_id, out_of_run_cap_usd=out_of_run_cap_usd, result_ids=result_ids)
     async with prepared.service:
@@ -483,25 +485,26 @@ async def judge_repeat_work(
     :class:`JudgeRepeatReport`. Run it as a job (:func:`~threetears.evals.run.start_job_work`) or in the foreground
     (:func:`~threetears.evals.run.run_job_work`).
 
-    Args:
-        host: The host: the run's store, the judge clients — through the same run-pinned resolution the run
-            scored through — and how a judge call that raised reads.
-        run_id: The finished run.
-        scope_id: The scope it lives in.
-        out_of_run_cap_usd: The most the repeat's calls may be priced at together; ``None`` when the host
-            enforces no out-of-run cap.
-        result_ids: The results to repeat; ``None`` for every result of the run.
-
-    Returns:
-        The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
+    :param host: The host: the run's store, the judge clients — through the same run-pinned resolution the run
+        scored through — and how a judge call that raised reads.
+    :ptype host: EvalHost
+    :param run_id: The finished run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param out_of_run_cap_usd: The most the repeat's calls may be priced at together; ``None`` when the host
+        enforces no out-of-run cap.
+    :ptype out_of_run_cap_usd: float | None
+    :param result_ids: The results to repeat; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`JUDGE_REPEAT_ACTION`.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The run is still running; its judging apparatus was not recorded or would be
-            asked differently today; ``result_ids`` names a result outside it; no result can be repeated; or
-            the calls cannot be priced under the enforced cap or are priced above it. All before any call.
-        ValueError: The host supplies no completion clients.
+    :rtype: JobWork[EvalActionJob]
+    :raises NotFoundError: No run with that id, or a record it names does not load.
+    :raises ValidationFailedError: The run is still running; its judging apparatus was not recorded or would be
+        asked differently today; ``result_ids`` names a result outside it; no result can be repeated; or
+        the calls cannot be priced under the enforced cap or are priced above it. All before any call.
+    :raises ValueError: The host supplies no completion clients.
     """
     prepared = await _prepare(host, run_id, scope_id, out_of_run_cap_usd=out_of_run_cap_usd, result_ids=result_ids)
     try:
@@ -619,17 +622,15 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, repeat: JudgeRe
     stored document this build refuses to hydrate) costs this one result its record — named in the report's
     ``unwritten`` — and never the report of everything else the repeat paid for.
 
-    Returns:
-        True once the repeat is stored; False when the result is gone, could not be read (``StorageError``, or
+    :return: True once the repeat is stored; False when the result is gone, could not be read (``StorageError``, or
         a pydantic ``ValidationError`` hydrating it), or every write was refused (``ConflictError``) or failed
         (``StorageError``).
-
-    Raises:
-        Exception: Anything else the store raises — a host adapter's own driver exception, which the store
-            port names no type for — propagates, loudly, out of :func:`judge_repeat_work`: the calls already
-            made stay in the out-of-run ledger, but that report is not returned. This catches only the types
-            the engine's store is documented to raise, never everything, so an unexpected fault is not filed as
-            an ordinary unwritten result.
+    :rtype: bool
+    :raises Exception: Anything else the store raises — a host adapter's own driver exception, which the store
+        port names no type for — propagates, loudly, out of :func:`judge_repeat_work`: the calls already
+        made stay in the out-of-run ledger, but that report is not returned. This catches only the types
+        the engine's store is documented to raise, never everything, so an unexpected fault is not filed as
+        an ordinary unwritten result.
     """
     for _ in range(_WRITE_ATTEMPTS):
         try:

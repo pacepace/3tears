@@ -28,11 +28,10 @@ _WORD_RE = re.compile(r"[A-Z]+s?(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 def identifier_words(text: str) -> list[str]:
     """Split an identifier or token into lowercase words.
 
-    Args:
-        text: An identifier, a dotted wire name, or any token-shaped string.
-
-    Returns:
-        Its constituent words, lowercased, in order.
+    :param text: An identifier, a dotted wire name, or any token-shaped string.
+    :ptype text: str
+    :return: Its constituent words, lowercased, in order.
+    :rtype: list[str]
     """
     out: list[str] = []
     for chunk in re.split(r"[^A-Za-z0-9]+", text):

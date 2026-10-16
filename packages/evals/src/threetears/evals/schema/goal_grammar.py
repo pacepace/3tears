@@ -240,12 +240,10 @@ _BUILTINS = frozenset(
 def parse(expression: str) -> ast.Expression:
     """Parse a goal-state expression into an AST and validate the node set.
 
-    Raises:
-        DSLError: If the expression is syntactically invalid or contains
-            disallowed nodes.
-
-    Returns:
-        An :class:`ast.Expression` ready to evaluate with :func:`_eval_node`.
+    :return: An :class:`ast.Expression` ready to evaluate with :func:`_eval_node`.
+    :rtype: ast.Expression
+    :raises DSLError: If the expression is syntactically invalid or contains
+        disallowed nodes.
     """
     if not isinstance(expression, str) or not expression.strip():
         raise DSLError("Expression must be a non-empty string.")
@@ -362,9 +360,8 @@ def _refuse_a_variation_read_as_a_collection(node: ast.AST) -> None:
     one walks its characters. A control end state may still state a real list, so a check of this
     shape could be proven on its control and then fail every case — refused where it is parsed instead.
 
-    Raises:
-        DSLError: ``intersects`` with a variation operand, ``contains`` with a variation haystack, a
-            generator over a variation path, or an index into one.
+    :raises DSLError: ``intersects`` with a variation operand, ``contains`` with a variation haystack, a
+        generator over a variation path, or an index into one.
     """
     remedy = (
         "a case stores every variation parameter as one string, never a list, so it cannot be read as a "
@@ -392,11 +389,10 @@ def speaks_the_goal_language(expression: str) -> bool:
     written under an older, looser rule — which it must name as refused today — from a fact a kind
     computed and reported in its own words (``field_accuracy >= 0.92``), which was never a goal check.
 
-    Args:
-        expression: A stored outcome's expression.
-
-    Returns:
-        Whether it names only the language's own words.
+    :param expression: A stored outcome's expression.
+    :ptype expression: str
+    :return: Whether it names only the language's own words.
+    :rtype: bool
     """
     try:
         tree = ast.parse(expression, mode="eval")
@@ -435,8 +431,8 @@ class ExtractedPaths:
         than matching the whole string. Where the host declares ``inventory.orders``,
         ``state.inventory.orders.length`` and ``state.inventory.orders`` are both that dimension.
 
-        Returns:
-            The paths, in first-appearance order.
+        :return: The paths, in first-appearance order.
+        :rtype: tuple[str, ...]
         """
         return self.by_root.get("state", ())
 
@@ -447,8 +443,8 @@ class ExtractedPaths:
         Case parameters, not world state. Read apart rather than folded in because resolving one
         against a world registry would refuse every expression that reads its own case.
 
-        Returns:
-            The paths, in first-appearance order.
+        :return: The paths, in first-appearance order.
+        :rtype: tuple[str, ...]
         """
         return self.by_root.get("variation", ())
 
@@ -471,16 +467,13 @@ def extract_paths(expression: str) -> ExtractedPaths:
       itself a path, and that path is extracted where it is written — so ``any(it.sku == "X"
       for it in state.inventory.orders)`` reads ``inventory.orders`` and nothing else.
 
-    Args:
-        expression: DSL expression text.
-
-    Returns:
-        The paths it reads, deduplicated, in the order they first appear.
-
-    Raises:
-        DSLError: The expression is malformed or contains disallowed nodes. Extraction parses
-            with the same validator evaluation does, so a path that cannot be extracted is one
-            that could never have been evaluated either.
+    :param expression: DSL expression text.
+    :ptype expression: str
+    :return: The paths it reads, deduplicated, in the order they first appear.
+    :rtype: ExtractedPaths
+    :raises DSLError: The expression is malformed or contains disallowed nodes. Extraction parses
+        with the same validator evaluation does, so a path that cannot be extracted is one
+        that could never have been evaluated either.
     """
     found: dict[str, list[str]] = {root: [] for root in _EXTRACTED_ROOTS}
     _collect_paths(parse(expression).body, found)
@@ -490,9 +483,10 @@ def extract_paths(expression: str) -> ExtractedPaths:
 def _collect_paths(node: ast.AST, found: dict[str, list[str]]) -> None:
     """Record every rooted path under ``node`` into ``found``, in source order.
 
-    Args:
-        node: The node to walk.
-        found: ``{root: [dotted path, ...]}``, appended to in place.
+    :param node: The node to walk.
+    :ptype node: ast.AST
+    :param found: ``{root: [dotted path, ...]}``, appended to in place.
+    :ptype found: dict[str, list[str]]
     """
     if isinstance(node, (ast.Attribute, ast.Subscript)):
         base, segments, indices = _unwind_chain(node)
@@ -517,13 +511,12 @@ def _unwind_chain(node: ast.AST) -> tuple[ast.AST, list[str], list[ast.AST]]:
     already collected: those sit *above* the index and therefore address inside one element,
     which no dimension name reaches.
 
-    Args:
-        node: An :class:`ast.Attribute` or :class:`ast.Subscript`.
-
-    Returns:
-        ``(base, segments, indices)`` — the innermost non-chain node, the dotted segments between
+    :param node: An :class:`ast.Attribute` or :class:`ast.Subscript`.
+    :ptype node: ast.AST
+    :return: ``(base, segments, indices)`` — the innermost non-chain node, the dotted segments between
         it and the first index, and every index expression, each of which may hold paths of its
         own.
+    :rtype: tuple[ast.AST, list[str], list[ast.AST]]
     """
     segments: list[str] = []
     indices: list[ast.AST] = []
@@ -593,14 +586,11 @@ def extract_text_matches(expression: str) -> tuple[TextMatch, ...]:
     **Emptiness is not reported**: ``X == ""`` asks whether anything was written, which is
     structure, not a reading of what was written. Neither is a comparison against a number.
 
-    Args:
-        expression: DSL expression text.
-
-    Returns:
-        The matches, in source order.
-
-    Raises:
-        DSLError: The expression is malformed or contains disallowed nodes.
+    :param expression: DSL expression text.
+    :ptype expression: str
+    :return: The matches, in source order.
+    :rtype: tuple[TextMatch, ...]
+    :raises DSLError: The expression is malformed or contains disallowed nodes.
     """
     found: list[TextMatch] = []
     _collect_text_matches(parse(expression).body, None, found)
@@ -641,10 +631,12 @@ def _match(node: ast.AST, operand: TextOperand, predicate: TextPredicate) -> Tex
 def _collect_text_matches(node: ast.AST, it_binding: TextOperand | None, found: list[TextMatch]) -> None:
     """Record each text match under ``node``; ``it_binding`` is what ``it`` addresses, if bound.
 
-    Args:
-        node: The node to walk.
-        it_binding: The operand ``it`` stands for inside the enclosing ``any()``/``all()``.
-        found: Appended to in place.
+    :param node: The node to walk.
+    :ptype node: ast.AST
+    :param it_binding: The operand ``it`` stands for inside the enclosing ``any()``/``all()``.
+    :ptype it_binding: TextOperand | None
+    :param found: Appended to in place.
+    :ptype found: list[TextMatch]
     """
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         name = node.func.id
@@ -681,13 +673,13 @@ def _collect_text_matches(node: ast.AST, it_binding: TextOperand | None, found: 
 def text_operand(node: ast.AST, it_binding: TextOperand | None) -> TextOperand | None:
     """What ``node`` addresses in world state or in recorded call parameters, or None.
 
-    Args:
-        node: An expression node.
-        it_binding: What ``it`` stands for, if bound.
-
-    Returns:
-        ``(calls spec or None, segments)`` with ``"[]"`` for each index, or None for a literal, a
+    :param node: An expression node.
+    :ptype node: ast.AST
+    :param it_binding: What ``it`` stands for, if bound.
+    :ptype it_binding: TextOperand | None
+    :return: ``(calls spec or None, segments)`` with ``"[]"`` for each index, or None for a literal, a
         call other than ``calls()``, a ``variation`` path, or ``it`` outside any binding.
+    :rtype: TextOperand | None
     """
     segments: list[str] = []
     current = node
@@ -709,12 +701,12 @@ def text_operand(node: ast.AST, it_binding: TextOperand | None) -> TextOperand |
 def _is_text_comparand(node: ast.AST, it_binding: TextOperand | None) -> bool:
     """Whether an equality's other side makes it a comparison of text rather than a count or emptiness.
 
-    Args:
-        node: The other side of ``==``/``!=``.
-        it_binding: What ``it`` stands for, if bound.
-
-    Returns:
-        True for a non-empty string literal, a ``variation`` path, or another state path.
+    :param node: The other side of ``==``/``!=``.
+    :ptype node: ast.AST
+    :param it_binding: What ``it`` stands for, if bound.
+    :ptype it_binding: TextOperand | None
+    :return: True for a non-empty string literal, a ``variation`` path, or another state path.
+    :rtype: bool
     """
     if isinstance(node, ast.Constant):
         return isinstance(node.value, str) and node.value != ""
@@ -746,14 +738,11 @@ def referenced_actions(expression: str) -> tuple[tuple[str, str], ...]:
     The one walk over what a check refers to: :func:`undefined_call_references` asks it whether each name
     exists for the host, and a launch asks it whether each is offered to the candidate.
 
-    Args:
-        expression: A goal-state expression.
-
-    Returns:
-        The named actions.
-
-    Raises:
-        DSLError: The expression does not parse.
+    :param expression: A goal-state expression.
+    :ptype expression: str
+    :return: The named actions.
+    :rtype: tuple[tuple[str, str], ...]
+    :raises DSLError: The expression does not parse.
     """
     named: list[tuple[str, str]] = []
     for node in ast.walk(parse(expression).body):
@@ -770,15 +759,12 @@ def referenced_actions(expression: str) -> tuple[tuple[str, str], ...]:
 def reads_call_ledger(expression: str) -> bool:
     """Whether a goal check reads the cell's call ledger at all — through any call builtin, or ``passed()``.
 
-    Args:
-        expression: A goal-state expression.
-
-    Returns:
-        Whether it calls ``called_before``, ``called_after``, ``call_count``, ``last_call_was``, ``calls``,
+    :param expression: A goal-state expression.
+    :ptype expression: str
+    :return: Whether it calls ``called_before``, ``called_after``, ``call_count``, ``last_call_was``, ``calls``,
         ``refused``, ``refused_count`` or ``passed``.
-
-    Raises:
-        DSLError: The expression does not parse.
+    :rtype: bool
+    :raises DSLError: The expression does not parse.
     """
     return any(
         isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _LEDGER_BUILTINS
@@ -789,14 +775,11 @@ def reads_call_ledger(expression: str) -> bool:
 def reads_refusals(expression: str) -> bool:
     """Whether a goal check reads the calls a tool refused, through ``refused()`` or ``refused_count()``.
 
-    Args:
-        expression: A goal-state expression.
-
-    Returns:
-        Whether it calls either.
-
-    Raises:
-        DSLError: The expression does not parse.
+    :param expression: A goal-state expression.
+    :ptype expression: str
+    :return: Whether it calls either.
+    :rtype: bool
+    :raises DSLError: The expression does not parse.
     """
     return any(
         isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in REFUSAL_BUILTINS
@@ -812,11 +795,10 @@ FIRE_PREDICATES = frozenset({"fired", "fired_armed"})
 def _fired_name(node: ast.Call) -> str | None:
     """The dimension a ``fired()`` or ``fired_armed()`` call names, or None when it names none as one string literal.
 
-    Args:
-        node: A ``fired`` or ``fired_armed`` call.
-
-    Returns:
-        The name.
+    :param node: A ``fired`` or ``fired_armed`` call.
+    :ptype node: ast.Call
+    :return: The name.
+    :rtype: str | None
     """
     if len(node.args) != 1 or node.keywords:
         return None
@@ -833,14 +815,11 @@ def referenced_fires(expression: str) -> tuple[str, ...]:
     name is a triggered dimension the host declares (:func:`undefined_fire_references`), and a
     precondition refuses any — at t=0 nothing has fired.
 
-    Args:
-        expression: A goal-state expression.
-
-    Returns:
-        The named dimensions.
-
-    Raises:
-        DSLError: The expression does not parse.
+    :param expression: A goal-state expression.
+    :ptype expression: str
+    :return: The named dimensions.
+    :rtype: tuple[str, ...]
+    :raises DSLError: The expression does not parse.
     """
     calls = [
         node
@@ -865,11 +844,9 @@ def parse_tool_action(spec: Any) -> tuple[str, str]:
     ``inventory.place_order`` as Attribute(Name('inventory'), 'place_order') which
     is not a valid path — so the user writes it as a string literal).
 
-    Returns:
-        ``(tool, action)`` tuple.
-
-    Raises:
-        DSLError: When the spec doesn't decode to a 2-segment dotted name.
+    :return: ``(tool, action)`` tuple.
+    :rtype: tuple[str, str]
+    :raises DSLError: When the spec doesn't decode to a 2-segment dotted name.
     """
     if isinstance(spec, str):
         if "." not in spec:

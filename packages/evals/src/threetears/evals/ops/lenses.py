@@ -116,29 +116,35 @@ def scope_pivot(
 ) -> PivotTable:
     """One measure over the scope's observations, aggregated over two coordinates.
 
-    Args:
-        host: The host whose store and vocabulary are read.
-        scope_id: The scope.
-        row_factor: The coordinate the rows are.
-        column_factor: The coordinate the columns are.
-        metric: The measure; ``None`` or blank takes the composite.
-        weighting: The aggregation weighting; ``None`` or blank takes the disclosed default.
-        subject_id: Only this subject's observations; required to pivot a judged measure over many.
-        status: Only runs with this status; ``"all"`` reads every run.
-        predicted_cost: The estimate made before these runs, whose predictions a cost pivot sets beside
-            each planned cell's observed cost: a :class:`LaunchEstimate` (:func:`launch_estimate`'s, each priced
-            arm's prediction) or an analysis :class:`~threetears.evals.analysis.lenses.cost_estimate.CostEstimate` — the
-            model, or its JSON form as a caller across a wire holds it.
-        launched_run_ids: The runs the estimated launch made, once it has. Each cell beside a prediction then
-            says how many of its observations came from other runs (``PivotCell.n_unplanned``) — the history
-            the prediction was drawn from among them. Refused without ``predicted_cost``.
-
-    Returns:
-        The table.
-
-    Raises:
-        ValidationFailedError: The pivot cannot be answered honestly — see
-            :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
+    :param host: The host whose store and vocabulary are read.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param row_factor: The coordinate the rows are.
+    :ptype row_factor: str
+    :param column_factor: The coordinate the columns are.
+    :ptype column_factor: str
+    :param metric: The measure; ``None`` or blank takes the composite.
+    :ptype metric: str | None
+    :param weighting: The aggregation weighting; ``None`` or blank takes the disclosed default.
+    :ptype weighting: str | None
+    :param subject_id: Only this subject's observations; required to pivot a judged measure over many.
+    :ptype subject_id: str | None
+    :param status: Only runs with this status; ``"all"`` reads every run.
+    :ptype status: str | None
+    :param predicted_cost: The estimate made before these runs, whose predictions a cost pivot sets beside
+        each planned cell's observed cost: a :class:`LaunchEstimate` (:func:`launch_estimate`'s, each priced
+        arm's prediction) or an analysis :class:`~threetears.evals.analysis.lenses.cost_estimate.CostEstimate` — the
+        model, or its JSON form as a caller across a wire holds it.
+    :ptype predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None
+    :param launched_run_ids: The runs the estimated launch made, once it has. Each cell beside a prediction then
+        says how many of its observations came from other runs (``PivotCell.n_unplanned``) — the history
+        the prediction was drawn from among them. Refused without ``predicted_cost``.
+    :ptype launched_run_ids: Sequence[str]
+    :return: The table.
+    :rtype: PivotTable
+    :raises ValidationFailedError: The pivot cannot be answered honestly — see
+        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
     """
     plan: list[PlannedCost] | None = None
     if predicted_cost is not None:
@@ -186,21 +192,24 @@ def scope_history(
 ) -> HistoryResult:
     """One measure over time for each contestant in the scope, with its regressions flagged.
 
-    Args:
-        host: The host whose store and vocabulary are read.
-        scope_id: The scope.
-        metric: The measure: the composite, spend, latency, a judged axis, or a numeric measure the host
-            declares (a quick-path scorer's name); ``None`` or blank takes the composite.
-        min_absolute_change: The smallest move a regression flag counts, in the measure's unit.
-        min_relative_change: The smallest move relative to the baseline a flag counts, as a fraction.
-        subject_id: Only this subject's observations.
-        status: Only runs with this status; ``"all"`` reads every run.
-
-    Returns:
-        The series.
-
-    Raises:
-        ValidationFailedError: The metric cannot be seriesed, or the status is no run's.
+    :param host: The host whose store and vocabulary are read.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param metric: The measure: the composite, spend, latency, a judged axis, or a numeric measure the host
+        declares (a quick-path scorer's name); ``None`` or blank takes the composite.
+    :ptype metric: str | None
+    :param min_absolute_change: The smallest move a regression flag counts, in the measure's unit.
+    :ptype min_absolute_change: float
+    :param min_relative_change: The smallest move relative to the baseline a flag counts, as a fraction.
+    :ptype min_relative_change: float
+    :param subject_id: Only this subject's observations.
+    :ptype subject_id: str | None
+    :param status: Only runs with this status; ``"all"`` reads every run.
+    :ptype status: str | None
+    :return: The series.
+    :rtype: HistoryResult
+    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's.
     """
     return history(
         host.storage,
@@ -229,18 +238,19 @@ def scope_frontier(
     sweepables so each point names what its runs set away from production. An eval comparing arms
     files every arm under one subject, so its arms (models among them) are one frontier.
 
-    Args:
-        host: The host whose store and vocabulary are read.
-        scope_id: The scope.
-        bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
-        subject_id: Only this subject's variants; others are counted as filtered out.
-        status: Only runs with this status; ``"all"`` ranks every run.
-
-    Returns:
-        The frontier.
-
-    Raises:
-        ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's.
+    :param host: The host whose store and vocabulary are read.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
+    :ptype bar: float | str | None
+    :param subject_id: Only this subject's variants; others are counted as filtered out.
+    :ptype subject_id: str | None
+    :param status: Only runs with this status; ``"all"`` ranks every run.
+    :ptype status: str | None
+    :return: The frontier.
+    :rtype: FrontierResult
+    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's.
     """
     return FrontierResult.model_validate(
         frontier(
@@ -265,18 +275,19 @@ def scope_export(
 ) -> ScoreExport:
     """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere.
 
-    Args:
-        host: The host whose store and vocabulary are read.
-        scope_id: The scope.
-        format: ``"csv"`` (the default) or ``"json"``.
-        status: Only runs with this status; ``"all"`` exports every run.
-        run_ids: Only these runs — archived ones included, since they were named.
-
-    Returns:
-        The export.
-
-    Raises:
-        ValidationFailedError: The format is not one there is, or the status is no run's.
+    :param host: The host whose store and vocabulary are read.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param format: ``"csv"`` (the default) or ``"json"``.
+    :ptype format: str | None
+    :param status: Only runs with this status; ``"all"`` exports every run.
+    :ptype status: str | None
+    :param run_ids: Only these runs — archived ones included, since they were named.
+    :ptype run_ids: list[str] | None
+    :return: The export.
+    :rtype: ScoreExport
+    :raises ValidationFailedError: The format is not one there is, or the status is no run's.
     """
     return export_results(
         host.storage,
@@ -333,17 +344,17 @@ def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sc
     default pass threshold; the disclosures are the ones every other comparison surface carries, computed by the
     same helpers.
 
-    Args:
-        host: The host whose store is read.
-        baseline_run_id: The run read as the baseline.
-        candidate_run_id: The run read against it.
-        scope_id: The scope both runs live in.
-
-    Returns:
-        The comparison and its disclosures.
-
-    Raises:
-        NotFoundError: Either run is not in the scope.
+    :param host: The host whose store is read.
+    :ptype host: EvalHost
+    :param baseline_run_id: The run read as the baseline.
+    :ptype baseline_run_id: str
+    :param candidate_run_id: The run read against it.
+    :ptype candidate_run_id: str
+    :param scope_id: The scope both runs live in.
+    :ptype scope_id: str
+    :return: The comparison and its disclosures.
+    :rtype: RunsCompared
+    :raises NotFoundError: Either run is not in the scope.
     """
     storage = host.storage
 
@@ -435,17 +446,17 @@ class RunsBisected(EvalBaseModel):
 def runs_bisect(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsBisected:
     """Split two runs' versioned inputs into those that differ, agree and cannot be decided, with each disclosure.
 
-    Args:
-        host: The host whose store and sweepable declarations are read.
-        baseline_run_id: The run read as the baseline.
-        candidate_run_id: The run read against it.
-        scope_id: The scope both runs live in.
-
-    Returns:
-        The split and its disclosures.
-
-    Raises:
-        NotFoundError: Either run is not in the scope.
+    :param host: The host whose store and sweepable declarations are read.
+    :ptype host: EvalHost
+    :param baseline_run_id: The run read as the baseline.
+    :ptype baseline_run_id: str
+    :param candidate_run_id: The run read against it.
+    :ptype candidate_run_id: str
+    :param scope_id: The scope both runs live in.
+    :ptype scope_id: str
+    :return: The split and its disclosures.
+    :rtype: RunsBisected
+    :raises NotFoundError: Either run is not in the scope.
     """
     split = bisect_runs(host.storage, baseline_run_id, candidate_run_id, scope_id, profile=host.profile)
     _, completeness, window = _pair_disclosures(host, baseline_run_id, candidate_run_id, scope_id)
@@ -462,33 +473,33 @@ def runs_bisect(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sco
 
 
 class ArmEstimate(EvalBaseModel):
-    """One arm of a launch estimate: what its kind planned, what the host's pricer predicted, and what the launch would do.
+    """One arm of a launch estimate: what its kind planned, what the host's pricer predicted, and what the launch would
+    do.
 
-    Attributes:
-        described: The arm, as the launch's refusal names it.
-        candidate_model: The model it runs on — its plan's, or the one named when its kind plans nothing
-            (``None`` there for an arm on the kind's unnamed default).
-        case_count: The cases its plan bounds it to (or the hypothetical count the estimate was asked for);
-            ``None`` when its kind plans nothing.
-        case_source: ``stored`` for an arm over the template's stored cases, ``generated`` for one whose cases
-            its launch generates.
-        n_observations: ``case_count × k_runs``, the observations it would make; ``None`` with no plan.
-        predicted_usd: The figure the launch holds to the arm's cap — a range pricer's upper end — or ``None``
-            when nothing predicts it (unknown, never $0).
-        central_usd: A range pricer's central estimate, never held to the cap; ``None`` for a single figure.
-        low_usd: A range pricer's lower end; ``None`` otherwise.
-        method_id: The estimator, or ``None`` for a pricer that names none.
-        basis: How the prediction was made, or why there is none.
-        outcome: What the launch's one pricing rule makes of it (:data:`~threetears.evals.run.ArmOutcome`).
-        refusal: The refusal the launch would make of it, word for word; ``None`` unless refused.
-        remedy: What brings it under its cap, or names one; set exactly when ``refusal`` is.
-        call_ceiling_usd: The largest reservation one of its calls will hold against its run's cap, as its kind
-            priced it (:class:`~threetears.evals.run.CallCeiling`) — an arm whose largest call is above its cap is
-            refused, since its run could never make that call; ``None`` when its kind does not price its calls
-            before launch.
-        call_ceiling_lower_bound: Whether ``call_ceiling_usd`` is a floor under the arm's largest call rather than
-            its exact ceiling — a subject kind's, priced with its transcripts left out
-            (:attr:`~threetears.evals.run.CallCeiling.lower_bound`). Its largest call is reserved at that or more.
+    :ivar described: The arm, as the launch's refusal names it.
+    :ivar candidate_model: The model it runs on — its plan's, or the one named when its kind plans nothing
+        (``None`` there for an arm on the kind's unnamed default).
+    :ivar case_count: The cases its plan bounds it to (or the hypothetical count the estimate was asked for);
+        ``None`` when its kind plans nothing.
+    :ivar case_source: ``stored`` for an arm over the template's stored cases, ``generated`` for one whose cases
+        its launch generates.
+    :ivar n_observations: ``case_count × k_runs``, the observations it would make; ``None`` with no plan.
+    :ivar predicted_usd: The figure the launch holds to the arm's cap — a range pricer's upper end — or ``None``
+        when nothing predicts it (unknown, never $0).
+    :ivar central_usd: A range pricer's central estimate, never held to the cap; ``None`` for a single figure.
+    :ivar low_usd: A range pricer's lower end; ``None`` otherwise.
+    :ivar method_id: The estimator, or ``None`` for a pricer that names none.
+    :ivar basis: How the prediction was made, or why there is none.
+    :ivar outcome: What the launch's one pricing rule makes of it (:data:`~threetears.evals.run.ArmOutcome`).
+    :ivar refusal: The refusal the launch would make of it, word for word; ``None`` unless refused.
+    :ivar remedy: What brings it under its cap, or names one; set exactly when ``refusal`` is.
+    :ivar call_ceiling_usd: The largest reservation one of its calls will hold against its run's cap, as its kind
+        priced it (:class:`~threetears.evals.run.CallCeiling`) — an arm whose largest call is above its cap is
+        refused, since its run could never make that call; ``None`` when its kind does not price its calls
+        before launch.
+    :ivar call_ceiling_lower_bound: Whether ``call_ceiling_usd`` is a floor under the arm's largest call rather than
+        its exact ceiling — a subject kind's, priced with its transcripts left out
+        (:attr:`~threetears.evals.run.CallCeiling.lower_bound`). Its largest call is reserved at that or more.
     """
 
     described: str
@@ -511,24 +522,23 @@ class ArmEstimate(EvalBaseModel):
 class DetectableEffect(EvalBaseModel):
     """The smallest difference one reading's comparison would find, or why none can be stated.
 
-    Attributes:
-        reading: Whether ``name`` is a measure or a judged dimension.
-        name: The reading.
-        delta: The smallest true difference between two arms, in the reading's unit, that the paired
-            comparison finds with :attr:`DetectableEffects.power` at the family's first Holm step; ``None``
-            where ``cannot_estimate`` says why.
-        cannot_estimate: Why no difference is stated; ``None`` when one is.
-        basis: ``paired_runs`` when two earlier runs launched differently shared cases, so how far two arms
-            disagree about one case was measured; ``unrelated_case_effects`` when no such pair exists and the
-            two arms' case levels are taken as unrelated — two independent draws of one arm's between-case
-            spread, the most a pairing can leave when arms do not find opposite cases hard. ``None`` with no
-            estimate.
-        within_case_sd: The repeat noise around a case's level, pooled over the earlier runs.
-        between_case_sd: The case-to-case spread the paired difference keeps: measured between paired runs
-            (``paired_runs``), or one arm's between-case spread (``unrelated_case_effects``, counted twice).
-        difference_sd: The planned standard deviation of one case's difference of means at the planned ``k``.
-        n_history_cases: The earlier cases the between-case figure rests on.
-        run_ids: The earlier runs whose values were read.
+    :ivar reading: Whether ``name`` is a measure or a judged dimension.
+    :ivar name: The reading.
+    :ivar delta: The smallest true difference between two arms, in the reading's unit, that the paired
+        comparison finds with :attr:`DetectableEffects.power` at the family's first Holm step; ``None``
+        where ``cannot_estimate`` says why.
+    :ivar cannot_estimate: Why no difference is stated; ``None`` when one is.
+    :ivar basis: ``paired_runs`` when two earlier runs launched differently shared cases, so how far two arms
+        disagree about one case was measured; ``unrelated_case_effects`` when no such pair exists and the
+        two arms' case levels are taken as unrelated — two independent draws of one arm's between-case
+        spread, the most a pairing can leave when arms do not find opposite cases hard. ``None`` with no
+        estimate.
+    :ivar within_case_sd: The repeat noise around a case's level, pooled over the earlier runs.
+    :ivar between_case_sd: The case-to-case spread the paired difference keeps: measured between paired runs
+        (``paired_runs``), or one arm's between-case spread (``unrelated_case_effects``, counted twice).
+    :ivar difference_sd: The planned standard deviation of one case's difference of means at the planned ``k``.
+    :ivar n_history_cases: The earlier cases the between-case figure rests on.
+    :ivar run_ids: The earlier runs whose values were read.
     """
 
     reading: ReadingKind
@@ -563,18 +573,17 @@ class DetectableEffects(EvalBaseModel):
     never supplied: the within-case (repeat) and between-case components of earlier runs of the same template
     (:func:`~threetears.evals.analysis.stats.variance_components`). With none to measure, it says so.
 
-    Attributes:
-        n_cases: The cases per arm the launch plans (the fewest over its arms); ``None`` with no plan.
-        k_runs: The repeats per case the launch plans.
-        family_size: The comparisons the family would correct together: the readings below, times one contrast
-            per arm beyond the first (at least one).
-        alpha: The family's level, :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`.
-        per_comparison_alpha: ``alpha / family_size``, the level a lone difference must clear.
-        power: The power each difference is stated at.
-        run_ids: The earlier runs of the template that were read.
-        cannot_estimate: Why nothing could be estimated for any reading; ``None`` when the readings say.
-        effects: One per reading the earlier runs carried.
-        assumptions: What every difference here assumes.
+    :ivar n_cases: The cases per arm the launch plans (the fewest over its arms); ``None`` with no plan.
+    :ivar k_runs: The repeats per case the launch plans.
+    :ivar family_size: The comparisons the family would correct together: the readings below, times one contrast
+        per arm beyond the first (at least one).
+    :ivar alpha: The family's level, :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`.
+    :ivar per_comparison_alpha: ``alpha / family_size``, the level a lone difference must clear.
+    :ivar power: The power each difference is stated at.
+    :ivar run_ids: The earlier runs of the template that were read.
+    :ivar cannot_estimate: Why nothing could be estimated for any reading; ``None`` when the readings say.
+    :ivar effects: One per reading the earlier runs carried.
+    :ivar assumptions: What every difference here assumes.
     """
 
     n_cases: int | None
@@ -597,23 +606,22 @@ class LaunchEstimate(EvalBaseModel):
     figure an operator reads here is the figure the launch holds each arm's cap to, and an arm this estimate
     shows refused is an arm the launch refuses, in the same words. It spends nothing.
 
-    Attributes:
-        template_id: The template.
-        subject_id: The subject the launch would measure.
-        cassette_mode: The cassette mode, normalised.
-        k_runs: Repeats per case.
-        n_variations: Cases the launch would generate first; ``0`` for stored cases.
-        hypothetical_case_count: The case count each planned arm was priced at in place of its plan's, for a
-            hypothetical grid; ``None`` when every arm is priced at its plan, as the launch prices it.
-        cap_usd: The cap each arm's run would be held to; ``None`` when the host enforces none.
-        cap_origin: ``chosen`` when the launch named the cap, ``inherited`` from the host's; ``None`` uncapped.
-        arms: Every arm, in arm order.
-        total_predicted_usd: Every arm's held-to figure, summed — ``None`` when any arm has none, since a total
-            missing an arm is not the launch's total.
-        would_launch: Whether no arm would be refused on its price.
-        computed_at: When the estimate was made, the stamp a pivot's prediction carries.
-        detectable_effect: What the launch could detect, per reading (:class:`DetectableEffects`); ``None`` on
-            an estimate handed in without one.
+    :ivar template_id: The template.
+    :ivar subject_id: The subject the launch would measure.
+    :ivar cassette_mode: The cassette mode, normalised.
+    :ivar k_runs: Repeats per case.
+    :ivar n_variations: Cases the launch would generate first; ``0`` for stored cases.
+    :ivar hypothetical_case_count: The case count each planned arm was priced at in place of its plan's, for a
+        hypothetical grid; ``None`` when every arm is priced at its plan, as the launch prices it.
+    :ivar cap_usd: The cap each arm's run would be held to; ``None`` when the host enforces none.
+    :ivar cap_origin: ``chosen`` when the launch named the cap, ``inherited`` from the host's; ``None`` uncapped.
+    :ivar arms: Every arm, in arm order.
+    :ivar total_predicted_usd: Every arm's held-to figure, summed — ``None`` when any arm has none, since a total
+        missing an arm is not the launch's total.
+    :ivar would_launch: Whether no arm would be refused on its price.
+    :ivar computed_at: When the estimate was made, the stamp a pivot's prediction carries.
+    :ivar detectable_effect: What the launch could detect, per reading (:class:`DetectableEffects`); ``None`` on
+        an estimate handed in without one.
     """
 
     template_id: str
@@ -633,14 +641,13 @@ class LaunchEstimate(EvalBaseModel):
     def planned_costs(self, run_ids: Sequence[str] = ()) -> list[PlannedCost]:
         """Each priced arm as a cost pivot's plan: its model, its template, its observations and its prediction.
 
-        Args:
-            run_ids: The runs the launch made, once it has (the run ids its launch job names, as run_ids); empty before, when the
-                cost a pivot sets beside each prediction is history the launch did not make.
-
-        Returns:
-            One :class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost` per arm with a model, a plan and a
-            prediction; the prediction's point is the pricer's central estimate where it gave a range (the
+        :param run_ids: The runs the launch made, once it has (the run ids its launch job names, as run_ids); empty
+            before, when the cost a pivot sets beside each prediction is history the launch did not make.
+        :ptype run_ids: Sequence[str]
+        :return: One :class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost` per arm with a model, a plan
+            and a prediction; the prediction's point is the pricer's central estimate where it gave a range (the
             band then running from its lower to its upper end) and its single figure otherwise.
+        :rtype: list[PlannedCost]
         """
         planned: list[PlannedCost] = []
         for arm in self.arms:
@@ -685,20 +692,20 @@ async def launch_estimate(
     generation calls a generating launch makes first are priced separately, against the host's out-of-run cap,
     by the launch itself (``EvalStorage.query_out_of_run_spend`` reads what they spent).
 
-    Args:
-        host: The launching host.
-        arguments: What the launch would name.
-        scope_id: The scope the launch would run in.
-        n_test_cases: A case count to price each planned arm at in place of its plan's, for a hypothetical grid;
-            ``None`` prices each at its plan, as the launch would.
-
-    Returns:
-        The estimate.
-
-    Raises:
-        NotFoundError: The template is not in the scope.
-        ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
-            below one.
+    :param host: The launching host.
+    :ptype host: OpsHost
+    :param arguments: What the launch would name.
+    :ptype arguments: LaunchArguments
+    :param scope_id: The scope the launch would run in.
+    :ptype scope_id: str
+    :param n_test_cases: A case count to price each planned arm at in place of its plan's, for a hypothetical grid;
+        ``None`` prices each at its plan, as the launch would.
+    :ptype n_test_cases: int | None
+    :return: The estimate.
+    :rtype: LaunchEstimate
+    :raises NotFoundError: The template is not in the scope.
+    :raises ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
+        below one.
     """
     quote = await quote_launch(
         host.launch,
@@ -757,27 +764,31 @@ def detectable_effects(
     """What a launch of ``template_id`` with ``n_cases`` cases and ``k_runs`` repeats could detect, per reading.
 
     Reads every earlier run of the template in the scope (archived runs left out, as every quality view
-    leaves them) and each reading a comparison family would test on it (:func:`~threetears.evals.analysis.bundle.comparisons.planning_readings`).
-    Per reading, the within-case and between-case variance of those runs
-    (:func:`~threetears.evals.analysis.stats.variance_components`) give one case's planned difference of means
-    its spread: ``between + 2·within/k``, where ``between`` is how far two arms disagree about one case —
-    measured over two earlier runs launched differently on shared cases where there are any
+    leaves them) and each reading a comparison family would test on it
+    (:func:`~threetears.evals.analysis.bundle.comparisons.planning_readings`). Per reading, the within-case and
+    between-case variance of those runs (:func:`~threetears.evals.analysis.stats.variance_components`) give one case's
+    planned difference of means its spread: ``between + 2·within/k``, where ``between`` is how far two arms disagree
+    about one case — measured over two earlier runs launched differently on shared cases where there are any
     (:func:`~threetears.evals.analysis.stats.paired_case_variance`), and otherwise twice one arm's
     between-case variance, the two arms' case levels taken as unrelated. The smallest difference the paired
     t-test finds at :data:`~threetears.evals.analysis.stats.DETECTABLE_POWER` at ``α/m`` follows
     (:func:`~threetears.evals.analysis.stats.paired_detectable_difference`). No variance is ever supplied: with
     no earlier run, or too few repeated cases, the reading says it cannot estimate and why.
 
-    Args:
-        host: The host whose store holds the earlier runs and whose vocabulary reads them.
-        scope_id: The scope.
-        template_id: The template the launch runs.
-        n_cases: The cases per arm the launch plans; ``None`` when its kind plans none.
-        k_runs: The repeats per case.
-        n_arms: The arms the launch runs.
-
-    Returns:
-        The block.
+    :param host: The host whose store holds the earlier runs and whose vocabulary reads them.
+    :ptype host: EvalHost
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param template_id: The template the launch runs.
+    :ptype template_id: str
+    :param n_cases: The cases per arm the launch plans; ``None`` when its kind plans none.
+    :ptype n_cases: int | None
+    :param k_runs: The repeats per case.
+    :ptype k_runs: int
+    :param n_arms: The arms the launch runs.
+    :ptype n_arms: int
+    :return: The block.
+    :rtype: DetectableEffects
     """
     runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
     results_by_run = {run.id: host.storage.query_eval_results_by_run(run.id, scope_id) for run in runs}
@@ -886,13 +897,14 @@ def _detectable_effect(
 def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimate:
     """One arm's verdict, as the estimate reports it.
 
-    Args:
-        arm: The verdict.
-        k_runs: Repeats per case.
-        n_variations: Cases the launch generates; ``0`` for stored cases.
-
-    Returns:
-        The arm.
+    :param arm: The verdict.
+    :ptype arm: ArmVerdict
+    :param k_runs: Repeats per case.
+    :ptype k_runs: int
+    :param n_variations: Cases the launch generates; ``0`` for stored cases.
+    :ptype n_variations: int
+    :return: The arm.
+    :rtype: ArmEstimate
     """
     plan = arm.plan
     price = arm.price
@@ -948,15 +960,14 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     ``priced from revision 1 of '<name>': this revision has no priced result yet; model, judge, simulator and
     apparatus unchanged (...)``. It crosses a step only where the template leaves what a run spends alone (its
     candidate kind, judged dimensions with their judge pins, conversation shape, world seed and allowed tools); a
-    step changing any of them stops the walk, and the arm reads unpriced naming what changed. An earlier revision priced only under other launch conditions is named with the conditions that
-    differ. A revision with priced results of its own is priced from them alone. This is pricing only: analysis
-    never pools two revisions' results.
+    step changing any of them stops the walk, and the arm reads unpriced naming what changed. An earlier revision priced
+    only under other launch conditions is named with the conditions that differ. A revision with priced results of its
+    own is priced from them alone. This is pricing only: analysis never pools two revisions' results.
 
-    Args:
-        host: The host whose store holds the history and whose vocabulary reads it.
-
-    Returns:
-        The pricer.
+    :param host: The host whose store holds the history and whose vocabulary reads it.
+    :ptype host: EvalHost
+    :return: The pricer.
+    :rtype: LaunchPricer
     """
 
     def priced_history(quote: ArmQuote, template_id: str) -> CostEstimateCell:
@@ -1136,14 +1147,14 @@ def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalT
 def _launch_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
     """The launch conditions ``run`` was launched under otherwise than ``quote``'s arm will be, beside its template.
 
-    Args:
-        run: A run from the scope's history.
-        quote: The arm being priced.
-
-    Returns:
-        Each condition that moves what a run spends and differs, as ``<condition> (<run's> there, <arm's> here)``
+    :param run: A run from the scope's history.
+    :ptype run: EvalRun
+    :param quote: The arm being priced.
+    :ptype quote: ArmQuote
+    :return: Each condition that moves what a run spends and differs, as ``<condition> (<run's> there, <arm's> here)``
         — the judges and the simulator by the models that ran, not by what the launch named. Empty when the run was
         launched as the arm will be.
+    :rtype: list[str]
     """
     judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
     pairs: list[tuple[str, object, object]] = [

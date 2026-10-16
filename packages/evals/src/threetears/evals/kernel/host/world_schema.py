@@ -103,16 +103,14 @@ def honoured_kind(schema: Any, *, at: str) -> str:
       admits nothing, and a ``type`` beside the branches would be a second statement of the shape that
       neither reader consults.
 
-    Args:
-        schema: The schema, or one nested in it.
-        at: Where the schema sits — a dimension name or a seed path — for the message.
-
-    Returns:
-        A key of :data:`HONOURED_KEYWORDS`.
-
-    Raises:
-        UnsupportedSchemaError: The schema, or one nested in it, is outside the honoured subset. The message
-            names where and what, and is phrased for either reader.
+    :param schema: The schema, or one nested in it.
+    :ptype schema: Any
+    :param at: Where the schema sits — a dimension name or a seed path — for the message.
+    :ptype at: str
+    :return: A key of :data:`HONOURED_KEYWORDS`.
+    :rtype: str
+    :raises UnsupportedSchemaError: The schema, or one nested in it, is outside the honoured subset. The message
+        names where and what, and is phrased for either reader.
     """
     kind = _resolve(schema, at=at)
     if kind == "object":
@@ -177,16 +175,15 @@ def _resolve(schema: Any, *, at: str) -> str:
 def schema_violations(schema: Mapping[str, Any], value: Any, *, at: str) -> list[str]:
     """Every way ``value`` fails ``schema``, each naming the path it fails at.
 
-    Args:
-        schema: A dimension's schema, or one nested in it.
-        value: The seeded value.
-        at: The path ``value`` sits at, for the messages (``jobs.queue[2].duration_ms``).
-
-    Returns:
-        One sentence per violation; empty when the value conforms.
-
-    Raises:
-        UnsupportedSchemaError: The schema is outside the honoured subset (:func:`honoured_kind`).
+    :param schema: A dimension's schema, or one nested in it.
+    :ptype schema: Mapping[str, Any]
+    :param value: The seeded value.
+    :ptype value: Any
+    :param at: The path ``value`` sits at, for the messages (``jobs.queue[2].duration_ms``).
+    :ptype at: str
+    :return: One sentence per violation; empty when the value conforms.
+    :rtype: list[str]
+    :raises UnsupportedSchemaError: The schema is outside the honoured subset (:func:`honoured_kind`).
     """
     kind = honoured_kind(schema, at=at)
     if kind == "anyOf":
@@ -211,13 +208,14 @@ def _any_branch(branches: list[Mapping[str, Any]], value: Any, *, at: str) -> li
     one that wanted none. A branch is named by its ``title`` annotation when it has one, so the host's own word
     for the shape ("a stopped room") reaches the author.
 
-    Args:
-        branches: The ``anyOf`` list, already audited by :func:`honoured_kind`.
-        value: The seeded value.
-        at: The path ``value`` sits at.
-
-    Returns:
-        Empty, or one sentence.
+    :param branches: The ``anyOf`` list, already audited by :func:`honoured_kind`.
+    :ptype branches: list[Mapping[str, Any]]
+    :param value: The seeded value.
+    :ptype value: Any
+    :param at: The path ``value`` sits at.
+    :ptype at: str
+    :return: Empty, or one sentence.
+    :rtype: list[str]
     """
     refusals: list[str] = []
     for index, branch in enumerate(branches):

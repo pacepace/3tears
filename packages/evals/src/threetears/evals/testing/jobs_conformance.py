@@ -136,12 +136,11 @@ class CompletionGuard:
     before it is sent, at most ``call_return_timeout_s``: a call that awaits its own job never returns, so its job's
     request is refused and recorded in :attr:`awaited_by_call` instead of the case hanging.
 
-    Attributes:
-        outside: Each request made outside a job's work, described; every one was refused.
-        inside: How many requests a job's work made.
-        awaited_by_call: Each job's request that waited out ``call_return_timeout_s`` for the running call to return,
-            described; every one was refused.
-        call_return_timeout_s: How long a job's request waits for a running call to return.
+    :ivar outside: Each request made outside a job's work, described; every one was refused.
+    :ivar inside: How many requests a job's work made.
+    :ivar awaited_by_call: Each job's request that waited out ``call_return_timeout_s`` for the running call to return,
+        described; every one was refused.
+    :ivar call_return_timeout_s: How long a job's request waits for a running call to return.
     """
 
     outside: list[str] = field(default_factory=list)
@@ -165,11 +164,9 @@ class CompletionGuard:
     async def after_the_call(self, where: str) -> None:
         """Wait, for a job's request, until no call is running — or refuse it when the call does not return.
 
-        Args:
-            where: The request, described.
-
-        Raises:
-            JobAwaitedByItsCall: The running call did not return within ``call_return_timeout_s``.
+        :param where: The request, described.
+        :ptype where: str
+        :raises JobAwaitedByItsCall: The running call did not return within ``call_return_timeout_s``.
         """
         try:
             await asyncio.wait_for(self._no_call_running.wait(), self.call_return_timeout_s)
@@ -183,11 +180,10 @@ class CompletionGuard:
     def wrap(self, clients: CompletionClients) -> CompletionClients:
         """The host's client factory, every client it builds watched.
 
-        Args:
-            clients: The host's own factory.
-
-        Returns:
-            A factory the host builds its :class:`~threetears.evals.kernel.host.EvalHost` with for the kit.
+        :param clients: The host's own factory.
+        :ptype clients: CompletionClients
+        :return: A factory the host builds its :class:`~threetears.evals.kernel.host.EvalHost` with for the kit.
+        :rtype: CompletionClients
         """
 
         def guarded(role: Any, model: str | None, *, temperature: float | None = None) -> Any:
@@ -206,11 +202,10 @@ class CompletionGuard:
 class JobsConformanceHost:
     """What a host hands the kit for one case: its operations host, who calls, and its sample launch.
 
-    Attributes:
-        host: The host the action runs in, built over a fresh store with its client factory wrapped by the
-            case's :class:`CompletionGuard`.
-        caller: Who the kit calls as.
-        sample: A launch the host runs end to end (:class:`~threetears.evals.actions.ConformanceSample`).
+    :ivar host: The host the action runs in, built over a fresh store with its client factory wrapped by the
+        case's :class:`CompletionGuard`.
+    :ivar caller: Who the kit calls as.
+    :ivar sample: A launch the host runs end to end (:class:`~threetears.evals.actions.ConformanceSample`).
     """
 
     host: OpsHost
@@ -227,10 +222,9 @@ BuildConformanceHost = Callable[[CompletionGuard], JobsConformanceHost]
 class JobsConformanceCase:
     """One action held to one rule.
 
-    Attributes:
-        name: ``<action>.<rule>``, for a test id.
-        rule: The rule, in a sentence.
-        check: Runs the case against a host the builder makes; raises :class:`JobsConformanceFailure` when broken.
+    :ivar name: ``<action>.<rule>``, for a test id.
+    :ivar rule: The rule, in a sentence.
+    :ivar check: Runs the case against a host the builder makes; raises :class:`JobsConformanceFailure` when broken.
     """
 
     name: str
@@ -348,14 +342,15 @@ def jobs_conformance_cases(
 ) -> tuple[JobsConformanceCase, ...]:
     """Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
 
-    Args:
-        catalogue: The actions — the engine's and the host's (:func:`~threetears.evals.actions.eval_catalogue`).
-        job_timeout_s: How long a happy path's jobs may run before the case fails.
-        call_return_timeout_s: How long a job's request waits for the running call to return before the case
-            fails it as a call that waits on its own job.
-
-    Returns:
-        The cases, in catalogue order: an action's call case, then, for a spend action, its happy-path case.
+    :param catalogue: The actions — the engine's and the host's (:func:`~threetears.evals.actions.eval_catalogue`).
+    :ptype catalogue: ActionCatalogue
+    :param job_timeout_s: How long a happy path's jobs may run before the case fails.
+    :ptype job_timeout_s: float
+    :param call_return_timeout_s: How long a job's request waits for the running call to return before the case
+        fails it as a call that waits on its own job.
+    :ptype call_return_timeout_s: float
+    :return: The cases, in catalogue order: an action's call case, then, for a spend action, its happy-path case.
+    :rtype: tuple[JobsConformanceCase, ...]
     """
     cases: list[JobsConformanceCase] = []
     for action in catalogue.actions:

@@ -153,20 +153,19 @@ def reporter_case_freeze(host: EvalHost, freeze: ReporterCaseFreeze, scope_id: s
     of one is (:func:`~threetears.evals.run.get_template`), in the caller's scope, so a template, campaign
     or analysis of another scope does not resolve.
 
-    Args:
-        host: The host whose store holds the campaign and receives the case.
-        freeze: What to freeze.
-        scope_id: The scope the template, the campaign and its runs live in, and the case is stored in.
-
-    Returns:
-        The receipt: the case — the pair's existing live case when the freeze matched it — its fingerprint
+    :param host: The host whose store holds the campaign and receives the case.
+    :ptype host: EvalHost
+    :param freeze: What to freeze.
+    :ptype freeze: ReporterCaseFreeze
+    :param scope_id: The scope the template, the campaign and its runs live in, and the case is stored in.
+    :ptype scope_id: str
+    :return: The receipt: the case — the pair's existing live case when the freeze matched it — its fingerprint
         and the limits it recorded.
-
-    Raises:
-        NotFoundError: The template, campaign or analysis is not in the scope.
-        ValidationFailedError: The template is not of the reporter kind, or the freeze refused (see
-            :func:`~threetears.evals.analysis.freeze_reporter_case`).
-        StorageError: The case could not be persisted.
+    :rtype: FrozenReporterCase
+    :raises NotFoundError: The template, campaign or analysis is not in the scope.
+    :raises ValidationFailedError: The template is not of the reporter kind, or the freeze refused (see
+        :func:`~threetears.evals.analysis.freeze_reporter_case`).
+    :raises StorageError: The case could not be persisted.
     """
     stored = freeze_reporter_case(
         host,
@@ -186,18 +185,18 @@ def reporter_cases_list(
 ) -> ReporterCaseListing:
     """A reporter template's cases: each with whether a launch runs it, then what cannot be read or decided.
 
-    Args:
-        host: The host whose store is read.
-        template_id: The reporter template.
-        scope_id: The scope it lives in.
-        include_archived: List retired cases too.
-
-    Returns:
-        The listing.
-
-    Raises:
-        NotFoundError: No template with that id in the scope.
-        ValidationFailedError: The template is not of the reporter kind.
+    :param host: The host whose store is read.
+    :ptype host: EvalHost
+    :param template_id: The reporter template.
+    :ptype template_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param include_archived: List retired cases too.
+    :ptype include_archived: bool
+    :return: The listing.
+    :rtype: ReporterCaseListing
+    :raises NotFoundError: No template with that id in the scope.
+    :raises ValidationFailedError: The template is not of the reporter kind.
     """
     template = host.storage.load_template(template_id, scope_id)
     if template is None:
@@ -233,21 +232,22 @@ def reporter_case_archive(
 ) -> FrozenReporterCase:
     """Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
 
-    Args:
-        host: The host whose store holds the case.
-        test_case_id: The case.
-        scope_id: The scope it lives in.
-        archived: ``True`` retires it, ``False`` restores it.
-        reason: Why it is retired; cleared on restore.
-
-    Returns:
-        The case's receipt, as persisted.
-
-    Raises:
-        NotFoundError: No case with that id in the scope.
-        ValidationFailedError: It carries no reporter case, or restoring it would make a second live case of
-            its pair (see :func:`~threetears.evals.analysis.set_reporter_case_archived`).
-        StorageError: The write failed.
+    :param host: The host whose store holds the case.
+    :ptype host: EvalHost
+    :param test_case_id: The case.
+    :ptype test_case_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param archived: ``True`` retires it, ``False`` restores it.
+    :ptype archived: bool
+    :param reason: Why it is retired; cleared on restore.
+    :ptype reason: str | None
+    :return: The case's receipt, as persisted.
+    :rtype: FrozenReporterCase
+    :raises NotFoundError: No case with that id in the scope.
+    :raises ValidationFailedError: It carries no reporter case, or restoring it would make a second live case of
+        its pair (see :func:`~threetears.evals.analysis.set_reporter_case_archived`).
+    :raises StorageError: The write failed.
     """
     return frozen_case_receipt(
         set_reporter_case_archived(host.storage, test_case_id, scope_id, archived=archived, reason=reason)
@@ -287,11 +287,10 @@ class ReporterPrompts(Protocol):
         answered a missing name with the default would have the run bill the incumbent prompt under the
         candidate's name; the launch refuses instead.
 
-        Args:
-            preset: The preset's name, or ``None`` for the system default.
-
-        Returns:
-            The prompt text, or ``None`` when no prompt of that name is stored.
+        :param preset: The preset's name, or ``None`` for the system default.
+        :ptype preset: str | None
+        :return: The prompt text, or ``None`` when no prompt of that name is stored.
+        :rtype: str | None
         """
         ...
 
@@ -300,15 +299,14 @@ class ReporterPrompts(Protocol):
 class ReporterAdmitted:
     """What :func:`admit_reporter_launch` resolved of a reporter arm it can honour.
 
-    Attributes:
-        preset: The preset the launch named, or ``None`` for the system default.
-        prompt: The text the preset resolved to — what a generating arm's
-            :class:`~threetears.evals.analysis.ReporterKind` writes with, under the prompt id
-            :data:`~threetears.evals.kernel.ANALYSIS_GEN_PROMPT`.
-        candidate_model: The generator model the arm runs on, or
-            :data:`~threetears.evals.analysis.AS_RECORDED_MODEL` for the replay.
-        judge_model: The run-level judge pin, resolved.
-        cases: The cases the arm runs, in run order.
+    :ivar preset: The preset the launch named, or ``None`` for the system default.
+    :ivar prompt: The text the preset resolved to — what a generating arm's
+        :class:`~threetears.evals.analysis.ReporterKind` writes with, under the prompt id
+        :data:`~threetears.evals.kernel.ANALYSIS_GEN_PROMPT`.
+    :ivar candidate_model: The generator model the arm runs on, or
+        :data:`~threetears.evals.analysis.AS_RECORDED_MODEL` for the replay.
+    :ivar judge_model: The run-level judge pin, resolved.
+    :ivar cases: The cases the arm runs, in run order.
     """
 
     preset: str | None
@@ -407,7 +405,8 @@ def admit_reporter_launch(
     prompts: ReporterPrompts,
     resolve_model: ReporterModelResolver,
 ) -> ReporterAdmitted:
-    """Every refusal a reporter arm meets before it is priced, and what it resolved to — for its plan and its launcher alike.
+    """Every refusal a reporter arm meets before it is priced, and what it resolved to — for its plan and its launcher
+    alike.
 
     The host supplies only what the host knows: its prompt registry and its model resolution. Everything else is
     the kind's, in this order: the template (:func:`~threetears.evals.analysis.refuse_undeliverable_reporter_template`),
@@ -418,20 +417,20 @@ def admit_reporter_launch(
     reads; otherwise the template's live bank (:func:`~threetears.evals.analysis.live_reporter_cases`), refused
     when empty or ambiguous.
 
-    Args:
-        request: The arm.
-        storage: Where the template's cases are stored.
-        prompts: The host's prompt registry, as just loaded.
-        resolve_model: The host's model resolution.
-
-    Returns:
-        What the arm resolved to.
-
-    Raises:
-        ValidationFailedError: The template asks for what a reporter cannot honour; the preset is not stored, or
-            no default is; the model is an alias, or the host refuses it; there is no live case, a pair holds two,
-            a case of the bank does not read, or a case-set case carries no reporter case; or the replay is
-            launched over a case pinning no recorded memo.
+    :param request: The arm.
+    :ptype request: LaunchRequest
+    :param storage: Where the template's cases are stored.
+    :ptype storage: EvalStorage
+    :param prompts: The host's prompt registry, as just loaded.
+    :ptype prompts: ReporterPrompts
+    :param resolve_model: The host's model resolution.
+    :ptype resolve_model: ReporterModelResolver
+    :return: What the arm resolved to.
+    :rtype: ReporterAdmitted
+    :raises ValidationFailedError: The template asks for what a reporter cannot honour; the preset is not stored, or
+        no default is; the model is an alias, or the host refuses it; there is no live case, a pair holds two,
+        a case of the bank does not read, or a case-set case carries no reporter case; or the replay is
+        launched over a case pinning no recorded memo.
     """
     refuse_undeliverable_reporter_template(request.template)
     preset = request.overlays_as(ReporterOverlays).prompt_preset if request.overlays is not None else None
@@ -465,18 +464,18 @@ def plan_reporter_arm(
     launch's judge or the judge role's default, with no simulator. A launcher re-admits with the same hooks, so
     the plan and the run cannot be built from different reads.
 
-    Args:
-        host: The host, where the cases and judge configs are read.
-        request: The arm.
-        prompts: The host's prompt registry, as just loaded.
-        resolve_model: The host's model resolution.
-
-    Returns:
-        The plan.
-
-    Raises:
-        ValidationFailedError: Anything :func:`admit_reporter_launch` or
-            :func:`~threetears.evals.run.plan_judge` refuses.
+    :param host: The host, where the cases and judge configs are read.
+    :ptype host: EvalHost
+    :param request: The arm.
+    :ptype request: LaunchRequest
+    :param prompts: The host's prompt registry, as just loaded.
+    :ptype prompts: ReporterPrompts
+    :param resolve_model: The host's model resolution.
+    :ptype resolve_model: ReporterModelResolver
+    :return: The plan.
+    :rtype: ArmPlan
+    :raises ValidationFailedError: Anything :func:`admit_reporter_launch` or
+        :func:`~threetears.evals.run.plan_judge` refuses.
     """
     admitted = admit_reporter_launch(request, storage=host.storage, prompts=prompts, resolve_model=resolve_model)
     return ArmPlan(
@@ -518,20 +517,20 @@ async def price_largest_reporter_call(
     Admits the arm again (:func:`admit_reporter_launch`, off the event loop) with the same hooks the plan is made
     with, so the plan and the price cannot be built from different reads.
 
-    Args:
-        host: The host the launcher builds the generator client on.
-        request: The arm, as planned.
-        prompts: The host's prompt registry, as just loaded.
-        resolve_model: The host's model resolution.
-
-    Returns:
-        The largest generator call's ceiling, naming its case and what lowers it; ``None`` for the replay, or when
+    :param host: The host the launcher builds the generator client on.
+    :ptype host: EvalHost
+    :param request: The arm, as planned.
+    :ptype request: LaunchRequest
+    :param prompts: The host's prompt registry, as just loaded.
+    :ptype prompts: ReporterPrompts
+    :param resolve_model: The host's model resolution.
+    :ptype resolve_model: ReporterModelResolver
+    :return: The largest generator call's ceiling, naming its case and what lowers it; ``None`` for the replay, or when
         no case's call could be priced (the client has no ``price_ceiling``, or answers ``None``).
-
-    Raises:
-        ValidationFailedError: Anything :func:`admit_reporter_launch` refuses.
-        ValueError: The host supplies no completion clients, or its client priced a call at an amount no
-            reservation could hold.
+    :rtype: CallCeiling | None
+    :raises ValidationFailedError: Anything :func:`admit_reporter_launch` refuses.
+    :raises ValueError: The host supplies no completion clients, or its client priced a call at an amount no
+        reservation could hold.
     """
     admitted = await run_blocking(
         host.blocking_executor,

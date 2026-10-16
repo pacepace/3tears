@@ -125,8 +125,7 @@ _PASS_FAIL = {"pass": 1, "fail": 0, "1": 1, "0": 0, "true": 1, "false": 0}
 def coordinates(arm: str) -> dict[str, str] | None:
     """An arm named as ``k=v`` pairs, by factor (``"prompt=v2, effort=low"`` is two factors), or ``None`` for a name.
 
-    Raises:
-        ValueError: A name that mixes pairs and plain words, or names one factor twice.
+    :raises ValueError: A name that mixes pairs and plain words, or names one factor twice.
     """
     parts = [part.strip() for part in arm.split(",")]
     if not any("=" in part for part in parts):
@@ -149,15 +148,14 @@ def coordinates(arm: str) -> dict[str, str] | None:
 class JudgeCalibration:
     """How a judge's scores on one dimension agree with a person's labels, and the evidence tier that bears.
 
-    Attributes:
-        dimension: The judged dimension.
-        labels: The labels paired with a judge score.
-        kappa: Cohen's kappa on pass/fail, the quadratic-weighted one on 1-5; ``None`` when undefined.
-        lower: The kappa's one-sided 95% lower bound; ``None`` when it has none.
-        upper: Its one-sided 97.5% upper bound; ``None`` when it has none.
-        calibration: How the calibration criterion reads: ``met``, ``not_met``, ``undecided`` or ``insufficient``.
-        tier: The evidence tier the judge's readings bear: ``calibrated``, ``separation``, ``incidental`` or
-            ``undetermined``.
+    :ivar dimension: The judged dimension.
+    :ivar labels: The labels paired with a judge score.
+    :ivar kappa: Cohen's kappa on pass/fail, the quadratic-weighted one on 1-5; ``None`` when undefined.
+    :ivar lower: The kappa's one-sided 95% lower bound; ``None`` when it has none.
+    :ivar upper: Its one-sided 97.5% upper bound; ``None`` when it has none.
+    :ivar calibration: How the calibration criterion reads: ``met``, ``not_met``, ``undecided`` or ``insufficient``.
+    :ivar tier: The evidence tier the judge's readings bear: ``calibrated``, ``separation``, ``incidental`` or
+        ``undetermined``.
     """
 
     dimension: str
@@ -185,31 +183,30 @@ class Result:
 
     ``print(result)`` is the quiet summary (:meth:`render`); :meth:`write` writes the report.
 
-    Attributes:
-        name: The eval's name, which titles its campaign and report.
-        scope_id: The scope the campaign and its runs are stored in.
-        control: The arm every other arm is tested against: the runner mapping's first key, or the one arm.
-        arms: Each arm's run summary, by arm name, in the order the arms were given.
-        report: The campaign's report, as :func:`~threetears.evals.analysis.campaign_report` reads it.
-        host: The host the runs and the campaign are stored in, for reading them further.
-        campaign_id: The campaign holding every arm's run.
-        factors: The factors each arm name names a level of, in order: ``("candidate",)`` when the arms are named
-            plainly on the arm lever, ``("model",)`` when the one arm or the arms are named as models.
-        store: Where the runs are stored, in words: the file, or that they are held in memory.
-        fields: The eval's field graders, the classifier first.
-        judge: The eval's judge, or ``None``.
-        disclosures: What the run must say about how it was run, beside its readings: a tool recording replayed or
-            made, a logged runner's file.
-        calibrations: How the judge agrees with the labels ``Judge(labels=...)`` names, per dimension
-            (:func:`calibrate`); empty with no judge, no labels, or no label that pairs.
-        to_label: Every judged answer on every dimension, as a row of :data:`TO_LABEL`, the verdict withheld.
-        contrast_arms: The arm each row of the report's contrasts table tests, by name, row for row; ``None`` for a
-            row no arm's variant matches.
-        contrast_measures: The key of the measure each row of the contrasts table reads, row for row.
-        kind: The kind every arm ran — the callable kind, or the judged one — whose levers the campaign's axes name.
-        guardrail_readings: Every guardrail, decided for each arm against the control; empty when none is declared.
-        arm_variants: Each arm's variant key, by name: what the bundle names the arm by.
-        labelled_arms: Each arm's name, by the words the report names it by (``baseline``).
+    :ivar name: The eval's name, which titles its campaign and report.
+    :ivar scope_id: The scope the campaign and its runs are stored in.
+    :ivar control: The arm every other arm is tested against: the runner mapping's first key, or the one arm.
+    :ivar arms: Each arm's run summary, by arm name, in the order the arms were given.
+    :ivar report: The campaign's report, as :func:`~threetears.evals.analysis.campaign_report` reads it.
+    :ivar host: The host the runs and the campaign are stored in, for reading them further.
+    :ivar campaign_id: The campaign holding every arm's run.
+    :ivar factors: The factors each arm name names a level of, in order: ``("candidate",)`` when the arms are named
+        plainly on the arm lever, ``("model",)`` when the one arm or the arms are named as models.
+    :ivar store: Where the runs are stored, in words: the file, or that they are held in memory.
+    :ivar fields: The eval's field graders, the classifier first.
+    :ivar judge: The eval's judge, or ``None``.
+    :ivar disclosures: What the run must say about how it was run, beside its readings: a tool recording replayed or
+        made, a logged runner's file.
+    :ivar calibrations: How the judge agrees with the labels ``Judge(labels=...)`` names, per dimension
+        (:func:`calibrate`); empty with no judge, no labels, or no label that pairs.
+    :ivar to_label: Every judged answer on every dimension, as a row of :data:`TO_LABEL`, the verdict withheld.
+    :ivar contrast_arms: The arm each row of the report's contrasts table tests, by name, row for row; ``None`` for a
+        row no arm's variant matches.
+    :ivar contrast_measures: The key of the measure each row of the contrasts table reads, row for row.
+    :ivar kind: The kind every arm ran — the callable kind, or the judged one — whose levers the campaign's axes name.
+    :ivar guardrail_readings: Every guardrail, decided for each arm against the control; empty when none is declared.
+    :ivar arm_variants: Each arm's variant key, by name: what the bundle names the arm by.
+    :ivar labelled_arms: Each arm's name, by the words the report names it by (``baseline``).
     """
 
     name: str
@@ -239,8 +236,7 @@ class Result:
     def summary(self) -> EvalSummary:
         """The one arm's run summary.
 
-        Raises:
-            ValueError: The result is a comparison: name the arm (``result.arms["baseline"]``).
+        :raises ValueError: The result is a comparison: name the arm (``result.arms["baseline"]``).
         """
         return self._arm(None)
 
@@ -248,8 +244,7 @@ class Result:
     def run_id(self) -> str:
         """The one arm's run id.
 
-        Raises:
-            ValueError: The result is a comparison: read :attr:`run_ids`.
+        :raises ValueError: The result is a comparison: read :attr:`run_ids`.
         """
         return self._arm(None).run_id
 
@@ -266,28 +261,22 @@ class Result:
     def results(self, arm: str | None = None) -> list[CaseResult]:
         """Every result of one arm: each case's answer on each repeat, its grades, and why it failed or was excluded.
 
-        Args:
-            arm: The arm, by name; ``None`` for the one arm of a result that has one.
-
-        Returns:
-            The arm's results, as :meth:`~threetears.evals.analysis.summary.EvalSummary.results` reads them.
-
-        Raises:
-            ValueError: ``arm`` names no arm, or is ``None`` on a comparison.
+        :param arm: The arm, by name; ``None`` for the one arm of a result that has one.
+        :ptype arm: str | None
+        :return: The arm's results, as :meth:`~threetears.evals.analysis.summary.EvalSummary.results` reads them.
+        :rtype: list[CaseResult]
+        :raises ValueError: ``arm`` names no arm, or is ``None`` on a comparison.
         """
         return self._arm(arm).results()
 
     def misses(self, arm: str | None = None) -> list[CaseResult]:
         """The results one arm missed, each saying why.
 
-        Args:
-            arm: The arm, by name; ``None`` for the one arm of a result that has one.
-
-        Returns:
-            The arm's misses, as :meth:`~threetears.evals.analysis.summary.EvalSummary.misses` reads them.
-
-        Raises:
-            ValueError: ``arm`` names no arm, or is ``None`` on a comparison.
+        :param arm: The arm, by name; ``None`` for the one arm of a result that has one.
+        :ptype arm: str | None
+        :return: The arm's misses, as :meth:`~threetears.evals.analysis.summary.EvalSummary.misses` reads them.
+        :rtype: list[CaseResult]
+        :raises ValueError: ``arm`` names no arm, or is ``None`` on a comparison.
         """
         return self._arm(arm).misses()
 
@@ -311,15 +300,13 @@ class Result:
         The classifier's (the first field) are the run's own, as its summary carries them; any other field's are
         counted the same way, over the same results, from each answer's label in that field.
 
-        Args:
-            grader: The field, by name; ``None`` for the classifier.
-            arm: The arm, by name; ``None`` for the one arm of a result that has one.
-
-        Returns:
-            The confusion matrix, by expected then predicted label, and each label's statistics, by label.
-
-        Raises:
-            ValueError: No field grader of that name (or none at all), or an arm the result does not have.
+        :param grader: The field, by name; ``None`` for the classifier.
+        :ptype grader: str | None
+        :param arm: The arm, by name; ``None`` for the one arm of a result that has one.
+        :ptype arm: str | None
+        :return: The confusion matrix, by expected then predicted label, and each label's statistics, by label.
+        :rtype: tuple[list[ConfusionCount], list[LabelStatistics]]
+        :raises ValueError: No field grader of that name (or none at all), or an arm the result does not have.
         """
         summary = self._arm(arm)
         if not self.fields:
@@ -367,11 +354,10 @@ class Result:
         quieted: errors, exclusions and their causes, a run stopped short, unpriced spend, the self-judging warning,
         and how the judge stands against people's labels.
 
-        Args:
-            full: Every arm's whole summary and the whole report, Methods included, as Markdown.
-
-        Returns:
-            The text.
+        :param full: Every arm's whole summary and the whole report, Methods included, as Markdown.
+        :ptype full: bool
+        :return: The text.
+        :rtype: str
         """
         if full:
             return "\n\n".join([*(summary.render() for summary in self.arms.values()), report_markdown(self.report)])
@@ -468,13 +454,12 @@ class Result:
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the report as one self-contained page, its Markdown and its bundle, and the judged answers to label.
 
-        Args:
-            out_dir: The directory; created when missing.
-
-        Returns:
-            Each file written, by role: ``html`` (``report.html``), ``bundle`` (``bundle.json``) and ``markdown``
+        :param out_dir: The directory; created when missing.
+        :ptype out_dir: Path | str
+        :return: Each file written, by role: ``html`` (``report.html``), ``bundle`` (``bundle.json``) and ``markdown``
             (``report.md``), and, for a judged eval, ``to_label`` (:data:`TO_LABEL`): each judged answer on each
             dimension, the judge's verdict withheld, for a person to label and ``Judge(labels=...)`` to read back.
+        :rtype: dict[str, Path]
         """
         written: dict[str, Path] = {str(role): path for role, path in self.report.write(out_dir).items()}
         if self.judge is not None:
@@ -497,12 +482,10 @@ class Result:
     def contrasts(self, reading: str | None = None) -> list[dict[str, Any]]:
         """Every contrast against the control the report tested, the ones its page leaves out under the case floor too.
 
-        Args:
-            reading: Only the rows on this reading, by its key (``"accuracy"``) or as the report heads it
-                (``"Accuracy"``); ``None`` keeps every row.
-
-        Returns:
-            One row per arm and reading, keyed ``arm`` (the arm tested, by its key in :attr:`arms`: the name
+        :param reading: Only the rows on this reading, by its key (``"accuracy"``) or as the report heads it
+            (``"Accuracy"``); ``None`` keeps every row.
+        :ptype reading: str | None
+        :return: One row per arm and reading, keyed ``arm`` (the arm tested, by its key in :attr:`arms`: the name
             you gave it), ``measure_id`` (the key of the measure read, to cite or filter
             on), ``question`` (in the words it was asked), ``reading`` (the measure as the report heads it),
             ``contrast`` (the arm, as the report names it), ``control`` (the control, as the report names it),
@@ -512,6 +495,7 @@ class Result:
             over the campaign's family), ``verdict`` (in words, printed from ``outcome``) and ``outcome`` (the
             typed verdict: ``improved``, ``regressed``, ``equivalent``, ``not_separated`` or ``untested``, which
             code branches on); empty when the report tested nothing.
+        :rtype: list[dict[str, Any]]
         """
         rows = contrast_rows(self.report.bundle)
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
@@ -530,13 +514,13 @@ class Result:
         The source of truth for every verdict the report prints, which is rendered from these: branch on
         :attr:`~threetears.evals.analysis.Verdict.outcome`, never on the words.
 
-        Args:
-            reading: Only the verdicts on this reading, by its key (``"accuracy"``) or as the report heads it
-                (``"Accuracy"``); ``None`` keeps every one.
-            kind: Only ``"contrast"``, ``"guardrail"`` or ``"bar"`` verdicts; ``None`` keeps every kind.
-
-        Returns:
-            The verdicts, guardrails first, then bars, then contrasts, each in its table's row order.
+        :param reading: Only the verdicts on this reading, by its key (``"accuracy"``) or as the report heads it
+            (``"Accuracy"``); ``None`` keeps every one.
+        :ptype reading: str | None
+        :param kind: Only ``"contrast"``, ``"guardrail"`` or ``"bar"`` verdicts; ``None`` keeps every kind.
+        :ptype kind: VerdictKind | None
+        :return: The verdicts, guardrails first, then bars, then contrasts, each in its table's row order.
+        :rtype: list[Verdict]
         """
         return [
             verdict
@@ -548,18 +532,16 @@ class Result:
     def gate(self, fail_on: Iterable[str] = DEFAULT_FAIL_ON, *, readings: Iterable[str] | None = None) -> GateResult:
         """Gate a build on this comparison's verdicts, as ``python -m threetears.evals gate`` does on a campaign.
 
-        Args:
-            fail_on: The outcomes that fail it (:data:`~threetears.evals.analysis.GATE_TOKENS`). The default,
-                :data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`, fails on a regressed contrast, a breached
-                guardrail and an undecided guardrail.
-            readings: Only the verdicts on these readings, by key or heading; ``None`` gates every verdict.
-
-        Returns:
-            The gate's result: ``failed`` when a named outcome occurred, ``passed`` only when every verdict was
+        :param fail_on: The outcomes that fail it (:data:`~threetears.evals.analysis.GATE_TOKENS`). The default,
+            :data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`, fails on a regressed contrast, a breached
+            guardrail and an undecided guardrail.
+        :ptype fail_on: Iterable[str]
+        :param readings: Only the verdicts on these readings, by key or heading; ``None`` gates every verdict.
+        :ptype readings: Iterable[str] | None
+        :return: The gate's result: ``failed`` when a named outcome occurred, ``passed`` only when every verdict was
             decided and none failed, ``undecided`` otherwise — never a pass.
-
-        Raises:
-            ValueError: A ``fail_on`` name that is no outcome, or a reading no verdict is on.
+        :rtype: GateResult
+        :raises ValueError: A ``fail_on`` name that is no outcome, or a reading no verdict is on.
         """
         return gate_verdicts(self.report.verdicts, fail_on=fail_on, readings=readings)
 
@@ -570,19 +552,17 @@ class Result:
         ``cases`` row saying how many cases and observations each column rests on, a stratum of fewer than
         ``STRATUM_MIN_CASES`` (10) cases marked too few to read alone, then one row per reading.
 
-        Args:
-            arm: Only this arm's rows, by its key in :attr:`arms`; ``None`` keeps every arm's.
-            reading: Only the rows on this reading, as the report heads it (``"Accuracy"``), or ``"cases"``;
-                ``None`` keeps every row.
-
-        Returns:
-            One row per arm and reading, keyed ``arm`` (the arm, by its key in :attr:`arms`), ``label`` (the arm as
+        :param arm: Only this arm's rows, by its key in :attr:`arms`; ``None`` keeps every arm's.
+        :ptype arm: str | None
+        :param reading: Only the rows on this reading, as the report heads it (``"Accuracy"``), or ``"cases"``;
+            ``None`` keeps every row.
+        :ptype reading: str | None
+        :return: One row per arm and reading, keyed ``arm`` (the arm, by its key in :attr:`arms`), ``label`` (the arm as
             the report names it), ``reading``, ``all`` (the figure over every case) and ``strata`` (the figure
             over each stratum's cases alone, by stratum name, the cases declaring none under ``"(no stratum)"``;
             a stratum the arm has no case in is absent); empty when no case declares a stratum.
-
-        Raises:
-            ValueError: ``arm`` names no arm.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: ``arm`` names no arm.
         """
         if arm is not None:
             _refuse_an_unknown_arm(self.arms, arm)
@@ -617,19 +597,16 @@ class Result:
         control, never in the contrasts: ``held`` when the arm is shown no worse than the control by more than the
         margin, ``breached`` when it is shown worse by more, and ``undecided`` otherwise, which is never safe.
 
-        Args:
-            arm: Only this arm's rows, by its key in :attr:`arms`; ``None`` keeps every arm's.
-
-        Returns:
-            One row per guardrail and arm, keyed ``arm`` (the arm checked, by its key in :attr:`arms`),
+        :param arm: Only this arm's rows, by its key in :attr:`arms`; ``None`` keeps every arm's.
+        :ptype arm: str | None
+        :return: One row per guardrail and arm, keyed ``arm`` (the arm checked, by its key in :attr:`arms`),
             ``measure_id`` (the guardrail's key: a scorer's name or a judged dimension's), ``outcome`` (``held``,
             ``breached`` or ``undecided``), ``contrast`` (the arm, as the report names it), and the table's other
             columns: ``guardrail`` (as the report heads it), ``control_mean`` and ``arm_mean``, ``cases``,
             ``delta`` (arm minus control), ``interval`` (on the delta), ``margin`` and ``decision`` (the outcome in
             words, with why when undecided); empty when no reading is a guardrail or no control resolved.
-
-        Raises:
-            ValueError: ``arm`` names no arm.
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: ``arm`` names no arm.
         """
         if arm is not None:
             _refuse_an_unknown_arm(self.arms, arm)
@@ -661,15 +638,12 @@ class Result:
         An arm with any guardrail ``breached`` is not to be adopted, whatever its contrasts show it gained; one
         ``undecided`` is not known to be safe, which says nothing either way about whether it is.
 
-        Args:
-            arm: The arm, by its key in :attr:`arms`.
-
-        Returns:
-            The guardrails the arm breached, those it is undecided on, and those it held, each by key; all empty
+        :param arm: The arm, by its key in :attr:`arms`.
+        :ptype arm: str
+        :return: The guardrails the arm breached, those it is undecided on, and those it held, each by key; all empty
             for the control, which no guardrail is checked against itself, and when no reading is a guardrail.
-
-        Raises:
-            ValueError: ``arm`` names no arm.
+        :rtype: ArmGuardrails
+        :raises ValueError: ``arm`` names no arm.
         """
         _refuse_an_unknown_arm(self.arms, arm)
         variant = self.arm_variants.get(arm)
@@ -685,17 +659,16 @@ class Result:
         the second model is the contrast against the first prompt on that model. Each campaign Holm-corrects its own
         contrasts, so the two reports are two families, not one.
 
-        Args:
-            control: The arm to test every other against, by name.
-            name: The new campaign's name; ``None`` names it after this one and the new control.
-            created_by: Who the campaign and its control are recorded as created by.
-
-        Returns:
-            A result over the same arms and runs, against ``control``.
-
-        Raises:
-            ValueError: ``control`` names no arm.
-            ValidationFailedError: The host refuses the campaign's declaration.
+        :param control: The arm to test every other against, by name.
+        :ptype control: str
+        :param name: The new campaign's name; ``None`` names it after this one and the new control.
+        :ptype name: str | None
+        :param created_by: Who the campaign and its control are recorded as created by.
+        :ptype created_by: str
+        :return: A result over the same arms and runs, against ``control``.
+        :rtype: Result
+        :raises ValueError: ``control`` names no arm.
+        :raises ValidationFailedError: The host refuses the campaign's declaration.
         """
         _refuse_an_unknown_arm(self.arms, control)
 
@@ -813,8 +786,7 @@ def _write_to_label(path: Path, rows: Iterable[Mapping[str, str]]) -> None:
 def _read_labels(path: Path, scope_id: str, scales: Mapping[str, RubricScale]) -> list[CalibrationRating]:
     """The labels a person filled in on a :data:`TO_LABEL` file, as ratings to pair with the judge's scores.
 
-    Raises:
-        ValueError: A missing column, a label not on its dimension's scale, or a dimension the judge does not score.
+    :raises ValueError: A missing column, a label not on its dimension's scale, or a dimension the judge does not score.
     """
     with path.open(encoding="utf-8", newline="") as read:
         rows = list(csv.DictReader(read))
@@ -873,11 +845,9 @@ def calibrate(
     Labels pair with the judge's scores of byte-identical answers on the same dimension, in this run or the one they
     were written on, so a replayed run reads the labels written on its recording's.
 
-    Returns:
-        One per dimension a label pairs with; empty with no judge, no labels file, or no label in it.
-
-    Raises:
-        ValueError: A labels file with a missing column, or a label not on its dimension's scale.
+    :return: One per dimension a label pairs with; empty with no judge, no labels file, or no label in it.
+    :rtype: list[JudgeCalibration]
+    :raises ValueError: A labels file with a missing column, or a label not on its dimension's scale.
     """
     if judge is None or judge.labels is None or not judge.labels.is_file():
         return []
@@ -909,14 +879,16 @@ def judged_rows(
 ) -> list[dict[str, str]]:
     """Every judged answer on every dimension, as a :data:`TO_LABEL` row, the judge's score withheld. Reads the store.
 
-    Args:
-        host: Where the runs are stored.
-        arms: Each arm's summary.
-        scope_id: Their scope.
-        case_names: What each test case is called, by its id.
-
-    Returns:
-        The rows, arm by arm, in the order the store lists each run's results.
+    :param host: Where the runs are stored.
+    :ptype host: EvalHost
+    :param arms: Each arm's summary.
+    :ptype arms: Mapping[str, EvalSummary]
+    :param scope_id: Their scope.
+    :ptype scope_id: str
+    :param case_names: What each test case is called, by its id.
+    :ptype case_names: Mapping[str, str]
+    :return: The rows, arm by arm, in the order the store lists each run's results.
+    :rtype: list[dict[str, str]]
     """
     rows: list[dict[str, str]] = []
     for summary in arms.values():

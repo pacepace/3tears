@@ -72,9 +72,8 @@ class ReaderConformanceFailure(AssertionError):
 class ReaderSample:
     """What the kit checks a host's readers over: the host's profile and runs it produced.
 
-    Attributes:
-        profile: The host's profile — every reader on it is checked.
-        runs: ``(run, its results)`` pairs, as the host's store holds them. At least one.
+    :ivar profile: The host's profile — every reader on it is checked.
+    :ivar runs: ``(run, its results)`` pairs, as the host's store holds them. At least one.
     """
 
     profile: HostProfile
@@ -85,10 +84,9 @@ class ReaderSample:
 class ReaderConformanceCase:
     """One promise a reader makes, as a check over a sample.
 
-    Attributes:
-        name: A stable identifier, for a test id (``"sweepable.json_safe"``).
-        rule: The promise, in one sentence.
-        check: The check. Takes the sample; returns, or raises :class:`ReaderConformanceFailure`.
+    :ivar name: A stable identifier, for a test id (``"sweepable.json_safe"``).
+    :ivar rule: The promise, in one sentence.
+    :ivar check: The check. Takes the sample; returns, or raises :class:`ReaderConformanceFailure`.
     """
 
     name: str
@@ -98,13 +96,11 @@ class ReaderConformanceCase:
     def run(self, sample: ReaderSample) -> None:
         """Run the case over ``sample``.
 
-        Args:
-            sample: The host's profile and runs.
-
-        Raises:
-            ReaderConformanceFailure: The sample holds no run, or a reader broke the rule; the message
-                names the case, the rule and what was observed. Anything else a reader raises propagates
-                unchanged.
+        :param sample: The host's profile and runs.
+        :ptype sample: ReaderSample
+        :raises ReaderConformanceFailure: The sample holds no run, or a reader broke the rule; the message
+            names the case, the rule and what was observed. Anything else a reader raises propagates
+            unchanged.
         """
         if not sample.runs:
             raise ReaderConformanceFailure(

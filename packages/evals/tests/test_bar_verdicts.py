@@ -29,10 +29,12 @@ def _bundle(
 ) -> AnalysisContextBundle:
     """The toy campaign's bundle under a ``field_accuracy`` bar at ``threshold`` and a declared ``margin``.
 
-    Args:
-        threshold: Where the registered bar sits, or None for the toy host's own.
-        margin: The measure's declared materiality threshold, or None for none.
-        observations_per_run: Cut each run to its first results, or None to keep them all.
+    :param threshold: Where the registered bar sits, or None for the toy host's own.
+    :ptype threshold: float | None
+    :param margin: The measure's declared materiality threshold, or None for none.
+    :ptype margin: float | None
+    :param observations_per_run: Cut each run to its first results, or None to keep them all.
+    :ptype observations_per_run: int | None
     """
     campaign, storage = toyhost_campaign()
     profile = toyhost_profile()

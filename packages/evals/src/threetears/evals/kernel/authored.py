@@ -215,16 +215,13 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     strings and reads them back (:func:`threetears.evals.run.judge.judge_reply_format`), and a host projecting its own
     model declares the values as strings in it (a ``Literal["1", "2"]``, a ``str`` enum) and converts on read.
 
-    Args:
-        schema: A pydantic-generated JSON schema.
-
-    Returns:
-        The projected schema.
-
-    Raises:
-        MapFieldInSchema: An object carries an open ``additionalProperties``.
-        UnportableSchema: A node carries a keyword outside the portable subset that validation does not stand in for,
-            or an ``enum`` or ``const`` holding a value that is not a string.
+    :param schema: A pydantic-generated JSON schema.
+    :ptype schema: dict[str, Any]
+    :return: The projected schema.
+    :rtype: dict[str, Any]
+    :raises MapFieldInSchema: An object carries an open ``additionalProperties``.
+    :raises UnportableSchema: A node carries a keyword outside the portable subset that validation does not stand in
+        for, or an ``enum`` or ``const`` holding a value that is not a string.
     """
 
     def string_values(key: str, values: list[Any], path: str) -> list[str]:
@@ -288,17 +285,15 @@ def strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, An
     enforce a strict schema is the host client's to handle — it sends the nearest mode its provider has (JSON
     mode, a tool's input schema) — and the reply is validated against the model on return either way.
 
-    Args:
-        name: The schema's name, as the directive carries it.
-        schema: A pydantic-generated JSON schema (``Model.model_json_schema()``), or one shaped like it.
-
-    Returns:
-        The OpenAI-shaped directive.
-
-    Raises:
-        MapFieldInSchema: An object in it admits arbitrary keys, which no strict mode accepts.
-        UnportableSchema: A node in it carries a keyword outside the portable subset that validation does not stand in
-            for, or an ``enum`` or ``const`` holding a value that is not a string (:func:`strict_schema`).
+    :param name: The schema's name, as the directive carries it.
+    :ptype name: str
+    :param schema: A pydantic-generated JSON schema (``Model.model_json_schema()``), or one shaped like it.
+    :ptype schema: Mapping[str, Any]
+    :return: The OpenAI-shaped directive.
+    :rtype: dict[str, Any]
+    :raises MapFieldInSchema: An object in it admits arbitrary keys, which no strict mode accepts.
+    :raises UnportableSchema: A node in it carries a keyword outside the portable subset that validation does not stand
+        in for, or an ``enum`` or ``const`` holding a value that is not a string (:func:`strict_schema`).
     """
     projected = {key: value for key, value in strict_schema(dict(schema)).items() if key != "description"}
     return {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": projected}}
@@ -310,11 +305,10 @@ def count_slots(schema: dict[str, Any]) -> int:
     Strings and arrays are what a provider's grammar pays for (enums and integers barely register), so
     they are what :data:`SLOT_BUDGET` bounds.
 
-    Args:
-        schema: A projected schema.
-
-    Returns:
-        The slot count.
+    :param schema: A projected schema.
+    :ptype schema: dict[str, Any]
+    :return: The slot count.
+    :rtype: int
     """
 
     def count(node: Any) -> int:
@@ -332,11 +326,10 @@ def count_slots(schema: dict[str, Any]) -> int:
 def authored_schema(caveat_kinds: Iterable[str]) -> dict[str, Any]:
     """The strict JSON schema of the authored payload, with the host's caveat kinds as an enum.
 
-    Args:
-        caveat_kinds: The caveat kinds on offer — the engine's and any the host registered.
-
-    Returns:
-        The schema, as sent.
+    :param caveat_kinds: The caveat kinds on offer — the engine's and any the host registered.
+    :ptype caveat_kinds: Iterable[str]
+    :return: The schema, as sent.
+    :rtype: dict[str, Any]
     """
     schema = strict_schema(AuthoredAnalysis.model_json_schema())
     schema["$defs"]["Caveat"]["properties"]["kind"] = {"type": "string", "enum": sorted(set(caveat_kinds))}
@@ -346,11 +339,10 @@ def authored_schema(caveat_kinds: Iterable[str]) -> dict[str, Any]:
 def response_format(caveat_kinds: Iterable[str]) -> dict[str, Any]:
     """The ``response_format`` directive that sends :func:`authored_schema` in strict mode.
 
-    Args:
-        caveat_kinds: The caveat kinds on offer.
-
-    Returns:
-        The OpenAI-shaped ``json_schema`` directive.
+    :param caveat_kinds: The caveat kinds on offer.
+    :ptype caveat_kinds: Iterable[str]
+    :return: The OpenAI-shaped ``json_schema`` directive.
+    :rtype: dict[str, Any]
     """
     schema = authored_schema(caveat_kinds)
     return {"type": "json_schema", "json_schema": {"name": SCHEMA_NAME, "strict": True, "schema": schema}}
@@ -359,16 +351,14 @@ def response_format(caveat_kinds: Iterable[str]) -> dict[str, Any]:
 def validate_authored(payload: Any, caveat_kinds: Iterable[str]) -> AuthoredAnalysis:
     """Check a returned payload against the schema it was sent: the same models and vocabulary.
 
-    Args:
-        payload: The parsed JSON object the generator returned.
-        caveat_kinds: The caveat kinds that were on offer.
-
-    Returns:
-        The validated payload.
-
-    Raises:
-        pydantic.ValidationError: The payload does not match the models.
-        OffVocabulary: A caveat kind that was not on offer.
+    :param payload: The parsed JSON object the generator returned.
+    :ptype payload: Any
+    :param caveat_kinds: The caveat kinds that were on offer.
+    :ptype caveat_kinds: Iterable[str]
+    :return: The validated payload.
+    :rtype: AuthoredAnalysis
+    :raises pydantic.ValidationError: The payload does not match the models.
+    :raises OffVocabulary: A caveat kind that was not on offer.
     """
     document = AuthoredAnalysis.model_validate(payload)
     kinds = set(caveat_kinds)

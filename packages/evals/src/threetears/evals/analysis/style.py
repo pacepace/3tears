@@ -46,16 +46,16 @@ _NOT_A_NAME = re.compile(r"\s|[0-9a-f]{12,}|^\d+$")
 def humanize(kind: HumanizeKind, identifier: str) -> str:
     """An identifier as a reader is shown it after its first mention.
 
-    Args:
-        kind: What the identifier names.
-        identifier: The identifier as stored.
-
-    Returns:
-        A model id without its vendor prefix; an arm by its given label (else its model id, vendor dropped), its
+    :param kind: What the identifier names.
+    :ptype kind: HumanizeKind
+    :param identifier: The identifier as stored.
+    :ptype identifier: str
+    :return: A model id without its vendor prefix; an arm by its given label (else its model id, vendor dropped), its
         ``axis=level`` pairs read as words; a dimension with its underscores as spaces, but a check expression (a
         call, a comparison, a quote) as written, since it is code; a case label where it reads as a name someone
         gave (``double-charge``: one token, not a generated id, not a bare number — empty for a dump, a sentence or
         an id, so the caller names the case by number); a provider as given.
+    :rtype: str
     """
     if (kind, identifier) in HUMANIZE_OVERRIDES:
         return HUMANIZE_OVERRIDES[(kind, identifier)]
@@ -84,12 +84,12 @@ def measure_name(name: str, reader_name: str | None = None) -> str:
     A goal check's measure is named by its expression, verbatim, as a code span: never humanized and never "Pass rate
     of", since a single trial's failure has no rate. Any other measure by its reader name, else its key humanized.
 
-    Args:
-        name: The measure's key.
-        reader_name: Its reader-facing name, when the catalog carries one.
-
-    Returns:
-        The name.
+    :param name: The measure's key.
+    :ptype name: str
+    :param reader_name: Its reader-facing name, when the catalog carries one.
+    :ptype reader_name: str | None
+    :return: The name.
+    :rtype: str
     """
     if (check := goal_check_of(name)) is not None:
         return code(check)
@@ -121,12 +121,12 @@ class ArmName:
 def arm_name(display: str, *, control: bool = False) -> ArmName:
     """Read an arm's display (``model=deepseek-v4.1-flash (production)``, ``candidate=v1``) as an :class:`ArmName`.
 
-    Args:
-        display: The arm's name as :func:`~threetears.evals.analysis.arms.arm_names` spells it.
-        control: Whether it is the control.
-
-    Returns:
-        The arm's given label and model, never as ``key=value``.
+    :param display: The arm's name as :func:`~threetears.evals.analysis.arms.arm_names` spells it.
+    :ptype display: str
+    :param control: Whether it is the control.
+    :ptype control: bool
+    :return: The arm's given label and model, never as ``key=value``.
+    :rtype: ArmName
     """
     pairs = [_PAIR.match(part.strip()) for part in display.split(", ")]
     if len(pairs) > 1 and all(pairs):
@@ -277,13 +277,14 @@ def sentences(text: str) -> list[str]:
 def lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]:
     """Every rule ``text`` breaks.
 
-    Args:
-        text: A sentence, a paragraph or a header.
-        question: The declared question; a sentence of it repeated verbatim is a violation.
-        header: Whether ``text`` is a header, held to :data:`MAX_HEADER_WORDS` words.
-
-    Returns:
-        The violations, in the order found; empty when the text passes.
+    :param text: A sentence, a paragraph or a header.
+    :ptype text: str
+    :param question: The declared question; a sentence of it repeated verbatim is a violation.
+    :ptype question: str | None
+    :param header: Whether ``text`` is a header, held to :data:`MAX_HEADER_WORDS` words.
+    :ptype header: bool
+    :return: The violations, in the order found; empty when the text passes.
+    :rtype: list[StyleViolation]
     """
     found: list[StyleViolation] = []
     lowered = text.casefold()
@@ -318,12 +319,12 @@ def fix_prose(text: str, *, question: str | None = None) -> tuple[str, list[Styl
 
     A sentence carrying a banned phrase or repeating the declared question is meta-prose or a hedge: it goes.
 
-    Args:
-        text: Prose a model wrote.
-        question: The declared question.
-
-    Returns:
-        ``(fixed, remaining)``: the kept sentences, and the violations they still carry.
+    :param text: Prose a model wrote.
+    :ptype text: str
+    :param question: The declared question.
+    :ptype question: str | None
+    :return: ``(fixed, remaining)``: the kept sentences, and the violations they still carry.
+    :rtype: tuple[str, list[StyleViolation]]
     """
     kept = [
         sentence
@@ -341,13 +342,14 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
     blocks, folded trial details, the methods' disclosures fold and a line quoting something whole (the declared
     question under the title) are data and quoted text, not prose.
 
-    Args:
-        markdown: The page.
-        question: The declared question, which only its own quoted line may carry.
-        names: The arms' names, which head a column as a name, not a header's words.
-
-    Returns:
-        The violations, in page order.
+    :param markdown: The page.
+    :ptype markdown: str
+    :param question: The declared question, which only its own quoted line may carry.
+    :ptype question: str | None
+    :param names: The arms' names, which head a column as a name, not a header's words.
+    :ptype names: Collection[str]
+    :return: The violations, in page order.
+    :rtype: list[StyleViolation]
     """
     found: list[StyleViolation] = []
     fenced = False

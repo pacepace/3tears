@@ -71,16 +71,15 @@ __all__ = [
 class FidelityContract:
     """One shared construction path and the callers required to reach it.
 
-    Attributes:
-        behavior: Unique name for the path. A behavior with more than one shared
-            constructor registers one contract per constructor, dotted
-            (``"relevance_classifier.call"``).
-        constructor: Dotted path to the single function that builds the payload.
-        callers: Dotted module paths that must reach ``constructor``. Production
-            first, by convention, so a reader sees which side is the reference.
-        why: One line naming what breaks when they diverge. Not decoration —
-            it is what tells a later reader whether a proposed refactor is
-            allowed to split the path.
+    :ivar behavior: Unique name for the path. A behavior with more than one shared
+        constructor registers one contract per constructor, dotted
+        (``"relevance_classifier.call"``).
+    :ivar constructor: Dotted path to the single function that builds the payload.
+    :ivar callers: Dotted module paths that must reach ``constructor``. Production
+        first, by convention, so a reader sees which side is the reference.
+    :ivar why: One line naming what breaks when they diverge. Not decoration —
+        it is what tells a later reader whether a proposed refactor is
+        allowed to split the path.
     """
 
     behavior: str
@@ -95,15 +94,13 @@ def contract_for(contracts: tuple[FidelityContract, ...], behavior: str) -> Fide
     The registry is a parameter rather than a module global: it is the host's
     data, and this module is the part a second host inherits unchanged.
 
-    Args:
-        contracts: The host's registry.
-        behavior: The contract's ``behavior``.
-
-    Returns:
-        The contract.
-
-    Raises:
-        KeyError: When no contract carries that name.
+    :param contracts: The host's registry.
+    :ptype contracts: tuple[FidelityContract, ...]
+    :param behavior: The contract's ``behavior``.
+    :ptype behavior: str
+    :return: The contract.
+    :rtype: FidelityContract
+    :raises KeyError: When no contract carries that name.
     """
     for contract in contracts:
         if contract.behavior == behavior:
@@ -121,16 +118,13 @@ def resolve_constructor(contract: FidelityContract) -> object:
     prefix split would have to guess, and guessing wrong reports a missing module for a
     constructor that is present.
 
-    Args:
-        contract: The contract.
-
-    Returns:
-        The constructor object.
-
-    Raises:
-        ImportError: When no prefix of the path imports as a module, or when a module on the
-            path exists and fails to import.
-        AttributeError: When the remaining segments are not attributes of it.
+    :param contract: The contract.
+    :ptype contract: FidelityContract
+    :return: The constructor object.
+    :rtype: object
+    :raises ImportError: When no prefix of the path imports as a module, or when a module on the
+        path exists and fails to import.
+    :raises AttributeError: When the remaining segments are not attributes of it.
     """
     module, attributes = _split_at_module_boundary(contract.constructor)
     resolved: object = module
@@ -147,16 +141,13 @@ def _split_at_module_boundary(constructor: str) -> tuple[object, list[str]]:
     module-level function, or a method on a class? — and a second answer is how the two
     come to disagree about what a caller must reference.
 
-    Args:
-        constructor: The contract's dotted constructor path.
-
-    Returns:
-        ``(module, attribute_parts)``: the deepest importable module on the path, and the
+    :param constructor: The contract's dotted constructor path.
+    :ptype constructor: str
+    :return: ``(module, attribute_parts)``: the deepest importable module on the path, and the
         segments below it. One part is a module-level function; two is a method on a class.
-
-    Raises:
-        ImportError: When no prefix of the path imports as a module, or when a module on the
-            path exists and fails to import.
+    :rtype: tuple[object, list[str]]
+    :raises ImportError: When no prefix of the path imports as a module, or when a module on the
+        path exists and fails to import.
     """
     parts = constructor.split(".")
     for cut in range(len(parts) - 1, 0, -1):
@@ -193,11 +184,10 @@ def _referenced_names(source: str) -> set[str]:
     (``build = ...``) are not uses either. An AST walk rather than a substring search, so a
     name inside a comment or a docstring does not count as reaching it.
 
-    Args:
-        source: Python source text.
-
-    Returns:
-        The identifiers referenced.
+    :param source: Python source text.
+    :ptype source: str
+    :return: The identifiers referenced.
+    :rtype: set[str]
     """
     names: set[str] = set()
     for node in ast.walk(ast.parse(source)):
@@ -227,11 +217,10 @@ def _attribute_chain(node: ast.Attribute) -> str | None:
     expression is still matched by a contract that names a module-level function, and only
     a METHOD contract — which is asking a stricter question on purpose — declines it.
 
-    Args:
-        node: The attribute node.
-
-    Returns:
-        The dotted chain, or ``None`` when the head is not a bare name.
+    :param node: The attribute node.
+    :ptype node: ast.Attribute
+    :return: The dotted chain, or ``None`` when the head is not a bare name.
+    :rtype: str | None
     """
     parts = [node.attr]
     current: ast.expr = node.value
@@ -261,17 +250,14 @@ def callers_missing_the_constructor(contract: FidelityContract) -> list[str]:
     fidelity contract is a claim about ONE shared construction path and a path whose
     receiver the walk cannot identify is not one an AST canary can vouch for.
 
-    Args:
-        contract: The contract to check.
-
-    Returns:
-        The dotted module paths that fail, in declaration order. Empty when
+    :param contract: The contract to check.
+    :ptype contract: FidelityContract
+    :return: The dotted module paths that fail, in declaration order. Empty when
         every caller still references the constructor. A caller whose source
         cannot be located fails too — an unlocatable caller is not a proven one.
-
-    Raises:
-        ImportError: When the constructor's own module path does not import — a contract
-            whose constructor is gone is a broken contract, not a set of missing callers.
+    :rtype: list[str]
+    :raises ImportError: When the constructor's own module path does not import — a contract
+        whose constructor is gone is a broken contract, not a set of missing callers.
     """
     module, attributes = _split_at_module_boundary(contract.constructor)
     defining_module = getattr(module, "__name__", "")

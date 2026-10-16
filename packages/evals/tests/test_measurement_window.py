@@ -137,12 +137,12 @@ class _WindowStorage:
     ) -> list[EvalRun]:
         """Return the seeded runs in the scope, filtered by status as the real store does.
 
-        Args:
-            scope_id: Partition key.
-            status: Optional run-status filter.
-
-        Returns:
-            The matching runs.
+        :param scope_id: Partition key.
+        :ptype scope_id: str
+        :param status: Optional run-status filter.
+        :ptype status: str | None
+        :return: The matching runs.
+        :rtype: list[EvalRun]
         """
         return as_listed(
             [r for r in self._runs if r.scope_id == scope_id and (not status or r.status == status)],
@@ -152,11 +152,10 @@ class _WindowStorage:
     def query_eval_results(self, scope_id: str) -> list[EvalResult]:
         """Return the seeded results in the scope.
 
-        Args:
-            scope_id: Partition key.
-
-        Returns:
-            The matching results.
+        :param scope_id: Partition key.
+        :ptype scope_id: str
+        :return: The matching results.
+        :rtype: list[EvalResult]
         """
         return [r for r in self._results if r.scope_id == scope_id]
 

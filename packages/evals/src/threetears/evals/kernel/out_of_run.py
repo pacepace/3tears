@@ -100,10 +100,9 @@ class AdmittedGeneration:
     refused before the launch returns, and its launcher only makes the calls. A host generating outside a launch
     plans with :func:`plan_variation_calls`, admits with :meth:`OutOfRunBudget.admit`, and builds one the same way.
 
-    Attributes:
-        writer: The client every call was priced on and is made on — the very object.
-        budget: The budget that admitted the calls.
-        calls: Each ``llm`` axis's admitted call, by axis name.
+    :ivar writer: The client every call was priced on and is made on — the very object.
+    :ivar budget: The budget that admitted the calls.
+    :ivar calls: Each ``llm`` axis's admitted call, by axis name.
     """
 
     writer: VariationLLM
@@ -114,12 +113,12 @@ class AdmittedGeneration:
 def existing_axis_values(axis: VariationAxis, existing: Sequence[EvalTestCase]) -> set[str]:
     """The values a template's stored cases already give ``axis`` — what its generation call asks the model to avoid.
 
-    Args:
-        axis: The variation axis.
-        existing: The template's stored cases in the scope being generated into.
-
-    Returns:
-        The non-empty values those cases carry for the axis.
+    :param axis: The variation axis.
+    :ptype axis: VariationAxis
+    :param existing: The template's stored cases in the scope being generated into.
+    :ptype existing: Sequence[EvalTestCase]
+    :return: The non-empty values those cases carry for the axis.
+    :rtype: set[str]
     """
     return {tc.variation_params.get(axis.name, "") for tc in existing if tc.variation_params.get(axis.name)}
 
@@ -127,19 +126,21 @@ def existing_axis_values(axis: VariationAxis, existing: Sequence[EvalTestCase]) 
 def plan_variation_calls(
     template: EvalTemplate, n_variations: int, existing: Sequence[EvalTestCase]
 ) -> dict[str, PlannedCall]:
-    """The one call each of ``template``'s ``llm`` axes makes to generate ``n_variations`` values, built before any is made.
+    """The one call each of ``template``'s ``llm`` axes makes to generate ``n_variations`` values, built before any is
+    made.
 
     Each call asks for ``{"values": [...]}`` as a strict schema — an object envelope, since no structured mode
     takes a bare top-level array — naming the values the template's stored cases already give the axis, so the
     model avoids them.
 
-    Args:
-        template: The template whose ``llm`` axes are written.
-        n_variations: How many values each axis is asked for.
-        existing: The template's stored cases in the scope being generated into.
-
-    Returns:
-        One planned call per ``llm`` axis, keyed by axis name in declaration order; empty when no axis is ``llm``.
+    :param template: The template whose ``llm`` axes are written.
+    :ptype template: EvalTemplate
+    :param n_variations: How many values each axis is asked for.
+    :ptype n_variations: int
+    :param existing: The template's stored cases in the scope being generated into.
+    :ptype existing: Sequence[EvalTestCase]
+    :return: One planned call per ``llm`` axis, keyed by axis name in declaration order; empty when no axis is ``llm``.
+    :rtype: dict[str, PlannedCall]
     """
     return {
         axis.name: _llm_axis_call(axis, n_variations, existing_axis_values(axis, existing))
@@ -202,22 +203,21 @@ class OutOfRunBudget:
     what was admitted. Admissions accumulate — a second admission is
     refused when it and every earlier one together would pass the cap.
 
-    Attributes:
-        store: Where every call's ledger row is written.
-        scope_id: The scope the work is for, which the rows live in.
-        cap_usd: The most the work's calls may be priced at, together; ``None`` when the host enforces
-            no out-of-run cap (its enforcement switched off), and then nothing is refused — every call is
-            still priced where the client can say, and ledgered.
-        template_id: The template the work is for, stamped on every row; ``None`` when it is for none.
-        subject_id: The subject the work is for, stamped on every row; ``None`` when it is for none.
-        launch_group_id: The launch a case generation is made for, stamped on every row.
-        campaign_id: The campaign an analysis generation is written for, stamped on every row.
-        run_id: The finished run a judge repeat re-scores, stamped on every row.
-        blocking_executor: Where each ledger write to ``store`` runs, off the event loop — the host's
-            ``EvalHost.blocking_executor``, or ``None`` for the loop's default executor. Keyword-only and
-            without a default, as the host's own is: a store write made on the loop stalls every
-            coroutine in the process, and the default executor is the one a host's liveness probes may
-            share, so each construction names where its writes go.
+    :ivar store: Where every call's ledger row is written.
+    :ivar scope_id: The scope the work is for, which the rows live in.
+    :ivar cap_usd: The most the work's calls may be priced at, together; ``None`` when the host enforces
+        no out-of-run cap (its enforcement switched off), and then nothing is refused — every call is
+        still priced where the client can say, and ledgered.
+    :ivar template_id: The template the work is for, stamped on every row; ``None`` when it is for none.
+    :ivar subject_id: The subject the work is for, stamped on every row; ``None`` when it is for none.
+    :ivar launch_group_id: The launch a case generation is made for, stamped on every row.
+    :ivar campaign_id: The campaign an analysis generation is written for, stamped on every row.
+    :ivar run_id: The finished run a judge repeat re-scores, stamped on every row.
+    :ivar blocking_executor: Where each ledger write to ``store`` runs, off the event loop — the host's
+        ``EvalHost.blocking_executor``, or ``None`` for the loop's default executor. Keyword-only and
+        without a default, as the host's own is: a store write made on the loop stalls every
+        coroutine in the process, and the default executor is the one a host's liveness probes may
+        share, so each construction names where its writes go.
     """
 
     store: OutOfRunSpendStore
@@ -238,8 +238,7 @@ class OutOfRunBudget:
     def __post_init__(self) -> None:
         """Refuse a cap that is not a positive, finite amount.
 
-        Raises:
-            ValueError: ``cap_usd`` is not ``None`` and not positive and finite.
+        :raises ValueError: ``cap_usd`` is not ``None`` and not positive and finite.
         """
         if self.cap_usd is not None and not (math.isfinite(self.cap_usd) and self.cap_usd > 0):
             raise ValueError(f"cap_usd must be a positive amount, or None for no enforced cap; got {self.cap_usd!r}")
@@ -268,22 +267,22 @@ class OutOfRunBudget:
     def quote(
         self, client: PricedCompletion, purpose: KnownOutOfRunPurpose, calls: Sequence[PlannedCall]
     ) -> list[float | None]:
-        """Price ``calls`` on ``client`` against what is left of the cap, refusing as :meth:`admit` would, committing nothing.
+        """Price ``calls`` on ``client`` against what is left of the cap, refusing as :meth:`admit` would, committing
+        nothing.
 
         What a pre-flight asks — a battery checking every template's generation before it launches any.
 
-        Args:
-            client: The client the calls would be made on.
-            purpose: What the calls are for.
-            calls: The calls, at least one.
-
-        Returns:
-            Each call's ceiling, in order; ``None`` where the client could not say and no cap is enforced.
-
-        Raises:
-            ValueError: ``calls`` is empty.
-            ValidationFailedError: Under an enforced cap, a call the client cannot price, or ceilings that
-                together with what is already committed pass the cap.
+        :param client: The client the calls would be made on.
+        :ptype client: PricedCompletion
+        :param purpose: What the calls are for.
+        :ptype purpose: KnownOutOfRunPurpose
+        :param calls: The calls, at least one.
+        :ptype calls: Sequence[PlannedCall]
+        :return: Each call's ceiling, in order; ``None`` where the client could not say and no cap is enforced.
+        :rtype: list[float | None]
+        :raises ValueError: ``calls`` is empty.
+        :raises ValidationFailedError: Under an enforced cap, a call the client cannot price, or ceilings that
+            together with what is already committed pass the cap.
         """
         if not calls:
             raise ValueError("an admission prices at least one call")
@@ -324,17 +323,16 @@ class OutOfRunBudget:
     ) -> list[AdmittedCall]:
         """Price ``calls`` on ``client`` and admit them together, or refuse them together before any is made.
 
-        Args:
-            client: The client the calls will be made on.
-            purpose: What the calls are for.
-            calls: The calls, at least one.
-
-        Returns:
-            One :class:`AdmittedCall` per call, in order, each to be made through :meth:`generate`.
-
-        Raises:
-            ValueError: ``calls`` is empty.
-            ValidationFailedError: See :meth:`quote`.
+        :param client: The client the calls will be made on.
+        :ptype client: PricedCompletion
+        :param purpose: What the calls are for.
+        :ptype purpose: KnownOutOfRunPurpose
+        :param calls: The calls, at least one.
+        :ptype calls: Sequence[PlannedCall]
+        :return: One :class:`AdmittedCall` per call, in order, each to be made through :meth:`generate`.
+        :rtype: list[AdmittedCall]
+        :raises ValueError: ``calls`` is empty.
+        :raises ValidationFailedError: See :meth:`quote`.
         """
         ceilings = self.quote(client, purpose, calls)
         self._committed_usd += math.fsum(c for c in ceilings if c is not None)
@@ -350,21 +348,19 @@ class OutOfRunBudget:
     async def generate(self, client: PricedCompletion, admitted: AdmittedCall) -> RecordedCompletion:
         """Make one admitted call and write its ledger row, whether it returns or raises.
 
-        Args:
-            client: The client the call was admitted on — that object.
-            admitted: The object :meth:`admit` returned for the call. Each is made once.
-
-        Returns:
-            The completion and its ledger row.
-
-        Raises:
-            ValueError: ``admitted`` is not an object this budget admitted and has not made — another budget's,
-                one already made, or a copy (its call altered after pricing or not) — or ``client`` is not the
-                client it was priced on.
-            StorageError: The ledger row could not be written for a completed call; the row is kept on
-                :attr:`unrecorded`.
-            Exception: Whatever the call raised — after its row is written, or, when that write fails too, kept on
-                :attr:`unrecorded`.
+        :param client: The client the call was admitted on — that object.
+        :ptype client: PricedCompletion
+        :param admitted: The object :meth:`admit` returned for the call. Each is made once.
+        :ptype admitted: AdmittedCall
+        :return: The completion and its ledger row.
+        :rtype: RecordedCompletion
+        :raises ValueError: ``admitted`` is not an object this budget admitted and has not made — another budget's,
+            one already made, or a copy (its call altered after pricing or not) — or ``client`` is not the
+            client it was priced on.
+        :raises StorageError: The ledger row could not be written for a completed call; the row is kept on
+            :attr:`unrecorded`.
+        :raises Exception: Whatever the call raised — after its row is written, or, when that write fails too, kept on
+            :attr:`unrecorded`.
         """
         minted = self._admitted.get(admitted.token)
         if minted is None or minted[0] is not admitted:
@@ -481,12 +477,12 @@ def _storable(admitted: AdmittedCall, reported: dict[str, Any]) -> dict[str, Any
     Validated one attribute at a time against the row's own field, so one unreadable attribute costs only
     itself and the row of a paid call is always written.
 
-    Args:
-        admitted: The call, for the log line.
-        reported: The completion's attributes, by ledger field.
-
-    Returns:
-        The attributes to store, plus ``unreadable`` naming any recorded None for that reason.
+    :param admitted: The call, for the log line.
+    :ptype admitted: AdmittedCall
+    :param reported: The completion's attributes, by ledger field.
+    :ptype reported: dict[str, Any]
+    :return: The attributes to store, plus ``unreadable`` naming any recorded None for that reason.
+    :rtype: dict[str, Any]
     """
     storable: dict[str, Any] = {}
     unreadable: list[str] = []
@@ -517,13 +513,14 @@ def _sent_settings(admitted: AdmittedCall, result: Any, unreadable: list[str]) -
     defect, is not a reason to drop the row of a paid call: it is recorded None and named in ``unreadable``, as every
     other attribute the ledger cannot hold is.
 
-    Args:
-        admitted: The call, for the log line.
-        result: The call's completion.
-        unreadable: The row's unreadable attributes so far; ``sent_settings`` is appended when it is one.
-
-    Returns:
-        The settings to store, or ``None``.
+    :param admitted: The call, for the log line.
+    :ptype admitted: AdmittedCall
+    :param result: The call's completion.
+    :ptype result: Any
+    :param unreadable: The row's unreadable attributes so far; ``sent_settings`` is appended when it is one.
+    :ptype unreadable: list[str]
+    :return: The settings to store, or ``None``.
+    :rtype: ClientRequestSettings | None
     """
     try:
         return sent_settings_of(result)

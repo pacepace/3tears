@@ -84,14 +84,16 @@ ENDING_WRITE_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 2.0, 5.0)
 def end_record[R: EvalDocumentModel](record: R, outcome: JobOutcome, detail: str | None = None, **fields: Any) -> R:
     """``record`` as it ends: its outcome, why (unless it completed), when — and any other field the ending sets.
 
-    Args:
-        record: A job record of this module's shape.
-        outcome: How it ended.
-        detail: Why it ended other than completed; ``None`` for a completion.
-        **fields: The ending's own fields — a report, a result, the runs a launch started.
-
-    Returns:
-        A copy carrying the ending.
+    :param record: A job record of this module's shape.
+    :ptype record: R
+    :param outcome: How it ended.
+    :ptype outcome: JobOutcome
+    :param detail: Why it ended other than completed; ``None`` for a completion.
+    :ptype detail: str | None
+    :param **fields: The ending's own fields — a report, a result, the runs a launch started.
+    :ptype fields: Any
+    :return: A copy carrying the ending.
+    :rtype: R
     """
     return record.model_copy(update={"outcome": outcome, "detail": detail, "ended_at": utc_now_iso(), **fields})
 
@@ -108,13 +110,14 @@ def leased_job_kind[R: EvalDocumentModel](
 ) -> LeasedJobKind[R]:
     """The lease machinery's reading of a record of this module's shape: ended once its outcome is not ``running``.
 
-    Args:
-        name: The job kind's name, for a message.
-        model: The record's model, declaring ``outcome``, ``detail``, ``ended_at`` and the four lease fields.
-        named_runs: The runs the record names as its own, settled with it when it is written lost; ``None`` for none.
-
-    Returns:
-        The kind, registered by its model so every store read of a record of it settles it.
+    :param name: The job kind's name, for a message.
+    :ptype name: str
+    :param model: The record's model, declaring ``outcome``, ``detail``, ``ended_at`` and the four lease fields.
+    :ptype model: type[R]
+    :param named_runs: The runs the record names as its own, settled with it when it is written lost; ``None`` for none.
+    :ptype named_runs: Callable[[R], Sequence[str]] | None
+    :return: The kind, registered by its model so every store read of a record of it settles it.
+    :rtype: LeasedJobKind[R]
     """
     return LeasedJobKind(
         name=name,
@@ -144,12 +147,16 @@ class JobRecorder[R: EvalDocumentModel]:
     ) -> None:
         """Bind the writes to the record's store.
 
-        Args:
-            store: Where the record lives.
-            executor: Where the store round-trips run; ``None`` for the loop's default executor.
-            kind: The record's type.
-            record: The record as it was started.
-            leases: The leases the record is held under: a record they have let go of takes no write from here.
+        :param store: Where the record lives.
+        :ptype store: JobRecordStore
+        :param executor: Where the store round-trips run; ``None`` for the loop's default executor.
+        :ptype executor: Executor | None
+        :param kind: The record's type.
+        :ptype kind: LeasedJobKind[R]
+        :param record: The record as it was started.
+        :ptype record: R
+        :param leases: The leases the record is held under: a record they have let go of takes no write from here.
+        :ptype leases: JobLeases | None
         """
         self._store = store
         self._executor = executor
@@ -170,19 +177,16 @@ class JobRecorder[R: EvalDocumentModel]:
     async def save(self, record: R) -> R:
         """Write ``record`` as the job's own write, carrying the stored lease and cancel fields.
 
-        Args:
-            record: The record as the job would write it.
-
-        Returns:
-            The record as written, which :attr:`record` now is.
-
-        Raises:
-            JobFenced: The stored record has ended — written lost, by a reader that found the lease lapsed or by a
-                shutdown — or this process let go of its lease, so the job writes nothing more.
-            ConflictError: Every attempt lost its race.
-            StorageError: A read or write failed.
-            asyncio.CancelledError: The job was cancelled while the write ran. The write still finished, and
-                :attr:`record` is what it wrote, so the cancelled ending starts from it.
+        :param record: The record as the job would write it.
+        :ptype record: R
+        :return: The record as written, which :attr:`record` now is.
+        :rtype: R
+        :raises JobFenced: The stored record has ended — written lost, by a reader that found the lease lapsed or by a
+            shutdown — or this process let go of its lease, so the job writes nothing more.
+        :raises ConflictError: Every attempt lost its race.
+        :raises StorageError: A read or write failed.
+        :raises asyncio.CancelledError: The job was cancelled while the write ran. The write still finished, and
+            :attr:`record` is what it wrote, so the cancelled ending starts from it.
         """
 
         def write() -> R:
@@ -210,19 +214,18 @@ class JobWork[R: EvalDocumentModel]:
     :class:`~threetears.evals.run.AdmittedLaunch` refuses a second start), and its record's first write is
     create-only, so no run writes over another's.
 
-    Attributes:
-        kind: The record's type, as the lease machinery reads it.
-        record: The record as the job starts: ``outcome`` ``running``, no lease yet (the runner grants it).
-        run: Runs the work to its end and returns the record as it ends (:func:`end_record`), writing any progress
-            through the recorder on the way. What it raises ends the job ``failed`` with the error as its detail —
-            and, for an engine refusal, its kind and status as the record's ``refusal`` — a cancel ends it
-            ``cancelled``, and a fenced write ends it as the record already says.
-        budget_s: The work's wall-clock ceiling when it runs as a job: when it runs out, the work is stopped and the
-            record ends ``timed_out``. ``None`` for work that bounds what it does itself — a launch bounds its
-            preparation and leaves its runs to their own budgets, so time its runs spend queued for a slot is never
-            counted against it.
-        discard: Releases what admission built (reserved room, admitted clients) when the work never runs: its
-            start refused, or its task cancelled before its first step. ``None`` when admission holds nothing.
+    :ivar kind: The record's type, as the lease machinery reads it.
+    :ivar record: The record as the job starts: ``outcome`` ``running``, no lease yet (the runner grants it).
+    :ivar run: Runs the work to its end and returns the record as it ends (:func:`end_record`), writing any progress
+        through the recorder on the way. What it raises ends the job ``failed`` with the error as its detail —
+        and, for an engine refusal, its kind and status as the record's ``refusal`` — a cancel ends it
+        ``cancelled``, and a fenced write ends it as the record already says.
+    :ivar budget_s: The work's wall-clock ceiling when it runs as a job: when it runs out, the work is stopped and the
+        record ends ``timed_out``. ``None`` for work that bounds what it does itself — a launch bounds its
+        preparation and leaves its runs to their own budgets, so time its runs spend queued for a slot is never
+        counted against it.
+    :ivar discard: Releases what admission built (reserved room, admitted clients) when the work never runs: its
+        start refused, or its task cancelled before its first step. ``None`` when admission holds nothing.
     """
 
     kind: LeasedJobKind[R]
@@ -235,8 +238,7 @@ class JobWork[R: EvalDocumentModel]:
     def claim(self) -> None:
         """Take the work's one run: what :func:`start_job_work` and :func:`run_job_work` do before they write anything.
 
-        Raises:
-            RuntimeError: It was already started — the caller holds work its admission priced for one run.
+        :raises RuntimeError: It was already started — the caller holds work its admission priced for one run.
         """
         if self._used:
             raise RuntimeError(f"{self.kind.name} job {self.record_id!r} was already started; admitted work runs once")
@@ -265,15 +267,16 @@ async def _run_to_end[R: EvalDocumentModel](
 ) -> R:
     """Run ``work`` and write its ending — completed, failed, cancelled or timed out — whatever the work did.
 
-    Args:
-        work: The admitted work.
-        recorder: Its record's writes.
-        deadline: What bounds the work by its ``budget_s`` — entered here, around the work alone, so a budget that
-            fires is caught here and the record says ``timed_out``; a deadline entered around this whole frame
-            would reach it as a cancel. ``None`` runs the work unbounded (the foreground form).
-
-    Returns:
-        The record as it ended; as last written when the record was fenced off (written lost elsewhere).
+    :param work: The admitted work.
+    :ptype work: JobWork[R]
+    :param recorder: Its record's writes.
+    :ptype recorder: JobRecorder[R]
+    :param deadline: What bounds the work by its ``budget_s`` — entered here, around the work alone, so a budget that
+        fires is caught here and the record says ``timed_out``; a deadline entered around this whole frame
+        would reach it as a cancel. ``None`` runs the work unbounded (the foreground form).
+    :ptype deadline: JobTimeoutFactory | None
+    :return: The record as it ended; as last written when the record was fenced off (written lost elsewhere).
+    :rtype: R
     """
     record_id, scope_id, name = work.record_id, work.scope_id, work.kind.name
     try:
@@ -324,12 +327,10 @@ async def _write_ending[R: EvalDocumentModel](
     cancel arriving while it waits — leaves the record to read lost once its lease lapses, and the ending it would
     have written is logged at ERROR in full, so what the job paid for can be recovered from the log.
 
-    Returns:
-        The record as written; ``ended`` itself when no attempt was, so a foreground caller still holds the result.
-
-    Raises:
-        JobFenced: The record ended elsewhere first; nothing was written.
-        asyncio.CancelledError: Cancelled while waiting to try again; the ending was logged.
+    :return: The record as written; ``ended`` itself when no attempt was, so a foreground caller still holds the result.
+    :rtype: R
+    :raises JobFenced: The record ended elsewhere first; nothing was written.
+    :raises asyncio.CancelledError: Cancelled while waiting to try again; the ending was logged.
     """
     delays = iter(ENDING_WRITE_RETRY_DELAYS_S)
     attempt = 0
@@ -402,22 +403,23 @@ async def start_job_work[R: EvalDocumentModel](
 ) -> R:
     """Write the work's record, leased, and run the work as a background job the manager tracks.
 
-    Args:
-        manager: The process's job manager; it must hold leases.
-        work: The admitted work.
-        store: Where the record lives — the store the manager's leases renew it in.
-        executor: Where the store round-trips run.
-        key: An exclusivity key: while a job holding it is live, this start is refused. ``None`` for none.
-
-    Returns:
-        The record as started.
-
-    Raises:
-        ValueError: The manager holds no leases — its job could be read lost by every other process at once.
-        RuntimeError: The work was already started; nothing was written.
-        ConflictError: A live job holds ``key``; the record is written ``failed`` and admission's holdings released.
-            Or a record is already stored under the work's id; it is left as it is.
-        StorageError: The record could not be written; nothing started.
+    :param manager: The process's job manager; it must hold leases.
+    :ptype manager: EvalJobManager
+    :param work: The admitted work.
+    :ptype work: JobWork[R]
+    :param store: Where the record lives — the store the manager's leases renew it in.
+    :ptype store: JobRecordStore
+    :param executor: Where the store round-trips run.
+    :ptype executor: Executor | None
+    :param key: An exclusivity key: while a job holding it is live, this start is refused. ``None`` for none.
+    :ptype key: str | None
+    :return: The record as started.
+    :rtype: R
+    :raises ValueError: The manager holds no leases — its job could be read lost by every other process at once.
+    :raises RuntimeError: The work was already started; nothing was written.
+    :raises ConflictError: A live job holds ``key``; the record is written ``failed`` and admission's holdings released.
+        Or a record is already stored under the work's id; it is left as it is.
+    :raises StorageError: The record could not be written; nothing started.
     """
     leases = manager.leases
     if leases is None:
@@ -466,21 +468,21 @@ async def run_job_work[R: EvalDocumentModel](
     (:func:`~threetears.evals.kernel.running_job` stays the caller's), because it is not one: it is for a caller
     that is not a transport — a script, the command line — and waits as long as the work takes.
 
-    Args:
-        work: The admitted work.
-        store: Where the record lives.
-        executor: Where the store round-trips run.
-        leases: The leases the record is held under while the work runs.
-
-    Returns:
-        The record as it ended.
-
-    Raises:
-        asyncio.CancelledError: The caller was cancelled, or a cancel was asked on the record; it is written
-            ``cancelled`` first.
-        RuntimeError: The work was already started; nothing was written.
-        ConflictError: A record is already stored under the work's id; it is left as it is, and nothing ran.
-        StorageError: The record could not be written as it started; nothing ran.
+    :param work: The admitted work.
+    :ptype work: JobWork[R]
+    :param store: Where the record lives.
+    :ptype store: JobRecordStore
+    :param executor: Where the store round-trips run.
+    :ptype executor: Executor | None
+    :param leases: The leases the record is held under while the work runs.
+    :ptype leases: JobLeases
+    :return: The record as it ended.
+    :rtype: R
+    :raises asyncio.CancelledError: The caller was cancelled, or a cancel was asked on the record; it is written
+        ``cancelled`` first.
+    :raises RuntimeError: The work was already started; nothing was written.
+    :raises ConflictError: A record is already stored under the work's id; it is left as it is, and nothing ran.
+    :raises StorageError: The record could not be written as it started; nothing ran.
     """
     work.claim()
     try:
@@ -570,19 +572,21 @@ def action_job_work(
     The action's handler makes its refusals and prices what it will spend first, in the call, and hands the
     spending half here as ``run``.
 
-    Args:
-        scope_id: The caller's scope, where the record lives.
-        action: The action's name.
-        run: The work: makes the calls and returns the action's typed result.
-        label: A short line naming the work.
-        budget_s: The work's wall-clock ceiling as a job. Required: no action job runs under a ceiling nobody chose.
-        discard: Releases what the handler built for ``run`` when the work never runs.
-
-    Returns:
-        The work, its record running.
-
-    Raises:
-        ValueError: ``budget_s`` is not positive.
+    :param scope_id: The caller's scope, where the record lives.
+    :ptype scope_id: str
+    :param action: The action's name.
+    :ptype action: str
+    :param run: The work: makes the calls and returns the action's typed result.
+    :ptype run: Callable[[], Awaitable[BaseModel]]
+    :param label: A short line naming the work.
+    :ptype label: str
+    :param budget_s: The work's wall-clock ceiling as a job. Required: no action job runs under a ceiling nobody chose.
+    :ptype budget_s: float
+    :param discard: Releases what the handler built for ``run`` when the work never runs.
+    :ptype discard: Callable[[], Awaitable[None]] | None
+    :return: The work, its record running.
+    :rtype: JobWork[EvalActionJob]
+    :raises ValueError: ``budget_s`` is not positive.
     """
     if not budget_s > 0:
         raise ValueError(f"an action job's budget_s must be positive; got {budget_s!r}")

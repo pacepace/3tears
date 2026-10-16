@@ -77,20 +77,21 @@ def compute_orphaned_runs(
 ) -> OrphanedRunsResult:
     """Report the runs no campaign claims, and the spend they represent.
 
-    Args:
-        runs: Every run in the scope, all statuses and including archived
-            ones — an archived run's dollars were still spent, and this view
-            reports on spend as much as on membership.
-        results: Every result in the scope; a result's ``cost_usd`` is
-            attributed to its ``eval_run_id``, matching :func:`compute_program_budget`.
-        campaign_run_id_sets: One ``run_ids`` list per campaign in the
-            scope. Taken as a list of lists rather than a pre-flattened set
-            so the campaign COUNT is derived from the same argument as the claimed
-            ids — a separately-passed count could disagree with the membership it
-            claims to describe.
-
-    Returns:
-        An :class:`OrphanedRunsResult`, rows in ``created_at`` order.
+    :param runs: Every run in the scope, all statuses and including archived
+        ones — an archived run's dollars were still spent, and this view
+        reports on spend as much as on membership.
+    :ptype runs: list[EvalRun]
+    :param results: Every result in the scope; a result's ``cost_usd`` is
+        attributed to its ``eval_run_id``, matching :func:`compute_program_budget`.
+    :ptype results: list[EvalResult]
+    :param campaign_run_id_sets: One ``run_ids`` list per campaign in the
+        scope. Taken as a list of lists rather than a pre-flattened set
+        so the campaign COUNT is derived from the same argument as the claimed
+        ids — a separately-passed count could disagree with the membership it
+        claims to describe.
+    :ptype campaign_run_id_sets: list[list[str]]
+    :return: An :class:`OrphanedRunsResult`, rows in ``created_at`` order.
+    :rtype: OrphanedRunsResult
     """
     claimed_run_ids = {run_id for run_ids in campaign_run_id_sets for run_id in run_ids}
     costs_by_run: dict[str, list[float | None]] = {}

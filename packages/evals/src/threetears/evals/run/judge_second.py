@@ -109,19 +109,18 @@ class SecondJudgeSkip(EvalBaseModel, CoreShapeModel):
 class SecondJudgeEstimate(EvalBaseModel):
     """What asking a second judge about a run would be priced at, against the cap it would be held to — no call made.
 
-    Attributes:
-        run_id: The run.
-        judge: The second judge.
-        eligible: The run's results the second judge could be asked about.
-        sampled: The results the seeded sample draws, sorted.
-        dims: The judge calls it would send, one per scored dim per sampled result.
-        max_calls: The most calls it can make: each dim's first attempt and every parse retry.
-        ceiling_usd: The most those calls can cost together, as the clients price them; ``None`` when a client
-            cannot say.
-        cap_usd: The out-of-run cap it would be held to; ``None`` when the host enforces none.
-        would_start: Whether every call would be admitted.
-        refusal: Why it would not, when it would not.
-        skipped: The run's results that could not be asked about, each with why.
+    :ivar run_id: The run.
+    :ivar judge: The second judge.
+    :ivar eligible: The run's results the second judge could be asked about.
+    :ivar sampled: The results the seeded sample draws, sorted.
+    :ivar dims: The judge calls it would send, one per scored dim per sampled result.
+    :ivar max_calls: The most calls it can make: each dim's first attempt and every parse retry.
+    :ivar ceiling_usd: The most those calls can cost together, as the clients price them; ``None`` when a client
+        cannot say.
+    :ivar cap_usd: The out-of-run cap it would be held to; ``None`` when the host enforces none.
+    :ivar would_start: Whether every call would be admitted.
+    :ivar refusal: Why it would not, when it would not.
+    :ivar skipped: The run's results that could not be asked about, each with why.
     """
 
     run_id: str
@@ -140,24 +139,24 @@ class SecondJudgeEstimate(EvalBaseModel):
 class SecondJudgeReport(EvalBaseModel, CoreShapeModel):
     """What a second judge's pass did, what it spent apart from the candidate's cost, and what it read.
 
-    Attributes:
-        run_id: The run.
-        pass_id: The pass, as every entry it recorded names it.
-        judge: The second judge.
-        sample_fraction: The share of the eligible results it drew.
-        sample_seed: The seed it drew them with.
-        eligible: The run's results it could have asked about.
-        sampled: The results the sample drew, sorted by id.
-        judged: The results a second score was recorded on, in the order they were asked.
-        scores_paired: Dims the second judge scored.
-        scores_unanswered: Dims whose call failed or answered it could not tell.
-        skipped: The run's results not asked about, each with why — decided before anything was spent.
-        unwritten: Results asked and paid for whose record did not land. Their spend is in the ledger.
-        stopped: Why the pass stopped before its last result, when it did — the account behind the judge refused a
-            call, so every later one would be refused too.
-        calls_made: Calls made, ledgered under purpose ``second_judge``, and one whose ledger row could not be written counted all the same.
-        cost_usd: What they cost together — measurement cost, never the candidate's; ``None`` when any went unpriced.
-        cap_usd: The out-of-run cap the calls were admitted under; ``None`` when the host enforces none.
+    :ivar run_id: The run.
+    :ivar pass_id: The pass, as every entry it recorded names it.
+    :ivar judge: The second judge.
+    :ivar sample_fraction: The share of the eligible results it drew.
+    :ivar sample_seed: The seed it drew them with.
+    :ivar eligible: The run's results it could have asked about.
+    :ivar sampled: The results the sample drew, sorted by id.
+    :ivar judged: The results a second score was recorded on, in the order they were asked.
+    :ivar scores_paired: Dims the second judge scored.
+    :ivar scores_unanswered: Dims whose call failed or answered it could not tell.
+    :ivar skipped: The run's results not asked about, each with why — decided before anything was spent.
+    :ivar unwritten: Results asked and paid for whose record did not land. Their spend is in the ledger.
+    :ivar stopped: Why the pass stopped before its last result, when it did — the account behind the judge refused a
+        call, so every later one would be refused too.
+    :ivar calls_made: Calls made, ledgered under purpose ``second_judge``, and one whose ledger row could not be written
+        counted all the same.
+    :ivar cost_usd: What they cost together — measurement cost, never the candidate's; ``None`` when any went unpriced.
+    :ivar cap_usd: The out-of-run cap the calls were admitted under; ``None`` when the host enforces none.
     """
 
     run_id: str
@@ -230,11 +229,10 @@ def _collect(
 ) -> _Collected:
     """Load the run and every result to ask about, refusing what cannot be asked — blocking, so off the loop.
 
-    Raises:
-        NotFoundError: No run with that id, its template, or a judge config the second judge names, does not load.
-        ValidationFailedError: The run is still running or was not judged; its judging apparatus was not recorded;
-            its judge request settings are not the ones a call sends now; the second judge is the run's own;
-            ``result_ids`` names a result not in the run; or no result can be asked about.
+    :raises NotFoundError: No run with that id, its template, or a judge config the second judge names, does not load.
+    :raises ValidationFailedError: The run is still running or was not judged; its judging apparatus was not recorded;
+        its judge request settings are not the ones a call sends now; the second judge is the run's own;
+        ``result_ids`` names a result not in the run; or no result can be asked about.
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
@@ -342,9 +340,8 @@ async def _prepare(
 
     The caller owns ``service`` and enters it, which releases every client built here.
 
-    Raises:
-        ValidationFailedError: ``sample_fraction`` is outside ``(0, 1]``, or :func:`_collect` refuses the run.
-        ValueError: The host supplies no completion clients.
+    :raises ValidationFailedError: ``sample_fraction`` is outside ``(0, 1]``, or :func:`_collect` refuses the run.
+    :raises ValueError: The host supplies no completion clients.
     """
     if not 0.0 < sample_fraction <= 1.0:
         raise ValidationFailedError(
@@ -409,23 +406,27 @@ async def estimate_second_judge(
 
     The same collection, sample, calls and admission :func:`second_judge_work` makes, so ``would_start`` is its answer.
 
-    Args:
-        host: The host: the run's store and the judge clients.
-        run_id: The finished run.
-        scope_id: The scope it lives in.
-        judge: The second judge.
-        out_of_run_cap_usd: The cap it would be held to; ``None`` when the host enforces none.
-        sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``.
-        seed: The seed the share is drawn with.
-        result_ids: The results to draw from; ``None`` for every result of the run.
-
-    Returns:
-        The estimate.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The run cannot be asked about (see :func:`second_judge_work`).
-        ValueError: The host supplies no completion clients.
+    :param host: The host: the run's store and the judge clients.
+    :ptype host: EvalHost
+    :param run_id: The finished run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param judge: The second judge.
+    :ptype judge: SecondJudge
+    :param out_of_run_cap_usd: The cap it would be held to; ``None`` when the host enforces none.
+    :ptype out_of_run_cap_usd: float | None
+    :param sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``.
+    :ptype sample_fraction: float
+    :param seed: The seed the share is drawn with.
+    :ptype seed: int
+    :param result_ids: The results to draw from; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :return: The estimate.
+    :rtype: SecondJudgeEstimate
+    :raises NotFoundError: No run with that id, or a record it names does not load.
+    :raises ValidationFailedError: The run cannot be asked about (see :func:`second_judge_work`).
+    :raises ValueError: The host supplies no completion clients.
     """
     prepared = await _prepare(
         host,
@@ -552,30 +553,35 @@ async def second_judge_work(
     cost on its own line, never the candidate's. Run it as a job (:func:`~threetears.evals.run.start_job_work`) or in
     the foreground (:func:`~threetears.evals.run.run_job_work`).
 
-    Args:
-        host: The host: the run's store, its judge clients, and how a judge call that raised reads.
-        run_id: The finished run.
-        scope_id: The scope it lives in.
-        judge: The second judge: the model every dim is sent to, the prompts, the temperature.
-        out_of_run_cap_usd: The most the pass's calls may be priced at together; ``None`` when the host enforces
-            no out-of-run cap.
-        asked_by: The operation asking, recorded on the pass.
-        sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``; 1 asks about every
-            one, as a drift check does.
-        seed: The seed the share is drawn with.
-        result_ids: The results to draw from; ``None`` for every result of the run.
-
-    Returns:
-        The admitted work; its record is the pass, whose id every entry it records names.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The run is still running or was not judged; its judging apparatus was not recorded,
-            or its judge request settings are not the ones a call sends now; the second judge is the run's own; a
-            config it names asks for another dim; ``sample_fraction`` is outside ``(0, 1]``; ``result_ids`` names a
-            result outside the run; no result can be asked about; or the calls cannot be priced under the enforced
-            cap or are priced above it. All before any call.
-        ValueError: The host supplies no completion clients.
+    :param host: The host: the run's store, its judge clients, and how a judge call that raised reads.
+    :ptype host: EvalHost
+    :param run_id: The finished run.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param judge: The second judge: the model every dim is sent to, the prompts, the temperature.
+    :ptype judge: SecondJudge
+    :param out_of_run_cap_usd: The most the pass's calls may be priced at together; ``None`` when the host enforces
+        no out-of-run cap.
+    :ptype out_of_run_cap_usd: float | None
+    :param asked_by: The operation asking, recorded on the pass.
+    :ptype asked_by: SecondJudgeAskedBy
+    :param sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``; 1 asks about every
+        one, as a drift check does.
+    :ptype sample_fraction: float
+    :param seed: The seed the share is drawn with.
+    :ptype seed: int
+    :param result_ids: The results to draw from; ``None`` for every result of the run.
+    :ptype result_ids: Sequence[str] | None
+    :return: The admitted work; its record is the pass, whose id every entry it records names.
+    :rtype: JobWork[EvalSecondJudgePass]
+    :raises NotFoundError: No run with that id, or a record it names does not load.
+    :raises ValidationFailedError: The run is still running or was not judged; its judging apparatus was not recorded,
+        or its judge request settings are not the ones a call sends now; the second judge is the run's own; a
+        config it names asks for another dim; ``sample_fraction`` is outside ``(0, 1]``; ``result_ids`` names a
+        result outside the run; no result can be asked about; or the calls cannot be priced under the enforced
+        cap or are priced above it. All before any call.
+    :raises ValueError: The host supplies no completion clients.
     """
     prepared = await _prepare(
         host,
@@ -635,8 +641,8 @@ async def _ask(
 ) -> SecondJudgeReport:
     """Make an admitted pass's calls, result by result, recording each result's entry as its calls return.
 
-    Returns:
-        What was asked, and what it cost apart from the candidate.
+    :return: What was asked, and what it cost apart from the candidate.
+    :rtype: SecondJudgeReport
     """
     collected = prepared.collected
     judged: list[str] = []
@@ -744,9 +750,9 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, entry: SecondJu
     paid for and in the ledger by now, so a result that cannot be read costs this one result its record — named in
     the report's ``unwritten`` — and never the report of everything else the pass paid for.
 
-    Returns:
-        True once the entry is stored; False when the result is gone, could not be read, or every write was
+    :return: True once the entry is stored; False when the result is gone, could not be read, or every write was
         refused or failed.
+    :rtype: bool
     """
     for _ in range(_WRITE_ATTEMPTS):
         try:

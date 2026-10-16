@@ -141,13 +141,13 @@ def read_anthropic_refusal(status: int, body: object) -> SettingRefusal | None:
     which is the maximum allowed ...``, read as ``max_tokens`` with that ``limit``). Anything else (a range error, the
     credit notice Anthropic also sends as a 400) is ``None``.
 
-    Args:
-        status: The HTTP status (``anthropic.APIStatusError.status_code``).
-        body: The JSON body, parsed or as text (``anthropic.APIStatusError.body``, the whole
-            ``{"type": "error", "error": {...}}``).
-
-    Returns:
-        The refusal, or ``None``.
+    :param status: The HTTP status (``anthropic.APIStatusError.status_code``).
+    :ptype status: int
+    :param body: The JSON body, parsed or as text (``anthropic.APIStatusError.body``, the whole
+        ``{"type": "error", "error": {...}}``).
+    :ptype body: object
+    :return: The refusal, or ``None``.
+    :rtype: SettingRefusal | None
     """
     if status != 400:
         return None
@@ -191,13 +191,13 @@ def read_openai_refusal(status: int, body: object) -> SettingRefusal | None:
     of tokens, read as ``max_tokens`` with that ``limit``. Read by ``param`` and ``code``, never by the message, except
     that list and that number.
 
-    Args:
-        status: The HTTP status (``openai.APIStatusError.status_code``).
-        body: The JSON body, parsed or as text: ``{"error": {...}}`` as it arrives, or the inner error object an
-            SDK keeps (``openai.APIStatusError.body``).
-
-    Returns:
-        The refusal, or ``None``.
+    :param status: The HTTP status (``openai.APIStatusError.status_code``).
+    :ptype status: int
+    :param body: The JSON body, parsed or as text: ``{"error": {...}}`` as it arrives, or the inner error object an
+        SDK keeps (``openai.APIStatusError.body``).
+    :ptype body: object
+    :return: The refusal, or ``None``.
+    :rtype: SettingRefusal | None
     """
     if status != 400:
         return None
@@ -232,12 +232,12 @@ def read_router_refusal(status: int, body: object) -> SettingRefusal | None:
     ``error.metadata.raw`` (and its name in ``metadata.provider_name``); it is read by its own shape, OpenAI's
     (``param`` and ``code``) or else Anthropic's. Anything else, OpenRouter's own 400s included, is ``None``.
 
-    Args:
-        status: The HTTP status (``openrouter.errors.OpenRouterError.status_code`` on the SDK).
-        body: The JSON body, parsed or as text (``OpenRouterError.body`` on the SDK is the text).
-
-    Returns:
-        The refusal, or ``None``.
+    :param status: The HTTP status (``openrouter.errors.OpenRouterError.status_code`` on the SDK).
+    :ptype status: int
+    :param body: The JSON body, parsed or as text (``OpenRouterError.body`` on the SDK is the text).
+    :ptype body: object
+    :return: The refusal, or ``None``.
+    :rtype: SettingRefusal | None
     """
     error = _error(_parsed(body))
     message = _message(error)

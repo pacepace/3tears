@@ -42,11 +42,10 @@ class ExtractionClient(Protocol):
     async def extract(self, request: ExtractionRequest) -> ExtractionResult:
         """Send one request.
 
-        Args:
-            request: The request, as :func:`extraction_request` built it.
-
-        Returns:
-            The extracted fields and the call's own usage.
+        :param request: The request, as :func:`extraction_request` built it.
+        :ptype request: ExtractionRequest
+        :return: The extracted fields and the call's own usage.
+        :rtype: ExtractionResult
         """
         ...
 
@@ -54,12 +53,12 @@ class ExtractionClient(Protocol):
 def extraction_request(*, model: str, document: ToyDocument) -> ExtractionRequest:
     """Build the one request an extraction sends — the fidelity contract's constructor.
 
-    Args:
-        model: The extractor model.
-        document: The invoice to extract from.
-
-    Returns:
-        The request.
+    :param model: The extractor model.
+    :ptype model: str
+    :param document: The invoice to extract from.
+    :ptype document: ToyDocument
+    :return: The request.
+    :rtype: ExtractionRequest
     """
     fields = ", ".join(document.key)
     page = "\n".join(f"{name}: {value}" for name, value in document.key.items())
@@ -73,13 +72,14 @@ def extraction_request(*, model: str, document: ToyDocument) -> ExtractionReques
 async def extract_invoice(client: ExtractionClient, *, model: str, document: ToyDocument) -> ExtractionResult:
     """Extract one invoice, the way the product does it outside any eval.
 
-    Args:
-        client: The provider.
-        model: The extractor model.
-        document: The invoice.
-
-    Returns:
-        What the provider returned.
+    :param client: The provider.
+    :ptype client: ExtractionClient
+    :param model: The extractor model.
+    :ptype model: str
+    :param document: The invoice.
+    :ptype document: ToyDocument
+    :return: What the provider returned.
+    :rtype: ExtractionResult
     """
     return await client.extract(extraction_request(model=model, document=document))
 

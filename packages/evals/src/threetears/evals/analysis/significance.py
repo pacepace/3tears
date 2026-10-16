@@ -55,15 +55,16 @@ def significance_read(*, significant: bool | None, p: float | None = None, effec
     how much data there was, never whether a difference cleared a threshold, so
     it is not part of the predicate and is not a parameter here.
 
-    Args:
-        significant: The verdict, or ``None`` when no test was run.
-        p: The p-value the verdict was thresholded against, when one exists.
-        effect: The effect size, when one exists — paired or not, since which
-            test produced it changes what it is CALLED but not whether one ran.
-
-    Returns:
-        :data:`SIGNIFICANT_LABEL`, :data:`NOT_SIGNIFICANT_LABEL`, or
+    :param significant: The verdict, or ``None`` when no test was run.
+    :ptype significant: bool | None
+    :param p: The p-value the verdict was thresholded against, when one exists.
+    :ptype p: float | None
+    :param effect: The effect size, when one exists — paired or not, since which
+        test produced it changes what it is CALLED but not whether one ran.
+    :ptype effect: float | None
+    :return: :data:`SIGNIFICANT_LABEL`, :data:`NOT_SIGNIFICANT_LABEL`, or
         :data:`NOT_TESTED_LABEL`.
+    :rtype: str
     """
     if p is None and effect is None:
         return NOT_TESTED_LABEL
@@ -103,20 +104,24 @@ def format_significance(
     sees ``not tested (n=1)`` learns *why* nothing was tested, where a bare
     "not tested" looks like a fault in the harness.
 
-    Args:
-        significant: The verdict, or ``None`` when no test was run.
-        paired: Whether the test that produced ``effect`` paired its samples.
-            Decides only the effect size's NAME (:data:`PAIRED_EFFECT_LABEL` vs
-            :data:`UNPAIRED_EFFECT_LABEL`) — a caller must pass what actually
-            ran, not what the surface is called.
-        p: The p-value the verdict was thresholded against.
-        effect: The effect size.
-        n: The sample size the test would have run over.
-        hedges: Whether ``effect`` is Hedges' g (the engine's tests, ``hedges_g``) rather than Cohen's d (a
-            stored delta-table row's historical ``d_z``). Decides the name with ``paired``.
-
-    Returns:
-        e.g. ``"significant (p=0.0123, d_z=1.42, n=8)"`` or ``"not tested (n=1)"``.
+    :param significant: The verdict, or ``None`` when no test was run.
+    :ptype significant: bool | None
+    :param paired: Whether the test that produced ``effect`` paired its samples.
+        Decides only the effect size's NAME (:data:`PAIRED_EFFECT_LABEL` vs
+        :data:`UNPAIRED_EFFECT_LABEL`) — a caller must pass what actually
+        ran, not what the surface is called.
+    :ptype paired: bool
+    :param p: The p-value the verdict was thresholded against.
+    :ptype p: float | None
+    :param effect: The effect size.
+    :ptype effect: float | None
+    :param n: The sample size the test would have run over.
+    :ptype n: int | None
+    :param hedges: Whether ``effect`` is Hedges' g (the engine's tests, ``hedges_g``) rather than Cohen's d (a
+        stored delta-table row's historical ``d_z``). Decides the name with ``paired``.
+    :ptype hedges: bool
+    :return: e.g. ``"significant (p=0.0123, d_z=1.42, n=8)"`` or ``"not tested (n=1)"``.
+    :rtype: str
     """
     if hedges:
         effect_label = PAIRED_HEDGES_LABEL if paired else UNPAIRED_HEDGES_LABEL
@@ -155,11 +160,10 @@ def significance_disclosure(*, paired: bool) -> str:
     calibrated against human labels a flag here is not a trustworthy quality
     signal, and nothing routes it anywhere.
 
-    Args:
-        paired: Whether the comparison paired its samples by test case.
-
-    Returns:
-        The disclosure sentence.
+    :param paired: Whether the comparison paired its samples by test case.
+    :ptype paired: bool
+    :return: The disclosure sentence.
+    :rtype: str
     """
     from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
 
@@ -186,13 +190,13 @@ def cross_subject_disclosure(subject_a: str | None, subject_b: str | None) -> st
     sameness, and comparing two blanks for equality would manufacture exactly the claim this refuses,
     but a subject key cannot be blank, so the pair is not constructible.
 
-    Args:
-        subject_a: Run A's subject key.
-        subject_b: Run B's subject key.
-
-    Returns:
-        The disclosure, or ``None`` when both sides name the same subject and
+    :param subject_a: Run A's subject key.
+    :ptype subject_a: str | None
+    :param subject_b: Run B's subject key.
+    :ptype subject_b: str | None
+    :return: The disclosure, or ``None`` when both sides name the same subject and
         the composites are therefore comparable.
+    :rtype: str | None
     """
     left = (subject_a or "").strip()
     right = (subject_b or "").strip()

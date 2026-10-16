@@ -121,13 +121,14 @@ def conformance_host(
 ) -> JobsConformanceHost:
     """A fresh judged host for one conformance case, its client factory wrapped by ``guard``.
 
-    Args:
-        guard: The case's guard.
-        clients: The factory to wrap; ``None`` for a fresh :class:`ScriptedClients`.
-        store: The document store under the host; ``None`` for a fresh in-memory one.
-
-    Returns:
-        The host, the caller and the sample launch every engine happy path builds on.
+    :param guard: The case's guard.
+    :ptype guard: CompletionGuard
+    :param clients: The factory to wrap; ``None`` for a fresh :class:`ScriptedClients`.
+    :ptype clients: CompletionClients | None
+    :param store: The document store under the host; ``None`` for a fresh in-memory one.
+    :ptype store: DocumentStore | None
+    :return: The host, the caller and the sample launch every engine happy path builds on.
+    :rtype: JobsConformanceHost
     """
     factory = guard.wrap(clients if clients is not None else ScriptedClients())
     eval_host = callable_host(clients=factory, store=store)

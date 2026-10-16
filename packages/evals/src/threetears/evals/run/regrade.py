@@ -140,26 +140,29 @@ async def regrade(
     unless ``apply``; then the moved check verdicts are stored, conditional on the result as read, and the judged
     dims are asked and stored through ``rejudge_result``, in that order.
 
-    Args:
-        host: The host: the result's store, the world registry a ``state.*`` check resolves through
-            (``profile.world``), and, to apply a judged re-ask, the judge clients.
-        result_id: The stored result (one trial) to re-grade.
-        scope_id: The scope it lives in.
-        checks: Re-grade its check dims from its trace.
-        judges: Name its failed judged dims, and ask them again when applying.
-        apply: Store the new verdicts and ask the judge; ``False`` (the default) reports and spends nothing.
-
-    Returns:
-        What moved, what was left as stored and why, and whether it was written.
-
-    Raises:
-        NotFoundError: No such result, or its run, in the scope.
-        ValidationFailedError: Its run is still pending or running; or a failed judged dim's apparatus cannot be
-            reproduced from what the run recorded (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`
-            names it), before anything is written or spent; ask with ``judges=False`` to re-grade its checks alone.
-        ValueError: Applying a judged re-ask on a host that supplies no completion clients, before anything is written.
-        ConflictError: Something else wrote the result since it was read: nothing of the checks was stored. Raised by
-            the judged re-ask too, after the checks were stored.
+    :param host: The host: the result's store, the world registry a ``state.*`` check resolves through
+        (``profile.world``), and, to apply a judged re-ask, the judge clients.
+    :ptype host: EvalHost
+    :param result_id: The stored result (one trial) to re-grade.
+    :ptype result_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param checks: Re-grade its check dims from its trace.
+    :ptype checks: bool
+    :param judges: Name its failed judged dims, and ask them again when applying.
+    :ptype judges: bool
+    :param apply: Store the new verdicts and ask the judge; ``False`` (the default) reports and spends nothing.
+    :ptype apply: bool
+    :return: What moved, what was left as stored and why, and whether it was written.
+    :rtype: Regrade
+    :raises NotFoundError: No such result, or its run, in the scope.
+    :raises ValidationFailedError: Its run is still pending or running; or a failed judged dim's apparatus cannot be
+        reproduced from what the run recorded (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`
+        names it), before anything is written or spent; ask with ``judges=False`` to re-grade its checks alone.
+    :raises ValueError: Applying a judged re-ask on a host that supplies no completion clients, before anything is
+        written.
+    :raises ConflictError: Something else wrote the result since it was read: nothing of the checks was stored. Raised
+        by the judged re-ask too, after the checks were stored.
     """
     read = await run_blocking(host.blocking_executor, _read, host.storage, result_id, scope_id, judges=judges)
     result, etag, run, failed = read.result, read.etag, read.run, read.failed_judge_dims
@@ -226,9 +229,8 @@ class _Read:
 def _read(storage: EvalStorage, result_id: str, scope_id: str, *, judges: bool) -> _Read:
     """The result, its etag, its run, what its cell stored, and its failed judged dims held to reproducibility.
 
-    Raises:
-        NotFoundError: No such result or run.
-        ValidationFailedError: The run is still being written, or a failed judged dim cannot be reproduced.
+    :raises NotFoundError: No such result or run.
+    :raises ValidationFailedError: The run is still being written, or a failed judged dim cannot be reproduced.
     """
     result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
     if result is None:
@@ -265,8 +267,7 @@ def _failed_judge_dims(
 ) -> tuple[list[str], str | None]:
     """The judged dims whose judging failed, each reproducible as the run recorded it; or why there are none.
 
-    Raises:
-        ValidationFailedError: A failed dim's apparatus cannot be reproduced (the check a re-judge makes).
+    :raises ValidationFailedError: A failed dim's apparatus cannot be reproduced (the check a re-judge makes).
     """
     if result.judge_error is None:
         return [], "no judged dim failed: each holds a score or a can't-tell, or the result was not judged"
@@ -292,9 +293,9 @@ def _regrade_checks(
 ) -> list[GoalStateOutcome] | None:
     """Re-grade one result's goal checks against what its cell stored, recording each on ``report``.
 
-    Returns:
-        The outcomes to store, or ``None`` when no verdict moved, so only a moved result is rewritten. An outcome that
-        did not move is kept verbatim, detail included.
+    :return: The outcomes to store, or ``None`` when no verdict moved, so only a moved result is rewritten. An outcome
+        that did not move is kept verbatim, detail included.
+    :rtype: list[GoalStateOutcome] | None
     """
     if not result.goal_state_outcomes:
         report.checks_not_regraded = "it carries no goal-state outcomes"

@@ -254,8 +254,7 @@ class Verdict(EvalDocumentModel):
     def _the_outcome_is_its_kinds(self) -> Self:
         """Refuse an outcome of another kind, and a guardrail flag that disagrees with the kind.
 
-        Raises:
-            ValueError: The outcome is not one of the kind's, or ``guardrail`` is not ``kind == "guardrail"``.
+        :raises ValueError: The outcome is not one of the kind's, or ``guardrail`` is not ``kind == "guardrail"``.
         """
         if self.outcome not in VERDICT_OUTCOMES[self.kind]:
             raise ValueError(f"a {self.kind} verdict cannot be {self.outcome!r}")
@@ -323,8 +322,7 @@ class TextBlock(_Block):
     def _a_findings_own_words_name_it(self) -> Self:
         """Refuse a finding's title, body, caveat or carried-forward claim that names no finding.
 
-        Raises:
-            ValueError: A block in one of those roles has no ``finding``.
+        :raises ValueError: A block in one of those roles has no ``finding``.
         """
         if self.role in FINDING_ROLES and self.finding is None:
             raise ValueError(f"a {self.role} block belongs to a finding and names none")
@@ -344,8 +342,7 @@ class TableColumn(EvalDocumentModel):
     def _the_term_is_defined(self) -> Self:
         """Refuse a link to a term the glossary does not define.
 
-        Raises:
-            ValueError: ``term`` is not a :data:`~threetears.evals.analysis.style.GLOSSARY` key.
+        :raises ValueError: ``term`` is not a :data:`~threetears.evals.analysis.style.GLOSSARY` key.
         """
         if self.term is not None and self.term not in GLOSSARY:
             raise ValueError(f"column {self.key!r} links the term {self.term!r}, which the glossary does not define")
@@ -397,8 +394,7 @@ class TableCell(EvalDocumentModel):
     def _a_unit_qualifies_a_number(self) -> Self:
         """Refuse a unit on anything but a number.
 
-        Raises:
-            ValueError: ``unit`` is set and ``value`` is not a number.
+        :raises ValueError: ``unit`` is set and ``value`` is not a number.
         """
         if self.unit and not self.is_number:
             raise ValueError(f"a cell's unit qualifies a number, and this cell holds {self.value!r}")
@@ -408,9 +404,8 @@ class TableCell(EvalDocumentModel):
     def _an_interval_brackets_a_number(self) -> Self:
         """Refuse an interval with one end, on anything but a number, or running backwards, and a margin alone.
 
-        Raises:
-            ValueError: ``low`` and ``high`` are not both set or both absent, the cell holds no number, ``low`` is
-                above ``high``, or ``margin`` is set with no interval.
+        :raises ValueError: ``low`` and ``high`` are not both set or both absent, the cell holds no number, ``low`` is
+            above ``high``, or ``margin`` is set with no interval.
         """
         if (self.low is None) != (self.high is None):
             raise ValueError("a cell's interval has two ends, and this cell sets one")
@@ -441,11 +436,10 @@ class TableCell(EvalDocumentModel):
 def table_row(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
     """A table row from its values, each made a :class:`TableCell`.
 
-    Args:
-        values: The row's values, by column key.
-
-    Returns:
-        The row's cells, by the same keys, in the same order.
+    :param values: The row's values, by column key.
+    :ptype values: Mapping[str, CellValue]
+    :return: The row's cells, by the same keys, in the same order.
+    :rtype: dict[str, TableCell]
     """
     return {key: TableCell(value=value) for key, value in values.items()}
 
@@ -475,8 +469,7 @@ class TableBlock(_Block):
     def _rows_fit_the_table(self) -> Self:
         """Refuse a table showing more rows than it has, or a row keying other columns than the table's.
 
-        Raises:
-            ValueError: ``total_rows`` is below the rows shown, or a row's keys are not exactly the columns'.
+        :raises ValueError: ``total_rows`` is below the rows shown, or a row's keys are not exactly the columns'.
         """
         if self.total_rows < len(self.rows):
             raise ValueError(f"table {self.name!r} shows {len(self.rows)} rows but says it has {self.total_rows}")
@@ -488,8 +481,8 @@ class TableBlock(_Block):
     def values(self) -> list[dict[str, CellValue]]:
         """The rows shown as their values alone — what a program reads a table for.
 
-        Returns:
-            One mapping per row, in the stated order, each column key to its cell's value.
+        :return: One mapping per row, in the stated order, each column key to its cell's value.
+        :rtype: list[dict[str, CellValue]]
         """
         return [{key: cell.value for key, cell in row.items()} for row in self.rows]
 
@@ -532,8 +525,7 @@ class IntervalRow(EvalDocumentModel):
     def _the_interval_holds_the_value(self) -> Self:
         """Refuse an interval that runs backwards.
 
-        Raises:
-            ValueError: ``low`` is above ``high``.
+        :raises ValueError: ``low`` is above ``high``.
         """
         if self.low > self.high:
             raise ValueError(f"row {self.label!r}: its interval runs from {self.low} down to {self.high}")
@@ -558,8 +550,7 @@ class ChartBlock(_Block):
     def _draws_what_its_kind_draws(self) -> Self:
         """Refuse a chart with nothing to draw, or one carrying the other kind's marks.
 
-        Raises:
-            ValueError: An outcome bar with rows or no bar, or an interval chart with bars or no row.
+        :raises ValueError: An outcome bar with rows or no bar, or an interval chart with bars or no row.
         """
         if self.chart == "outcome_bar" and (self.rows or not self.bars):
             raise ValueError("an outcome bar draws one bar per arm and no interval row")
@@ -570,8 +561,8 @@ class ChartBlock(_Block):
     def values_table(self) -> tuple[list[str], list[list[str]]]:
         """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture.
 
-        Returns:
-            ``(headers, rows)``, each row's cells as text.
+        :return: ``(headers, rows)``, each row's cells as text.
+        :rtype: tuple[list[str], list[list[str]]]
         """
         if self.chart == "outcome_bar":
             labels = list(dict.fromkeys(segment.label for bar in self.bars for segment in bar.segments))
@@ -681,11 +672,10 @@ class DisclosureBlock(_Block):
     def verdict_tone(rule: str) -> Literal["decided", "open", "failed", "summary"]:
         """The tone a verdict line is set in, by the rule that wrote it.
 
-        Args:
-            rule: The rule, as :func:`~threetears.evals.analysis.report.verdict.verdict_line` names it.
-
-        Returns:
-            The tone.
+        :param rule: The rule, as :func:`~threetears.evals.analysis.report.verdict.verdict_line` names it.
+        :ptype rule: str
+        :return: The tone.
+        :rtype: Literal['decided', 'open', 'failed', 'summary']
         """
         return _VERDICT_TONES[rule]
 
@@ -693,8 +683,7 @@ class DisclosureBlock(_Block):
     def _the_term_is_defined(self) -> Self:
         """Refuse a link to a term the glossary does not define.
 
-        Raises:
-            ValueError: ``term`` is not a :data:`~threetears.evals.analysis.style.GLOSSARY` key.
+        :raises ValueError: ``term`` is not a :data:`~threetears.evals.analysis.style.GLOSSARY` key.
         """
         if self.term is not None and self.term not in GLOSSARY:
             raise ValueError(f"a disclosure links the term {self.term!r}, which the glossary does not define")
@@ -704,8 +693,7 @@ class DisclosureBlock(_Block):
     def _the_tone_is_the_verdicts(self) -> Self:
         """Refuse a tone on any line but the verdict's.
 
-        Raises:
-            ValueError: ``tone`` is set and ``source`` is not ``verdict``.
+        :raises ValueError: ``tone`` is set and ``source`` is not ``verdict``.
         """
         if self.tone is not None and self.source != "verdict":
             raise ValueError(f"a tone sets the verdict line apart, and this disclosure speaks for {self.source!r}")
@@ -769,8 +757,7 @@ class Report(EvalDocumentModel):
     def _positions_point_at_findings(self) -> Self:
         """Refuse a block linked to a finding the report does not hold.
 
-        Raises:
-            ValueError: A block's ``finding`` or ``rests_on`` names a position past ``finding_count``.
+        :raises ValueError: A block's ``finding`` or ``rests_on`` names a position past ``finding_count``.
         """
         for index, block in enumerate(self.blocks):
             named = ([block.finding] if block.finding is not None else []) + list(block.rests_on)
@@ -785,9 +772,8 @@ class Report(EvalDocumentModel):
     def _the_basis_matches_what_the_report_holds(self) -> Self:
         """Refuse a report whose basis disagrees with its source or its blocks.
 
-        Raises:
-            ValueError: An analysis report names no analysis or model, or a code-only report names one or holds a
-                finding or an author's words.
+        :raises ValueError: An analysis report names no analysis or model, or a code-only report names one or holds a
+            finding or an author's words.
         """
         source = self.source
         if self.basis == "analysis":
@@ -841,11 +827,10 @@ class Report(EvalDocumentModel):
         bundle with its ``schema_version``, so the fingerprint the page names is the one a reader computes from the
         file (``AnalysisContextBundle.from_json(...).fingerprint()``). ``report.md`` is the same page as Markdown.
 
-        Args:
-            out_dir: The directory; created when missing.
-
-        Returns:
-            Each file written, by role.
+        :param out_dir: The directory; created when missing.
+        :ptype out_dir: Path | str
+        :return: Each file written, by role.
+        :rtype: dict[ReportFile, Path]
         """
         # Deferred: the serializers import this module for the block types they lay out.
         from threetears.evals.analysis.report.serialize_html import report_html

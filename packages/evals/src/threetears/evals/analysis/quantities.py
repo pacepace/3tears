@@ -51,16 +51,17 @@ def display_scale(values: Sequence[float], unit: str | None, *, share: bool = Fa
     table (:mod:`threetears.evals.analysis.report.figures`) chooses each measure's unit here, once,
     for every surface that renders it.
 
-    Args:
-        values: Every value the chart will draw in this unit.
-        unit: The payload's declared unit, or ``None`` when it carried none.
-        share: Whether a unitless quantity is a share on 0–1 — a rate — which is stated as a percent.
-
-    Returns:
-        ``(factor, unit)`` — multiply each value by the factor and label the axis
+    :param values: Every value the chart will draw in this unit.
+    :ptype values: Sequence[float]
+    :param unit: The payload's declared unit, or ``None`` when it carried none.
+    :ptype unit: str | None
+    :param share: Whether a unitless quantity is a share on 0–1 — a rate — which is stated as a percent.
+    :ptype share: bool
+    :return: ``(factor, unit)`` — multiply each value by the factor and label the axis
         with the unit. ``(100.0, "%")`` for a share. ``(1.0, "")`` when no unit was declared: a quantity whose
         unit is unknown is drawn as it was given and labelled by its measure's
         name alone, because restating an unknown unit would be inventing one.
+    :rtype: tuple[float, str]
     """
     if not unit:
         return (100.0, PERCENT) if share else (1.0, "")

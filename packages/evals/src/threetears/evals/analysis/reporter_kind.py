@@ -112,16 +112,20 @@ def reporter_cell_timeout_s(
     are parameters too: they belong to the judge, which the run package owns, and analysis imports
     nothing from run.
 
-    Args:
-        judge_dims: Rubric dimensions the run's judge scores on each cell.
-        judge_concurrency: Judge requests in flight at once.
-        generator_max_tokens: The generator's output cap, as its clients are built with.
-        judge_call_attempts: Requests one judge dimension can make, its parse retries included.
-        judge_max_tokens: The judge's output cap, as its requests are built with.
-        request_s: The host's ceiling for one request on its client, by output cap.
-
-    Returns:
-        The cell ceiling in seconds: the generation's ceiling plus the judge phase's.
+    :param judge_dims: Rubric dimensions the run's judge scores on each cell.
+    :ptype judge_dims: int
+    :param judge_concurrency: Judge requests in flight at once.
+    :ptype judge_concurrency: int
+    :param generator_max_tokens: The generator's output cap, as its clients are built with.
+    :ptype generator_max_tokens: int
+    :param judge_call_attempts: Requests one judge dimension can make, its parse retries included.
+    :ptype judge_call_attempts: int
+    :param judge_max_tokens: The judge's output cap, as its requests are built with.
+    :ptype judge_max_tokens: int
+    :param request_s: The host's ceiling for one request on its client, by output cap.
+    :ptype request_s: RequestCeiling
+    :return: The cell ceiling in seconds: the generation's ceiling plus the judge phase's.
+    :rtype: float
     """
     generation_s = generation_ceiling_s(request_s=request_s, generator_max_tokens=generator_max_tokens)
     judging_s = judge_phase_ceiling_s(
@@ -170,11 +174,10 @@ class LabelCriterion(BaseModel):
     def of(cls, dim: RubricDim) -> LabelCriterion:
         """Copy the criterion a rubric dimension states.
 
-        Args:
-            dim: The template's dimension.
-
-        Returns:
-            Its description, scale and scoring guide.
+        :param dim: The template's dimension.
+        :ptype dim: RubricDim
+        :return: Its description, scale and scoring guide.
+        :rtype: LabelCriterion
         """
         return cls(description=dim.description, scale=dim.scale, scoring_guide=dict(dim.scoring_guide))
 
@@ -311,13 +314,13 @@ def message_check(writer_message: str, recorded_digest: str) -> WriterMessageChe
     The one comparison: the freeze calls it before the case exists (its answer decides a limit) and
     :func:`writer_message_check` calls it on a stored case, so the two cannot disagree.
 
-    Args:
-        writer_message: The message the case freezes.
-        recorded_digest: ``GenerationProvenance.user_message_digest`` of the recorded memo's analysis.
-
-    Returns:
-        ``verified`` when the message digests to what the generation recorded, ``differs`` when it
+    :param writer_message: The message the case freezes.
+    :ptype writer_message: str
+    :param recorded_digest: ``GenerationProvenance.user_message_digest`` of the recorded memo's analysis.
+    :ptype recorded_digest: str
+    :return: ``verified`` when the message digests to what the generation recorded, ``differs`` when it
         does not.
+    :rtype: WriterMessageCheck
     """
     return "verified" if user_message_digest(writer_message) == recorded_digest else "differs"
 
@@ -330,11 +333,10 @@ def writer_message_check(case: ReporterCase) -> WriterMessageCheck | None:
     settles both at once: ``verified`` means byte-identical, and ``differs`` means the memo is judged
     against a message its writer never read. A differing freeze is not refused — ``limits`` states it.
 
-    Args:
-        case: The stored case.
-
-    Returns:
-        The check's answer, or ``None`` when the case pins no memo and there is nothing to check.
+    :param case: The stored case.
+    :ptype case: ReporterCase
+    :return: The check's answer, or ``None`` when the case pins no memo and there is nothing to check.
+    :rtype: WriterMessageCheck | None
     """
     if case.writer_message is None or case.recorded_writer_message_digest is None:
         return None
@@ -344,11 +346,10 @@ def writer_message_check(case: ReporterCase) -> WriterMessageCheck | None:
 def reporter_case_payload(case: ReporterCase) -> dict[str, Any]:
     """The ``host_payload`` a reporter ``EvalTestCase`` carries.
 
-    Args:
-        case: The case to store.
-
-    Returns:
-        The payload, keyed so :func:`reporter_case_of` can read it back.
+    :param case: The case to store.
+    :ptype case: ReporterCase
+    :return: The payload, keyed so :func:`reporter_case_of` can read it back.
+    :rtype: dict[str, Any]
     """
     return {REPORTER_CASE_KEY: case.model_dump(mode="json")}
 
@@ -356,11 +357,10 @@ def reporter_case_payload(case: ReporterCase) -> dict[str, Any]:
 def reporter_case_of(test_case: EvalTestCase) -> ReporterCase | None:
     """Read a reporter case back off a stored test case.
 
-    Args:
-        test_case: Any stored case.
-
-    Returns:
-        The case, or ``None`` when this test case carries no reporter case.
+    :param test_case: Any stored case.
+    :ptype test_case: EvalTestCase
+    :return: The case, or ``None`` when this test case carries no reporter case.
+    :rtype: ReporterCase | None
     """
     payload = test_case.host_payload
     if not isinstance(payload, dict) or REPORTER_CASE_KEY not in payload:
@@ -371,14 +371,16 @@ def reporter_case_of(test_case: EvalTestCase) -> ReporterCase | None:
 def _losses(frozen: Any, rebuilt: Any, path: str, added: list[str]) -> list[str]:
     """Name every frozen value the rebuild dropped or changed, collecting the keys it only ADDED.
 
-    Args:
-        frozen: A node of the frozen document.
-        rebuilt: The same node of the rebuilt bundle's ``to_dict()``.
-        path: Where the node sits, for the message.
-        added: Receives the path of every key the rebuild has and the frozen document lacks.
-
-    Returns:
-        One entry per lost or changed value; empty when every frozen value survived.
+    :param frozen: A node of the frozen document.
+    :ptype frozen: Any
+    :param rebuilt: The same node of the rebuilt bundle's ``to_dict()``.
+    :ptype rebuilt: Any
+    :param path: Where the node sits, for the message.
+    :ptype path: str
+    :param added: Receives the path of every key the rebuild has and the frozen document lacks.
+    :ptype added: list[str]
+    :return: One entry per lost or changed value; empty when every frozen value survived.
+    :rtype: list[str]
     """
     if isinstance(frozen, dict) and isinstance(rebuilt, dict):
         losses: list[str] = []
@@ -423,19 +425,16 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
     rewritten across a change: a re-freeze would re-assemble today's evidence, which is not what
     the labels judged, so refusing the older shape would leave no way to keep the case honest. The
     frozen document never held the new field, so the rebuild can only fill it from the model's
-    own default, and every value the case pins is still there. The added fields are logged by path, and the generated analysis records the rebuilt bundle's own
-    fingerprint, so a memo generated over the wider bundle is distinguishable from one generated
-    at freeze time.
+    own default, and every value the case pins is still there. The added fields are logged by path, and the generated
+    analysis records the rebuilt bundle's own fingerprint, so a memo generated over the wider bundle is distinguishable
+    from one generated at freeze time.
 
-    Args:
-        case: The case whose frozen bundle to rebuild.
-
-    Returns:
-        The bundle, carrying every frozen value.
-
-    Raises:
-        ValueError: The frozen bundle does not validate, no longer digests to the recorded
-            fingerprint, or loses or changes a frozen value in the round-trip.
+    :param case: The case whose frozen bundle to rebuild.
+    :ptype case: ReporterCase
+    :return: The bundle, carrying every frozen value.
+    :rtype: AnalysisContextBundle
+    :raises ValueError: The frozen bundle does not validate, no longer digests to the recorded
+        fingerprint, or loses or changes a frozen value in the round-trip.
     """
     frozen_digest = evidence_digest(case.bundle)
     if frozen_digest != case.bundle_fingerprint:
@@ -478,14 +477,11 @@ def render_case_material(case: ReporterCase) -> str:
     memo is judged against this render and which against the case's frozen writer message is
     decided in one place, :func:`judge_case_material`.
 
-    Args:
-        case: The case whose frozen bundle to render.
-
-    Returns:
-        The generator's own user message over the frozen bundle.
-
-    Raises:
-        ValueError: The frozen bundle cannot be rebuilt intact (see :func:`rebuild_bundle`).
+    :param case: The case whose frozen bundle to render.
+    :ptype case: ReporterCase
+    :return: The generator's own user message over the frozen bundle.
+    :rtype: str
+    :raises ValueError: The frozen bundle cannot be rebuilt intact (see :func:`rebuild_bundle`).
     """
     return build_user_message(rebuild_bundle(case))
 
@@ -501,16 +497,14 @@ def judge_case_material(case: ReporterCase, *, generated_over: AnalysisContextBu
       then, so a recorded memo stays judgeable after a bundle change that orphans the frozen
       document for generation.
 
-    Args:
-        case: The cell's case.
-        generated_over: The bundle a generated memo was written over, or ``None`` for the recorded memo.
-
-    Returns:
-        The judge's case material.
-
-    Raises:
-        ValueError: ``generated_over`` is ``None`` and the case pins no recorded memo, so there is no
-            memo, and no message its writer read, to judge.
+    :param case: The cell's case.
+    :ptype case: ReporterCase
+    :param generated_over: The bundle a generated memo was written over, or ``None`` for the recorded memo.
+    :ptype generated_over: AnalysisContextBundle | None
+    :return: The judge's case material.
+    :rtype: str
+    :raises ValueError: ``generated_over`` is ``None`` and the case pins no recorded memo, so there is no
+        memo, and no message its writer read, to judge.
     """
     if generated_over is not None:
         return build_user_message(generated_over)
@@ -543,11 +537,10 @@ def _confidence(confidence: ConfidenceTier) -> str:
 def _read_case(test_case: EvalTestCase) -> ReporterCase | str:
     """Read a cell's case, or say why it cannot be — an infra fault.
 
-    Args:
-        test_case: The cell's stored case.
-
-    Returns:
-        The case, or the infra error to report.
+    :param test_case: The cell's stored case.
+    :ptype test_case: EvalTestCase
+    :return: The case, or the infra error to report.
+    :rtype: ReporterCase | str
     """
     try:
         case = reporter_case_of(test_case)
@@ -571,11 +564,10 @@ def _generation_input(test_case: EvalTestCase) -> tuple[ReporterCase, AnalysisCo
     ways. The request built from the bundle is :func:`~threetears.evals.analysis.generator.first_request`, which
     the generation sends.
 
-    Args:
-        test_case: The cell's stored case.
-
-    Returns:
-        ``(case, bundle)``, or the infra error to report.
+    :param test_case: The cell's stored case.
+    :ptype test_case: EvalTestCase
+    :return: ``(case, bundle)``, or the infra error to report.
+    :rtype: tuple[ReporterCase, AnalysisContextBundle] | str
     """
     case = _read_case(test_case)
     if isinstance(case, str):
@@ -612,13 +604,13 @@ def _refuse_a_model_mismatch(variant_config: VariantConfig, bound_model: str, *,
     whatever this kind is bound to; if the two disagree the run scores one candidate under
     another's name. The cell is cleanly excluded rather than measured.
 
-    Args:
-        variant_config: The cell's contestant stack.
-        bound_model: The model this kind actually runs.
-        what: How to name this kind's binding in the message.
-
-    Raises:
-        CandidatePreparationFailed: The two models differ.
+    :param variant_config: The cell's contestant stack.
+    :ptype variant_config: VariantConfig
+    :param bound_model: The model this kind actually runs.
+    :ptype bound_model: str
+    :param what: How to name this kind's binding in the message.
+    :ptype what: str
+    :raises CandidatePreparationFailed: The two models differ.
     """
     if variant_config.candidate_model == bound_model:
         return
@@ -654,13 +646,14 @@ class _RecordingClient:
     ) -> CompletionResult:
         """Forward one call and keep its result.
 
-        Args:
-            system: The system prompt.
-            user: The user message.
-            response_format: The provider directive.
-
-        Returns:
-            The provider's completion, unchanged.
+        :param system: The system prompt.
+        :ptype system: str
+        :param user: The user message.
+        :ptype user: str
+        :param response_format: The provider directive.
+        :ptype response_format: dict[str, Any] | None
+        :return: The provider's completion, unchanged.
+        :rtype: CompletionResult
         """
         try:
             result = await self.inner.generate(system=system, user=user, response_format=response_format)
@@ -680,11 +673,10 @@ class _RecordingClient:
         (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`). Zero when the first call
         itself raised: nothing was delivered, and nothing is averaged in.
 
-        Args:
-            bound_model: The model to attribute a call to when the provider named none.
-
-        Returns:
-            The cell's telemetry.
+        :param bound_model: The model to attribute a call to when the provider named none.
+        :ptype bound_model: str
+        :return: The cell's telemetry.
+        :rtype: CandidateTelemetry
         """
         ledger = RoleUsageLedger(role="candidate")
         for result in self.results:
@@ -703,11 +695,10 @@ class _RecordingClient:
         Reads :attr:`results` when it is called rather than when it is built, so a generation
         cut off in its repair call is recorded with the initial call's spend.
 
-        Args:
-            bound_model: The model to attribute a call to when the provider named none.
-
-        Returns:
-            The candidate side so far — spend only, since no memo exists until ``invoke`` returns.
+        :param bound_model: The model to attribute a call to when the provider named none.
+        :ptype bound_model: str
+        :return: The candidate side so far — spend only, since no memo exists until ``invoke`` returns.
+        :rtype: Callable[[], CandidateOutput]
         """
         return lambda: CandidateOutput(telemetry=self.telemetry(bound_model))
 
@@ -740,16 +731,21 @@ class ReporterKind:
     ) -> None:
         """Bind the prompt and the generator client this candidate runs, for the host whose memos it writes.
 
-        Args:
-            prompt: The resolved ``eval_analysis_gen`` prompt text.
-            prompt_id: The registry key it was resolved under.
-            prompt_version: Its version, or ``None`` to let the generator derive a content version.
-            client: The completion client, built by the launcher for ``model``.
-            model: The generator model id.
-            host: The host the frozen bundles were assembled for: its vocabulary is what a memo
-                over them is written and checked in, and its failure describer is the only reading
-                of what ``client`` raises that can say a failed call was refused for the calling
-                account, since the engine names none of the host's error types.
+        :param prompt: The resolved ``eval_analysis_gen`` prompt text.
+        :ptype prompt: str
+        :param prompt_id: The registry key it was resolved under.
+        :ptype prompt_id: str
+        :param prompt_version: Its version, or ``None`` to let the generator derive a content version.
+        :ptype prompt_version: str | None
+        :param client: The completion client, built by the launcher for ``model``.
+        :ptype client: Any
+        :param model: The generator model id.
+        :ptype model: str
+        :param host: The host the frozen bundles were assembled for: its vocabulary is what a memo
+            over them is written and checked in, and its failure describer is the only reading
+            of what ``client`` raises that can say a failed call was refused for the calling
+            account, since the engine names none of the host's error types.
+        :ptype host: EvalHost
         """
         self._prompt = prompt
         self._prompt_id = prompt_id
@@ -772,20 +768,22 @@ class ReporterKind:
 
         The case is not read here: it arrives with the test case in :meth:`invoke`.
 
-        Args:
-            subject_snapshot: Unread — the candidate is the prompt and model this kind holds.
-            variant_config: This cell's contestant stack; its model is the one it must measure.
-            world_seed: Unread — a reporter perceives no world.
-            span_window: This cell's tracing windows, opened in :meth:`invoke`.
-            cassettes: Unwired — a reporter calls no tool a cassette could record, so a cassette run
-                of one is refused by the engine rather than run live under a replay.
-            world: Unread — a reporter perceives no world, so it opens none and its cells record none.
-
-        Returns:
-            The cell's bound model and windows.
-
-        Raises:
-            CandidatePreparationFailed: The cell's model is not the one this kind's client runs.
+        :param subject_snapshot: Unread — the candidate is the prompt and model this kind holds.
+        :ptype subject_snapshot: Any
+        :param variant_config: This cell's contestant stack; its model is the one it must measure.
+        :ptype variant_config: VariantConfig
+        :param world_seed: Unread — a reporter perceives no world.
+        :ptype world_seed: Any
+        :param span_window: This cell's tracing windows, opened in :meth:`invoke`.
+        :ptype span_window: CellSpanWindow
+        :param cassettes: Unwired — a reporter calls no tool a cassette could record, so a cassette run
+            of one is refused by the engine rather than run live under a replay.
+        :ptype cassettes: CellCassettes | None
+        :param world: Unread — a reporter perceives no world, so it opens none and its cells record none.
+        :ptype world: Any
+        :return: The cell's bound model and windows.
+        :rtype: PreparedReporter
+        :raises CandidatePreparationFailed: The cell's model is not the one this kind's client runs.
         """
         _refuse_a_model_mismatch(variant_config, self._model, what="the reporter's generator client")
         return PreparedReporter(model=self._model, span_window=span_window)
@@ -802,15 +800,12 @@ class ReporterKind:
         The repair round-trip a refused output buys is not priced here: its message carries the first call's
         output, which does not exist before launch, so it stays held to the cap when it is reserved.
 
-        Args:
-            test_case: The cell's case, carrying the reporter case in its ``host_payload``.
-
-        Returns:
-            The ceiling in dollars; ``None`` for a case :meth:`invoke` makes no call for (it is excluded as the
+        :param test_case: The cell's case, carrying the reporter case in its ``host_payload``.
+        :ptype test_case: EvalTestCase
+        :return: The ceiling in dollars; ``None`` for a case :meth:`invoke` makes no call for (it is excluded as the
             harness's) or one this kind's client cannot price.
-
-        Raises:
-            ValueError: The client priced the call at an amount no reservation could hold.
+        :rtype: float | None
+        :raises ValueError: The client priced the call at an amount no reservation could hold.
         """
         generation_input = _generation_input(test_case)
         if isinstance(generation_input, str):
@@ -833,13 +828,14 @@ class ReporterKind:
         reserved against the run's cost cap before it is sent; one the cap has no room for is not, and
         the cell returns what the calls before it cost — the runner excludes it for the cap.
 
-        Args:
-            instance: What :meth:`prepare` bound.
-            test_case: The cell's case, carrying the reporter case in its ``host_payload``.
-            sink: This cell's sink, handed the recording client's reading.
-
-        Returns:
-            The analysis as one document, its judge evidence and what the generation cost.
+        :param instance: What :meth:`prepare` bound.
+        :ptype instance: PreparedReporter
+        :param test_case: The cell's case, carrying the reporter case in its ``host_payload``.
+        :ptype test_case: EvalTestCase
+        :param sink: This cell's sink, handed the recording client's reading.
+        :ptype sink: CellSink
+        :return: The analysis as one document, its judge evidence and what the generation cost.
+        :rtype: CandidateOutput
         """
         scopes = instance.span_window
         with scopes.identity():
@@ -931,16 +927,16 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     nothing for it. Findings are numbered ``F1`` onward, and every link the model made by position is printed that
     way, a finding's trials by their ids. The memo has no headline, summary or chart: the report's first screen is
     code's, so the judge scores what the writer wrote. Arms are named by
-    :func:`~threetears.evals.analysis.arms.arm_label`, numbers by :func:`~threetears.evals.analysis.numbers.format_number`.
+    :func:`~threetears.evals.analysis.arms.arm_label`, numbers by
+        :func:`~threetears.evals.analysis.numbers.format_number`.
 
     The numbers code resolved from the model's own readings are printed beside them, because they are what the
     model's claims are about. Deterministic: one analysis renders to one string.
 
-    Args:
-        analysis: The analysis to render.
-
-    Returns:
-        The text the judge reads as the output under review.
+    :param analysis: The analysis to render.
+    :ptype analysis: EvalAnalysis
+    :return: The text the judge reads as the output under review.
+    :rtype: str
     """
     document = analysis.document
     arm = arm_namer(analysis)
@@ -1029,12 +1025,12 @@ def replay_case_material(case: ReporterCase, material: str) -> str:
     against this very bundle, so it gets no notes, and a case with no limits reads byte-identically
     to what the generator was sent.
 
-    Args:
-        case: The frozen case.
-        material: The message the recorded memo is judged against, as :func:`judge_case_material` chose it.
-
-    Returns:
-        The judge's case material for the as-recorded candidate.
+    :param case: The frozen case.
+    :ptype case: ReporterCase
+    :param material: The message the recorded memo is judged against, as :func:`judge_case_material` chose it.
+    :ptype material: str
+    :return: The judge's case material for the as-recorded candidate.
+    :rtype: str
     """
     if not case.limits:
         return material
@@ -1075,20 +1071,22 @@ class AsRecordedReporterKind:
     ) -> PreparedReporter:
         """Bind this cell's windows, refusing a cell recorded against a generator model.
 
-        Args:
-            subject_snapshot: Unread.
-            variant_config: This cell's contestant stack; it must name :data:`AS_RECORDED_MODEL`.
-            world_seed: Unread.
-            span_window: This cell's tracing windows.
-            cassettes: Unwired, as for the generating reporter.
-            world: Unread, as for the generating reporter.
-
-        Returns:
-            The cell's binding.
-
-        Raises:
-            CandidatePreparationFailed: The cell names a real model, whose score this replay
-                would otherwise be recorded under.
+        :param subject_snapshot: Unread.
+        :ptype subject_snapshot: Any
+        :param variant_config: This cell's contestant stack; it must name :data:`AS_RECORDED_MODEL`.
+        :ptype variant_config: VariantConfig
+        :param world_seed: Unread.
+        :ptype world_seed: Any
+        :param span_window: This cell's tracing windows.
+        :ptype span_window: CellSpanWindow
+        :param cassettes: Unwired, as for the generating reporter.
+        :ptype cassettes: CellCassettes | None
+        :param world: Unread, as for the generating reporter.
+        :ptype world: Any
+        :return: The cell's binding.
+        :rtype: PreparedReporter
+        :raises CandidatePreparationFailed: The cell names a real model, whose score this replay
+            would otherwise be recorded under.
         """
         _refuse_a_model_mismatch(variant_config, AS_RECORDED_MODEL, what="the as-recorded replay")
         return PreparedReporter(model=AS_RECORDED_MODEL, span_window=span_window)
@@ -1099,15 +1097,16 @@ class AsRecordedReporterKind:
         Only the identity window is opened: nothing the candidate does here takes time worth
         measuring, and a collection window around a replay would claim otherwise.
 
-        Args:
-            instance: What :meth:`prepare` bound.
-            test_case: The cell's case, carrying the reporter case in its ``host_payload``.
-            sink: This cell's sink. Unused: a replay awaits nothing and spends nothing, so there
-                is no progress to report.
-
-        Returns:
-            The recorded analysis as one document and its judge evidence, at zero cost — or an
+        :param instance: What :meth:`prepare` bound.
+        :ptype instance: PreparedReporter
+        :param test_case: The cell's case, carrying the reporter case in its ``host_payload``.
+        :ptype test_case: EvalTestCase
+        :param sink: This cell's sink. Unused: a replay awaits nothing and spends nothing, so there
+            is no progress to report.
+        :ptype sink: CellSink
+        :return: The recorded analysis as one document and its judge evidence, at zero cost — or an
             infra error when the case carries no readable recorded memo.
+        :rtype: CandidateOutput
         """
         with instance.span_window.identity():
             case = _read_case(test_case)

@@ -220,12 +220,12 @@ def _approx_analysis_input_tokens(bundle: AnalysisContextBundle, prompt: str) ->
     so the dollar cost is knowable only after the call. No tokenizer dependency is
     pulled in for a number that needs only an order of magnitude.
 
-    Args:
-        bundle: The assembled context bundle the generator will read.
-        prompt: The resolved ``eval_analysis_gen`` system prompt.
-
-    Returns:
-        An approximate input-token count.
+    :param bundle: The assembled context bundle the generator will read.
+    :ptype bundle: AnalysisContextBundle
+    :param prompt: The resolved ``eval_analysis_gen`` system prompt.
+    :ptype prompt: str
+    :return: An approximate input-token count.
+    :rtype: int
     """
     serialized = json.dumps(bundle.to_dict(), sort_keys=True)
     return (len(serialized) + len(prompt)) // 4
@@ -243,12 +243,12 @@ def describe_insight_id_filters(subject_id: str | None, source_campaign_id: str 
     named it on one surface and silently dropped it from the other, with no test
     comparing the two strings.
 
-    Args:
-        subject_id: The subject filter, if the caller supplied one.
-        source_campaign_id: The campaign filter, if the caller supplied one.
-
-    Returns:
-        A comma-joined ``name=value`` phrase, or ``""`` when neither was supplied.
+    :param subject_id: The subject filter, if the caller supplied one.
+    :ptype subject_id: str | None
+    :param source_campaign_id: The campaign filter, if the caller supplied one.
+    :ptype source_campaign_id: str | None
+    :return: A comma-joined ``name=value`` phrase, or ``""`` when neither was supplied.
+    :rtype: str
     """
     return ", ".join(
         part
@@ -263,8 +263,7 @@ def describe_insight_id_filters(subject_id: str | None, source_campaign_id: str 
 def _load_campaign(storage: AnalysisStore, campaign_id: str, scope_id: str) -> EvalCampaign:
     """Load a campaign within a scope, refusing an unknown id as the campaign family does.
 
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
+    :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
@@ -291,9 +290,10 @@ class BudgetedGenerator:
     def __init__(self, budget: OutOfRunBudget, client: BoundCompletionClient) -> None:
         """Bind the budget to the client every call is priced on and made through.
 
-        Args:
-            budget: The generation's own budget.
-            client: The generator client; this does not own it.
+        :param budget: The generation's own budget.
+        :ptype budget: OutOfRunBudget
+        :param client: The generator client; this does not own it.
+        :ptype client: BoundCompletionClient
         """
         self._budget = budget
         self._client = client
@@ -310,9 +310,8 @@ class BudgetedGenerator:
         A call already admitted with exactly this prompt (the first call, admitted when the generation was
         prepared) is not priced twice.
 
-        Raises:
-            ValidationFailedError: The call cannot be priced under an enforced cap, or its price would pass
-                what is left of the cap.
+        :raises ValidationFailedError: The call cannot be priced under an enforced cap, or its price would pass
+            what is left of the cap.
         """
         call = PlannedCall(system=system, user=user, response_format=response_format)
         if self._pending is not None and self._pending.call == call:
@@ -324,8 +323,7 @@ class BudgetedGenerator:
     ) -> CompletionResult:
         """Make the admitted call through the budget, which ledgers it whether it returns or raises.
 
-        Raises:
-            ValueError: No call with exactly this prompt was admitted — a call that would go unpriced.
+        :raises ValueError: No call with exactly this prompt was admitted — a call that would go unpriced.
         """
         pending, self._pending = self._pending, None
         if pending is None or pending.call != PlannedCall(system=system, user=user, response_format=response_format):
@@ -337,17 +335,16 @@ class BudgetedGenerator:
 class AnalysisGenerationEstimate(EvalBaseModel):
     """What a generation would be priced at before it starts, against the cap it would be held to.
 
-    Attributes:
-        campaign_id: The campaign.
-        generator_model: The model the generation would call, as the host's client resolved it.
-        first_call_ceiling_usd: The most the first call can cost, as the client prices it; ``None`` when it
-            cannot say.
-        max_calls: How many calls a generation can make: the first, and the one repair round-trip a refused
-            output buys. The repair's prompt carries the refused output, so it is priced only when it exists —
-            against what is left of the same cap, before it is sent.
-        cap_usd: The out-of-run cap the generation is held to; ``None`` when the host enforces none.
-        would_start: Whether the first call would be admitted.
-        refusal: Why it would not, when it would not.
+    :ivar campaign_id: The campaign.
+    :ivar generator_model: The model the generation would call, as the host's client resolved it.
+    :ivar first_call_ceiling_usd: The most the first call can cost, as the client prices it; ``None`` when it
+        cannot say.
+    :ivar max_calls: How many calls a generation can make: the first, and the one repair round-trip a refused
+        output buys. The repair's prompt carries the refused output, so it is priced only when it exists —
+        against what is left of the same cap, before it is sent.
+    :ivar cap_usd: The out-of-run cap the generation is held to; ``None`` when the host enforces none.
+    :ivar would_start: Whether the first call would be admitted.
+    :ivar refusal: Why it would not, when it would not.
     """
 
     campaign_id: str
@@ -378,13 +375,13 @@ async def _assemble(
     model: str | None,
     resolve_prompt: Callable[[], Awaitable[str]],
 ) -> _Assembled:
-    """Load the campaign, assemble its bundle off the event loop, refuse an empty one, resolve the prompt, build the client.
+    """Load the campaign, assemble its bundle off the event loop, refuse an empty one, resolve the prompt, build the
+    client.
 
-    Raises:
-        NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
-            model is not one the host allows (``HostProfile.analysis_writer_models``).
-        ValueError: The host supplies no completion clients.
+    :raises NotFoundError: No campaign with that id.
+    :raises ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
+        model is not one the host allows (``HostProfile.analysis_writer_models``).
+    :raises ValueError: The host supplies no completion clients.
     """
     clients = host.completion_clients("an analysis generation")
     storage, executor = host.storage, host.blocking_executor
@@ -478,23 +475,25 @@ async def estimate_analysis_generation(
     The same assembly and the same pricing rule :func:`prepare_analysis_generation` refuses by, so an
     estimate reading ``would_start`` is the start's own answer.
 
-    Args:
-        host: The host: where the campaign is read and the client is built.
-        campaign_id: The campaign.
-        scope_id: The scope it lives in.
-        model: The generator model override, or ``None`` for the host's default.
-        resolve_prompt: Resolves the generator prompt.
-        out_of_run_cap_usd: The out-of-run cap the generation would be held to; ``None`` when the host
-            enforces none.
-
-    Returns:
-        The estimate.
-
-    Raises:
-        NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
-            model is not one the host allows.
-        ValueError: The host supplies no completion clients.
+    :param host: The host: where the campaign is read and the client is built.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param model: The generator model override, or ``None`` for the host's default.
+    :ptype model: str | None
+    :param resolve_prompt: Resolves the generator prompt.
+    :ptype resolve_prompt: Callable[[], Awaitable[str]]
+    :param out_of_run_cap_usd: The out-of-run cap the generation would be held to; ``None`` when the host
+        enforces none.
+    :ptype out_of_run_cap_usd: float | None
+    :return: The estimate.
+    :rtype: AnalysisGenerationEstimate
+    :raises NotFoundError: No campaign with that id.
+    :raises ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
+        model is not one the host allows.
+    :raises ValueError: The host supplies no completion clients.
     """
     assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
     try:
@@ -538,28 +537,30 @@ async def prepare_analysis_generation(
     BEFORE calling this, because preparing builds a client and resolves the prompt, work a refused second
     request need not pay for. Every store read runs on the host's blocking executor.
 
-    Args:
-        host: The host: where the campaign's runs, results and insights are read, the vocabulary
-            the bundle is assembled in, and the client factory the generator is built from.
-        campaign_id: The campaign to analyse.
-        scope_id: The scope the campaign, its member runs and everything generated from it live in.
-        model: The generator model override, or None for the host's default.
-        resolve_prompt: Resolves the generator prompt this generation runs, refusing an unknown
-            preset with ``ValidationFailedError``. Awaited only once the bundle has evidence.
-        out_of_run_cap_usd: The most the generation's calls may together be priced at — the host's
-            out-of-run cap — or ``None`` when the host enforces none (each call is still priced where the
-            client can say, and ledgered). Required, so every caller decides what bounds the spend.
-
-    Returns:
-        The prepared generation. It holds a built generator client, which the run enters and
+    :param host: The host: where the campaign's runs, results and insights are read, the vocabulary
+        the bundle is assembled in, and the client factory the generator is built from.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign to analyse.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign, its member runs and everything generated from it live in.
+    :ptype scope_id: str
+    :param model: The generator model override, or None for the host's default.
+    :ptype model: str | None
+    :param resolve_prompt: Resolves the generator prompt this generation runs, refusing an unknown
+        preset with ``ValidationFailedError``. Awaited only once the bundle has evidence.
+    :ptype resolve_prompt: Callable[[], Awaitable[str]]
+    :param out_of_run_cap_usd: The most the generation's calls may together be priced at — the host's
+        out-of-run cap — or ``None`` when the host enforces none (each call is still priced where the
+        client can say, and ledgered). Required, so every caller decides what bounds the spend.
+    :ptype out_of_run_cap_usd: float | None
+    :return: The prepared generation. It holds a built generator client, which the run enters and
         releases; one prepared and never run keeps its transport open until it is collected.
-
-    Raises:
-        NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, the writer model is
-            not one the host allows, or the first call
-            cannot be priced under an enforced cap or is priced above it — the client it built released.
-        ValueError: The host supplies no completion clients.
+    :rtype: PreparedGeneration
+    :raises NotFoundError: No campaign with that id.
+    :raises ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, the writer model is
+        not one the host allows, or the first call
+        cannot be priced under an enforced cap or is priced above it — the client it built released.
+    :raises ValueError: The host supplies no completion clients.
     """
     assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
     calls = BudgetedGenerator(_generation_budget(host, assembled, out_of_run_cap_usd), assembled.client)
@@ -592,13 +593,14 @@ def running_analysis_attempt(
     answered from the store in every process from its first poll; :func:`run_analysis_generation` writes it again
     as it ends.
 
-    Args:
-        prepared: The prepared generation.
-        prompt_id: The registry key its prompt was resolved under.
-        started_at: When it was started; now when omitted.
-
-    Returns:
-        The attempt, ``running``, its id the generation's.
+    :param prepared: The prepared generation.
+    :ptype prepared: PreparedGeneration
+    :param prompt_id: The registry key its prompt was resolved under.
+    :ptype prompt_id: str
+    :param started_at: When it was started; now when omitted.
+    :ptype started_at: str | None
+    :return: The attempt, ``running``, its id the generation's.
+    :rtype: EvalAnalysisAttempt
     """
     return EvalAnalysisAttempt(
         id=prepared.attempt_id,
@@ -619,8 +621,7 @@ def _still_held(storage: AnalysisStore, prepared: PreparedGeneration, leases: Jo
 
     A generation run inline has no stored attempt until it ends, and is never refused here.
 
-    Raises:
-        JobFenced: The stored attempt has ended, or ``leases`` let go of it.
+    :raises JobFenced: The stored attempt has ended, or ``leases`` let go of it.
     """
     if leases is not None and leases.fenced(prepared.attempt_id):
         raise JobFenced(
@@ -640,17 +641,17 @@ async def _offloaded[**P](
 ) -> bool:
     """Run a store write on ``executor``, waiting for it through a cancellation of the waiter.
 
-    Args:
-        executor: The host's blocking executor.
-        fn: The blocking write.
-        *args: Its positional arguments.
-        **kwargs: Its keyword arguments.
-
-    Returns:
-        Whether a cancellation arrived while it ran — the caller delivers it once it has finished.
-
-    Raises:
-        Exception: Whatever the write raised.
+    :param executor: The host's blocking executor.
+    :ptype executor: Executor | None
+    :param fn: The blocking write.
+    :ptype fn: Callable[P, object]
+    :param *args: Its positional arguments.
+    :ptype args: P.args
+    :param **kwargs: Its keyword arguments.
+    :ptype kwargs: P.kwargs
+    :return: Whether a cancellation arrived while it ran — the caller delivers it once it has finished.
+    :rtype: bool
+    :raises Exception: Whatever the write raised.
     """
     return (await _offloaded_result(executor, fn, *args, **kwargs))[1]
 
@@ -660,11 +661,9 @@ async def _offloaded_result[**P, T](
 ) -> tuple[T, bool]:
     """:func:`_offloaded`, keeping what the write returned.
 
-    Returns:
-        What ``fn`` returned, and whether a cancellation arrived while it ran.
-
-    Raises:
-        Exception: Whatever the write raised.
+    :return: What ``fn`` returned, and whether a cancellation arrived while it ran.
+    :rtype: tuple[T, bool]
+    :raises Exception: Whatever the write raised.
     """
     work = asyncio.ensure_future(run_blocking(executor, fn, *args, **kwargs))
     cancelled = await wait_through_cancellation(work)
@@ -695,40 +694,42 @@ async def run_analysis_generation(
     conditionally, and when it finds the attempt already lost the analysis and the insights stored just before it
     are withdrawn, so a lost attempt never keeps an analysis.
 
-    Args:
-        host: The host: where the analysis, its insights and the attempt record are written, the
-            vocabulary the memo is checked in, and how a provider call that raised becomes the
-            text the attempt keeps.
-        prepared: What :func:`prepare_analysis_generation` checked and built.
-        prompt_id: The registry key the prompt was resolved under — provenance the generator
-            cannot derive, because reading the registry is the host's.
-        max_output_tokens: The output cap the client was built with, for the pre-spend log line.
-        deadline: A background generation's wall-clock budget, not yet entered — the host's job timeout built for
-            it (:class:`~threetears.evals.kernel.JobTimeoutFactory`). Entered here around the generator calls, so
-            when it runs out the attempt is recorded ``timed_out`` (:func:`~threetears.evals.kernel.timed_out_detail`)
-            and :class:`~threetears.evals.kernel.EvalJobTimeout` raised, as every job kind's budget reads; storing what
-            the calls paid for is not cut short. ``None`` for a generation its caller bounds.
-        leases: The leases a background generation's attempt is held under: once they have let go of it, the
-            generation stores and records nothing more (:meth:`~threetears.evals.kernel.JobLeases.let_go`), even
-            when the store would still take the write. ``None`` for a generation no process holds a lease for.
-
-    Returns:
-        The stored analysis and the insights it minted.
-
-    Raises:
-        ValidationFailedError: The generator's output failed the generation contract, or the repair
-            round-trip it bought was refused by the generation's budget before it was sent.
-        JobFenced: The generation's attempt was written lost by another process, or this process let go of its
-            lease, before its analysis was stored; nothing was stored.
-        EvalJobTimeout: ``deadline`` ran out while the generator was being called; the attempt reads ``timed_out``.
-        StorageError: The analysis or one of its insights could not be stored. An insight that fails
-            leaves the attempt recorded ``stored`` all the same — the analysis is — so a background
-            generation's poll reports the memo stored while its insight ledger is incomplete; the
-            background task catches that failure and logs it, and nothing else reports it.
-        ProviderRefusedError: The generator call raised and the host describer withheld its payload
-            (a provider status error in its chain, or no describer able to say otherwise). The attempt is recorded ``failed`` and the failure
-            logged, both through the host describer, before this is raised in its place. Any other
-            failure is recorded ``failed`` and propagates as itself, so its status names no provider.
+    :param host: The host: where the analysis, its insights and the attempt record are written, the
+        vocabulary the memo is checked in, and how a provider call that raised becomes the
+        text the attempt keeps.
+    :ptype host: EvalHost
+    :param prepared: What :func:`prepare_analysis_generation` checked and built.
+    :ptype prepared: PreparedGeneration
+    :param prompt_id: The registry key the prompt was resolved under — provenance the generator
+        cannot derive, because reading the registry is the host's.
+    :ptype prompt_id: str
+    :param max_output_tokens: The output cap the client was built with, for the pre-spend log line.
+    :ptype max_output_tokens: int
+    :param deadline: A background generation's wall-clock budget, not yet entered — the host's job timeout built for
+        it (:class:`~threetears.evals.kernel.JobTimeoutFactory`). Entered here around the generator calls, so
+        when it runs out the attempt is recorded ``timed_out`` (:func:`~threetears.evals.kernel.timed_out_detail`)
+        and :class:`~threetears.evals.kernel.EvalJobTimeout` raised, as every job kind's budget reads; storing what
+        the calls paid for is not cut short. ``None`` for a generation its caller bounds.
+    :ptype deadline: AbstractAsyncContextManager[Any] | None
+    :param leases: The leases a background generation's attempt is held under: once they have let go of it, the
+        generation stores and records nothing more (:meth:`~threetears.evals.kernel.JobLeases.let_go`), even
+        when the store would still take the write. ``None`` for a generation no process holds a lease for.
+    :ptype leases: JobLeases | None
+    :return: The stored analysis and the insights it minted.
+    :rtype: tuple[EvalAnalysis, list[EvalInsight]]
+    :raises ValidationFailedError: The generator's output failed the generation contract, or the repair
+        round-trip it bought was refused by the generation's budget before it was sent.
+    :raises JobFenced: The generation's attempt was written lost by another process, or this process let go of its
+        lease, before its analysis was stored; nothing was stored.
+    :raises EvalJobTimeout: ``deadline`` ran out while the generator was being called; the attempt reads ``timed_out``.
+    :raises StorageError: The analysis or one of its insights could not be stored. An insight that fails
+        leaves the attempt recorded ``stored`` all the same — the analysis is — so a background
+        generation's poll reports the memo stored while its insight ledger is incomplete; the
+        background task catches that failure and logs it, and nothing else reports it.
+    :raises ProviderRefusedError: The generator call raised and the host describer withheld its payload
+        (a provider status error in its chain, or no describer able to say otherwise). The attempt is recorded
+        ``failed`` and the failure logged, both through the host describer, before this is raised in its place. Any
+        other failure is recorded ``failed`` and propagates as itself, so its status names no provider.
     """
     storage, failure_describer, executor = host.storage, host.failure_describer, host.blocking_executor
     campaign_id, scope_id, bundle = prepared.campaign_id, prepared.scope_id, prepared.bundle
@@ -1018,26 +1019,38 @@ def _record_analysis_attempt(
     ``running`` record when there is one, keeping its lease fields, and never over one that has ended: an
     attempt another process wrote lost keeps that ending, and this one is logged and dropped.
 
-    Args:
-        storage: Where the attempt record is written.
-        campaign_id: The campaign the generation was over.
-        scope_id: The scope the campaign lives in, where the record is written.
-        outcome: How it ended.
-        tally: What the generator sent, spent and was refused.
-        generator_model: The model the generator client was built for.
-        prompt_id: The registry key the prompt was resolved under.
-        bundle_fingerprint: The fingerprint of the bundle it ran over.
-        started_at: When the generation was started.
-        error: What the caller was told ended it; None when it was stored.
-        analysis_id: The analysis it stored; None unless it was.
-        attempt_id: The attempt's id, minted when the generation was prepared — a background
-            generation's job id, so its poller can find this record once the job is gone.
-        leases: The leases the attempt is held under; once they let go of it, this ending is refused.
-        refusal: The engine refusal the attempt ended on, as data; None for any other ending.
-
-    Returns:
-        ``recorded``; ``fenced`` when the stored attempt had already ended — written lost — so this ending was
+    :param storage: Where the attempt record is written.
+    :ptype storage: AnalysisStore
+    :param campaign_id: The campaign the generation was over.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign lives in, where the record is written.
+    :ptype scope_id: str
+    :param outcome: How it ended.
+    :ptype outcome: AttemptOutcome
+    :param tally: What the generator sent, spent and was refused.
+    :ptype tally: GenerationTally
+    :param generator_model: The model the generator client was built for.
+    :ptype generator_model: str
+    :param prompt_id: The registry key the prompt was resolved under.
+    :ptype prompt_id: str
+    :param bundle_fingerprint: The fingerprint of the bundle it ran over.
+    :ptype bundle_fingerprint: str
+    :param started_at: When the generation was started.
+    :ptype started_at: str
+    :param error: What the caller was told ended it; None when it was stored.
+    :ptype error: str | None
+    :param analysis_id: The analysis it stored; None unless it was.
+    :ptype analysis_id: str | None
+    :param attempt_id: The attempt's id, minted when the generation was prepared — a background
+        generation's job id, so its poller can find this record once the job is gone.
+    :ptype attempt_id: str
+    :param leases: The leases the attempt is held under; once they let go of it, this ending is refused.
+    :ptype leases: JobLeases | None
+    :param refusal: The engine refusal the attempt ended on, as data; None for any other ending.
+    :ptype refusal: JobRefusal | None
+    :return: ``recorded``; ``fenced`` when the stored attempt had already ended — written lost — so this ending was
         refused; ``unrecorded`` when the write failed (logged).
+    :rtype: _AttemptRecorded
     """
     attempt = EvalAnalysisAttempt(
         id=attempt_id,
@@ -1101,15 +1114,17 @@ def _withdraw_generation(
     Blocking. A withdrawal that fails part-way raises what the store raised; the caller raises the fence that made
     it necessary, saying the withdrawal failed and what is left to remove by hand, rather than that it happened.
 
-    Args:
-        storage: Where the analysis and the insights were written.
-        analysis: The analysis stored.
-        insights: The insights written, in order.
-        overwritten: The ledger rows those insights were written over, by id, as they stood.
-        scope_id: The scope they live in.
-
-    Raises:
-        Exception: Whatever the store raised, part-way.
+    :param storage: Where the analysis and the insights were written.
+    :ptype storage: AnalysisStore
+    :param analysis: The analysis stored.
+    :ptype analysis: EvalAnalysis
+    :param insights: The insights written, in order.
+    :ptype insights: list[EvalInsight]
+    :param overwritten: The ledger rows those insights were written over, by id, as they stood.
+    :ptype overwritten: dict[str, EvalInsight]
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :raises Exception: Whatever the store raised, part-way.
     """
     for insight in insights:
         if (prior := overwritten.get(insight.id)) is not None:
@@ -1133,16 +1148,15 @@ def _withdraw_generation(
 def get_analysis(storage: AnalysisStore, analysis_id: str, scope_id: str) -> EvalAnalysis:
     """Load a stored analysis by id.
 
-    Args:
-        storage: Where analyses are read.
-        analysis_id: The analysis to load.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The analysis.
-
-    Raises:
-        NotFoundError: No analysis with that id in the scope.
+    :param storage: Where analyses are read.
+    :ptype storage: AnalysisStore
+    :param analysis_id: The analysis to load.
+    :ptype analysis_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The analysis.
+    :rtype: EvalAnalysis
+    :raises NotFoundError: No analysis with that id in the scope.
     """
     analysis = storage.load_analysis(analysis_id, scope_id)
     if analysis is None:
@@ -1189,18 +1203,17 @@ def inspect_campaign_bundle(
 
     Costs nothing: the assembler performs storage reads and no model call.
 
-    Args:
-        host: The host: where the campaign's runs, results and insights are read, and the
-            vocabulary the bundle is assembled in.
-        campaign_id: The campaign to assemble for.
-        scope_id: The scope the campaign and its member runs live in.
-
-    Returns:
-        The assembled bundle with its freshly computed fingerprint. No
+    :param host: The host: where the campaign's runs, results and insights are read, and the
+        vocabulary the bundle is assembled in.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign to assemble for.
+    :ptype campaign_id: str
+    :param scope_id: The scope the campaign and its member runs live in.
+    :ptype scope_id: str
+    :return: The assembled bundle with its freshly computed fingerprint. No
         generation is being spoken about, so nothing is compared against.
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
+    :rtype: BundleInspection
+    :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     # Deliberately NOT refused when the bundle resolves no runs, unlike
@@ -1241,19 +1254,18 @@ def inspect_analysis_bundle(
 
     Costs nothing: storage reads and no model call.
 
-    Args:
-        host: The host: where the analysis, its campaign's runs, results and insights are read,
-            and the vocabulary the bundle is re-assembled in.
-        analysis_id: The stored analysis to re-assemble the input of.
-        scope_id: The scope the analysis, its campaign and the campaign's runs live in.
-
-    Returns:
-        The re-assembled bundle, the recorded fingerprint, and whether the two
+    :param host: The host: where the analysis, its campaign's runs, results and insights are read,
+        and the vocabulary the bundle is re-assembled in.
+    :ptype host: EvalHost
+    :param analysis_id: The stored analysis to re-assemble the input of.
+    :ptype analysis_id: str
+    :param scope_id: The scope the analysis, its campaign and the campaign's runs live in.
+    :ptype scope_id: str
+    :return: The re-assembled bundle, the recorded fingerprint, and whether the two
         agree.
-
-    Raises:
-        NotFoundError: No analysis with that id, or the campaign it names no
-            longer exists in the scope.
+    :rtype: BundleInspection
+    :raises NotFoundError: No analysis with that id, or the campaign it names no
+        longer exists in the scope.
     """
     storage = host.storage
     analysis = get_analysis(storage, analysis_id, scope_id)  # NotFoundError if absent
@@ -1289,18 +1301,17 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     archived or re-run since, and every disclosure on it is the frozen bundle's own. Derived on every read and never
     written back, so a stored analysis stays pivotable.
 
-    Args:
-        storage: Where the analysis is read.
-        analysis_id: The analysis to report.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The report; :meth:`~threetears.evals.analysis.report.Report.write` puts it in a directory, and
+    :param storage: Where the analysis is read.
+    :ptype storage: AnalysisStore
+    :param analysis_id: The analysis to report.
+    :ptype analysis_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The report; :meth:`~threetears.evals.analysis.report.Report.write` puts it in a directory, and
         :func:`~threetears.evals.analysis.report.report_markdown` and
         :func:`~threetears.evals.analysis.report.report_html` serialize it.
-
-    Raises:
-        NotFoundError: No analysis with that id in the scope.
+    :rtype: Report
+    :raises NotFoundError: No analysis with that id in the scope.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
     # The campaign titles the report by name; an analysis outliving its campaign is still reported, by its id.
@@ -1321,17 +1332,16 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
 
     Costs no model call either way: the code-only report is storage reads and arithmetic.
 
-    Args:
-        host: The host: where the campaign and its analyses are read, and the vocabulary its evidence is
-            assembled in when there is no analysis.
-        campaign_id: The campaign.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The report; its ``basis`` says which it is.
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
+    :param host: The host: where the campaign and its analyses are read, and the vocabulary its evidence is
+        assembled in when there is no analysis.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The report; its ``basis`` says which it is.
+    :rtype: Report
+    :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
@@ -1350,16 +1360,15 @@ def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[V
     analysis was generated: a gate rests on code's verdicts, never on an analyst's words, and an analysis's
     frozen surface holds no contrast. Costs no model call.
 
-    Args:
-        host: The host whose store holds the campaign, and whose vocabulary its evidence is assembled in.
-        campaign_id: The campaign.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The verdicts, in the report's order.
-
-    Raises:
-        NotFoundError: No campaign with that id in the scope.
+    :param host: The host whose store holds the campaign, and whose vocabulary its evidence is assembled in.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The verdicts, in the report's order.
+    :rtype: list[Verdict]
+    :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
@@ -1425,19 +1434,20 @@ def list_insights(
     eventually force the question — an unbounded ledger cannot be read whole
     forever, and whoever bounds it owes this filter a substring channel.
 
-    Args:
-        storage: Where the insight ledger is read.
-        scope_id: The storage scope whose ledger to read.
-        subject_id: Optional equality filter on the subject an insight is about.
-        scope: Optional case-insensitive SUBSTRING filter over the insight's
-            free-text scope.
-        source_campaign_id: Optional equality filter on the minting campaign.
-
-    Returns:
-        The matching insights, newest observation first.
-
-    Raises:
-        ValidationFailedError: ``scope`` was given and matched no insight.
+    :param storage: Where the insight ledger is read.
+    :ptype storage: AnalysisStore
+    :param scope_id: The storage scope whose ledger to read.
+    :ptype scope_id: str
+    :param subject_id: Optional equality filter on the subject an insight is about.
+    :ptype subject_id: str | None
+    :param scope: Optional case-insensitive SUBSTRING filter over the insight's
+        free-text scope.
+    :ptype scope: str | None
+    :param source_campaign_id: Optional equality filter on the minting campaign.
+    :ptype source_campaign_id: str | None
+    :return: The matching insights, newest observation first.
+    :rtype: list[EvalInsight]
+    :raises ValidationFailedError: ``scope`` was given and matched no insight.
     """
     insights = storage.query_insights(
         scope_id,
@@ -1478,17 +1488,16 @@ def reporter_case_bank(storage: AnalysisStore, template_id: str, scope_id: str) 
     :func:`~threetears.evals.analysis.reporter_bank.decidable_reporter_case_bank`, which a
     retirement's restore (:func:`threetears.evals.analysis.reporter_curation.set_reporter_case_archived`) reads too.
 
-    Args:
-        storage: Where the template's cases are read.
-        template_id: The reporter template.
-        scope_id: The partition its cases live in.
-
-    Returns:
-        The bank.
-
-    Raises:
-        ValidationFailedError: A stored case of the template carries a reporter case this build
-            cannot read.
+    :param storage: Where the template's cases are read.
+    :ptype storage: AnalysisStore
+    :param template_id: The reporter template.
+    :ptype template_id: str
+    :param scope_id: The partition its cases live in.
+    :ptype scope_id: str
+    :return: The bank.
+    :rtype: ReporterCaseBank
+    :raises ValidationFailedError: A stored case of the template carries a reporter case this build
+        cannot read.
     """
     return decidable_reporter_case_bank(
         storage.query_test_cases(scope_id, template_id=template_id), template_id=template_id
@@ -1520,8 +1529,8 @@ def freeze_reporter_case(
     its writer was sent. It does keep a digest of it (``generation.user_message_digest``), which
     the case copies and the freeze checks the rendered text against: a message that differs is
     frozen anyway and stated in ``limits``, as a bundle that does not reproduce is
-    (:func:`~threetears.evals.analysis.reporter_kind.writer_message_check`). Each label is stamped with the criterion the
-    template states for its dimension (``ReporterLabel.criterion``), so a reworded rubric shows
+    (:func:`~threetears.evals.analysis.reporter_kind.writer_message_check`). Each label is stamped with the criterion
+    the template states for its dimension (``ReporterLabel.criterion``), so a reworded rubric shows
     on a calibration read instead of silently re-meaning the label; a label that arrives already
     carrying one is refused.
 
@@ -1571,40 +1580,44 @@ def freeze_reporter_case(
     of the pair, which mints one case replacing them all. Naming all of them is required, so a
     freeze cannot retire a revision its author never saw; a launch never runs both.
 
-    Args:
-        host: The host: where the campaign's evidence is read and the case is written, and the
-            vocabulary the frozen bundle is assembled in.
-        template_id: The reporter template the case belongs to.
-        campaign_id: The campaign whose bundle is frozen.
-        scope_id: The scope its member runs (and the case) live in.
-        analysis_id: A stored analysis of that campaign to pin as the recorded memo, or
-            ``None`` to freeze the bundle alone.
-        labels: Reader verdicts on the recorded memo, as
-            :class:`~threetears.evals.analysis.reporter_kind.ReporterLabel` objects or their
-            JSON. Each must name a dimension the template scores.
-        supersedes: The ids of the live cases of this (campaign, recorded analysis) pair this
-            freeze replaces — the one live case to revise its labels or its evidence, every live
-            case to resolve a pair holding several — or empty when it replaces none. A bare
-            string is refused: it would be read one character per id.
-        load_template: The host's template load; raises ``NotFoundError`` for an unknown id, and
-            whatever else the host refuses a template for.
-
-    Returns:
-        The stored case — the existing live one when this freeze's labels match it.
-
-    Raises:
-        NotFoundError: The template, campaign or analysis does not exist.
-        ValidationFailedError: A template that is not of the reporter kind
-            (:data:`~threetears.evals.analysis.reporter_kind.REPORTER_KIND`), a label that does not
-            validate or names an unscored dimension,
-            labels with no recorded memo to be about, an analysis of another campaign,
-            a bundle resolving no runs, a label change or a moved re-assembly that
-            does not name the live case in ``supersedes``, a ``supersedes`` naming a case outside this pair or one
-            already superseded or retired, ``supersedes`` on a pair with no live case, a label
-            arriving with a criterion, a pair with more than one live case that ``supersedes`` does
-            not name in full, or a stored case of the template this build cannot read.
-        StorageError: The new case could not be persisted.
-        TypeError: ``supersedes`` is a bare string rather than a sequence of ids.
+    :param host: The host: where the campaign's evidence is read and the case is written, and the
+        vocabulary the frozen bundle is assembled in.
+    :ptype host: EvalHost
+    :param template_id: The reporter template the case belongs to.
+    :ptype template_id: str
+    :param campaign_id: The campaign whose bundle is frozen.
+    :ptype campaign_id: str
+    :param scope_id: The scope its member runs (and the case) live in.
+    :ptype scope_id: str
+    :param analysis_id: A stored analysis of that campaign to pin as the recorded memo, or
+        ``None`` to freeze the bundle alone.
+    :ptype analysis_id: str | None
+    :param labels: Reader verdicts on the recorded memo, as
+        :class:`~threetears.evals.analysis.reporter_kind.ReporterLabel` objects or their
+        JSON. Each must name a dimension the template scores.
+    :ptype labels: Sequence[Any]
+    :param supersedes: The ids of the live cases of this (campaign, recorded analysis) pair this
+        freeze replaces — the one live case to revise its labels or its evidence, every live
+        case to resolve a pair holding several — or empty when it replaces none. A bare
+        string is refused: it would be read one character per id.
+    :ptype supersedes: Sequence[str]
+    :param load_template: The host's template load; raises ``NotFoundError`` for an unknown id, and
+        whatever else the host refuses a template for.
+    :ptype load_template: Callable[[str], EvalTemplate]
+    :return: The stored case — the existing live one when this freeze's labels match it.
+    :rtype: EvalTestCase
+    :raises NotFoundError: The template, campaign or analysis does not exist.
+    :raises ValidationFailedError: A template that is not of the reporter kind
+        (:data:`~threetears.evals.analysis.reporter_kind.REPORTER_KIND`), a label that does not
+        validate or names an unscored dimension,
+        labels with no recorded memo to be about, an analysis of another campaign,
+        a bundle resolving no runs, a label change or a moved re-assembly that
+        does not name the live case in ``supersedes``, a ``supersedes`` naming a case outside this pair or one
+        already superseded or retired, ``supersedes`` on a pair with no live case, a label
+        arriving with a criterion, a pair with more than one live case that ``supersedes`` does
+        not name in full, or a stored case of the template this build cannot read.
+    :raises StorageError: The new case could not be persisted.
+    :raises TypeError: ``supersedes`` is a bare string rather than a sequence of ids.
     """
     from pydantic import ValidationError
 
@@ -1836,18 +1849,17 @@ def reporter_calibration(
     written against still reads as the template states it (``criterion_drift``), and each case
     whether its recorded memo was judged against a frozen writer message.
 
-    Args:
-        storage: Where the run's cases, results and template are read.
-        run_id: The reporter run.
-        scope_id: The scope it ran in.
-
-    Returns:
-        The calibration read.
-
-    Raises:
-        NotFoundError: No such run in that scope.
-        ValidationFailedError: The run froze no reporter case, so it is not a reporter run; or
-            a stored case of its template carries a reporter case this build cannot read.
+    :param storage: Where the run's cases, results and template are read.
+    :ptype storage: AnalysisStore
+    :param run_id: The reporter run.
+    :ptype run_id: str
+    :param scope_id: The scope it ran in.
+    :ptype scope_id: str
+    :return: The calibration read.
+    :rtype: ReporterCalibration
+    :raises NotFoundError: No such run in that scope.
+    :raises ValidationFailedError: The run froze no reporter case, so it is not a reporter run; or
+        a stored case of its template carries a reporter case this build cannot read.
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:

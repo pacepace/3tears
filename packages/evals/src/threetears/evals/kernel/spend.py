@@ -24,13 +24,13 @@ def reported_price_source(provider: str, *, from_rate_table: bool) -> str:
     charge is an observation and will not move, while an operator-declared rate applied to
     a counted volume moves the moment the operator edits it.
 
-    Args:
-        provider: The provider the call was made to.
-        from_rate_table: Whether the figure came from an operator-declared rate rather than
-            from the provider's own report.
-
-    Returns:
-        A provenance string, e.g. ``"search_api:configured_rate"`` or ``"search_api:reported"``.
+    :param provider: The provider the call was made to.
+    :ptype provider: str
+    :param from_rate_table: Whether the figure came from an operator-declared rate rather than
+        from the provider's own report.
+    :ptype from_rate_table: bool
+    :return: A provenance string, e.g. ``"search_api:configured_rate"`` or ``"search_api:reported"``.
+    :rtype: str
     """
     return f"{provider}:configured_rate" if from_rate_table else f"{provider}:reported"
 
@@ -55,8 +55,7 @@ class ExternalRateTable:
     currency is a change to the stored schema, the budget cap and every renderer, not a
     value to declare.
 
-    Attributes:
-        rates: USD per single unit, keyed by ``(provider, bare unit name)``.
+    :ivar rates: USD per single unit, keyed by ``(provider, bare unit name)``.
     """
 
     rates: Mapping[tuple[str, str], float]
@@ -70,12 +69,11 @@ class ExternalRateTable:
         ``(provider, unit)`` pair — never at another provider's rate, and never at a
         default standing in for a rate nobody set.
 
-        Args:
-            spend: The contribution to price.
-
-        Returns:
-            The dollar figure, or ``None`` when the provider reported none and no rate was
+        :param spend: The contribution to price.
+        :ptype spend: ExternalSpend
+        :return: The dollar figure, or ``None`` when the provider reported none and no rate was
             declared for its unit.
+        :rtype: float | None
         """
         if spend.money is not None:
             return spend.money

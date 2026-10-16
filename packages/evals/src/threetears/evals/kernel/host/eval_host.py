@@ -87,18 +87,19 @@ class CompletionClients(Protocol):
     ) -> BoundCompletionClient:
         """Build a client for ``role`` bound to ``model``.
 
-        Args:
-            role: Which apparatus role the client serves.
-            model: The model to bind, or ``None`` for the role's default as the host resolves it.
-                The built client names what it resolved to (``model_name``).
-            temperature: The sampling temperature, or ``None`` for the provider default. The judge always
-                names one (:data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE` unless a config
-                says otherwise); a client whose model refuses a temperature sends none and says so on each
-                completion (``CompletionResult.temperature`` is ``None``), because the score records what was
-                sent, never what was asked.
-
-        Returns:
-            The client, owned by the caller.
+        :param role: Which apparatus role the client serves.
+        :ptype role: CompletionRole
+        :param model: The model to bind, or ``None`` for the role's default as the host resolves it.
+            The built client names what it resolved to (``model_name``).
+        :ptype model: str | None
+        :param temperature: The sampling temperature, or ``None`` for the provider default. The judge always
+            names one (:data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE` unless a config
+            says otherwise); a client whose model refuses a temperature sends none and says so on each
+            completion (``CompletionResult.temperature`` is ``None``), because the score records what was
+            sent, never what was asked.
+        :ptype temperature: float | None
+        :return: The client, owned by the caller.
+        :rtype: BoundCompletionClient
         """
         ...  # pragma: no cover — protocol
 
@@ -127,18 +128,17 @@ class TemplateChecks:
     has a default: a host with nothing to check passes a function that checks nothing, which is a decision its code
     states.
 
-    Attributes:
-        require_known_tools_allowed: Whether each name in a template's ``tools_allowed`` is a tool type the host's
-            catalog has; handed the list (``None`` when the template states none).
-        refuse_undeclared_world_seed: Whether a template's ``world_seed`` names only paths the host's world can seed:
-            the host's walk over its own namespaces.
-        refuse_undeliverable_template: Whether the template declares only apparatus its candidate kind can honour: the
-            host's kind capability table. The template fields a kind never acts on are not its to refuse: every path
-            refuses those itself, from ``kinds``.
-        kinds: The host's launch registry, by kind name: the mapping its ``LaunchHost`` is built with. Every path that
-            admits a template refuses one stating a field its kind's entry ignores
-            (``threetears.evals.run.authoring.refuse_ignored_template_fields``), as the launch dispatch does; a kind
-            the registry does not carry is refused nothing here, and its launch is refused by name.
+    :ivar require_known_tools_allowed: Whether each name in a template's ``tools_allowed`` is a tool type the host's
+        catalog has; handed the list (``None`` when the template states none).
+    :ivar refuse_undeclared_world_seed: Whether a template's ``world_seed`` names only paths the host's world can seed:
+        the host's walk over its own namespaces.
+    :ivar refuse_undeliverable_template: Whether the template declares only apparatus its candidate kind can honour: the
+        host's kind capability table. The template fields a kind never acts on are not its to refuse: every path
+        refuses those itself, from ``kinds``.
+    :ivar kinds: The host's launch registry, by kind name: the mapping its ``LaunchHost`` is built with. Every path that
+        admits a template refuses one stating a field its kind's entry ignores
+        (``threetears.evals.run.authoring.refuse_ignored_template_fields``), as the launch dispatch does; a kind
+        the registry does not carry is refused nothing here, and its launch is refused by name.
     """
 
     require_known_tools_allowed: Callable[[Sequence[str] | None], None]
@@ -159,29 +159,28 @@ class EvalHost:
     :class:`~threetears.evals.kernel.host.profile.HostProfile` is one: it holds live objects and
     callables, is a runtime registration, and is never stored or sent anywhere.
 
-    Attributes:
-        profile: The product's vocabulary — what it sweeps, what it measures, its bars, its world
-            and its presentation style. Every identity, gate and lens reads it from here.
-        storage: Where every eval document is read and written, over the product's own
-            :class:`~threetears.evals.schema.store_port.DocumentStore`.
-        failure_describer: How a raised provider call reads — the only thing that can say a call
-            was refused for the calling account, which stops a run rather than excluding its cells.
-            :func:`~threetears.evals.kernel.provider.withhold_failure_detail` is the honest one
-            for a product with no error types of its own.
-        trace_sink: The product's tracing, or ``None`` when nobody watches its cells — which records
-            no spans and no span-derived latency, and is a decision rather than a fault.
-        blocking_executor: Where synchronous storage calls run off the event loop, or ``None`` for
-            the loop's default executor.
-        cell_timeout: What bounds each cell's wall clock;
-            :func:`~threetears.evals.kernel.host.timeouts.default_cell_timeout` for a product with
-            no timeout layer of its own.
-        clients: Builds the completion clients the engine's own roles call — the judge on a
-            re-judge, the analysis generator — and the client a kind's launcher asks for in the
-            ``variation`` role to write generated cases. ``None`` for a product whose engine work calls no
-            model, and an entrypoint that needs one refuses rather than guessing.
-        template_checks: The host's checks on a template (:class:`TemplateChecks`), which every path that admits a
-            template reads from here. ``None`` for a product that authors no template through the engine (a quick
-            ``Eval`` stores its own), and an entrypoint that admits one refuses rather than admitting it unchecked.
+    :ivar profile: The product's vocabulary — what it sweeps, what it measures, its bars, its world
+        and its presentation style. Every identity, gate and lens reads it from here.
+    :ivar storage: Where every eval document is read and written, over the product's own
+        :class:`~threetears.evals.schema.store_port.DocumentStore`.
+    :ivar failure_describer: How a raised provider call reads — the only thing that can say a call
+        was refused for the calling account, which stops a run rather than excluding its cells.
+        :func:`~threetears.evals.kernel.provider.withhold_failure_detail` is the honest one
+        for a product with no error types of its own.
+    :ivar trace_sink: The product's tracing, or ``None`` when nobody watches its cells — which records
+        no spans and no span-derived latency, and is a decision rather than a fault.
+    :ivar blocking_executor: Where synchronous storage calls run off the event loop, or ``None`` for
+        the loop's default executor.
+    :ivar cell_timeout: What bounds each cell's wall clock;
+        :func:`~threetears.evals.kernel.host.timeouts.default_cell_timeout` for a product with
+        no timeout layer of its own.
+    :ivar clients: Builds the completion clients the engine's own roles call — the judge on a
+        re-judge, the analysis generator — and the client a kind's launcher asks for in the
+        ``variation`` role to write generated cases. ``None`` for a product whose engine work calls no
+        model, and an entrypoint that needs one refuses rather than guessing.
+    :ivar template_checks: The host's checks on a template (:class:`TemplateChecks`), which every path that admits a
+        template reads from here. ``None`` for a product that authors no template through the engine (a quick
+        ``Eval`` stores its own), and an entrypoint that admits one refuses rather than admitting it unchecked.
     """
 
     profile: HostProfile
@@ -196,15 +195,12 @@ class EvalHost:
     def completion_clients(self, purpose: str) -> CompletionClients:
         """The host's client factory, or a refusal naming what needed one.
 
-        Args:
-            purpose: What is asking, for the refusal — e.g. ``"a re-judge"``.
-
-        Returns:
-            The factory.
-
-        Raises:
-            RefusedInput: This host supplies no completion clients — a :class:`ValueError`, as every caller
-                documents, that a surface reports as a refusal rather than as an unanticipated error.
+        :param purpose: What is asking, for the refusal — e.g. ``"a re-judge"``.
+        :ptype purpose: str
+        :return: The factory.
+        :rtype: CompletionClients
+        :raises RefusedInput: This host supplies no completion clients — a :class:`ValueError`, as every caller
+            documents, that a surface reports as a refusal rather than as an unanticipated error.
         """
         if self.clients is None:
             raise RefusedInput(
@@ -216,15 +212,12 @@ class EvalHost:
     def checks_for(self, purpose: str) -> TemplateChecks:
         """The host's template checks, or a refusal naming what needed them.
 
-        Args:
-            purpose: What is admitting a template, for the refusal — e.g. ``"create_template"``.
-
-        Returns:
-            The checks.
-
-        Raises:
-            RefusedInput: This host supplies no template checks — a :class:`ValueError`, as every caller documents,
-                that a surface reports as a refusal rather than as an unanticipated error.
+        :param purpose: What is admitting a template, for the refusal — e.g. ``"create_template"``.
+        :ptype purpose: str
+        :return: The checks.
+        :rtype: TemplateChecks
+        :raises RefusedInput: This host supplies no template checks — a :class:`ValueError`, as every caller documents,
+            that a surface reports as a refusal rather than as an unanticipated error.
         """
         if self.template_checks is None:
             raise RefusedInput(

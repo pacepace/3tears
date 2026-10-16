@@ -218,8 +218,7 @@ class SeedJudgeCase(EvalBaseModel):
     def authored(self, criterion_template: EvalTemplate) -> AuthoredJudgeCase:
         """The case, built against the template that words its criterion, as ``judge_case_author`` builds one.
 
-        Raises:
-            ValidationFailedError: The template has no such dimension, or its scale cannot hold the verdict.
+        :raises ValidationFailedError: The template has no such dimension, or its scale cannot hold the verdict.
         """
         return author_judge_case(
             criterion_template,
@@ -326,20 +325,19 @@ class SeedCaseSet(EvalBaseModel):
 class SeedCorpus:
     """A host's authored definitions for one scope, already constructed through their production models.
 
-    Raises:
-        ValueError: A definition names a scope other than ``scope_id``. A corpus seeds one scope,
-            and a definition from another would be written there by a seed that reads only this
-            one — so its slot would never read occupied, and every boot would write it again.
-            Also two definitions of one type under one natural key (template ``name``, rubric dim
-            ``key``, judge config ``(rubric_dim_id, name)``), since the seed would write the first
-            and read the second as occupied by it; and two non-archived judge configs for one
-            ``rubric_dim_id``, a state no authoring path can produce — archive all but the one a
-            run should inherit, and name the others by id in a launch's ``judge_config_ids``. And two
-            identical judge cases, which would freeze into one stored case. And two judge cases under one name, two
-            case sets under one name, and a case set listing a case twice, naming a case the corpus does not carry,
-            or naming one of another judge template than its own. And a template case naming a template the corpus
-            does not carry, or one of the judge kind, and two template cases of one template under one name or
-            with one content.
+    :raises ValueError: A definition names a scope other than ``scope_id``. A corpus seeds one scope,
+        and a definition from another would be written there by a seed that reads only this
+        one — so its slot would never read occupied, and every boot would write it again.
+        Also two definitions of one type under one natural key (template ``name``, rubric dim
+        ``key``, judge config ``(rubric_dim_id, name)``), since the seed would write the first
+        and read the second as occupied by it; and two non-archived judge configs for one
+        ``rubric_dim_id``, a state no authoring path can produce — archive all but the one a
+        run should inherit, and name the others by id in a launch's ``judge_config_ids``. And two
+        identical judge cases, which would freeze into one stored case. And two judge cases under one name, two
+        case sets under one name, and a case set listing a case twice, naming a case the corpus does not carry,
+        or naming one of another judge template than its own. And a template case naming a template the corpus
+        does not carry, or one of the judge kind, and two template cases of one template under one name or
+        with one content.
     """
 
     scope_id: str
@@ -578,10 +576,9 @@ def _load_dir[M: BaseModel](
 
     Sorted so a corpus loads in a stable order and a seeding log is diffable between boots.
 
-    Raises:
-        ValueError: A file is not valid JSON, or is not a valid document for ``model``.
-            Raised rather than skipped: a definition that silently fails to load is a
-            measurement instrument missing a dimension nobody notices is gone.
+    :raises ValueError: A file is not valid JSON, or is not a valid document for ``model``.
+        Raised rather than skipped: a definition that silently fails to load is a
+        measurement instrument missing a dimension nobody notices is gone.
     """
     if not directory.is_dir():
         return ()
@@ -604,25 +601,23 @@ def load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus:
     definitions, so it holds no path to a corpus: a host with authored definitions passes
     their directory here.
 
-    Args:
-        seed_dir: A directory holding ``templates/``, ``rubric_dims/``, ``judge_configs/``, ``template_cases/``,
-            ``judge_cases/`` and ``case_sets/`` subdirectories of ``*.json`` documents (a template case as
-            :class:`SeedTemplateCase` and a judge case as :class:`SeedJudgeCase`, each named by its file unless it
-            names itself, and a case set as :class:`SeedCaseSet`; none of the three carries a scope). A missing
-            subdirectory loads as empty.
-        scope_id: The scope the definitions are built in. A file that names a ``scope_id`` of
-            its own does not construct — the field is passed twice — because the scope is the
-            host's to choose at load, not the file's.
-
-    Returns:
-        The corpus. Empty tuples where a subdirectory is absent or holds no ``*.json``.
-
-    Raises:
-        FileNotFoundError: ``seed_dir`` itself is not a directory. A host naming a corpus that
-            is not there has a wrong path, not an empty corpus, and loading it as empty would
-            seed nothing with nothing in the log to say why.
-        ValueError: A file in the corpus does not construct. This is deliberately loud —
-            it means the host ships a definition the server would refuse.
+    :param seed_dir: A directory holding ``templates/``, ``rubric_dims/``, ``judge_configs/``, ``template_cases/``,
+        ``judge_cases/`` and ``case_sets/`` subdirectories of ``*.json`` documents (a template case as
+        :class:`SeedTemplateCase` and a judge case as :class:`SeedJudgeCase`, each named by its file unless it
+        names itself, and a case set as :class:`SeedCaseSet`; none of the three carries a scope). A missing
+        subdirectory loads as empty.
+    :ptype seed_dir: Path
+    :param scope_id: The scope the definitions are built in. A file that names a ``scope_id`` of
+        its own does not construct — the field is passed twice — because the scope is the
+        host's to choose at load, not the file's.
+    :ptype scope_id: str
+    :return: The corpus. Empty tuples where a subdirectory is absent or holds no ``*.json``.
+    :rtype: SeedCorpus
+    :raises FileNotFoundError: ``seed_dir`` itself is not a directory. A host naming a corpus that
+        is not there has a wrong path, not an empty corpus, and loading it as empty would
+        seed nothing with nothing in the log to say why.
+    :raises ValueError: A file in the corpus does not construct. This is deliberately loud —
+        it means the host ships a definition the server would refuse.
     """
     if not seed_dir.is_dir():
         raise FileNotFoundError(f"eval seed corpus directory {seed_dir} does not exist or is not a directory")
@@ -672,27 +667,25 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
     ``case_set_mint`` takes, reported under ``case_set`` keyed by its label (``<name> v1``); one whose
     cases did not all land (a write the store refused) is counted failed and minted on the next boot.
 
-    Args:
-        host: The host: the store being seeded, the profile a template is held to, and the template checks
-            ``create_template`` reads (``template_checks``).
-        corpus: The definitions to seed and the scope they are seeded into, which the host
-            loads (:func:`load_seed_corpus` over its own directory) or builds in memory.
-            Required rather than defaulted, so the seeder never decides whose definitions a
-            scope receives.
-
-    Returns:
-        Per-doc-type created, skipped and failed counts, the natural keys written, the keys
+    :param host: The host: the store being seeded, the profile a template is held to, and the template checks
+        ``create_template`` reads (``template_checks``).
+    :ptype host: EvalHost
+    :param corpus: The definitions to seed and the scope they are seeded into, which the host
+        loads (:func:`load_seed_corpus` over its own directory) or builds in memory.
+        Required rather than defaulted, so the seeder never decides whose definitions a
+        scope receives.
+    :ptype corpus: SeedCorpus
+    :return: Per-doc-type created, skipped and failed counts, the natural keys written, the keys
         withheld as conflicting with the store, the keys withheld as deleted, and the keys withheld because only a
         reset can write them (``needs_reset``: a template case or judge case for a revision already holding cases, and
         a case set listing one).
-
-    Raises:
-        ValidationFailedError: A corpus template fails a gate ``create_template`` applies, or a
-            corpus judge case one ``judge_case_author`` applies (a template it names that neither the
-            store nor the corpus holds, a judge template of another kind, a criterion the template's
-            rubric lacks, a verdict its scale cannot hold). Raised before anything is written, naming
-            every refused definition and why.
-        RefusedInput: The host supplies no template checks.
+    :rtype: SeedOutcome
+    :raises ValidationFailedError: A corpus template fails a gate ``create_template`` applies, or a
+        corpus judge case one ``judge_case_author`` applies (a template it names that neither the
+        store nor the corpus holds, a judge template of another kind, a criterion the template's
+        rubric lacks, a verdict its scale cannot hold). Raised before anything is written, naming
+        every refused definition and why.
+    :raises RefusedInput: The host supplies no template checks.
     """
     checks = host.checks_for("the definition seed")
     templates: list[EvalTemplate] = []
@@ -774,16 +767,15 @@ def authored_seed_cases(
 ) -> list[tuple[SeedJudgeCase, AuthoredJudgeCase]]:
     """Every corpus judge case built through ``author_judge_case``, before anything is written; refused as a whole.
 
-    Args:
-        corpus: The corpus whose judge cases to build.
-        by_name: The template each name resolves to. The seed resolves one in the store first (the store is master:
-            a corpus template whose name the store holds is never written), as its current revision, and else among
-            the corpus's admitted templates, which the same seed writes; a drift read and a reset resolve one in the
-            corpus first, since they read and write what the corpus carries.
-
-    Raises:
-        ValidationFailedError: A case names a template neither holds, a judge template not of the judge kind, or a
-            criterion or verdict ``judge_case_author`` would refuse; naming every such case.
+    :param corpus: The corpus whose judge cases to build.
+    :ptype corpus: SeedCorpus
+    :param by_name: The template each name resolves to. The seed resolves one in the store first (the store is master:
+        a corpus template whose name the store holds is never written), as its current revision, and else among
+        the corpus's admitted templates, which the same seed writes; a drift read and a reset resolve one in the
+        corpus first, since they read and write what the corpus carries.
+    :ptype by_name: Mapping[str, EvalTemplate]
+    :raises ValidationFailedError: A case names a template neither holds, a judge template not of the judge kind, or a
+        criterion or verdict ``judge_case_author`` would refuse; naming every such case.
     """
     built: list[tuple[SeedJudgeCase, AuthoredJudgeCase]] = []
     refusals: list[str] = []
@@ -883,8 +875,8 @@ def _seed_judge_cases(
     ``needs_reset``, keyed ``<judge template>/<corpus name>``: ``reset_definitions`` writes the template's next
     revision with the whole battery.
 
-    Returns:
-        Each named case that is stored now, created or already present, by its corpus name: its test case id.
+    :return: Each named case that is stored now, created or already present, by its corpus name: its test case id.
+    :rtype: dict[str, str]
     """
     storage = host.storage
     created_keys: list[str] = []
@@ -985,9 +977,10 @@ def _seed_case_sets(
 def seed_case_set_digest(case_set: SeedCaseSet, authored: Mapping[str, AuthoredJudgeCase]) -> str:
     """The digest of a corpus case set's content: its name, template, ``tracked`` and each listed case's content.
 
-    Args:
-        case_set: The corpus set.
-        authored: Each corpus judge case the set may list, built, by its corpus name.
+    :param case_set: The corpus set.
+    :ptype case_set: SeedCaseSet
+    :param authored: Each corpus judge case the set may list, built, by its corpus name.
+    :ptype authored: Mapping[str, AuthoredJudgeCase]
     """
     return case_set_digest(
         name=case_set.name,
@@ -1010,17 +1003,24 @@ def _seed_doc_type[D](
 ) -> None:
     """Write one doc type's definitions into their empty slots, recording the counts on ``outcome``.
 
-    Args:
-        outcome: The seed's running tally, written under ``doc_type``.
-        doc_type: The doc type the counts are recorded under.
-        definitions: That type's definitions from the corpus.
-        occupied: The natural keys already present.
-        natural_key: A definition's slot. Logged joined with ``/``.
-        save: The storage write for this type.
-        conflicts: Whether writing an unoccupied definition would contradict a live record; such a
-            definition is not written and is recorded under ``conflicted``.
-        deleted: Natural keys an operator deleted (tombstoned); an unoccupied definition under one
-            is not written and is recorded under ``deleted``.
+    :param outcome: The seed's running tally, written under ``doc_type``.
+    :ptype outcome: SeedOutcome
+    :param doc_type: The doc type the counts are recorded under.
+    :ptype doc_type: str
+    :param definitions: That type's definitions from the corpus.
+    :ptype definitions: Sequence[D]
+    :param occupied: The natural keys already present.
+    :ptype occupied: set[tuple[str, ...]]
+    :param natural_key: A definition's slot. Logged joined with ``/``.
+    :ptype natural_key: Callable[[D], tuple[str, ...]]
+    :param save: The storage write for this type.
+    :ptype save: Callable[[D], None]
+    :param conflicts: Whether writing an unoccupied definition would contradict a live record; such a
+        definition is not written and is recorded under ``conflicted``.
+    :ptype conflicts: Callable[[D], bool]
+    :param deleted: Natural keys an operator deleted (tombstoned); an unoccupied definition under one
+        is not written and is recorded under ``deleted``.
+    :ptype deleted: set[tuple[str, ...]] | None
     """
     created_keys: list[str] = []
     conflicted: list[str] = []

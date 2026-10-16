@@ -51,11 +51,10 @@ from packages.evals.tests.off_loop import off_loop
 def _delivery(**overrides: Any) -> AsyncDelivery:
     """A scout delivered two turns after it was acknowledged, live on its own model, with overrides.
 
-    Args:
-        **overrides: Field overrides.
-
-    Returns:
-        The entry.
+    :param **overrides: Field overrides.
+    :ptype overrides: Any
+    :return: The entry.
+    :rtype: AsyncDelivery
     """
     fields: dict[str, Any] = {
         "tool": "scout_ahead",
@@ -201,13 +200,14 @@ class _ScoutStillOutKind(ToyExtractorKind):
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Report a scout in flight and a payload, then wait past any deadline.
 
-        Args:
-            instance: Ignored.
-            test_case: Ignored.
-            sink: The cell's sink, which the reading is registered on.
-
-        Returns:
-            Never.
+        :param instance: Ignored.
+        :ptype instance: ToyExtractorInstance
+        :param test_case: Ignored.
+        :ptype test_case: EvalTestCase
+        :param sink: The cell's sink, which the reading is registered on.
+        :ptype sink: CellSink
+        :return: Never.
+        :rtype: CandidateOutput
         """
         sink.report_progress(
             lambda: CandidateOutput(

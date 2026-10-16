@@ -64,13 +64,14 @@ class _ScriptedJudge:
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> _Reply:
         """Record the prompt pair and hand back the fixed reply.
 
-        Args:
-            system: The system prompt.
-            user: The user prompt.
-            response_format: Ignored.
-
-        Returns:
-            The scripted reply.
+        :param system: The system prompt.
+        :ptype system: str
+        :param user: The user prompt.
+        :ptype user: str
+        :param response_format: Ignored.
+        :ptype response_format: Any
+        :return: The scripted reply.
+        :rtype: _Reply
         """
         self.calls.append((system, user))
         return self.reply

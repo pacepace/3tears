@@ -657,19 +657,18 @@ def definition_drift(
 ) -> DefinitionDrift:
     """Read every definition of a seed corpus against its scope's stored one. Writes nothing, spends nothing.
 
-    Args:
-        host: The host: the store read, and the profile a template's spec is resolved by.
-        corpus: The corpus, loaded for the scope it reads (:func:`~threetears.evals.run.load_seed_corpus`).
-        seeded_digests: What the host seeded before ``.30``, when the store recorded nothing: the digest of each
-            definition it seeded then (:func:`corpus_digests` over that corpus), by the key a reading names it by. A
-            stored record's own digest wins over it. ``None`` for none, when such rows read ``unknown``.
-
-    Returns:
-        One reading per corpus definition: templates, rubric dims, judge configs, template cases, judge cases, case
+    :param host: The host: the store read, and the profile a template's spec is resolved by.
+    :ptype host: EvalHost
+    :param corpus: The corpus, loaded for the scope it reads (:func:`~threetears.evals.run.load_seed_corpus`).
+    :ptype corpus: SeedCorpus
+    :param seeded_digests: What the host seeded before ``.30``, when the store recorded nothing: the digest of each
+        definition it seeded then (:func:`corpus_digests` over that corpus), by the key a reading names it by. A
+        stored record's own digest wins over it. ``None`` for none, when such rows read ``unknown``.
+    :ptype seeded_digests: Mapping[str, str] | None
+    :return: One reading per corpus definition: templates, rubric dims, judge configs, template cases, judge cases, case
         sets.
-
-    Raises:
-        ValidationFailedError: A corpus judge case cannot be built, as the boot seed refuses it.
+    :rtype: DefinitionDrift
+    :raises ValidationFailedError: A corpus judge case cannot be built, as the boot seed refuses it.
     """
     survey = _Survey.read(host, corpus, seeded_digests)
     return DefinitionDrift(scope_id=corpus.scope_id, readings=list(survey.readings.values()))
@@ -683,13 +682,13 @@ def corpus_digests(host: EvalHost, corpus: SeedCorpus) -> dict[str, str]:
     since reads ``stale`` rather than ``unknown``. A template is digested with its spec as the host's kind resolves it
     today, so a row stored under a spec model that has since gained a default reads as differing from it.
 
-    Args:
-        host: The host whose profile resolves a template's spec, and whose store resolves a criterion template the
-            corpus does not carry.
-        corpus: The corpus, loaded for the scope it describes.
-
-    Returns:
-        Each definition's key -> its digest.
+    :param host: The host whose profile resolves a template's spec, and whose store resolves a criterion template the
+        corpus does not carry.
+    :ptype host: EvalHost
+    :param corpus: The corpus, loaded for the scope it describes.
+    :ptype corpus: SeedCorpus
+    :return: Each definition's key -> its digest.
+    :rtype: dict[str, str]
     """
     return {reading.key: reading.seed_digest for reading in definition_drift(host, corpus).readings}
 
@@ -720,27 +719,28 @@ def reset_definitions(
     new revision's cases; a case set whose cases are all current is minted alone. A template case resets with its
     template, whose new revision holds every corpus case of it (the module docstring).
 
-    Args:
-        host: The host: the store written, and the profile and template checks (``template_checks``) a template is
-            admitted under, as ``create_template`` admits one.
-        corpus: The corpus, loaded for the scope it writes.
-        definitions: The keys to reset, as a drift read names them (:meth:`DefinitionDrift.keys`).
-        overwrite_customized: Write over a definition reading ``customized`` or ``unknown``, and a judge template's
-            live cases the corpus does not carry. What is superseded stays stored, archived, readable by id.
-        seeded_digests: As :func:`definition_drift` takes it.
-
-    Returns:
-        What was written, and the drift read after.
-
-    Raises:
-        ValidationFailedError: A key names no corpus definition, or a template or judge case authoring would refuse;
-            nothing was written, every refusal named.
-        ConflictError: A definition may be an operator's (customized, unknown, or uncarried live cases) without
-            ``overwrite_customized``, or a judge config contradicts a live config of another name for its
-            dimension; nothing was written, every refusal named.
-        StorageError: A write failed part-way. Every check ran first, so this is the store failing, and the
-            definitions written before it stand; the drift read says which.
-        RefusedInput: The host supplies no template checks.
+    :param host: The host: the store written, and the profile and template checks (``template_checks``) a template is
+        admitted under, as ``create_template`` admits one.
+    :ptype host: EvalHost
+    :param corpus: The corpus, loaded for the scope it writes.
+    :ptype corpus: SeedCorpus
+    :param definitions: The keys to reset, as a drift read names them (:meth:`DefinitionDrift.keys`).
+    :ptype definitions: Sequence[str]
+    :param overwrite_customized: Write over a definition reading ``customized`` or ``unknown``, and a judge template's
+        live cases the corpus does not carry. What is superseded stays stored, archived, readable by id.
+    :ptype overwrite_customized: bool
+    :param seeded_digests: As :func:`definition_drift` takes it.
+    :ptype seeded_digests: Mapping[str, str] | None
+    :return: What was written, and the drift read after.
+    :rtype: DefinitionReset
+    :raises ValidationFailedError: A key names no corpus definition, or a template or judge case authoring would refuse;
+        nothing was written, every refusal named.
+    :raises ConflictError: A definition may be an operator's (customized, unknown, or uncarried live cases) without
+        ``overwrite_customized``, or a judge config contradicts a live config of another name for its
+        dimension; nothing was written, every refusal named.
+    :raises StorageError: A write failed part-way. Every check ran first, so this is the store failing, and the
+        definitions written before it stand; the drift read says which.
+    :raises RefusedInput: The host supplies no template checks.
     """
     checks = host.checks_for("a definition reset")
     scope = corpus.scope_id

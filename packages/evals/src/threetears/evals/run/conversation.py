@@ -83,24 +83,26 @@ async def drive_conversation(
     Nothing is posted through ``post_user_turn``: the host's fire handle moved the candidate's world, and the
     kind decides how its candidate perceives it. A conversation of world rounds alone runs no simulator call.
 
-    Args:
-        driver: A fresh driver over the template's ``conversation`` block.
-        candidate_turn: The candidate's answer to one round, handed that round's delivered utterances.
-        post_user_turn: Delivers one simulated utterance into the candidate's world.
-        llm: The simulator-role client, for utterances and ``llm_decided`` picks alike. Every call it makes is
-            held against the run's cost cap through ``sink``, reserved at the client's own ceiling when it
-            prices its calls (``price_ceiling``), so a client that does is never called past the cap.
-        sink: The cell's sink, which holds every simulator call against the run's cost cap and counts what it
-            cost, and is asked before every decision whether the cap is reached (see the module docstring).
-        world: The cell's world session, which fires each world round's dimension; required when the
-            conversation declares world rounds.
-
-    Returns:
-        Why the conversation stopped: ``max_turns``, ``user_done`` or ``budget_stopped``.
-
-    Raises:
-        ValueError: ``driver`` has already taken a turn; this drives a conversation from its start. Or the
-            conversation declares world rounds and no world session was handed in to fire them.
+    :param driver: A fresh driver over the template's ``conversation`` block.
+    :ptype driver: TurnDriver
+    :param candidate_turn: The candidate's answer to one round, handed that round's delivered utterances.
+    :ptype candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]]
+    :param post_user_turn: Delivers one simulated utterance into the candidate's world.
+    :ptype post_user_turn: Callable[[SimulatorTurn], Awaitable[None]]
+    :param llm: The simulator-role client, for utterances and ``llm_decided`` picks alike. Every call it makes is
+        held against the run's cost cap through ``sink``, reserved at the client's own ceiling when it
+        prices its calls (``price_ceiling``), so a client that does is never called past the cap.
+    :ptype llm: SimulatorLLM
+    :param sink: The cell's sink, which holds every simulator call against the run's cost cap and counts what it
+        cost, and is asked before every decision whether the cap is reached (see the module docstring).
+    :ptype sink: CellSink
+    :param world: The cell's world session, which fires each world round's dimension; required when the
+        conversation declares world rounds.
+    :ptype world: WorldSession | None
+    :return: Why the conversation stopped: ``max_turns``, ``user_done`` or ``budget_stopped``.
+    :rtype: ConversationStopCause
+    :raises ValueError: ``driver`` has already taken a turn; this drives a conversation from its start. Or the
+        conversation declares world rounds and no world session was handed in to fire them.
     """
     if driver.user_turns or driver.candidate_turns or driver.stop_cause is not None:
         raise ValueError("drive_conversation runs a conversation from its start, and this driver has already run")

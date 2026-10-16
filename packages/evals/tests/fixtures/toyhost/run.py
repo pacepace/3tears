@@ -137,8 +137,8 @@ def toyhost_template() -> EvalTemplate:
     ledger, so a stored toy result can be re-checked; its control proves the check discriminates.
     ``field_accuracy`` stays the kind's own fact, because it needs the adjudicated key.
 
-    Returns:
-        The template.
+    :return: The template.
+    :rtype: EvalTemplate
     """
     return EvalTemplate(
         id="toyhost-template-extract-invoice-fields",
@@ -187,8 +187,8 @@ def toyhost_arming_template() -> EvalTemplate:
     Both new checks carry a control (the posted hold), and each fails when the candidate did nothing —
     the seed arms the hold and never sets it.
 
-    Returns:
-        The template.
+    :return: The template.
+    :rtype: EvalTemplate
     """
     template = toyhost_template()
     controls = template.goal_check_controls
@@ -227,11 +227,10 @@ def toyhost_test_cases(template: EvalTemplate) -> list[EvalTestCase]:
     engine has: there is no per-case host payload, so a stimulus a host names in its own
     vocabulary has to be expressible as strings.
 
-    Args:
-        template: The template these cases were generated from.
-
-    Returns:
-        Three cases, in document order.
+    :param template: The template these cases were generated from.
+    :ptype template: EvalTemplate
+    :return: Three cases, in document order.
+    :rtype: list[EvalTestCase]
     """
     return [
         EvalTestCase(
@@ -271,19 +270,22 @@ def toyhost_run(
 ) -> EvalRun:
     """One arm of the run-path campaign: one extractor model over every case, ``k=2``.
 
-    Args:
-        model: The extractor this arm binds the candidate to.
-        template: The template being run.
-        kind: The kind that will drive the cells — asked which carriers it attaches and which
-            dimensions the seed sets, because the run-time algebra is a report of what a run
-            could actually have done rather than of what a template asked for.
-        world: The world the placements are computed against. The SAME registry the kind seeds
-            through, so the record and the run cannot disagree about what was declared.
-        arm: The arm's retrieval tuning and label. ``None`` is the standard matrix's arm for
-            ``model``, which records no retrieval tuning.
-
-    Returns:
-        The run, with its world placements already recorded.
+    :param model: The extractor this arm binds the candidate to.
+    :ptype model: str
+    :param template: The template being run.
+    :ptype template: EvalTemplate
+    :param kind: The kind that will drive the cells — asked which carriers it attaches and which
+        dimensions the seed sets, because the run-time algebra is a report of what a run
+        could actually have done rather than of what a template asked for.
+    :ptype kind: ToyExtractorKind
+    :param world: The world the placements are computed against. The SAME registry the kind seeds
+        through, so the record and the run cannot disagree about what was declared.
+    :ptype world: WorldRegistry
+    :param arm: The arm's retrieval tuning and label. ``None`` is the standard matrix's arm for
+        ``model``, which records no retrieval tuning.
+    :ptype arm: ToyhostArm | None
+    :return: The run, with its world placements already recorded.
+    :rtype: EvalRun
     """
     # A key is recorded only when the arm states it: a key omitted is a key this batch never
     # recorded, which is a different fact from one recorded as empty.
@@ -352,8 +354,8 @@ class ToyhostRunPath:
     async def results(self) -> list[EvalResult]:
         """Every cell the drive produced, run by run, read from the host's store off the event loop.
 
-        Returns:
-            Twelve observations for the standard matrix.
+        :return: Twelve observations for the standard matrix.
+        :rtype: list[EvalResult]
         """
 
         def read() -> list[EvalResult]:
@@ -365,11 +367,10 @@ class ToyhostRunPath:
     async def trace(self, result: EvalResult) -> EvalTrace | None:
         """The payload document the runner wrote beside one cell, or ``None`` when it wrote none.
 
-        Args:
-            result: The cell.
-
-        Returns:
-            Its trace.
+        :param result: The cell.
+        :ptype result: EvalResult
+        :return: Its trace.
+        :rtype: EvalTrace | None
         """
         return await run_blocking(
             self.host.blocking_executor, self.host.storage.load_eval_trace, result.id, result.scope_id
@@ -392,24 +393,27 @@ async def execute_toyhost_run(
     A judged drive (``packages.evals.tests.fixtures.toyhost.judge``) passes a service, and the kind then renders
     the evidence that service scores.
 
-    Args:
-        host: The toy host (:func:`~packages.evals.tests.fixtures.toyhost.host.toyhost_host`). Passed
-            in rather than built here because the world's read handles are bound to the object its
-            profile carries, so a caller that wants to read the world back afterwards needs the same
-            one — and its trace sink is the caller's decision, which a default here would make for it.
-        template: The template to run. ``None`` is :func:`toyhost_template`. A caller supplies its
-            own to reach a refusal the standard template cannot — a seed naming an undeclared
-            dimension, say, which the kind refuses and the runner records as one excluded cell.
-        arms: The batches to run. ``None`` is the standard matrix — one arm per extractor model,
-            no retrieval tuning.
-        judge_service: The engine's judge, or ``None`` for a drive nothing scores. Given one, the
-            kind hands each cell's evidence to it; the template must carry the rubric it scores.
-        judge_model: The model ``judge_service`` scores with. The launch that resolves it is the
-            host's, so a host driving the runner directly records it on each arm's run — the one
-            carrier the runner stamps every cell from — and the runner refuses a judge without one.
-
-    Returns:
-        What the drive produced.
+    :param host: The toy host (:func:`~packages.evals.tests.fixtures.toyhost.host.toyhost_host`). Passed
+        in rather than built here because the world's read handles are bound to the object its
+        profile carries, so a caller that wants to read the world back afterwards needs the same
+        one — and its trace sink is the caller's decision, which a default here would make for it.
+    :ptype host: EvalHost
+    :param template: The template to run. ``None`` is :func:`toyhost_template`. A caller supplies its
+        own to reach a refusal the standard template cannot — a seed naming an undeclared
+        dimension, say, which the kind refuses and the runner records as one excluded cell.
+    :ptype template: EvalTemplate | None
+    :param arms: The batches to run. ``None`` is the standard matrix — one arm per extractor model,
+        no retrieval tuning.
+    :ptype arms: Sequence[ToyhostArm] | None
+    :param judge_service: The engine's judge, or ``None`` for a drive nothing scores. Given one, the
+        kind hands each cell's evidence to it; the template must carry the rubric it scores.
+    :ptype judge_service: JudgeService | None
+    :param judge_model: The model ``judge_service`` scores with. The launch that resolves it is the
+        host's, so a host driving the runner directly records it on each arm's run — the one
+        carrier the runner stamps every cell from — and the runner refuses a judge without one.
+    :ptype judge_model: str | None
+    :return: What the drive produced.
+    :rtype: ToyhostRunPath
     """
     world = host.profile.world
     assert world is not None, "the run path seeds a world; this profile registers none"
@@ -463,8 +467,8 @@ def toyhost_run_design() -> CampaignDesign:
     stimulus WAS held: the three invoices are a fixed corpus every arm saw, which is the opposite
     of the corpus campaign's observational shape and is the reason both exist.
 
-    Returns:
-        The declaration.
+    :return: The declaration.
+    :rtype: CampaignDesign
     """
     return CampaignDesign.model_validate(
         {
@@ -506,11 +510,10 @@ def toyhost_run_design() -> CampaignDesign:
 def toyhost_run_campaign(path: ToyhostRunPath) -> EvalCampaign:
     """The campaign the two arms belong to.
 
-    Args:
-        path: What the drive produced.
-
-    Returns:
-        The campaign, naming both arms in declaration order.
+    :param path: What the drive produced.
+    :ptype path: ToyhostRunPath
+    :return: The campaign, naming both arms in declaration order.
+    :rtype: EvalCampaign
     """
     return EvalCampaign(
         id="7c1e2f05-4b83-42d7-9a6e-8d0f35b91c47",
@@ -531,11 +534,10 @@ def toyhost_run_bundle(path: ToyhostRunPath) -> AnalysisContextBundle:
 
     Assembled in the vocabulary of the host the drive ran under.
 
-    Args:
-        path: What the drive produced.
-
-    Returns:
-        The bundle, over runner-produced observations.
+    :param path: What the drive produced.
+    :ptype path: ToyhostRunPath
+    :return: The bundle, over runner-produced observations.
+    :rtype: AnalysisContextBundle
     """
     return assemble_context_bundle(toyhost_run_campaign(path), storage=path.host.storage, profile=path.host.profile)
 
@@ -557,8 +559,8 @@ def toyhost_retrieval_arms() -> tuple[ToyhostArm, ToyhostArm, ToyhostArm]:
     drifted on a knob nobody overlaid — the resolved configuration moved by more than the swept
     knob accounts for.
 
-    Returns:
-        ``(control, deeper, deeper_and_drifted)``.
+    :return: ``(control, deeper, deeper_and_drifted)``.
+    :rtype: tuple[ToyhostArm, ToyhostArm, ToyhostArm]
     """
     model = RUN_MODELS[0]
     overlay = {"rerank_depth": RETRIEVAL_SWEPT_DEPTH}
@@ -580,13 +582,14 @@ def toyhost_retrieval_arms() -> tuple[ToyhostArm, ToyhostArm, ToyhostArm]:
 def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun], *, control: EvalRun) -> EvalCampaign:
     """A retrieval-sweep campaign over some of a drive's batches, controlled on one of them.
 
-    Args:
-        path: What the drive produced — where the control's observations are read.
-        members: The batches the campaign names.
-        control: The batch whose variant is the declared control.
-
-    Returns:
-        The campaign.
+    :param path: What the drive produced — where the control's observations are read.
+    :ptype path: ToyhostRunPath
+    :param members: The batches the campaign names.
+    :ptype members: Sequence[EvalRun]
+    :param control: The batch whose variant is the declared control.
+    :ptype control: EvalRun
+    :return: The campaign.
+    :rtype: EvalCampaign
     """
     from threetears.evals.analysis import variant_key_of_run
 

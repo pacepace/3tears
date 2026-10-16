@@ -37,13 +37,13 @@ def _apparatus_classes(
     :class:`~threetears.evals.analysis.cells.Observation` carries the coordinate, and nothing
     downstream can tell which route produced it.
 
-    Args:
-        runs: The campaign's resolved runs.
-        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`. A
-            ``None`` level means the run never recorded that dimension.
-
-    Returns:
-        Run id → the class that run's observations belong to.
+    :param runs: The campaign's resolved runs.
+    :ptype runs: list[EvalRun]
+    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`. A
+        ``None`` level means the run never recorded that dimension.
+    :ptype apparatus_levels: dict[str, dict[str, str | None]]
+    :return: Run id → the class that run's observations belong to.
+    :rtype: dict[str, ApparatusClass]
     """
     dimensions = set(apparatus_levels)
     return {
@@ -76,19 +76,22 @@ def _observations(
     The key is the one the runner stamped on the result — every result carries one, since the
     engine resolves every run's candidate model and kind into its variant map.
 
-    Args:
-        runs: The campaign's resolved runs, in bundle order.
-        results_by_run: Each run's results, keyed by run id.
-        classes: Run id → apparatus class, from :func:`_apparatus_classes`.
-        scope_id: The scope these were read under.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        ``(observations, variant_index)`` — the observations in ``(run, result id)`` order, and
+    :param runs: The campaign's resolved runs, in bundle order.
+    :ptype runs: list[EvalRun]
+    :param results_by_run: Each run's results, keyed by run id.
+    :ptype results_by_run: dict[str, list[EvalResult]]
+    :param classes: Run id → apparatus class, from :func:`_apparatus_classes`.
+    :ptype classes: dict[str, ApparatusClass]
+    :param scope_id: The scope these were read under.
+    :ptype scope_id: str
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: ``(observations, variant_index)`` — the observations in ``(run, result id)`` order, and
         one index entry per variant, carrying the lever map its key was
         digested from. The index is built HERE rather than beside the cells because this is the
         one place that holds both halves at once: a cell knows its variant key and nothing
         about the run and candidate model the levels came from.
+    :rtype: tuple[list[Observation], list[VariantIndexEntry]]
     """
     observations = []
     index: dict[str, VariantIndexEntry] = {}
@@ -132,37 +135,35 @@ def _variant_key_of(
     :data:`~threetears.evals.kernel.identity.IDENTITY_VERSION` bump: a recorded map needs no predicate to
     read it, so the arm stays described, while a derivation replays today's predicate and cannot.
 
-    Args:
-        result: The observation.
-        run: The batch it belongs to.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        ``(key, levers, unavailable)``. ``unavailable`` is the reason ``levers`` is empty, or ``None`` when it is empty because the
-        host genuinely resolved no levers. **An empty map has two causes and they are not the same
+    :param result: The observation.
+    :ptype result: EvalResult
+    :param run: The batch it belongs to.
+    :ptype run: EvalRun
+    :param profile: The host whose vocabulary this reads.
+    :ptype profile: HostProfile
+    :return: ``(key, levers, unavailable)``. ``unavailable`` is the reason ``levers`` is empty, or ``None`` when it is
+        empty because the host genuinely resolved no levers. **An empty map has two causes and they are not the same
         fact** — a host that registers no levers describes its arms exactly, with nothing; a key
         nothing here can place describes its arm not at all. Deciding that here, where
         ``reproduces`` is already known, is what stops each caller re-deriving it from the shape of
         the map and getting it wrong in its own way. :func:`_undescribable_arm_reason` says which
         of the two undescribable cases it is, in the numbers that tell an operator what to do.
+    :rtype: tuple[str, dict[str, SweepableValue], str | None]
+    :raises LeverCoordinateError: The host's variant map disagrees with its own registry.
+        Reachable only on the DERIVED path — a run carrying its own pre-image is never
+        checked against today's registry, because the registry says what a lever is now and
+        the map records what one was. On that path it is loud: a campaign over a mis-registered
+        host fails assembly rather than assembling with no coordinates, and the same registry
+        would refuse every new observation anyway.
 
-    Raises:
-        LeverCoordinateError: The host's variant map disagrees with its own registry.
-            Reachable only on the DERIVED path — a run carrying its own pre-image is never
-            checked against today's registry, because the registry says what a lever is now and
-            the map records what one was. On that path it is loud: a campaign over a mis-registered
-            host fails assembly rather than assembling with no coordinates, and the same registry
-            would refuse every new observation anyway.
-
-    Note:
-        ``levers`` is the map the returned key was digested from, and is EMPTY with
-        ``unavailable`` set for a stamped key nothing here can place — a result from a run that
-        recorded no pre-image, read by a build whose predicate no longer reproduces the key. Its
-        stored key stays authoritative for pooling (that is what it was measured under), and
-        today's levels are not a description of it: indexing them would label the arm with a
-        stack it never ran. The arm is still INDEXED, carrying that reason instead of levels — an
-        arm that pooled and then appeared in no index was one the arm table, the generator prompt
-        and the coverage gate alike could not see, which is a silence rather than a disclosure.
+    ``levers`` is the map the returned key was digested from, and is EMPTY with
+    ``unavailable`` set for a stamped key nothing here can place — a result from a run that
+    recorded no pre-image, read by a build whose predicate no longer reproduces the key. Its
+    stored key stays authoritative for pooling (that is what it was measured under), and
+    today's levels are not a description of it: indexing them would label the arm with a
+    stack it never ran. The arm is still INDEXED, carrying that reason instead of levels — an
+    arm that pooled and then appeared in no index was one the arm table, the generator prompt
+    and the coverage gate alike could not see, which is a silence rather than a disclosure.
     """
     resolved = resolve_variant_identity(run=run, profile=profile)
     if resolved.variant_key == result.variant_key:
@@ -183,12 +184,12 @@ def _undescribable_arm_reason(result: EvalResult, run: EvalRun) -> str:
     reproduce" is true of a run measured this morning across one bump and of a run from a year
     ago, and the remedy differs entirely.
 
-    Args:
-        result: The observation whose stamped key cannot be described.
-        run: The batch it belongs to.
-
-    Returns:
-        The reason, for :attr:`~threetears.evals.kernel.campaign.VariantIndexEntry.levels_unavailable`.
+    :param result: The observation whose stamped key cannot be described.
+    :ptype result: EvalResult
+    :param run: The batch it belongs to.
+    :ptype run: EvalRun
+    :return: The reason, for :attr:`~threetears.evals.kernel.campaign.VariantIndexEntry.levels_unavailable`.
+    :rtype: str
     """
     if run.variant_levers is not None:
         return (
@@ -210,20 +211,18 @@ def variant_key_of_run(results: Sequence[EvalResult]) -> str | None:
     A control is a variant key and nobody types a sha256, so the authoring surface points at a
     run and this addresses it. A run is one arm, so it names one variant.
 
-    Args:
-        results: One run's results, which carry the key the runner stamped on each.
-
-    Returns:
-        The variant key, or ``None`` for a run with no results yet — a run with no observation
+    :param results: One run's results, which carry the key the runner stamped on each.
+    :ptype results: Sequence[EvalResult]
+    :return: The variant key, or ``None`` for a run with no results yet — a run with no observation
         is in no arm.
+    :rtype: str | None
 
-    Note:
-        **The key is taken from the first result.** Every result of a run is stamped from the one
-        lever map the run carries, so two results differ in their stamped key only if they were
-        written under different ``IDENTITY_VERSION``s, which a single runner pass cannot produce.
-        Stated rather than defended against, because the check would cost every bundle assembly a
-        comparison for a state no writer can reach — if one ever can (a backfill that re-stamps part
-        of a run, say), this is where it would go unnoticed.
+    **The key is taken from the first result.** Every result of a run is stamped from the one
+    lever map the run carries, so two results differ in their stamped key only if they were
+    written under different ``IDENTITY_VERSION``s, which a single runner pass cannot produce.
+    Stated rather than defended against, because the check would cost every bundle assembly a
+    comparison for a state no writer can reach — if one ever can (a backfill that re-stamps part
+    of a run, say), this is where it would go unnoticed.
     """
     return results[0].variant_key if results else None
 
