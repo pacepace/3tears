@@ -347,7 +347,10 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "eval_run": _ADDRESSED_EVERYWHERE
         | {"status", "archived", "created_at", "cancel_requested_at", "cancel_request_reason"},
         "eval_result": _ADDRESSED_EVERYWHERE | {"eval_run_id", "test_case_id", "model"},
-        "eval_trace": _ADDRESSED_EVERYWHERE,
+        # A batch read keeps these of each trace and drops the rest (``EvalStorage.load_judge_evidence``): the
+        # projection names them on the stored bytes, so an upgrader may not rename one.
+        "eval_trace": _ADDRESSED_EVERYWHERE
+        | {"result_id", "eval_run_id", "judge_evidence", "judged_artifact", "schema_minor"},
         "eval_out_of_run_spend": _ADDRESSED_EVERYWHERE | {"purpose", "launch_group_id", "template_id", "created_at"},
         "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
         "eval_sweep": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},

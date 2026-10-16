@@ -24,6 +24,7 @@ Pinned here:
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from typing import Any
 
@@ -31,6 +32,7 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import service as service_module
+from threetears.evals.ops import analysis as ops_analysis
 from threetears.evals.schema import JobLease, JobRefusal
 from threetears.evals.ops import (
     analysis_estimate,
@@ -247,6 +249,95 @@ def _record_threads(storage: Any, monkeypatch: pytest.MonkeyPatch, names: tuple[
 
         monkeypatch.setattr(storage, name, recording)
     return seen
+
+
+async def test_a_pricing_refusal_ends_the_job_without_an_error_record(caplog: pytest.LogCaptureFixture) -> None:
+    """A refusal is a designed ending the attempt records: the manager's task-failure log is for what nobody designed."""
+    fixture = off_loop(ops_fixture, ceiling_usd=CAP + 1.0)
+
+    with caplog.at_level(logging.DEBUG):
+        (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+        status = await settled(fixture.host, job.job_id)
+        await fixture.host.launch.job_manager.wait_for([job.job_id.rpartition(":")[2]])
+
+    assert status.state == "failed" and status.detail is not None and "above the out-of-run cap" in status.detail
+    assert [record.getMessage() for record in caplog.records if record.levelno >= logging.ERROR] == []
+    assert not [record for record in caplog.records if record.exc_info], "no traceback was logged for a refusal"
+
+
+#: Per hang, the budget it runs under: pricing is reached only after a real assembly, so its budget is the longer.
+@pytest.mark.parametrize(("hangs_in", "budget_s"), [("assembly", 0.2), ("pricing", 3.0)])
+async def test_a_preparation_that_never_finishes_ends_the_attempt_failed_and_releases_its_client(
+    monkeypatch: pytest.MonkeyPatch, hangs_in: str, budget_s: float
+) -> None:
+    fixture = off_loop(ops_fixture)
+    release = threading.Event()
+    monkeypatch.setattr(ops_analysis, "ANALYSIS_PREPARATION_BUDGET_S", budget_s)
+    if hangs_in == "assembly":
+        assemble = service_module.assemble_context_bundle
+
+        def held_assembly(campaign: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=10)  # the test never sets it before the budget fires; the thread is freed after
+            return assemble(campaign, **kwargs)
+
+        monkeypatch.setattr(service_module, "assemble_context_bundle", held_assembly)
+    else:
+
+        async def never_priced(_client: Any) -> None:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(service_module, "refresh_prices", never_priced)
+
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    status = await settled(fixture.host, job.job_id)
+    release.set()
+
+    assert status.state == "failed"
+    assert status.detail == f"refused before any call: preparation did not finish in {budget_s:g} s"
+    assert [writer.calls for writer in fixture.writers] == [[] for _ in fixture.writers], "nothing was sent"
+    assert [writer.closed for writer in fixture.writers] == ([] if hangs_in == "assembly" else [1])
+    await fixture.host.launch.job_manager.wait_for([job.job_id.rpartition(":")[2]])
+    assert fixture.host.launch.job_manager.active_task_ids(generation_key(fixture.campaign.id, TOYHOST_SCOPE)) == []
+
+
+async def test_an_ended_attempt_keeps_the_start_its_call_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = off_loop(ops_fixture)
+    release = threading.Event()
+    assemble = service_module.assemble_context_bundle
+
+    def held_assembly(campaign: Any, **kwargs: Any) -> Any:
+        release.wait(timeout=10)
+        return assemble(campaign, **kwargs)
+
+    monkeypatch.setattr(service_module, "assemble_context_bundle", held_assembly)
+    list_attempts = fixture.host.eval_host.storage.list_analysis_attempts_by_campaign
+
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (running,) = off_loop(list_attempts, fixture.campaign.id, TOYHOST_SCOPE)
+    await asyncio.sleep(0.05)  # the preparation takes time the start must not be moved by
+    release.set()
+    assert (await settled(fixture.host, job.job_id)).state == "completed"
+
+    (ended,) = off_loop(list_attempts, fixture.campaign.id, TOYHOST_SCOPE)
+    assert (ended.id, ended.outcome) == (running.id, "stored")
+    assert ended.started_at == running.started_at
+
+
+async def test_a_client_is_released_when_the_generation_s_budget_cannot_be_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = off_loop(ops_fixture)
+
+    def cannot_build(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("no budget")
+
+    monkeypatch.setattr(service_module, "BudgetedGenerator", cannot_build)
+
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    status = await settled(fixture.host, job.job_id)
+
+    assert status.state == "failed" and status.detail is not None and "no budget" in status.detail
+    assert [writer.closed for writer in fixture.writers] == [1]
 
 
 async def test_a_generation_makes_no_store_call_on_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:

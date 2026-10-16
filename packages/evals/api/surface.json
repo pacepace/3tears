@@ -498,8 +498,8 @@
     },
     "threetears.evals.schema.field_in_values": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]) -> dict[str, list[Any]]",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.fingerprint_criterion": {
       "kind": "function",

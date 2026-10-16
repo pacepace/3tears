@@ -681,6 +681,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.StoreClock",
         "threetears.evals.schema.AsyncStoreClock",
         "threetears.evals.schema.StoreConflict",
+        # The checks every store runs on `by_doc_type`'s `field_in` before it queries, so a host's store refuses what
+        # the engine's refuse.
+        "threetears.evals.schema.field_in_values",
         "threetears.evals.testing.STORE_CONFORMANCE_CASES",
         "threetears.evals.testing.StoreConformanceCase",
         "threetears.evals.testing.check_completion_conformance",
@@ -1179,7 +1182,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 518  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields.
+DECLARED_CEILING = 519  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.
 
 
 def tier_of(qualified: str) -> Tier:

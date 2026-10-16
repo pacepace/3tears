@@ -1,10 +1,12 @@
 """The analysis side's operations: campaigns, a generation started as a job, and the report read three ways.
 
 A generation is the analysis side's long work, and it follows the same job contract a launch does
-(:mod:`threetears.evals.ops.jobs`): :func:`analysis_generate` checks and builds everything before it
-spends — so a refused generation raises to its caller and costs nothing — then starts the paid call as a
-background task and returns its job. The job's record is the
-:class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt` the generation writes however it ends.
+(:mod:`threetears.evals.ops.jobs`): :func:`analysis_generate` checks only what its caller can fix cheaply (the
+campaign, the named writer, the slot), records a running attempt and starts a background task, returning its job at
+once. The task prepares — assembles the bundle, resolves the prompt, builds the client, prices the first call — and
+only then spends; a refusal it meets there ends the attempt ``failed`` with nothing spent, and ``job_poll`` reads it.
+The job's record is the :class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt` the generation writes however
+it ends.
 
 One generation per campaign runs at a time: a second is refused while the first is live, BEFORE it
 prepares, because preparing builds a client and resolves the prompt — work a refused request need not
@@ -62,6 +64,7 @@ from threetears.evals.kernel.job_leases import (
     settle_job_record,
     write_held_record,
 )
+from threetears.evals.kernel.job_timeout import EvalJobTimeout
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.refusals import job_refusal
 from threetears.evals.kernel.host import EvalHost
@@ -101,6 +104,15 @@ class CampaignListing(EvalBaseModel):
 #: How long a start waits for an in-process generation whose attempt has already ended to finish unwinding (releasing
 #: its client and its slot) before refusing it as still running. Unwinding is a few store writes, so this is generous.
 ENDED_TASK_UNWIND_S = 30.0
+
+#: A generation job's wall-clock ceiling on its preparation — assembling the bundle, the prompt, the client, the
+#: default-writer check and the first call's price — in seconds. The job starts with no budget of its own (its generator
+#: calls enter ``AnalysisGeneration.budget_s`` themselves), so without this a store call that hangs during assembly would
+#: leave the attempt ``running`` for as long as its lease kept renewing. Preparation makes no model call: a fixed handful
+#: of batched store reads and a catalogue fetch bounded by its own timeout, seconds on a large campaign. So the bound is
+#: tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose launchers call providers: a hang reads as refused
+#: within minutes rather than ``running`` for hours.
+ANALYSIS_PREPARATION_BUDGET_S = 900.0
 
 #: What a declared design is, said once for the operations and the actions that take it — creating and updating alike,
 #: since a tool's flat parameters give one name one meaning.
@@ -781,28 +793,35 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
                 campaign_id,
             )
 
-    async def prepare() -> PreparedGeneration:
+    async def prepare() -> PreparedGeneration | None:
         # Assembly, the prompt, the client, the host's default writer and the first call's price: every refusal ends
-        # the attempt with no call made, and the preparation has released any client it built.
+        # the attempt with no call made, and the preparation has released any client it built. A refusal is a designed
+        # ending, not a task failure: the attempt records it and this returns None, so the manager logs no error for
+        # it. What nobody designed for (a store that raised) is recorded the same way and raised on as itself.
         try:
-            return await prepare_analysis_generation(
-                eval_host,
-                campaign_id,
-                scope_id,
-                model=model,
-                resolve_prompt=generation.prompt,
-                out_of_run_cap_usd=host.out_of_run_cap(),
-                attempt_id=attempt_id,
-                on_assembled=assembled,
-            )
+            async with manager.job_timeout_factory(ANALYSIS_PREPARATION_BUDGET_S):
+                return await prepare_analysis_generation(
+                    eval_host,
+                    campaign_id,
+                    scope_id,
+                    model=model,
+                    resolve_prompt=generation.prompt,
+                    out_of_run_cap_usd=host.out_of_run_cap(),
+                    attempt_id=attempt_id,
+                    on_assembled=assembled,
+                    started_at=started.started_at,
+                )
         except JobFenced:
             raise
         except asyncio.CancelledError:
             await end_unrun("cancelled before any call, while the generation was being prepared", outcome="cancelled")
             raise
+        except EvalJobTimeout as timed_out:
+            await end_unrun(f"preparation did not finish in {timed_out.budget_s:g} s")
+            return None
         except EvalServiceError as refused:
             await end_unrun(str(refused), refused_by=refused)
-            raise
+            return None
         # prawduct:ok-broad-except — recorded on the attempt, then raised on as itself
         except Exception as broke:
             await end_unrun(f"the generation could not be prepared ({type(broke).__name__}: {broke})")
@@ -811,6 +830,8 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     async def work() -> None:
         try:
             prepared = await prepare()
+            if prepared is None:
+                return
             await run_analysis_generation(
                 eval_host,
                 prepared,

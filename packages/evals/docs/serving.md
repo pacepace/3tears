@@ -248,10 +248,14 @@ The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`,
 
 **No transport call waits on a model.** Every operation whose work calls one is a **job**: `run_launch`,
 `sweep_launch`, `analysis_generate`, `judge_second`, `judge_drift_check` and `judge_temperature` return
-`JobsStarted`, and `job_poll` / `job_cancel` take any job id they returned. The call does everything that can
-refuse before money is spent — the refusals, the pricing against the cap the work is held to, and the admission
-ceiling — and refuses there with nothing spent; the job does the spending. So a call is a few store round-trips,
-and a transport holds every call to one fixed timeout (`mount_fastmcp(..., call_timeout_s=...)`, 60s by default)
+`JobsStarted`, and `job_poll` / `job_cancel` take any job id they returned. The call does what it can
+refuse cheaply before money is spent — the refusals it can name from a few store reads, and the admission
+ceiling — and refuses there with nothing spent; the job does the spending. An analysis generation does less in
+its call: assembling its bundle reads every member run's results, so its job assembles it, builds the client and
+prices the first call against the cap, and a refusal at any of those ends the job `failed` with
+`refused before any call: <why>` for `job_poll` to read, with nothing spent. That preparation is bounded: one
+that has not finished in `ANALYSIS_PREPARATION_BUDGET_S` (8 hours, the engine's cap on one job) ends the same way.
+So a call is a few store round-trips, and a transport holds every call to one fixed timeout (`mount_fastmcp(..., call_timeout_s=...)`, 60s by default)
 rather than one sized to what a call might spend. The timeout may be a function in place of the number, read once
 as each call starts, so an operator retunes it from live configuration without remounting.
 
