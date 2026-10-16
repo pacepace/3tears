@@ -756,12 +756,18 @@ class JobLeases:
                     async with asyncio.timeout(left) as deadline:
                         verdict, reason = await run_blocking(self._pool(), self._renew, held)
             # prawduct:ok-broad-except — a failed renewal is retried next interval; the lease outlives two failures
-            except Exception:
+            except Exception as error:
                 hung = deadline.expired()
-                if hung:
-                    failed = TimeoutError(
+                # The store's own error when it raised one; a hung call is named as such, not as the timeout's
+                # cancellation. Only a renewal that lost every write (a "contended" verdict, never an exception) is
+                # a lost race.
+                failed: Exception = (
+                    TimeoutError(
                         f"the renewal's store call had not returned in the {self._lease_s:g}s of the lease it was renewing"
                     )
+                    if hung
+                    else error
+                )
                 # NOSILENT: retried next interval; the verdict stays None, so failures lasting a whole lease stop
                 # the job as lost (_expire), with this failure written on its record as a fault.
                 # Not written on the record here: the renewal IS this process's write of the record, and the
