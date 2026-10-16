@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.70.0 -- 2026-10-16
+
 ### Text a model reads stays under the item it belongs to
 
 A list line that put a many-line text after an indent or a list marker indented its first line
