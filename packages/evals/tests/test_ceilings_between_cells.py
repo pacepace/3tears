@@ -479,4 +479,5 @@ async def test_a_launched_run_stopped_by_its_ceiling_stores_the_record_and_its_s
     assert stop.landed_at_stop >= 3 and stop.landed_final >= stop.landed_at_stop
     assert stop.landed_final == len(results), "one call per cell, every cell whole"
     assert stop.cells_not_started == 12 - len(results)
-    assert stored.budget_stop_reason is not None and budget_stop_line([stop]) in stored.budget_stop_reason
+    assert stored.budget_stop_reason is not None
+    assert stored.budget_stop_reason.startswith(f"stopped by its metered-call ceiling: {stop.landed_at_stop} of 3")

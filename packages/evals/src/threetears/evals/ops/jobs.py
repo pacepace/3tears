@@ -78,6 +78,7 @@ from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose
 from threetears.evals.analysis.agreement import InterJudgeAgreement, inter_judge_agreement
 from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
 from threetears.evals.analysis.judge_temperature import read_judge_temperatures
+from threetears.evals.analysis.summary import budget_stop_line
 from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel
@@ -388,7 +389,10 @@ def _run_status(run: EvalRun) -> JobStatus:
     :rtype: JobStatus
     """
     state: JobState = "lost" if run.lost is not None else _RUN_STATES[run.status]
-    detail = run.cancellation_reason or run.budget_stop_reason or ("; ".join(run.error_details) or None)
+    # A ceiling stop is worded from its typed records, as the run's summary words it, never from the run
+    # package's own account of the stop in `budget_stop_reason`.
+    budget_stop = budget_stop_line(run.budget_stops) if run.budget_stops else run.budget_stop_reason
+    detail = run.cancellation_reason or budget_stop or ("; ".join(run.error_details) or None)
     if run.lost is not None:
         detail = run.lost.cause
     return JobStatus(

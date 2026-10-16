@@ -441,10 +441,14 @@ async def test_a_memo_whose_first_call_was_refused_delivered_no_turn() -> None:
     assert (cell.n_candidate_failed, cell.n_no_turn, cell.all_failed) == (1, 1, True)
 
 
-async def test_a_generator_call_the_runs_cap_has_no_room_for_is_not_sent_and_the_calls_before_it_keep_their_cost() -> (
+async def test_a_generator_repair_past_the_runs_cap_is_sent_and_both_calls_keep_their_cost_for_the_cap_to_read() -> (
     None
 ):
-    """The first call's $0.20 ceiling fits a $0.30 cap; the repair's, on top of the $0.15 the first cost, does not."""
+    """The repair's $0.20 ceiling, on top of the $0.15 the first call cost, is past a $0.30 cap, and it is sent anyway.
+
+    The cap is read between cells, against what has landed; inside a cell it refuses nothing, so the generator's
+    repair goes out, the memo fails on its own merits, and the cap counts both calls once the cell has landed.
+    """
     client = FixturedClient("this is not a memo")
     client.completion.cost_usd = 0.15
     client.ceiling_usd = 0.20
@@ -452,8 +456,8 @@ async def test_a_generator_call_the_runs_cap_has_no_room_for_is_not_sent_and_the
 
     result, _bundle = await _reporter_result(client, cap=cap)
 
-    assert result.turns_delivered == 1, "the repair call was refused before it was sent"
-    assert result.cost_usd == pytest.approx(0.15)
-    assert result.candidate_error is None, "the cap doing its job is no failure of the candidate's"
-    assert result.infra_error is not None and "cost cap" in result.infra_error
-    assert cap.accumulated_usd <= 0.30
+    assert result.turns_delivered == 2, "the repair call was sent: nothing inside a cell is refused"
+    assert result.cost_usd == pytest.approx(0.30)
+    assert result.candidate_error is not None, "the memo failed validation, the candidate's own failure"
+    assert result.infra_error is None, "the cap refused nothing, so there is no apparatus fault to record"
+    assert cap.accumulated_usd == pytest.approx(0.30), "the cap counts both calls once the cell has landed"

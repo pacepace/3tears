@@ -109,11 +109,7 @@ class BudgetStoppedError(Exception):
         self.breach = breach
         self.stops = tuple(stops)
         if self.stops:
-            # Imported here: the analysis layer reads the run layer, and this is the one place the run layer
-            # writes the line the page shows, so the two cannot word a stop differently.
-            from threetears.evals.analysis.summary import budget_stop_line
-
-            reason = budget_stop_line(self.stops)
+            reason = _stop_reason(self.stops)
         else:
             assert breach is not None
             if breach.unpriced_results:
@@ -128,6 +124,33 @@ class BudgetStoppedError(Exception):
                     f"${breach.max_cost_usd:.4f} cap"
                 )
         super().__init__(f"{reason} after {completed}/{total} results — run stopped gracefully")
+
+
+def _stop_reason(stops: Sequence[BudgetStop]) -> str:
+    """The exception's own account of a ceiling stop: which ceiling, and what had landed against it at the stop.
+
+    Not the line a reader is shown. Every surface that words a stop for a reader writes it from the typed
+    records, through :func:`~threetears.evals.analysis.summary.budget_stop_line`, which the run package cannot
+    import (the package matrix keeps ``run`` off ``analysis``). This is what the log and the stored
+    ``budget_stop_reason`` carry, so it names the ceiling and the figure it was stopped on, and leaves the
+    settled figures to the records.
+
+    :param stops: The stop records, at least one.
+    :ptype stops: Sequence[BudgetStop]
+    :return: One sentence, opening ``stopped by``.
+    :rtype: str
+    """
+    segments: list[str] = []
+    for stop in stops:
+        if stop.currency == "cost_usd":
+            unpriced = (
+                f"{stop.unpriced_results} result(s) spent what could not be priced, with " if stop.unpriced_results else ""
+            )
+            figures = f"{unpriced}${stop.landed_at_stop:.4f} of ${stop.ceiling:.4f} at the stop"
+            segments.append(f"its cost cap: {figures}")
+        else:
+            segments.append(f"its metered-call ceiling: {stop.landed_at_stop} of {stop.ceiling} at the stop")
+    return f"stopped by {'; by '.join(segments)}"
 
 
 class AccountExhaustedError(Exception):
