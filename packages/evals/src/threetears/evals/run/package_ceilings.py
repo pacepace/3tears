@@ -23,10 +23,10 @@ from threetears.evals.run.simulator import (
 class Ceilings:
     """The package's inner ceilings a host derives its outer budgets from, so a budget cannot drift below one.
 
-    ``Ceilings()`` is this build's: every field is the value or function of the same name the package exports
-    (``run.SCHEDULER_CALL_ATTEMPTS``, ``run.SIMULATOR_MAX_TOKENS``, ``run.SIMULATOR_ANSWER_BUDGET_TOKENS``,
-    ``gen.PROPOSER_MAX_TOKENS``, ``analysis.generation_ceiling_s``, ``analysis.judge_phase_ceiling_s``), and none is
-    set by the caller. A host computes each outer budget from a field (a scheduling call's retry budget from
+    ``Ceilings()`` is this build's: every field is one of the six inner ceilings, the only way the package exposes
+    them (the separate names ``run.SCHEDULER_CALL_ATTEMPTS``, ``run.SIMULATOR_MAX_TOKENS``,
+    ``run.SIMULATOR_ANSWER_BUDGET_TOKENS``, ``gen.PROPOSER_MAX_TOKENS``, ``analysis.generation_ceiling_s`` and
+    ``analysis.judge_phase_ceiling_s`` left the public surface in ``.33``), and none is set by the caller. A host computes each outer budget from a field (a scheduling call's retry budget from
     ``scheduler_call_attempts``, the simulator's and proposer's client caps from the token fields, a generation's or
     a judge phase's deadline from the two ceiling functions over its own per-request ceiling) instead of restating
     the number, so a release that raises an inner ceiling raises the budget over it.

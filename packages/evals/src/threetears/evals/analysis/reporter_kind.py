@@ -1148,7 +1148,6 @@ __all__ = [
     "ReporterLabel",
     "WriterMessageCheck",
     "judge_case_material",
-    "judge_phase_ceiling_s",
     "message_check",
     "rebuild_bundle",
     "render_case_material",

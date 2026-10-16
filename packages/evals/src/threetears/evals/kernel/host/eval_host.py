@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 #: own because it is a different job from the simulator's: a host resolves or refuses each role on
 #: its own, and a kind with no simulated user still generates. ``proposer`` drafts a rubric for operator
 #: review (:func:`~threetears.evals.gen.propose_draft`), outside any run, with its own output cap
-#: (:data:`~threetears.evals.gen.PROPOSER_MAX_TOKENS`) — a role of its own so a host does not borrow
+#: (``Ceilings().proposer_max_tokens``, :class:`~threetears.evals.run.Ceilings`) — a role of its own so a host does not borrow
 #: another role's model, cap or budget for it.
 CompletionRole = Literal["judge", "simulator", "analysis", "variation", "proposer"]
 

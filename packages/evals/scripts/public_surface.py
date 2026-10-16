@@ -631,7 +631,7 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The production host imports these (`tests/fixtures/host_imports/discodon.txt`), so they are its contract:
         # the inner ceilings it derives its outer budgets from, the metering it folds, the template checks it runs and
         # the schema keys and prompt markers its own code matches. `Ceilings` carries the six ceilings as one value;
-        # the six names stay beside it in `.32`.
+        # the six separate names left in `.33`.
         "threetears.evals.run.Ceilings",
         # The seam a host checks a proposed case name against, so it is never printed as `case N`.
         "threetears.evals.analysis.humanize",
@@ -643,17 +643,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.nested_schemas",
         "threetears.evals.schema.RESERVED_DIM_IDS",
         "threetears.evals.schema.NON_TERMINAL_RUN_STATUSES",
-        "threetears.evals.run.SCHEDULER_CALL_ATTEMPTS",
-        "threetears.evals.run.SIMULATOR_MAX_TOKENS",
-        "threetears.evals.run.SIMULATOR_ANSWER_BUDGET_TOKENS",
         "threetears.evals.run.MeteredCallTally",
         "threetears.evals.run.metered_cell_tally",
         "threetears.evals.run.fold_metered_cell",
         "threetears.evals.run.precondition_failure_text",
         "threetears.evals.run.refuse_ignored_template_fields",
-        "threetears.evals.gen.PROPOSER_MAX_TOKENS",
-        "threetears.evals.analysis.generation_ceiling_s",
-        "threetears.evals.analysis.judge_phase_ceiling_s",
         "threetears.evals.ops.run_label",
         # The write that renames a stored case, which a host otherwise made by writing the case document itself.
         "threetears.evals.ops.case_rename",
@@ -1193,7 +1187,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 525  # The host's imports set it on 2026-10-15; .33 adds the case rename a host calls.
+DECLARED_CEILING = 519  # The host's imports set it on 2026-10-15; .33 adds the case rename a host calls and drops the six ceiling names.
 
 
 def tier_of(qualified: str) -> Tier:

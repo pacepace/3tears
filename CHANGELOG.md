@@ -36,6 +36,10 @@ the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
   `case_rename` takes it as `corpus=`), so renaming a template case seeded before seeds recorded a name records its
   old name as its `seed_name`, and drift still finds it. Wire it as `lambda scope_id: load_seed_corpus(<your
   directory>, scope_id)`; without it, such a case reads as new to the corpus once renamed.
+- **The six separate ceiling names are removed; `Ceilings` replaces them.** Breaking: `run.SCHEDULER_CALL_ATTEMPTS`,
+  `run.SIMULATOR_MAX_TOKENS`, `run.SIMULATOR_ANSWER_BUDGET_TOKENS`, `gen.PROPOSER_MAX_TOKENS`,
+  `analysis.generation_ceiling_s` and `analysis.judge_phase_ceiling_s` are no longer exported, as `.32` said. To port, read
+  the same value or function from the field of `threetears.evals.run.Ceilings()` of the same name in lower case.
 - **A quick call fills a stored case's name only when it has none**, so running the same quick eval again keeps a
   name `case_rename` gave it.
 
@@ -61,7 +65,8 @@ the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
 
 **The surface**
 
-- **525 names are declared** (523 before): `case_rename` and `CaseRenamed`, both `host-contract`.
+- **519 names are declared** (523 before): `case_rename` and `CaseRenamed` are added, both `host-contract`, and the
+  six separate ceiling names are removed.
 
 **Machine-readable**
 
@@ -95,7 +100,7 @@ says what replaces it. `packages/evals/MIGRATIONS.toml` has the detail.
 - **The inner ceilings are one value.** `Ceilings()` (`threetears.evals.run`) holds `scheduler_call_attempts`,
   `simulator_max_tokens`, `simulator_answer_budget_tokens`, `proposer_max_tokens`, `generation_ceiling_s` and
   `judge_phase_ceiling_s`, so an outer budget is derived from a field rather than a copied number. The six separate
-  names stay exported in `.32` and leave in `.33`.
+  names stay exported in `.32` and leave in `.33` (below).
 
 **The typed decision rule**
 

@@ -1205,8 +1205,8 @@ in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `schedu
 `simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the two functions
 `generation_ceiling_s` and `judge_phase_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
 generation or a judge phase. Derive each outer budget from a field, never from a number you copied: a release that
-raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The six names the
-fields stand for are still exported where they were, for a host that has not moved to the fields yet.
+raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The package exports
+no other name for them: the six separate constants and functions `.32` kept beside `Ceilings` were removed in `.33`.
 
 ### Hearing about a regression when a run completes
 

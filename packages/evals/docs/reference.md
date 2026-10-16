@@ -564,12 +564,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reply schema's answer budget plus the declared reasoning headroom, DERIVED rather than chosen, so it always leaves room to think and then answer.
   <br>`= 10240`
 - **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_asked_settings`.
-- **`SCHEDULER_CALL_ATTEMPTS`** · *host contract* · constant (int) · How many calls one `llm_decided` scheduling decision may make: the first, and one repair that names what was wrong with it.
-  <br>`= 2`
-- **`SIMULATOR_ANSWER_BUDGET_TOKENS`** · *host contract* · constant (int) · Output room kept for the simulated user's visible reply: the strict-schema JSON object holding one utterance or one scheduling pick.
-  <br>`= 4096`
-- **`SIMULATOR_MAX_TOKENS`** · *host contract* · constant (int) · The simulator's output cap: the reasoning allowance plus the answer budget, derived rather than chosen. It is the only bound in tokens a simulator call has.
-  <br>`= 5120`
 - **`SIMULATOR_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_asked_settings`.
 
 <a id="api-analysis"></a>
@@ -603,8 +597,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
 - **`generate_analysis`** · *host contract* · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
   <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
-- **`generation_ceiling_s`** · *host contract* · function · The wall-clock ceiling of one `generate_analysis`, derived from the ceilings it wraps.
-  <br>`generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float`
 - **`humanize`** · *host contract* · function · An identifier as a reader is shown it after its first mention.
   <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble a campaign's context bundle and return it, without generating.
@@ -621,8 +613,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`judge_key(result: EvalResult, dim: str) -> JudgeKey | None`
 - **`judge_kind_readings`** · function · Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
   <br>`judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings`
-- **`judge_phase_ceiling_s`** · *host contract* · function · The wall-clock ceiling of one cell's judge phase, derived from the ceilings of its requests.
-  <br>`judge_phase_ceiling_s(*, judge_dims: int, judge_concurrency: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
   <br>`judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement`
 - **`lint_prose`** · function · Every rule `text` breaks.
@@ -703,8 +693,6 @@ The engine's generation package: the prompts and expanders that author test mate
 
 - **`EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT`** · constant (SeedTemplate) · The seeded default `eval_boundary_gen` template: drafts a battery of simulated actors that pressure a subject's boundaries, and the refusal dimensions they are scored on.
 - **`EVAL_PROPOSER_TEMPLATE_DEFAULT`** · constant (SeedTemplate) · The seeded default `eval_proposer` template: drafts a capability rubric and the variation axes that stress it.
-- **`PROPOSER_MAX_TOKENS`** · *host contract* · constant (int) · Output-token ceiling for the capability/boundary proposer.
-  <br>`= 16384`
 
 <a id="api-storage"></a>
 ### `threetears.evals.storage`
