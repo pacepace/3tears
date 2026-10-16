@@ -4,7 +4,7 @@ Evals for LLM features, from a classifier to a tool-using agent: it runs each ve
 what moved, with the uncertainty that says whether the move is real. Python 3.14+.
 
 ```bash
-pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.33#subdirectory=packages/evals"
+pip install 3tears-evals
 ```
 
 **Rung 0 is one TOML file and no Python.** [`examples/1-triage/triage.toml`](examples/1-triage/triage.toml) triages
@@ -53,20 +53,24 @@ missed, and where its report page is. Then climb [the ladder](docs/ladder.md), o
 
 ## Install
 
-**3tears-evals is not on PyPI until 0.70.0 ships**, so `pip install 3tears-evals` finds nothing yet. Until then,
-install it from the repository at a tag. The line above is the one place the docs name that tag, and every other
-page's install line points here. The FastMCP transport, for serving evals to an agent, is the `[fastmcp]` extra:
+`pip install 3tears-evals` is the base install. The FastMCP transport, for serving evals to an agent, is the `[fastmcp]` extra:
 
 ```bash
-pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.33#subdirectory=packages/evals"
+pip install "3tears-evals[fastmcp]"
 ```
 
-Once 0.70.0 is on PyPI these are `pip install 3tears-evals` and `pip install "3tears-evals[fastmcp]"`. In a checkout
-of this repo, `uv sync` at the root does it, and the commands above run from `packages/evals` with `uv run` in front.
-`threetears.evals.__version__` says which version is installed. The completion client (`Model`) is on the base
-install: it speaks each provider's HTTP API over `httpx`, with no SDK and no other 3tears package. The examples run on
-cheap models through OpenRouter (`OPENROUTER_API_KEY`); `Model(id, provider="anthropic")` (`ANTHROPIC_API_KEY`) and
-`provider="openai"` (`OPENAI_API_KEY`) are options, and `base_url=` takes any OpenAI-compatible endpoint. After a pip install, fetch the examples from the repository first
+To install a pre-release or an unreleased checkout, install from the repository at a tag instead:
+
+```bash
+pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.33#subdirectory=packages/evals"
+```
+
+In a checkout of this repo, `uv sync` at the root does it, and the commands above run from `packages/evals` with
+`uv run` in front. `threetears.evals.__version__` says which version is installed. The completion client (`Model`) is
+on the base install: it speaks each provider's HTTP API over `httpx`, with no SDK and no other 3tears package. The
+examples run on cheap models through OpenRouter (`OPENROUTER_API_KEY`); `Model(id, provider="anthropic")`
+(`ANTHROPIC_API_KEY`) and `provider="openai"` (`OPENAI_API_KEY`) are options, and `base_url=` takes any
+OpenAI-compatible endpoint. After a pip install, fetch the examples from the repository first
 ([how](examples/README.md#running-them)).
 
 > **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves with a

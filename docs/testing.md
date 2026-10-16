@@ -92,7 +92,7 @@ for want of one. `THREETEARS_EVALS_PAID_MODEL` picks the writer (default `claude
 is priced at its worst case before it is sent and refused unsent past the lane's ceiling
 (`SPEND_CEILING_USD`, $5; a typical run is two calls at well under a dollar each on the default
 writer). CI runs it (`.github/workflows/evals-paid.yml`) on a PR touching `analysis/generator.py`,
-`analysis/gen_prompt.py`, `contracts/authored.py` or the toy-host fixture, behind the `evals-paid`
+`analysis/gen_prompt.py`, `kernel/authored.py` or the toy-host fixture, behind the `evals-paid`
 environment's approval gate; there a missing key fails the job rather than skipping.
 
 ## Test fakes

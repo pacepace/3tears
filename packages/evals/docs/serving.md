@@ -447,8 +447,8 @@ The FastMCP transport (`threetears.evals.transports.fastmcp`) needs the extra; t
 pip install "3tears-evals[fastmcp]"
 ```
 
-That is the form once 0.70.0 is on PyPI. Until then, install the extra from the repository at the tag
-[the README names](../README.md#install):
+To install the extra from a pre-release or an unreleased checkout, use the repository form at a tag
+[the README shows](../README.md#install):
 `pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
 
 A result carries its text and the result model's JSON as structured content. A refused call is an MCP

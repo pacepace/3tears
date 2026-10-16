@@ -567,11 +567,14 @@ discodon's NATS convergence and sits outside this sequence.)
 
 ## Phase 5 -- Eval extraction
 
-- **3tears + discodon:** extract `3tears-eval-contracts` first (identity,
-  measures, spend/replay composition per
-  [D27/D28](search-spec.md#1-decisions-taken)), then `run` and `analysis`;
-  the generator ships package prompts plus the narrow completion protocol
-  satisfied by `3tears-models`, and may extract last.
+- **3tears + discodon:** extract the eval system (identity, measures,
+  spend/replay composition per
+  [D27/D28](search-spec.md#1-decisions-taken)) as `3tears-evals`, which shipped
+  as one package, `packages/evals`, not the four first proposed; the generator
+  ships package prompts plus the narrow completion protocol, satisfied by
+  the package's own `httpx` client. `3tears-evals` depends on no other 3tears
+  package (owner ruling 2026-10-11), so the `3tears-models` adapter once planned
+  here was removed in pre-release `.27`.
   → [`family-convergence.md` §4.2 (incl. verified corrections)](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon),
   [open questions 2, 3, 22](family-convergence.md#6-open-questions)
 - **discodon:** consume its own extraction -- first consumer, green before
@@ -660,9 +663,10 @@ discodon's NATS convergence and sits outside this sequence.)
   discodon's `EVAL_SYSTEM.md` §6 defers the physical package split until "a second
   real consumer pulls on it", while this phase waits on discodon's in-tree boundary
   -- which is four items from complete. Neither document moves on its own once
-  discodon closes them. `packages/` in this repo holds no `eval*` today, so the next
-  move after R2/R4/R7 is 3tears cutting `3tears-eval-contracts` and discodon
-  consuming its own extraction, per this phase's second bullet.
+  discodon closes them. `packages/evals` now holds the extraction, as one package
+  with no family dependency rather than the four first planned, so the next
+  move after R2/R4/R7 is discodon consuming its own extraction, per this
+  phase's second bullet.
 
 **Checkpoint:** discodon running on the extracted packages; the eval
 contracts ratified per

@@ -9,7 +9,9 @@ and [`search-spec.md` §7](search-spec.md#7-sequencing) (in-repo detail).
 Don't mirror status here -- one place, or they drift.
 **Evals (§4.2) shipped as one package, `3tears-evals`, not the four proposed.**
 Its current documentation is [`packages/evals/docs/`](../packages/evals/docs/),
-and its source is the authority wherever §4.2 differs from it.
+and its source is the authority wherever §4.2 or §4.4 differs from it.
+**`3tears-evals` depends on no other 3tears package** (owner ruling 2026-10-11):
+runtime dependencies are `httpx` and `pydantic`, with one extra, `fastmcp`.
 
 ---
 
@@ -291,7 +293,7 @@ shape the extraction:
 
 - **The storage Protocol exists.** It was carved in discodon on 2026-08-20 and has
   since moved into the package. **The authority is now
-  `packages/evals/src/threetears/evals/contracts/store_port.py`** (`DocumentStore`),
+  `packages/evals/src/threetears/evals/schema/store_port.py`** (`DocumentStore`),
   not this section. Read the Protocol and its module docstring rather than a summary
   here: a method table copied into this bullet in August drifted, and a store built
   from it could not serve the engine. The engine's in-memory adapter,
@@ -330,8 +332,13 @@ shape the extraction:
   - its prompts are *product prompts* (§4.3) -- they ship as package content
     with a plain override hook, never as a registry dependency;
   - its LLM boundary is the same narrow completion protocol eval-run already
-    commits to for its runner and judge, satisfied by `3tears-models`
-    through a thin adapter;
+    commits to for its runner and judge, satisfied by `3tears-evals`'s own
+    `Model`, built on `httpx` (the `3tears-models` adapter this bullet once
+    called for landed, then was removed in pre-release `.27`: owner ruling
+    2026-10-11, since a base install with no family dependency installs beside
+    a family pinned at any other version, which let the production host run
+    pre-release tags against a frozen family and lets a product outside the
+    family adopt it);
   - if the coupling still fights, gen extracts last -- it gates nothing, and
     open question 3 already contemplates folding it.
 
@@ -579,8 +586,10 @@ question 19).
 Already the family standard: LangChain-native construction, usage tracking with
 locked OTel span attributes, pricing, circuit breaking. The change is adoption
 (discodon retires its hand-rolled OpenRouter/LangChain plumbing) and enrichment
-(samsung's live-probed OpenRouter findings fold upstream rather than seeding
-another first-party client). LangSmith is explicitly **not** the family pattern -- 
+(samsung's live-probed OpenRouter findings fold upstream into `3tears-models`;
+`3tears-evals` is the exception and keeps its own `httpx` client, because it
+depends on no other family package -- owner ruling 2026-10-11, see §4.2).
+LangSmith is explicitly **not** the family pattern --
 the standard is OTel via the usage tracker.
 
 ### 4.5 Memory -- `3tears-agent-memory` (exists; metallm lineage)
