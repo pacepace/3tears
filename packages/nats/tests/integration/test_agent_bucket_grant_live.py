@@ -28,17 +28,13 @@ Gated on docker: a checkout without docker skips cleanly.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
-import nats
-import nats.errors
 import nats.js.errors
 import pytest
 
@@ -54,6 +50,8 @@ from threetears.nats.subject_permissions import (
 from threetears.nats.subjects import Subjects, get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
+from .refusals import Violations, connect, refused
+
 pytestmark = pytest.mark.integration
 
 _NS = "abglive"
@@ -65,9 +63,6 @@ _WRITE_SUFFIX = "survey-quota-cells"
 _READ_SUFFIX = "respondent_resume_handles"
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
-
-#: what a refused JetStream call surfaces as in nats-py: an unanswered request.
-_REFUSED = (nats.errors.TimeoutError, nats.errors.NoRespondersError)
 
 
 def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
@@ -145,41 +140,6 @@ def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
         container.stop()
 
 
-@contextlib.asynccontextmanager
-async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str, errors: list[str]) -> AsyncIterator[Any]:
-    """connect a raw nats client, routing async permission-violation errors into ``errors``.
-
-    :param uri: the server URI
-    :ptype uri: str
-    :param user: the user to connect as
-    :ptype user: str
-    :param password: that user's password
-    :ptype password: str
-    :param inbox_prefix: the inbox prefix the user's subscribe grant covers
-    :ptype inbox_prefix: str
-    :param errors: collects every asynchronous error the client reports
-    :ptype errors: list[str]
-    :return: the connected client, yielded
-    :rtype: AsyncIterator[Any]
-    """
-
-    async def _err_cb(exc: Exception) -> None:
-        errors.append(str(exc))
-
-    nc = await nats.connect(
-        uri,
-        user=user,
-        password=password,
-        inbox_prefix=inbox_prefix.encode(),
-        error_cb=_err_cb,
-        max_reconnect_attempts=0,
-    )
-    try:
-        yield nc
-    finally:
-        await nc.close()
-
-
 async def test_a_tool_pod_reaches_exactly_the_agent_buckets_it_was_granted(tmp_path: Path) -> None:
     """both halves against a real broker: the granted buckets work, every other route is refused."""
     if not check_docker_available():
@@ -214,10 +174,7 @@ async def test_a_tool_pod_reaches_exactly_the_agent_buckets_it_was_granted(tmp_p
     )
 
     with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
-        admin_errors: list[str] = []
-        async with _connect(
-            uri, user="admin", password=_ADMIN_PW, inbox_prefix="_INBOX", errors=admin_errors
-        ) as admin_nc:
+        async with connect(uri, user="admin", password=_ADMIN_PW, violations=Violations()) as admin_nc:
             admin_js = admin_nc.jetstream()
             # the owning agent opens its coordination buckets through ``kv_bucket`` with no direct
             # flag, so they run WITHOUT allow_direct; the read-granted one is created WITH it so the
@@ -232,9 +189,9 @@ async def test_a_tool_pod_reaches_exactly_the_agent_buckets_it_was_granted(tmp_p
             await admin_other.put("cell-1", b"9")
             await admin_js.add_stream(name=f"{_NS}-audit", subjects=[audit_wildcard])
 
-            errors: list[str] = []
-            async with _connect(
-                uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix, errors=errors
+            violations = Violations()
+            async with connect(
+                uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix, violations=violations
             ) as nc:
                 js = nc.jetstream(timeout=2)
                 await js.account_info()
@@ -258,20 +215,20 @@ async def test_a_tool_pod_reaches_exactly_the_agent_buckets_it_was_granted(tmp_p
                 # === SUCCEEDS: the pod's own audit subject, persisted by the audit stream =========
                 ack = await js.publish(own_audit, b"{}")
                 assert ack.stream == f"{_NS}-audit"
-                assert not [e for e in errors if "permissions violation" in e.lower()], errors
+                assert not violations.errors, violations.errors
 
                 # === REFUSED: every write to the read-granted bucket =============================
-                with pytest.raises(_REFUSED):
-                    await read_kv.put("handle-1", b"h1")
-                with pytest.raises(_REFUSED):
-                    await read_kv.delete("handle-1")
+                await refused(violations, read_kv.put("handle-1", b"h1"), naming=f"$kv.{read_only}.handle-1")
+                await refused(violations, read_kv.delete("handle-1"), naming=f"$kv.{read_only}.handle-1")
 
                 # === REFUSED: another owner's bucket, and an undeclared suffix of this owner ======
                 for bucket in (other_owners, undeclared):
-                    with pytest.raises(_REFUSED):
-                        await js.key_value(bucket)
-                    with pytest.raises(_REFUSED):
-                        await js.get_msg(f"KV_{bucket}", subject=f"$KV.{bucket}.cell-1")
+                    await refused(violations, js.key_value(bucket), naming=f"$js.api.stream.info.kv_{bucket}")
+                    await refused(
+                        violations,
+                        js.get_msg(f"KV_{bucket}", subject=f"$KV.{bucket}.cell-1"),
+                        naming=f"$js.api.stream.msg.get.kv_{bucket}",
+                    )
 
                 # === SUCCEEDS: a named consumer filtered inside the granted bucket ===============
                 created = await nc.request(
@@ -303,25 +260,15 @@ async def test_a_tool_pod_reaches_exactly_the_agent_buckets_it_was_granted(tmp_p
                         {"name": f"KV_{written}", "sources": [{"name": f"KV_{other_owners}"}]},
                     ),
                 ):
-                    with pytest.raises(_REFUSED):
-                        await nc.request(request_subject, json.dumps(body).encode(), timeout=2)
+                    await refused(
+                        violations,
+                        nc.request(request_subject, json.dumps(body).encode(), timeout=2),
+                        naming=request_subject,
+                    )
 
                 # === REFUSED: another pod's audit subject, and a platform audit subject ===========
                 for subject in (other_pod_audit, platform_audit):
-                    with pytest.raises(_REFUSED):
-                        await js.publish(subject, b"{}", timeout=2)
-
-                await asyncio.sleep(0.4)  # let the async -ERR frames land in the error callback
-                violations = [e for e in errors if "permissions violation" in e.lower()]
-                for needle in (
-                    f"$kv.{read_only}.handle-1".lower(),
-                    f"$js.api.stream.info.kv_{other_owners}".lower(),
-                    f"$js.api.stream.info.kv_{undeclared}".lower(),
-                    f"$js.api.stream.purge.kv_{written}".lower(),
-                    other_pod_audit.lower(),
-                    platform_audit.lower(),
-                ):
-                    assert any(needle in e.lower() for e in violations), (needle, violations)
+                    await refused(violations, js.publish(subject, b"{}", timeout=2), naming=subject)
 
                 # the granted bucket still works after the refusals
                 assert (await kv.get("cell-1")).value == b"3"

@@ -23,17 +23,13 @@ Gated on docker: a checkout without docker skips cleanly.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
 
-import nats
-import nats.errors
-import nats.js.errors
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -47,6 +43,8 @@ from threetears.nats import (
     set_default_namespace,
 )
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+from .refusals import Violations, connect, refused
 
 pytestmark = pytest.mark.integration
 
@@ -134,27 +132,6 @@ def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
         container.stop()
 
 
-@contextlib.asynccontextmanager
-async def _raw(uri: str, *, user: str, password: str, inbox: str, errors: list[str]) -> AsyncIterator:
-    """connect a raw nats client; route async permission-violation frames into ``errors``."""
-
-    async def _err_cb(exc: Exception) -> None:
-        errors.append(str(exc))
-
-    nc = await nats.connect(
-        uri,
-        user=user,
-        password=password,
-        inbox_prefix=inbox.encode(),
-        error_cb=_err_cb,
-        max_reconnect_attempts=0,
-    )
-    try:
-        yield nc
-    finally:
-        await nc.close()
-
-
 async def test_a_pod_delivers_its_own_result_and_a_registry_collects_it(tmp_path: Path) -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -182,8 +159,7 @@ async def test_a_pod_delivers_its_own_result_and_a_registry_collects_it(tmp_path
 
     with _nats_with_auth(config, tmp_path) as uri:
         # --- admin declares the stream the registry declares in production ---
-        admin_errors: list[str] = []
-        async with _raw(uri, user="admin", password=_ADMIN_PW, inbox="_INBOX", errors=admin_errors) as admin_nc:
+        async with connect(uri, user="admin", password=_ADMIN_PW, violations=Violations()) as admin_nc:
             from nats.js.api import StorageType, StreamConfig  # noqa: PLC0415
 
             await admin_nc.jetstream().add_stream(
@@ -196,24 +172,20 @@ async def test_a_pod_delivers_its_own_result_and_a_registry_collects_it(tmp_path
             )
 
         # --- the pod delivers its answer under its OWN id: this must genuinely ack ---
-        pod_errors: list[str] = []
+        pod_violations = Violations()
         pod_inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=_POD)
-        async with _raw(uri, user="pod", password=_POD_PW, inbox=pod_inbox, errors=pod_errors) as pod_nc:
+        async with connect(
+            uri, user="pod", password=_POD_PW, inbox_prefix=pod_inbox, violations=pod_violations
+        ) as pod_nc:
             pod_js = pod_nc.jetstream(timeout=8)
             ack = await pod_js.publish(result_subject.path, b"68KB of results")
             assert ack.stream == stream
-            assert not [e for e in pod_errors if "permissions violation" in e.lower()], pod_errors
+            assert not pod_violations.errors, pod_violations.errors
 
             # --- and is DENIED delivering under a PEER pod's id ---
-            before = len(pod_errors)
-            with pytest.raises((nats.errors.TimeoutError, nats.errors.NoRespondersError)):
-                await pod_js.publish(peer_subject.path, b"forged")
-            await asyncio.sleep(0.3)  # let the async -ERR frame land in the error callback
-            violations = [e for e in pod_errors[before:] if "permissions violation" in e.lower()]
-            assert violations, f"a peer's result subject was not refused: {pod_errors[before:]}"
             # the violation must name the FOREIGN pod's subject -- proof it was the grant, not some
-            # unrelated failure, that refused the publish (nats-py lowercases the server's frame).
-            assert any(_PEER_POD.lower() in e.lower() for e in violations), violations
+            # unrelated failure, that refused the publish.
+            await refused(pod_violations, pod_js.publish(peer_subject.path, b"forged"), naming=peer_subject.path)
 
         # --- the registry collects it through the SAME consumer the waiter opens ---
         client = await NatsClient.connect(

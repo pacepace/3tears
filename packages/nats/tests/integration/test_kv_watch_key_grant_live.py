@@ -35,7 +35,6 @@ from pathlib import Path
 from uuid import UUID
 
 import nats
-import nats.errors
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -51,6 +50,8 @@ from threetears.nats.subject_permissions import (
 )
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+from .refusals import Violations, refused, watching_client_log
 
 pytestmark = pytest.mark.integration
 
@@ -239,8 +240,9 @@ async def test_watch_key_works_under_the_one_key_grant_where_the_stock_watch_is_
 
             # === the stock watch, whose consumer is unnamed, is refused on the same connection ======
             stock_kv = await pod.raw.jetstream(timeout=3).key_value(bucket_name)
-            with pytest.raises((nats.errors.TimeoutError, nats.errors.NoRespondersError)):
-                await stock_kv.watch(own)
+            refusals = Violations()
+            with watching_client_log(refusals):
+                await refused(refusals, stock_kv.watch(own), naming=f"$js.api.consumer.create.{stream}")
         finally:
             if pod is not None:
                 await pod.shutdown(drain_timeout=timedelta(seconds=2))
