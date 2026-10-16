@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a model bounds its own wait on the price catalogue (`Model(catalogue_fetch_timeout=)`)
+
+- **`Model(catalogue_fetch_timeout=)` overrides `CATALOGUE_FETCH_TIMEOUT_S` for one model** (`None`, the default, keeps
+  the 30 seconds; a value not above zero is refused). It is the timeout of a fetch the model starts on a client the
+  catalogue opens, and the bound on a wait for a fetch another task started: a reader joining an in-flight fetch used
+  to wait for as long as the starter's fetch took. It now gives up at its own bound and proceeds unpriced
+  (`PriceRefresh.failure` says so; a catalogue already loaded prices from its stale rows), while the fetch continues
+  for its starter, and later reads are priced. Models sharing one catalogue each keep their own bound, and
+  `Model.derive` carries it.
+- `Catalogue.load` and `Catalogue.read` take `timeout=` for the same wait, and `load` raises `TimeoutError` when it
+  passes. A host that wrapped its catalogue reads in its own timeout can drop the wrapper.
+
 ### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
 
 Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).
