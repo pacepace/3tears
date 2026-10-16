@@ -147,6 +147,24 @@ def _unbroken_lines(tree: ast.Module, lines: list[str]) -> list[int]:
             current = parents.get(current)
         return True
 
+    def _one_of_its_lines(value: ast.expr) -> bool:
+        # ``"  " + line for line in body.splitlines()`` indents every line: the name a loop over
+        # ``splitlines()`` binds is one line of the text, whatever it is called
+        if not isinstance(value, ast.Name):
+            return False
+        current: ast.AST | None = parents.get(value)
+        while current is not None:
+            loops: list[tuple[ast.expr, ast.expr]] = []
+            if isinstance(current, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+                loops = [(gen.target, gen.iter) for gen in current.generators]
+            elif isinstance(current, (ast.For, ast.AsyncFor)):
+                loops = [(current.target, current.iter)]
+            for target, source in loops:
+                if isinstance(target, ast.Name) and target.id == value.id:
+                    return _call_name(source) == "splitlines"
+            current = parents.get(current)
+        return False
+
     def _marked(line: int) -> bool:
         return any(MARKER in lines[n - 1] for n in (line, line - 1) if 0 < n <= len(lines))
 
@@ -161,7 +179,7 @@ def _unbroken_lines(tree: ast.Module, lines: list[str]) -> list[int]:
             left = node.left
             if isinstance(left, ast.Constant) and isinstance(left.value, str) and _INDENTED_LINE.search(left.value):
                 values = [node.right]
-        flagged = [value for value in values if _free(value)]
+        flagged = [value for value in values if _free(value) and not _one_of_its_lines(value)]
         if flagged and _read_as_a_list(node) and not _marked(node.lineno):
             hits.add(node.lineno)
     return sorted(hits)
