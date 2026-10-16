@@ -10,8 +10,8 @@ every call, and read what was stored:
   them, and records it;
 * a host's own executor runs the cells when it supplies one;
 * the shared state of a run stays exact under concurrency: each cell's slice of the metered-call ledger
-  is its own calls, the ceiling holds across cells calling at once, and the cost cap is exceeded by no
-  more than the work in flight when it was reached.
+  is its own calls, the ceiling is read against the cells that landed and refuses no cell calling at once, and
+  the cost cap is exceeded by no more than the work in flight when it was reached.
 """
 
 from __future__ import annotations
@@ -251,26 +251,35 @@ async def test_the_default_executor_starts_cells_in_order_and_raises_the_first_f
 # =============================================================================
 
 
-async def test_each_cell_is_credited_its_own_metered_calls_and_the_ceiling_holds_across_cells() -> None:
+async def test_each_cell_is_credited_its_own_metered_calls_and_the_ceiling_refuses_none_of_them() -> None:
     ledger = MeteredCallLedger("run-1", ceiling=7)
     spend = ExternalSpend(provider="search", calls=1, provider_units=2, provider_unit="credits")
     tallies: dict[int, Any] = {}
+    meters: dict[int, Any] = {}
 
     async def cell(index: int, calls: int) -> None:
         with ledger.cell() as meter:
+            meters[index] = meter
             for _ in range(calls):
-                ledger.admit(tool="search", action="query", spend=spend)
+                assert ledger.admit(tool="search", action="query", spend=spend), "no call is refused inside a cell"
                 await asyncio.sleep(0)  # let the other cells call in between
             tallies[index] = meter.tally()
 
     await asyncio.gather(cell(0, 3), cell(1, 3), cell(2, 3))
 
     run = ledger.tally()
-    assert (run.calls, run.refused) == (7, 2), "the ceiling bounds the run, however many cells call at once"
+    assert (run.calls, run.refused) == (9, 0), "the ceiling is passed by the cells in flight and refuses none"
     assert sum(tally.calls for tally in tallies.values()) == run.calls
-    assert sum(tally.refused for tally in tallies.values()) == run.refused
-    assert all(tally.calls + tally.refused == 3 for tally in tallies.values()), "each cell is credited its own"
+    assert all(tally.calls == 3 and tally.refused == 0 for tally in tallies.values()), "each cell is credited its own"
     assert ledger.open_cell() is None, "no cell's meter outlives its block"
+    assert ledger.landed_calls == 0 and not ledger.ceiling_reached, (
+        "nothing has landed: the ceiling reads recorded cells"
+    )
+    for index in (0, 1):
+        ledger.land(meters[index])
+    assert ledger.landed_calls == 6 and not ledger.ceiling_reached
+    ledger.land(meters[2])
+    assert ledger.landed_calls == 9 and ledger.ceiling_reached
 
 
 async def test_the_cost_cap_is_exceeded_by_no_more_than_the_cells_in_flight_when_it_was_reached() -> None:

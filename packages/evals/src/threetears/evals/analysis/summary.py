@@ -59,7 +59,7 @@ from __future__ import annotations
 import math
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_validator
@@ -104,6 +104,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
 from threetears.evals.schema.models import (
     CHECK_REFUSED_UNDER_CURRENT_GRAMMAR,
+    BudgetStop,
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
 )
@@ -150,6 +151,52 @@ def dollars_text(amount: float | None) -> str:
         return f"${amount:.2f}"
     decimals = 2 - math.floor(math.log10(abs(amount)))
     return f"${amount:.{decimals}f}"
+
+
+def _plural(count: int, noun: str) -> str:
+    """``count`` and ``noun``, with the noun's plural ``s`` unless it is one."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
+    """The one line a run stopped by a per-run ceiling is reported with, written from the stop records.
+
+    Every figure is read off the records, which were taken from the counters, so no number on the line is
+    parsed from or rounded through prose. Money reads as ``$`` (:func:`dollars_text`) and the metered calls as
+    plain counts. A run both ceilings stopped at one boundary reads both, in the order given, and says the
+    cells that never started once, since a boundary has one. For example::
+
+        stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells not started
+
+    :param stops: The run's ``budget_stops``, at least one.
+    :ptype stops: Sequence[BudgetStop]
+    :return: One sentence, without indentation.
+    :rtype: str
+    :raises ValueError: ``stops`` is empty.
+    """
+    if not stops:
+        raise ValueError("a stop line is written from at least one stop record")
+    segments: list[str] = []
+    for position, stop in enumerate(stops):
+        if stop.currency == "cost_usd":
+            what, show = "its cost cap", dollars_text
+        else:
+            what, show = "its metered-call ceiling", lambda amount: f"{amount:g}"
+        settled = (
+            f"{show(stop.landed_final)} once {_plural(stop.cells_in_flight, 'running cell')} finished "
+            f"({'+' if stop.overshoot >= 0 else '-'}{show(abs(stop.overshoot))})"
+            if stop.cells_in_flight
+            else "no cell was running"
+        )
+        unpriced = (
+            f"{_plural(stop.unpriced_results, 'result')} spent what could not be priced, with "
+            if stop.unpriced_results
+            else ""
+        )
+        segment = f"{unpriced}{show(stop.landed_at_stop)} of {show(stop.ceiling)} at the stop, {settled}"
+        segments.append(f"stopped by {what}: {segment}" if position == 0 else f"by {what}: {segment}")
+    not_started = max(stop.cells_not_started for stop in stops)
+    return f"{'; '.join(segments)}; {_plural(not_started, 'cell')} not started"
 
 
 #: How one measure came out over a run, as the summary states it: ``measured`` (a mean), ``not_a_number`` (it is
@@ -759,7 +806,9 @@ class EvalSummary(BaseModel):
         when the run was summarised without its cases, as the CLI and ``run_get`` summarise one.
         :meth:`results` and :meth:`misses` read it.
     :ivar stopped_because: Why a designed stop ended the run short, as the run records it: the reason an
-        operator gave for a cancel, or which budget stopped it (its cost cap, or its wall-clock budget).
+        operator gave for a cancel, the line written from the run's stop records when a per-run ceiling (its cost
+        cap or its metered-call ceiling) stopped it (:func:`budget_stop_line`), or the reason its wall-clock
+        budget gave.
         ``None`` for a run nothing stopped, and for a cancel given no reason. A stop is never one of
         :attr:`errors`, which are faults.
     """
@@ -881,12 +930,19 @@ class EvalSummary(BaseModel):
         return f"{self.n_results} result(s): {', '.join(counts)}"
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description="Why a designed stop ended the run short (`stopped: <reason>`); null when nothing stopped it."
+        description=(
+            "Why a designed stop ended the run short (`stopped: <reason>`, or the sentence a per-run ceiling's stop "
+            "record is written as, which already opens `stopped by`); null when nothing stopped it."
+        )
     )
     @property
     def stopped_text(self) -> str | None:
         """The stop line, without indentation, or None."""
-        return None if self.stopped_because is None else f"stopped: {self.stopped_because}"
+        if self.stopped_because is None:
+            return None
+        if self.stopped_because.startswith("stopped by "):
+            return self.stopped_because
+        return f"stopped: {self.stopped_because}"
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
@@ -1306,7 +1362,8 @@ def summarize_run(
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
-        stopped_because=run.cancellation_reason or run.budget_stop_reason,
+        stopped_because=run.cancellation_reason
+        or (budget_stop_line(run.budget_stops) if run.budget_stops else run.budget_stop_reason),
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,
         judge_shares_candidate_model=self_judging_models(run, results),

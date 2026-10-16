@@ -418,19 +418,19 @@ async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what
         world=None,
     )
 
-    room = FakeCellSink(cap_usd=10.0)
+    room = FakeCellSink()
     answered = await kind.invoke(prepared, stored, sink=room)
     spent = sum(row.cost_usd or 0.0 for row in answered.telemetry.usage)
     assert spent > 0
     assert room.spent == {"candidate": pytest.approx(spent)}, "the trial's call is counted the moment it returns"
     assert room.held == [], "its reservation was settled"
 
-    full = FakeCellSink(cap_usd=0.0001)
-    full.add_spend("candidate", 1.0)
+    spent_already = FakeCellSink()
+    spent_already.add_spend("candidate", 1.0)
     calls = len(campaign.judge.calls)
-    refused = await kind.invoke(prepared, stored, sink=full)
-    assert len(campaign.judge.calls) == calls, "a call the cap has no room for is not sent"
-    assert not refused.output and not refused.candidate_errors and not refused.telemetry.usage
+    again = await kind.invoke(prepared, stored, sink=spent_already)
+    assert len(campaign.judge.calls) > calls, "the call is sent: the run's cap is read between cells, never inside one"
+    assert again.telemetry.usage and not again.candidate_errors
 
 
 class _Untempered:
@@ -480,7 +480,7 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
         cassettes=None,
         world=None,
     )
-    room = FakeCellSink(cap_usd=10.0)
+    room = FakeCellSink()
 
     with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
         await kind.invoke(prepared, stored, sink=room)

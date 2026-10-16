@@ -9,18 +9,16 @@ ONE run:
   delivered result's ``cost_usd`` and trips once the accumulated total exceeds
   the configured (or per-run overridden) ceiling — or, in a run it enforces, on the
   first result whose spend could not be priced (see :class:`EvalRunCostCap`).
-- Between cells, :func:`~threetears.evals.run.runner.execute_run` checks the cap and
-  stops GRACEFULLY when it trips — already-delivered results stay persisted and
-  the run is marked ``budget_stopped`` (a distinct, honest terminal status, not
-  an infra ``failed``) by raising :class:`BudgetStoppedError`, which the job
-  manager translates.
-- Inside a cell, the same cap is asked through the cell's sink, which counts every running cell's spend
-  by source and the ceilings of the priced calls they have in flight: a priced call is reserved before
-  it is made and refused when it would pass the cap
-  (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`), an unpriced one asks first
-  (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.cost_cap_reached`). The simulator's calls and
-  the judge phase's are held this way by the engine itself. A cell stopped that way is excluded, and the
-  run stops ``budget_stopped`` once it is saved.
+- Between cells, :func:`~threetears.evals.run.runner.execute_run` checks the cap against what has LANDED,
+  the spend of the cells already recorded, and stops GRACEFULLY when it trips: no new cell starts, the
+  cells already running finish, their results stay persisted and the run is marked ``budget_stopped`` (a
+  distinct, honest terminal status, not an infra ``failed``) by raising :class:`BudgetStoppedError`, which the
+  job manager translates. The run may land past the cap by up to the width's worth of cells.
+- Never inside a cell. The cap refuses no call a cell is making
+  (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve` holds nothing back and
+  :meth:`~threetears.evals.kernel.candidate_kind.CellSink.cost_cap_reached` is always ``False``): a refusal
+  inside a cell contaminates whichever cell happened to ask once the cap was spent, so a looping cell is
+  bounded by the cell timeout, not by the cap.
 - :class:`AccountExhaustedError` is the account-side twin: the provider account behind the
   run refused a candidate call (out of credit, or the key refused), so the run stops after
   that cell and is marked ``exhausted``. Nothing configures it; a cell observes it.
@@ -35,6 +33,7 @@ owns the async, off-loop path into the budget ledger.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -42,7 +41,7 @@ from threetears.evals.run import ceilings
 from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import KnownCostCapOrigin
+    from threetears.evals.schema.models import BudgetStop, KnownCostCapOrigin
 
 log = get_logger(__name__)
 
@@ -57,67 +56,77 @@ class CapBreach:
     operator set nor the spend that crossed it.
 
     :ivar max_cost_usd: The ceiling that bound the run.
-    :ivar accumulated_usd: This run's PRICED spend at the moment the cap tripped — the running cells' spend
-        and held reservations included, and a refused call's ceiling (``refused_call_usd``).
-    :ivar unpriced_results: Results whose spend could not be priced, counting a running cell's unpriced
-        pending spend as one. Non-zero is a breach on its own: the cap cannot say the run is inside
-        a ceiling it cannot count against.
-    :ivar refused_call_usd: The ceiling of the priced call the cap refused to admit, when a cell's reservation
-        is what reached it (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`) — the call
-        was never made, so ``accumulated_usd``, which counts it, is what the run WOULD have spent with it.
-        ``None`` when the spend itself crossed the cap.
+    :ivar accumulated_usd: This run's PRICED spend at the moment the cap tripped: the recorded cells' spend.
+    :ivar unpriced_results: Recorded results whose spend could not be priced. Non-zero is a breach on its
+        own: the cap cannot say the run is inside a ceiling it cannot count against.
     """
 
     max_cost_usd: float
     accumulated_usd: float
     unpriced_results: int
-    refused_call_usd: float | None = None
 
 
 class BudgetStoppedError(Exception):
-    """Raised by :func:`~threetears.evals.run.runner.execute_run` when the cap trips mid-run.
+    """Raised by :func:`~threetears.evals.run.runner.execute_run` when a per-run ceiling stops the run.
 
-    Signals that this run's accumulated cost exceeded its cap between cells and
-    the run stopped gracefully. Already-delivered results are persisted *before*
+    Signals that a ceiling (the cost cap, the metered-call ceiling, or both) was reached by what the
+    recorded cells landed, so no new cell started, and that the run stopped gracefully once the cells
+    already running had finished. Already-delivered results are persisted *before*
     this is raised (each cell saves its result as it completes), so nothing
-    produced is lost. The job manager catches it and marks the run
+    produced is lost. The job manager catches it, marks the run
     ``budget_stopped`` — a distinct, honest terminal status, never an infra
-    ``failed``.
+    ``failed`` — and records :attr:`stops` on the run.
+
+    :ivar completed: Results delivered (and persisted) before the stop.
+    :ivar total: Results the run's matrix would have produced.
+    :ivar breach: The cost cap's numbers when the cap stopped the run, else ``None``.
+    :ivar stops: One typed record per ceiling that stopped the run, each from the counters.
     """
 
-    def __init__(self, completed: int, total: int, breach: CapBreach):
-        """Record how far the run got before the cap stopped it, and on what numbers.
+    def __init__(
+        self, completed: int, total: int, breach: CapBreach | None = None, *, stops: Sequence[BudgetStop] = ()
+    ):
+        """Record how far the run got before a ceiling stopped it, and on what numbers.
 
-        The breach is required rather than optional: this error exists only
-        because a cap tripped, so an instance that cannot say which ceiling and
-        which spend is one an operator has to go and reconstruct — which is the
-        state the message used to leave them in.
+        An instance that cannot say which ceiling and which spend stopped the run is one an operator has to
+        go and reconstruct, so at least one of ``breach`` and ``stops`` is required, and the message is
+        written from ``stops`` when they are given.
 
         :param completed: Number of results delivered (and persisted) before the stop.
         :ptype completed: int
         :param total: Total results the run's matrix would have produced.
         :ptype total: int
-        :param breach: The ceiling and the accumulated spend that crossed it.
-        :ptype breach: CapBreach
+        :param breach: The ceiling and the accumulated spend that crossed it, when it was the cost cap.
+        :ptype breach: CapBreach | None
+        :param stops: The typed record of each ceiling that stopped the run.
+        :ptype stops: Sequence[BudgetStop]
+        :raises ValueError: Neither ``breach`` nor ``stops`` is given.
         """
+        if breach is None and not stops:
+            raise ValueError("a budget stop names the ceiling that stopped the run: pass a breach or stops")
         self.completed = completed
         self.total = total
         self.breach = breach
-        if breach.unpriced_results:
-            reason = (
-                f"{breach.unpriced_results} result(s) spent what could not be priced, beside "
-                f"${breach.accumulated_usd:.4f} of priced spend, so a ${breach.max_cost_usd:.4f} cap cannot be enforced"
-            )
-        elif breach.refused_call_usd is not None:
-            reason = (
-                f"eval run cost cap reached — a call priced at up to ${breach.refused_call_usd:.4f} would have taken "
-                f"the run to ${breach.accumulated_usd:.4f} against a ${breach.max_cost_usd:.4f} cap, so it was not made"
-            )
+        self.stops = tuple(stops)
+        if self.stops:
+            # Imported here: the analysis layer reads the run layer, and this is the one place the run layer
+            # writes the line the page shows, so the two cannot word a stop differently.
+            from threetears.evals.analysis.summary import budget_stop_line
+
+            reason = budget_stop_line(self.stops)
         else:
-            reason = (
-                f"eval run cost cap exceeded — ${breach.accumulated_usd:.4f} spent against a "
-                f"${breach.max_cost_usd:.4f} cap"
-            )
+            assert breach is not None
+            if breach.unpriced_results:
+                reason = (
+                    f"{breach.unpriced_results} result(s) spent what could not be priced, beside "
+                    f"${breach.accumulated_usd:.4f} of priced spend, so a ${breach.max_cost_usd:.4f} cap cannot be "
+                    "enforced"
+                )
+            else:
+                reason = (
+                    f"eval run cost cap exceeded — ${breach.accumulated_usd:.4f} spent against a "
+                    f"${breach.max_cost_usd:.4f} cap"
+                )
         super().__init__(f"{reason} after {completed}/{total} results — run stopped gracefully")
 
 
@@ -327,20 +336,17 @@ class EvalRunCostCap:
     def check(self, pending_usd: float | None = 0.0) -> CapBreach | None:
         """Report whether the run may proceed, and on what numbers if it may not.
 
-        The gate :func:`~threetears.evals.run.runner.execute_run` calls before each cell, with the spend
-        the cells already running have in flight, and the one a running cell asks through its sink
-        (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.cost_cap_reached`,
-        :meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`) with every running cell's spend
-        and held reservations, plus the ceiling of the call it is asking to make. One rule for both, so the
-        cap a cell is stopped by inside is the cap the run is stopped by between cells. Nothing is
-        recorded here: a cell's whole spend is recorded once, by :meth:`record`, when its result lands.
+        The gate :func:`~threetears.evals.run.runner.execute_run` calls before each cell, with nothing
+        pending: it reads what has LANDED, the spend of the cells already recorded, and never the spend of the
+        cells still running. Nothing is recorded here: a cell's whole spend is recorded once, by
+        :meth:`record`, when its result lands.
         It returns the observation rather than a bare boolean because the run loop is where the stop is
         raised and the cap is the only thing that knows the ceiling and the spend — a ``False`` there
         reaches the operator as an unattributed assertion.
 
-        :param pending_usd: Spend the running cells have made or reserved that is not yet recorded. ``None``
-            is pending spend that could not be priced, which breaches an enforcing cap as an unpriced
-            result does.
+        :param pending_usd: Spend to count beside what is recorded. The engine passes none (``0.0``): the cap is
+            read against landed spend. ``None`` is spend that could not be priced, which breaches an enforcing
+            cap as an unpriced result does.
         :ptype pending_usd: float | None
         :return: ``None`` while the run is within its cap counting that spend (including when enforcement
             is disabled, which is uncapped), or the :class:`CapBreach` that stops it.

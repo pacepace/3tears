@@ -18,13 +18,21 @@ Three pieces, and they are deliberately separate:
 - **The bound** is this module: one :class:`MeteredCallLedger` per run,
   in-memory, pure arithmetic, no shared pool and no database I/O.
 
-**It refuses calls; it does not stop the run.** A hard stop would discard a
-partially-measured matrix, where a refusal keeps every cell measurable and records
-the refusal count on ``metered_calls_refused``. The refusal reaches the candidate as an ordinary failed action
-result — the action seam's own feedback channel, the same way the ``tools_allowed``
-bound reaches it as a system perception on the attach path — and the run and its
-affected results carry a disclosure, so a truncated measurement can never be
-mistaken for a complete one.
+**The ceiling stops the run BETWEEN cells; it never refuses a call inside one.** Once the run's LANDED
+metered-call count — counted from the cells already recorded (:meth:`MeteredCallLedger.land`) — reaches the
+ceiling, no new cell starts (:meth:`MeteredCallLedger.ceiling_reached`, read by the runner's between-cells
+check), and the run ends ``budget_stopped`` with a typed record of the stop
+(:class:`~threetears.evals.schema.models.BudgetStop`). The cells already running finish without a single
+refusal, so a run may overshoot by up to the width's worth of cells, and that is the design. Refusing inside a
+cell made the cell that happened to ask after the ceiling was spent the contaminated one, so two identical runs at
+width above 1 could contaminate different cells; a cell is the unit of measurement, and it is either measured
+whole or never begun.
+
+**The one refusal that remains is a wrong declaration, not a budget.** A host that declared no metered tools
+(``none_declared``) has a ceiling of ``0`` that no landed count is compared to: a metered call there is refused at
+the dispatcher, counted on ``metered_calls_refused`` and logged as the contradiction of the host's declaration it
+is. The refusal reaches the candidate as an ordinary failed action result — the action seam's own feedback
+channel — and the run and its affected results carry a disclosure.
 
 **What it bounds, exactly:** action-seam calls. An async tool whose quota is spent
 on a detached background run declares its
@@ -70,7 +78,8 @@ class MeteredCallTally:
 
     :ivar calls: Metered calls admitted and dispatched, across every provider.
     :ivar spends: One entry per ``(provider, unit)`` this tally observed, in first-seen order.
-    :ivar refused: Calls the ceiling turned away, across every provider.
+    :ivar refused: Calls turned away at dispatch, across every provider. Only a host that declared no metered
+        tools refuses a call; a per-run ceiling stops the run between cells instead.
     """
 
     calls: int
@@ -180,22 +189,22 @@ class CellMeter:
         return MeteredCallTally(calls=self._calls, spends=tuple(self._spends.values()), refused=self._refused)
 
     def admitted(self, spend: ExternalSpend | None) -> None:
-        """Count one call the run's ceiling let through, with what it consumed."""
+        """Count one call the ledger let through, with what it consumed."""
         self._calls += 1
         _folded(self._spends, spend)
 
     def refused(self) -> None:
-        """Count one call the run's ceiling turned away."""
+        """Count one call turned away at dispatch (a host that declared no metered tools)."""
         self._refused += 1
 
 
 class MeteredCallLedger:
     """In-memory per-run ceiling on metered third-party calls.
 
-    One instance per eval run, shared by every cell — serial or concurrent: :meth:`admit` never yields to
-    the event loop, so the check and the count are one step and no two cells can both take the last
-    call under the ceiling. Each cell's own slice is counted as calls are decided (:meth:`cell`). Read at
-    the host's action dispatcher through the subject it was handed to. Pure arithmetic: no provider
+    One instance per eval run, shared by every cell — serial or concurrent. Each cell's own slice is counted as
+    calls are admitted (:meth:`cell`); the run's LANDED count — the calls of the cells already recorded — is
+    what the ceiling is read against (:meth:`land`, :meth:`ceiling_reached`), by the runner, between cells. Read
+    at the host's action dispatcher through the subject it was handed to. Pure arithmetic: no provider
     call, no database I/O, nothing that can fail open.
 
     ``ceiling=None`` counts without bounding — the shape a run gets when eval
@@ -203,8 +212,9 @@ class MeteredCallLedger:
     never having a ledger at all.
 
     ``none_declared=True`` is a host that declared it has no metered tools: the ceiling is ``0``,
-    so every metered call is refused and counted, and each one is logged as the contradiction of
-    the host's declaration it is rather than as a run reaching its limit.
+    so every metered call is refused at dispatch and counted, and each one is logged as the contradiction of
+    the host's declaration it is rather than as a run reaching its limit. That is a check on the declaration,
+    not a budget, so it is the one refusal the ledger still makes.
 
     Provisional: shaped by the first host that adopted the engine, and kept or removed by whether a second host's
     adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
@@ -213,10 +223,10 @@ class MeteredCallLedger:
     def __init__(self, run_id: str, ceiling: int | None, *, none_declared: bool = False):
         """Bind the ledger to a run and its ceiling.
 
-        :param run_id: The eval run this bounds — named in the log line when the
-            ceiling first binds, so a refusal is attributable to its run.
+        :param run_id: The eval run this bounds — named in the log line of a refusal, so it is attributable to
+            its run.
         :ptype run_id: str
-        :param ceiling: The maximum number of metered calls this run may make, or
+        :param ceiling: The landed metered-call count at which no new cell starts, or
             ``None`` for counted-but-unbounded.
         :ptype ceiling: int | None
         :param none_declared: The host declared it has no metered tools; requires a ``ceiling`` of 0.
@@ -231,7 +241,7 @@ class MeteredCallLedger:
         self._calls = 0
         self._spends: dict[tuple[str, str | None], ExternalSpend] = {}
         self._refused = 0
-        self._announced = False
+        self._landed = 0
 
     @classmethod
     def for_run(
@@ -262,7 +272,7 @@ class MeteredCallLedger:
         :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
         :ptype enforcement_enabled: bool
         :return: A ledger bound to this run's effective ceiling, counting without bounding
-            when the caller has enforcement off, and refusing every metered call for a host
+            when the caller has enforcement off, and refusing every metered call at dispatch for a host
             that declared none.
         :rtype: MeteredCallLedger
         :raises ValueError: An override for a host that declares no metered tools.
@@ -352,6 +362,32 @@ class MeteredCallLedger:
         """Snapshot what this run has metered so far."""
         return MeteredCallTally(calls=self._calls, spends=tuple(self._spends.values()), refused=self._refused)
 
+    @property
+    def landed_calls(self) -> int:
+        """Metered calls of the cells already recorded — the count the ceiling is read against."""
+        return self._landed
+
+    def land(self, meter: CellMeter) -> None:
+        """Count a recorded cell's metered calls as landed.
+
+        The runner calls it in the step that records the cell's result, so the landed count is exactly the
+        calls of the cells whose results are on the record. Calls of a cell still running are in
+        :meth:`tally` and not here: the ceiling never acts on them.
+
+        :param meter: The cell's meter, from :meth:`cell`.
+        :ptype meter: CellMeter
+        """
+        self._landed += meter.tally().calls
+
+    @property
+    def ceiling_reached(self) -> bool:
+        """Whether the landed count has reached the ceiling, so no new cell may start.
+
+        ``False`` for an unbounded ledger, and for a host that declared no metered tools: its ceiling of ``0``
+        is a check on the declaration (a call is refused at dispatch), not a budget a run can reach.
+        """
+        return not self._none_declared and self._ceiling is not None and self._landed >= self._ceiling
+
     @contextmanager
     def cell(self) -> Iterator[CellMeter]:
         """Meter one cell's own calls for as long as the block runs, in this context.
@@ -378,10 +414,9 @@ class MeteredCallLedger:
     def admit(self, *, tool: str, action: str, spend: ExternalSpend | None) -> bool:
         """Decide whether one metered call may proceed, recording it either way.
 
-        Called at the dispatcher **before** dispatch, which is what makes this a
-        bound rather than a tally: a provider charges on the attempt, so admitting
-        first and counting afterwards would let the call that crosses the ceiling
-        be the one nobody stopped.
+        Called at the dispatcher **before** dispatch. A per-run ceiling never refuses here — it stops the
+        run between cells (:attr:`ceiling_reached`) — so a call is turned away only by a host that declared
+        no metered tools, where the call contradicts the declaration.
 
         :param tool: Catalog name of the tool making the call.
         :ptype tool: str
@@ -389,38 +424,27 @@ class MeteredCallLedger:
         :ptype action: str
         :param spend: What the calling tool says this ONE call consumes. ``None`` when the
             tool declared no provider at all, which the metering-declaration canary
-            refuses for a metered action — the call is still counted and bounded, and
-            lands unattributed, because a call the ceiling let through has happened
+            refuses for a metered action — the call is still counted, and
+            lands unattributed, because a call this let through has happened
             whatever the declaration says about it.
         :ptype spend: ExternalSpend | None
-        :return: True when the call may proceed (and has been counted), False when the
-            ceiling refuses it (and the refusal has been counted).
+        :return: True when the call may proceed (and has been counted), False when the host declared no
+            metered tools (and the refusal has been counted).
         :rtype: bool
         """
         meter = self.open_cell()
-        if self._ceiling is not None and self._calls >= self._ceiling:
+        if self._none_declared:
             self._refused += 1
             if meter is not None:
                 meter.refused()
-            if self._none_declared:
-                log.error(
-                    "Eval run %s made a metered call at %s.%s, and its host declares no metered tools — the call is "
-                    "refused; the host's declaration (LaunchSettings.max_metered_calls=None) or its tool's metering "
-                    "declaration is wrong",
-                    self._run_id,
-                    tool,
-                    action,
-                )
-            elif not self._announced:
-                self._announced = True
-                log.warning(
-                    "Eval run %s reached its metered-call ceiling of %d at %s.%s — further metered "
-                    "third-party calls are refused; the run continues and is disclosed as bounded",
-                    self._run_id,
-                    self._ceiling,
-                    tool,
-                    action,
-                )
+            log.error(
+                "Eval run %s made a metered call at %s.%s, and its host declares no metered tools — the call is "
+                "refused; the host's declaration (LaunchSettings.max_metered_calls=None) or its tool's metering "
+                "declaration is wrong",
+                self._run_id,
+                tool,
+                action,
+            )
             return False
         self._calls += 1
         self._record_spend(spend)
@@ -434,7 +458,7 @@ class MeteredCallLedger:
         Accumulates per ``(provider, unit)`` rather than into one running number, because
         two providers' weighted units are not one quantity. A report with no provider
         contributes to the call count and nothing else — the call still happened and the
-        ceiling still bounds it, but nothing can be attributed, and the runner writes those
+        ceiling still counts it, but nothing can be attributed, and the runner writes those
         calls into a row of their own rather than losing them.
 
         Reads the fields directly rather than through ``getattr`` defaults. The type is
@@ -458,13 +482,12 @@ class MeteredCallLedger:
         _folded(self._spends, spend)
 
     def refusal_message(self, *, tool: str, action: str) -> str:
-        """The refusal the candidate reads when the ceiling turns a call away.
+        """The refusal the candidate reads when a host that declared no metered tools makes a metered call.
 
         Deliberately shaped like the ``tools_allowed`` attach refusal: it names
         what was refused, says the run — not the tool — imposed the limit, and
         tells the candidate to carry on rather than retry. A refusal that reads
-        like a provider outage invites exactly the retry loop the ceiling exists
-        to stop.
+        like a provider outage invites exactly the retry loop it exists to stop.
 
         :param tool: Catalog name of the tool the call was for.
         :ptype tool: str
@@ -472,16 +495,17 @@ class MeteredCallLedger:
         :ptype action: str
         :return: One sentence pair, safe to hand back as an ``ActionResult`` description.
         :rtype: str
+        :raises ValueError: The ledger belongs to a host that declared metered tools; a per-run ceiling stops
+            the run between cells and refuses no call, so there is nothing to say to a candidate.
         """
-        if self._none_declared:
-            return (
-                f"Cannot run '{tool}.{action}': this evaluation's host declares no metered third-party tools, so "
-                "no metered call is allowed. Continue with what you already have."
+        if not self._none_declared:
+            raise ValueError(
+                "only a host declaring no metered tools refuses a metered call; a per-run ceiling stops the run "
+                "between cells"
             )
         return (
-            f"Cannot run '{tool}.{action}': this evaluation run has reached its limit of "
-            f"{self._ceiling} metered third-party calls. Continue with what you already have — "
-            "further calls to paid or rationed providers will be refused."
+            f"Cannot run '{tool}.{action}': this evaluation's host declares no metered third-party tools, so "
+            "no metered call is allowed. Continue with what you already have."
         )
 
 

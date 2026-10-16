@@ -253,11 +253,11 @@ class PlannedJudge:
 class CallCeiling:
     """The largest reservation one call of an arm's cells will hold against its run's cap, priced before launch.
 
-    A run reserves a priced call's ceiling before it is made, and refuses the call when the ceiling would take the
-    run past its cap (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`). A call whose ceiling is
-    above the cap on its own can therefore never be made, at any spend: the run reaches that call, stops
-    ``budget_stopped`` and excludes its case. So an arm is refused before launch when its largest call's ceiling
-    is above its cap (:func:`price_arms`, and :func:`quote_launch` with it), and this is what that refusal reads.
+    A run's cap is read between cells and refuses no call inside one, so a call whose ceiling is above the cap on
+    its own is made, and the run stops ``budget_stopped`` before its next cell having spent more than the cap on
+    that one call. An arm is still refused before launch when its largest call's ceiling is above its cap
+    (:func:`price_arms`, and :func:`quote_launch` with it): a cap smaller than one call cannot bound the run, and
+    this is what that refusal reads.
 
     **Exact, or a floor.** For a kind whose calls are whole before launch (the judge kind's frozen cases, the
     reporter's frozen bundles), ``usd`` is the largest call's ceiling exactly, and ``lower_bound`` is ``False``.
@@ -2723,9 +2723,9 @@ def _largest_call_over_cap(
         refusal = (
             f"{what} cannot make {ceiling.call} under its ${cap:.2f} cap: even the smallest such call this arm could "
             f"make — its fixed parts alone, before any transcript or evidence is added — is reserved at "
-            f"${ceiling.usd:.4f} before it is sent, more than the whole cap, and a run refuses every call whose "
-            "reservation would take it past its cap. The run would stop budget_stopped on reaching the first such "
-            f"call, with its case excluded and whatever was spent before it lost to the measurement. {refused}"
+            f"${ceiling.usd:.4f} at most, more than the whole cap, so one such call alone would put the run past it. "
+            "A cap is read between cells and refuses no call inside one, so the run would make the call and stop "
+            f"budget_stopped before its next cell, after spending more than the cap on it. {refused}"
         )
         if needed <= host_ceiling:
             raise_it = (
@@ -2741,9 +2741,9 @@ def _largest_call_over_cap(
         return refusal, f"{raise_it}; or lower the call's floor: {ceiling.lowered_by}"
     refusal = (
         f"{what} cannot make its largest call under its ${cap:.2f} cap: {ceiling.call} is reserved at up to "
-        f"${ceiling.usd:.4f} before it is sent, more than the whole cap, and a run refuses every call whose "
-        "reservation would take it past its cap. The run would stop budget_stopped on reaching that call, with "
-        f"its case excluded and whatever the cases before it spent lost to the measurement. {refused}"
+        f"${ceiling.usd:.4f} at most, more than the whole cap, so one such call alone would put the run past it. A "
+        "cap is read between cells and refuses no call inside one, so the run would make the call and stop "
+        f"budget_stopped before its next cell, after spending more than the cap on it. {refused}"
     )
     room = (
         f" (${_cents_up(ceiling.usd + price.predicted_usd):.2f} also leaves room for the "

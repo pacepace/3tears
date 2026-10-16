@@ -26,6 +26,8 @@
 "threetears.evals.schema.AsyncStoreClock": "host-contract",
 "threetears.evals.schema.attribution_state": "provisional",
 "threetears.evals.schema.BoundCompletionClient": "stable",
+"threetears.evals.schema.BudgetStop": "provisional",
+"threetears.evals.schema.BudgetStopCurrency": "provisional",
 "threetears.evals.schema.BUILTIN_JUDGE_CONFIG_PREFIX": "provisional",
 "threetears.evals.schema.CalibrationRating": "stable",
 "threetears.evals.schema.CallLedger": "stable",

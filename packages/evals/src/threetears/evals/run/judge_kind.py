@@ -47,7 +47,6 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateTelemetry,
     CellSink,
     CellSpanWindow,
-    CostCapReached,
     VariantConfig,
 )
 from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
@@ -945,12 +944,8 @@ class JudgeKind:
                 request = self._request(service, case, _context_of(test_case, case))
             except ValueError as exc:
                 return CandidateOutput(infra_errors=[f"apparatus: test case {test_case.id}'s judge case: {exc}"])
-            try:
-                await refresh_prices(service.client_for(request))
-                held = sink.reserve("candidate", service.price_ceiling(request))
-            except CostCapReached:
-                # The sink recorded the breach: the runner excludes this cell for the cap, with nothing spent.
-                return CandidateOutput()
+            await refresh_prices(service.client_for(request))
+            held = sink.reserve("candidate", service.price_ceiling(request))
             try:
                 with scopes.collecting():
                     outcome = await service.score_request(request, case_id=test_case.id)

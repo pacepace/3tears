@@ -1,7 +1,7 @@
 """A floor under a subject arm's judge and simulator calls, priced before launch.
 
-A launch refuses an arm whose largest call is reserved above its cap (:class:`~threetears.evals.run.CallCeiling`),
-since its run could never make that call. The judge kind and the reporter price their largest call exactly: their
+A launch refuses an arm whose largest call is priced above its cap (:class:`~threetears.evals.run.CallCeiling`),
+since one such call alone would put its run past the cap. The judge kind and the reporter price their largest call exactly: their
 prompts are frozen cases. A subject kind's judge and simulator prompts carry a transcript and evidence that only
 its run writes, so its largest call cannot be priced before launch — but a FLOOR under it can.
 

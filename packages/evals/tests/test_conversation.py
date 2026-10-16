@@ -8,7 +8,6 @@ import pytest
 
 from packages.evals.tests.scripted_table import DONE, FakeCellSink, Raw, ScriptedTable, actor
 from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
-from threetears.evals.kernel.candidate_kind import CostCapReached
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run import drive_conversation
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
@@ -177,10 +176,10 @@ async def test_a_last_departure_after_others_spoke_under_the_scheduler_is_answer
     assert table.picks == []
 
 
-# --- the run's cost cap: every paid call held against it ------------------------------------------
+# --- spend: counted on the sink, never a reason to stop the conversation --------------------------------------
 
 
-async def test_every_simulator_call_is_held_against_the_cap_and_its_spend_lands_on_the_simulator_total():
+async def test_every_simulator_call_lands_its_spend_on_the_simulator_total():
     driver = _driver(actors=[actor("a")], max_turns=2)
     table = ScriptedTable(lines={"a": ["a1", "a2"]})
     sink = FakeCellSink()
@@ -188,148 +187,60 @@ async def test_every_simulator_call_is_held_against_the_cap_and_its_spend_lands_
 
     await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=sink)
 
-    # Per round: before the pick (free under round-robin, asked anyway), before the line and again as the
-    # line's call is held, before the pick that finds the round full, before the answer. Spend moves only
-    # with a line, a tenth of a cent each, and it moves on the simulator's own total.
-    assert sink.asked == pytest.approx([0.0, 0.0, 0.0, 0.001, 0.001, 0.001, 0.001, 0.001, 0.002, 0.002])
     assert sink.spent == {"simulator": pytest.approx(0.002)}
-    assert sink.held == [], "every held call was settled"
+    assert sink.held == [], "every call's reservation was settled"
 
 
-async def test_an_unpriced_conversation_stops_before_the_call_that_would_follow_crossing_the_cap():
-    """A cap of two and a half calls, on a client that cannot price a call: three utterances are bought, then nothing."""
-    driver = _driver(actors=[actor("a")], max_turns=5)
-    table = ScriptedTable(lines={"a": ["a1", "a2", "a3", "a4", "a5"]})
-    kind = _Kind()
-
-    cause = await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=FakeCellSink(cap_usd=0.0025))
-
-    assert cause is ConversationStopCause.BUDGET_STOPPED
-    assert table.utterance_calls == ["a", "a", "a"]
-    assert kind.rounds == [["a"], ["a"]], "the third line is left unanswered: answering it is a paid call past the cap"
-    assert driver.cost_usd == pytest.approx(0.003)
-
-
-async def test_a_priced_conversation_never_spends_past_the_cap():
-    """The same cap on a client that prices its calls: the call that would cross it is refused before it is made."""
+async def test_a_conversation_runs_to_its_own_end_however_much_it_has_spent():
+    """No cap is asked inside the loop: the run's ceilings are read between cells, so a long conversation finishes."""
     driver = _driver(actors=[actor("a")], max_turns=5)
     table = ScriptedTable(lines={"a": ["a1", "a2", "a3", "a4", "a5"]}, ceiling_usd=0.001)
-    sink = FakeCellSink(cap_usd=0.0025)
+    sink = FakeCellSink()
     kind = _Kind()
 
     cause = await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=sink)
 
-    assert cause is ConversationStopCause.BUDGET_STOPPED
-    assert table.utterance_calls == ["a", "a"], "the third line's ceiling would have taken the cell past the cap"
-    assert kind.rounds == [["a"], ["a"]]
-    assert sink.refused == [0.001]
-    assert driver.cost_usd == pytest.approx(0.002)
-    assert driver.cost_usd <= 0.0025, "a reserved conversation spends nothing past its cap"
+    assert cause is ConversationStopCause.MAX_TURNS
+    assert table.utterance_calls == ["a"] * 5
+    assert kind.rounds == [["a"]] * 5, "every line is answered"
+    assert driver.cost_usd == pytest.approx(0.005)
 
 
-async def test_the_scheduler_s_picks_count_against_the_cap_too():
-    driver = _driver(actors=[actor("a"), actor("b")], turn_scheduler="llm_decided", max_speakers_per_round=2)
-    table = ScriptedTable(picks=["a", "b"], lines={"a": ["a1"], "b": ["b1"]})
+async def test_the_schedulers_picks_and_repairs_are_made_whatever_they_cost():
+    driver = _driver(
+        actors=[actor("a"), actor("b")], turn_scheduler="llm_decided", max_speakers_per_round=2, max_turns=1
+    )
+    table = ScriptedTable(picks=[Raw("not a pick"), "a", ROUND_DONE], lines={"a": ["a1"]})
     kind = _Kind()
 
-    cause = await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=FakeCellSink(cap_usd=0.0015))
+    await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=FakeCellSink())
 
-    assert cause is ConversationStopCause.BUDGET_STOPPED
-    assert [call.purpose for call in driver.calls] == ["schedule", "utterance"]
-    assert kind.rounds == []
-
-
-async def test_a_scheduling_decision_s_repair_call_is_held_against_the_cap_as_a_call_of_its_own():
-    """A refused pick's repair is a paid call: it is asked about before it is made, so the cap stops it.
-
-    Half a call's worth of cap, crossed by the first call: the repair is not made, and nothing after it is bought.
-    """
-    driver = _driver(actors=[actor("a"), actor("b")], turn_scheduler="llm_decided", max_speakers_per_round=2)
-    table = ScriptedTable(picks=[Raw("not a pick"), "a"], lines={"a": ["a1"]})
-    kind = _Kind()
-
-    cause = await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=FakeCellSink(cap_usd=0.0005))
-
-    assert cause is ConversationStopCause.BUDGET_STOPPED
-    assert [call.purpose for call in driver.calls] == ["schedule"]
-    assert table.utterance_calls == []
-    assert driver.cost_usd == pytest.approx(0.001)
+    assert [call.purpose for call in driver.calls][:3] == ["schedule", "schedule", "utterance"]
+    assert kind.rounds, "the round was answered"
 
 
-async def test_an_unpriced_simulator_call_stops_the_conversation_under_a_cap():
+async def test_an_unpriced_simulator_call_leaves_its_source_unpriced_and_the_conversation_goes_on():
     driver = _driver(actors=[actor("a")], max_turns=3)
-    table = ScriptedTable(lines={"a": ["a1", "a2"]}, cost_usd=None)
-    sink = FakeCellSink(cap_usd=100.0)
+    table = ScriptedTable(lines={"a": ["a1", "a2", "a3"]}, cost_usd=None)
+    sink = FakeCellSink()
     kind = _Kind()
 
     cause = await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=sink)
 
-    assert cause is ConversationStopCause.BUDGET_STOPPED
-    assert table.utterance_calls == ["a"]
+    assert cause is ConversationStopCause.MAX_TURNS
+    assert table.utterance_calls == ["a", "a", "a"]
     assert driver.cost_usd is None
     assert sink.spent == {"simulator": None}, "unpriced spend leaves its source unpriced, never zero"
 
 
-async def test_a_departure_on_the_cap_leaves_the_round_unanswered_and_records_user_done():
-    """The cap reached just as the last actor leaves: the answer is not bought, the stop stays user_done."""
-    driver = _driver(actors=[actor("a")], max_speakers_per_round=2)
-    table = ScriptedTable(lines={"a": ["a1", DONE]})
-    sink = FakeCellSink(cap_usd=0.0015)
-    kind = _Kind()
+async def test_the_sink_never_reports_the_cap_reached_and_never_refuses_a_reservation():
+    sink = FakeCellSink()
 
-    cause = await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=sink)
+    held = sink.reserve("candidate", 1_000_000.0)
+    held.settle(1_000_000.0)
 
-    assert cause is ConversationStopCause.USER_DONE
-    assert kind.rounds == []
-    assert sink.asked[-1] == pytest.approx(0.002)
-
-
-class _CappedKind(_Kind):
-    """A kind whose candidate pays for its own answers, holding each against the cap and stopping when it is refused."""
-
-    def __init__(self, sink: FakeCellSink, *, answer_usd: float) -> None:
-        super().__init__()
-        self.sink = sink
-        self.answer_usd = answer_usd
-
-    async def answer(self, round_turns: Sequence[SimulatorTurn]) -> CandidateTurn:
-        held = self.sink.reserve("candidate", self.answer_usd)  # raises CostCapReached when there is no room
-        answered = await super().answer(round_turns)
-        held.settle(self.answer_usd)
-        return answered
-
-
-async def test_a_candidate_turn_that_raises_the_cap_signal_ends_the_conversation_budget_stopped_keeping_its_rounds():
-    """The candidate's own spend counts beside the simulator's, and the cap's refusal is a stop, never a candidate error."""
-    driver = _driver(actors=[actor("a")], max_turns=5)
-    table = ScriptedTable(lines={"a": ["a1", "a2", "a3", "a4", "a5"]}, ceiling_usd=0.001)
-    sink = FakeCellSink(cap_usd=0.025)
-    kind = _CappedKind(sink, answer_usd=0.01)
-
-    cause = await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=sink)
-
-    assert cause is ConversationStopCause.BUDGET_STOPPED, "the cap's refusal is no fault of the candidate's"
-    assert kind.rounds == [["a"], ["a"]], "the rounds already answered are kept"
-    assert table.utterance_calls == ["a", "a", "a"], "the third line fit; its answer did not"
-    assert sink.refused == [0.01]
-    assert sink.spent == {"simulator": pytest.approx(0.003), "candidate": pytest.approx(0.02)}
-    assert sum(total or 0.0 for total in sink.spent.values()) <= 0.025
-
-
-async def test_the_cap_signal_out_of_a_delivery_stops_the_conversation_budget_stopped_too():
-    driver = _driver(actors=[actor("a")], max_turns=3)
-    table = ScriptedTable(lines={"a": ["a1", "a2", "a3"]})
-    kind = _Kind()
-
-    async def post(turn: SimulatorTurn) -> None:
-        if len(kind.posted) == 1:
-            raise CostCapReached("the delivery's own paid work had no room")
-        await kind.post(turn)
-
-    cause = await drive_conversation(driver, kind.answer, post, llm=table, sink=FakeCellSink())
-
-    assert cause is ConversationStopCause.BUDGET_STOPPED
-    assert kind.rounds == [["a"]]
+    assert sink.cost_cap_reached() is False
+    assert sink.spent == {"candidate": 1_000_000.0}
 
 
 async def _raising(*_args) -> None:

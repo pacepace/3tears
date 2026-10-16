@@ -64,7 +64,6 @@ from threetears.evals.kernel import (
     CellCassettes,
     CellSink,
     CellSpanWindow,
-    CostCapReached,
     EvalStorage,
     MetricDescriptor,
     VariantConfig,
@@ -884,11 +883,8 @@ class CallableKind:
         :rtype: CandidateOutput
         """
         case = test_case.host_payload[_CASE_KEY]
-        try:
-            # Unpriceable, so held to the cap by asking (``CellSink.reserve`` with no ceiling holds nothing).
-            held = sink.reserve("candidate", None)
-        except CostCapReached:
-            return CandidateOutput()
+        # Unpriceable: the handle that lands its cost when the answer returns.
+        held = sink.reserve("candidate", None)
         if instance.tools is not None:
             instance.tools.bind_case(case)
         try:

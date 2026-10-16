@@ -72,7 +72,6 @@ from threetears.evals.kernel.candidate_kind import (
     CandidatePreparationFailed,
     CellPending,
     CellSink,
-    CostCapReached,
     UnknownCandidateKind,
     VariantConfig,
 )
@@ -100,6 +99,8 @@ from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
+    BudgetStop,
+    BudgetStopCurrency,
     CellTermination,
     ConversationStopCause,
     EvalResult,
@@ -139,7 +140,7 @@ from threetears.evals.run.judge_service import (
     JudgeService,
     fold_judge_outcomes,
 )
-from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
+from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
 from threetears.evals.run.run_document import fault_entry, record_run_faults
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.schema.logs import get_logger
@@ -587,17 +588,6 @@ def _judge_record(
     )
 
 
-def _budget_stopped_cell_error(breach: CapBreach | None) -> str:
-    """The infra error a cell the run's cost cap cut short carries, naming the numbers it was stopped on."""
-    if breach is None:
-        return "the run's cost cap was reached inside the cell, which stopped making paid calls"
-    unpriced = f" and {breach.unpriced_results} unpriced" if breach.unpriced_results else ""
-    return (
-        f"the run's cost cap was reached inside the cell (${breach.accumulated_usd:.4f} priced{unpriced} against a "
-        f"${breach.max_cost_usd:.4f} cap), which stopped making paid calls"
-    )
-
-
 def _declared_cell_width(kind: object) -> int | None:
     """How many cells ``kind`` declares it is safe to drive at once
     (:attr:`~threetears.evals.kernel.candidate_kind.CandidateKind.max_concurrent_cells`).
@@ -632,20 +622,20 @@ def _refuse_an_unusable_amount(amount: float | None, *, what: str) -> None:
 class _HeldCall:
     """One reservation on a cell's sink — :class:`~threetears.evals.kernel.candidate_kind.CellReservation`.
 
-    :ivar sink: The cell's sink, which holds it.
+    It holds nothing against the run: the cost cap is read between cells and refuses no call, so a reservation
+    is only the handle that lands a call's cost on its source's total once it settles.
+
+    :ivar sink: The cell's sink.
     :ivar source: Whose call it is; its cost lands on that source's total when it settles.
-    :ivar held_usd: The ceiling held against the cap — ``0.0`` for a call that could not be priced, which
-        holds nothing.
     :ivar closed: Whether it was settled or released.
     """
 
     sink: _CellSink
     source: CellPending
-    held_usd: float
     closed: bool = False
 
     def settle(self, cost_usd: float | None) -> None:
-        """Replace the held ceiling with what the call cost, in one step.
+        """Land what the call cost on its source's total.
 
         :param cost_usd: What the call cost; ``None`` when nothing priced it.
         :ptype cost_usd: float | None
@@ -658,7 +648,7 @@ class _HeldCall:
         self.sink.close_reservation(self, cost_usd, settled=True)
 
     def release(self) -> None:
-        """Stop holding the ceiling, counting nothing; a no-op once closed."""
+        """Close the reservation, counting nothing; a no-op once closed."""
         if self.closed:
             return
         self.closed = True
@@ -679,9 +669,9 @@ class _CellSink:
 
     It holds two things the kind reports — :attr:`pending` and how to read the candidate side
     so far — and three the engine observes for itself: the judge calls that returned, the kind
-    dispatched to, and what ``invoke`` returned once it has. Beside those it is the cell's account with
-    the run's cost cap: its spend by source (:attr:`spent`), the ceilings of its priced calls in flight
-    (:attr:`held`), and the breach it met, which every running cell's question of the cap reads. **Nothing may assign
+    dispatched to, and what ``invoke`` returned once it has. Beside those it keeps the cell's spend by source
+    (:attr:`spent`) and its slice of the metered-call ledger (:attr:`meter`). It carries no question of the run's
+    ceilings: both are read between cells, against what has landed. **Nothing may assign
     :attr:`pending` in a ``finally``** — a cancel unwinds through those, and a write there would
     overwrite the answer with whatever the unwind was doing.
     """
@@ -715,24 +705,13 @@ class _CellSink:
     #: built by the engine rather than the kind, so every exit records what fired before it and the
     #: end state if it was read: the session survives a cancel that destroys the kind's frame.
     world: WorldSession | None = None
-    #: The run's cost cap as this cell asks it: the pending spend handed in plus every running sibling's
-    #: (:func:`execute_run`'s ``gate_for``) — what :meth:`cost_cap_reached` and :meth:`reserve` ask.
-    #: ``None`` for a run with no cap wired, which nothing inside a cell can reach.
-    budget_gate: Callable[[float | None], CapBreach | None] | None = None
-    #: The breach the cell's own question reached, once it has — the cell is then cut short by the
-    #: run's ceiling, and the run stops ``budget_stopped`` once the cell is saved.
-    budget_breach: CapBreach | None = None
+    #: The cell's slice of the run's metered-call ledger, once the cell has opened it — landed on the run
+    #: when the cell's result is recorded. ``None`` for a run with no ledger.
+    meter: CellMeter | None = None
     #: The cell's spend so far, one running total per source, each only ever added to
     #: (:meth:`add_spend`) — ``None`` once part of a source's spend could not be priced. Kept apart so
-    #: no part of the cell reporting its spend can replace another part's: the cap counts their sum.
+    #: no part of the cell reporting its spend can replace another part's.
     spent: dict[CellPending, float | None] = field(default_factory=dict)
-    #: The reservations of the priced calls in flight, whose ceilings the cap counts as spent until each
-    #: is settled to what its call cost or released.
-    held: list[_HeldCall] = field(default_factory=list)
-    #: The cell's whole spend once its result is built (:meth:`conclude`), until the result is recorded.
-    concluded_usd: float | None = None
-    #: Whether :meth:`conclude` has run — ``concluded_usd`` is ``None`` for an unpriced result too.
-    concluded: bool = False
     #: The one reading taken, once :meth:`side` has taken it.
     _read: CandidateOutput | None = None
 
@@ -773,28 +752,6 @@ class _CellSink:
         """
         self.progress = read
 
-    @property
-    def in_flight_usd(self) -> float | None:
-        """What this cell has spent and holds that the run has not yet recorded — what the cap counts for it.
-
-        The sum of every source's running total and every held reservation's ceiling, or ``None`` once any
-        source went unpriced. Once the cell's result is built (:meth:`conclude`) it is the larger of that
-        and the result's own cost, so the count never drops while the cell is saved; the run loop takes
-        the cell out of the in-flight set in the same step it records the result.
-
-        :return: The pending spend, or ``None`` when part of it could not be priced.
-        :rtype: float | None
-        """
-        if any(total is None for total in self.spent.values()):
-            live: float | None = None
-        else:
-            live = math.fsum([*(total or 0.0 for total in self.spent.values()), *(h.held_usd for h in self.held)])
-        if not self.concluded:
-            return live
-        if live is None or self.concluded_usd is None:
-            return None
-        return max(live, self.concluded_usd)
-
     def add_spend(self, source: CellPending, cost_usd: float | None) -> None:
         """Add spend to ``source``'s running total — see
         :meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`.
@@ -810,78 +767,36 @@ class _CellSink:
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
 
     def reserve(self, source: CellPending, ceiling_usd: float | None) -> _HeldCall:
-        """Hold one paid call's ceiling against the cap, or refuse the call — see
+        """Open the handle that lands one paid call's cost, never refusing the call — see
         :meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`.
 
-        Two questions, so a refusal reports the right numbers: whether the cap is already reached without
-        the call, and whether the call's ceiling would take the run past it. Neither awaits, so no other
-        cell can be admitted between the question and the hold.
+        The cost cap is read between cells, against what has landed, so nothing here can turn a call away: a
+        refusal inside a cell contaminates whichever cell happened to ask once the cap was spent.
 
         :param source: Whose call it is.
         :ptype source: CellPending
-        :param ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded.
+        :param ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded; checked and
+            otherwise unused.
         :ptype ceiling_usd: float | None
         :return: The reservation.
         :rtype: _HeldCall
-        :raises CostCapReached: The cap has no room for the call; the breach is recorded.
         :raises ValueError: ``ceiling_usd`` is negative or not finite.
         """
         _refuse_an_unusable_amount(ceiling_usd, what="a call's ceiling")
-        if self.cost_cap_reached():
-            raise CostCapReached(f"the run's cost cap was already reached, so this cell's {source} call was not made")
-        held = _HeldCall(sink=self, source=source, held_usd=ceiling_usd or 0.0)
-        if ceiling_usd is not None and self.budget_gate is not None:
-            pending = self.in_flight_usd
-            breach = self.budget_gate(None if pending is None else pending + ceiling_usd)
-            if breach is not None:
-                self._record(replace(breach, refused_call_usd=ceiling_usd))
-                raise CostCapReached(
-                    f"this cell's {source} call, priced at up to ${ceiling_usd:.4f}, would take the run past its "
-                    f"${breach.max_cost_usd:.4f} cost cap, so it was not made"
-                )
-        if ceiling_usd is not None:
-            self.held.append(held)
-        return held
+        return _HeldCall(sink=self, source=source)
 
     def cost_cap_reached(self) -> bool:
-        """Whether the run's cost cap is reached counting every running cell's spend and reservations.
+        """Always ``False``: the cost cap is read between cells, never inside one.
 
-        Records the breach the first time it is reached, so the run loop stops the run on the numbers
-        the cell was stopped on even if it never asks again.
-
-        :return: ``True`` once the cap is reached; always ``False`` for a run with no cap wired.
+        :return: ``False``.
         :rtype: bool
         """
-        if self.budget_gate is None:
-            return False
-        breach = self.budget_gate(self.in_flight_usd)
-        if breach is not None:
-            self._record(breach)
-        return breach is not None
-
-    def conclude(self, cost_usd: float | None) -> None:
-        """Hold the cell's whole spend, now its result is built, until the run records it.
-
-        :param cost_usd: The result's ``cost_usd``.
-        :ptype cost_usd: float | None
-        """
-        self.concluded_usd = cost_usd
-        self.concluded = True
-
-    def _record(self, breach: CapBreach) -> None:
-        """Keep the first breach the cell met — the numbers it was stopped on."""
-        if self.budget_breach is None:
-            self.budget_breach = breach
+        return False
 
     def close_reservation(self, held: _HeldCall, cost_usd: float | None, *, settled: bool) -> None:
-        """Close one reservation: stop holding its ceiling, and count what its call cost when it settled.
-
-        One synchronous step, so no question of the cap can see the call counted nowhere.
-        """
+        """Close one reservation, counting what its call cost when it settled."""
         if settled:
             self.add_spend(held.source, cost_usd)
-        if any(entry is held for entry in self.held):
-            self.held = [entry for entry in self.held if entry is not held]
 
     def begin_judging(self, phase: _JudgePhase) -> None:
         """Mark the judge phase begun: the cell now waits on the judge, and the phase is on record.
@@ -1130,7 +1045,8 @@ async def _run_one_result_in_its_slice(
     sink: _CellSink,
 ) -> CellOutcome:
     """:func:`_run_one_result` inside the cell's slice of the run's metered-call ledger."""
-    with options.metered_calls.cell() if options.metered_calls is not None else nullcontext():
+    with options.metered_calls.cell() if options.metered_calls is not None else nullcontext() as meter:
+        sink.meter = meter
         return await _run_one_result(
             host,
             template=template,
@@ -1512,7 +1428,7 @@ async def _run_one_result(
             sink.waiting_on("apparatus")
             # A perturbation schedule the kind never announced its turns for would leave a cell keyed as
             # perturbed with nothing perturbed: the kind's code, so refused here rather than recorded.
-            world_session.require_schedule_announced(ran_its_course=_ran_its_course(candidate, sink))
+            world_session.require_schedule_announced(ran_its_course=_ran_its_course(candidate))
             await world_session.end_state()
     except ApparatusError as fault:
         # The rig broke under the candidate — a replay miss, a corrupt recording, a harness fault
@@ -1526,12 +1442,6 @@ async def _run_one_result(
         # cut-short record closes it too (idempotently), for the exits that are built before this runs.
         if cell_cassettes is not None:
             cell_cassettes.close()
-    if sink.budget_breach is not None or candidate.stop_cause is ConversationStopCause.BUDGET_STOPPED:
-        # The run's cost cap cut the cell short: what it holds is a truncated measurement, never the
-        # candidate's failure, so it is excluded on the rig's side and named for what stopped it.
-        candidate = candidate.model_copy(
-            update={"infra_errors": [*candidate.infra_errors, _budget_stopped_cell_error(sink.budget_breach)]}
-        )
     sink.adopt(candidate)
     if cell_cassettes is not None:
         cell_cassettes.hold(candidate.async_deliveries, complete=True)
@@ -1861,21 +1771,19 @@ def hold_to_declaration(kind_name: str, judged_artifact: JudgedArtifact, output:
 _RAN_ITS_COURSE_STOP_CAUSES = frozenset({ConversationStopCause.MAX_TURNS})
 
 
-def _ran_its_course(output: CandidateOutput, sink: _CellSink) -> bool:
+def _ran_its_course(output: CandidateOutput) -> bool:
     """Whether a cell ran to its own end, so it must have announced a turn under a perturbation schedule.
 
-    No error on the output, no breach of the run's cost cap, and a conversation — if the kind held one —
+    No error on the output, and a conversation — if the kind held one —
     that stopped on its turn budget. Every other ending may have come before turn 1
     (:meth:`~threetears.evals.kernel.world_session.WorldSession.require_schedule_announced`).
 
     :param output: What the kind returned.
     :ptype output: CandidateOutput
-    :param sink: The cell's sink, which records a cost-cap breach reached inside the cell.
-    :ptype sink: _CellSink
     :return: ``True`` when the cell ran its course.
     :rtype: bool
     """
-    if output.infra_errors or output.candidate_errors or sink.budget_breach is not None:
+    if output.infra_errors or output.candidate_errors:
         return False
     return output.stop_cause is None or output.stop_cause in _RAN_ITS_COURSE_STOP_CAUSES
 
@@ -3250,8 +3158,6 @@ async def judge_dims(
                 if sink is not None:
                     await refresh_prices(judge_service.client_for(request))
                 held = sink.reserve("judge", judge_service.price_ceiling(request)) if sink is not None else None
-            except CostCapReached as refused:
-                outcome = JudgeOutcome(score=None, error=f"not judged: {refused.detail}")
             except Exception as e:  # prawduct:ok-broad-except — judge boundary; pricing builds the dim's client, whose refusal is this dim's alone
                 # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
                 log.exception("Judge dim=%s could not be priced for case=%s", dim_id, context.case_id)
@@ -3315,6 +3221,27 @@ async def judge_dims(
     return [(request.dim_id, oc) for request, oc in zip(requests, outcomes, strict=True)]
 
 
+@dataclass(frozen=True)
+class _CeilingReached:
+    """One per-run ceiling the landed amount had reached when the run decided to start no new cell.
+
+    The half of a :class:`~threetears.evals.schema.models.BudgetStop` that is known at the stop; the other half
+    (what had landed once the running cells finished) is read when they have.
+
+    :ivar currency: What the ceiling counts.
+    :ivar ceiling: The ceiling, in the currency.
+    :ivar landed_at_stop: What had landed when the stop was decided.
+    :ivar unpriced_results: Recorded results whose spend could not be priced (``cost_usd`` only).
+    :ivar cells_in_flight: Cells running when the stop was decided.
+    """
+
+    currency: BudgetStopCurrency
+    ceiling: int | float
+    landed_at_stop: int | float
+    unpriced_results: int
+    cells_in_flight: int
+
+
 @dataclass
 class _RunStop:
     """What stops a run, once one of its cells decided it — the first decision wins.
@@ -3326,20 +3253,21 @@ class _RunStop:
     raise one cell sooner than it used to be raised, with nothing run in between.
     """
 
-    #: The cost cap's breach the run stops on, when the cap stopped it.
-    breach: CapBreach | None = None
+    #: The per-run ceilings the landed amounts had reached, when they stopped the run — every one that had,
+    #: never only the first checked.
+    ceilings: list[_CeilingReached] = field(default_factory=list)
     #: The provider's refusal of the calling account, when that stopped it.
     refusal: str | None = None
 
     @property
     def decided(self) -> bool:
         """Whether a cell has stopped the run."""
-        return self.breach is not None or self.refusal is not None
+        return bool(self.ceilings) or self.refusal is not None
 
-    def budget(self, breach: CapBreach) -> None:
-        """Stop the run on its cost cap, unless something stopped it first."""
+    def budget(self, reached: list[_CeilingReached]) -> None:
+        """Stop the run on the ceilings its landed amounts had reached, unless something stopped it first."""
         if not self.decided:
-            self.breach = breach
+            self.ceilings = list(reached)
 
     def exhausted(self, refusal: str) -> None:
         """Stop the run on its account's refusal, unless something stopped it first."""
@@ -3469,26 +3397,24 @@ async def execute_run(
     rather than to one of its own. Omitted, the loop keeps its own list and
     behaves as before.
 
-    Cost cap: ``budget_gate`` is checked BEFORE each cell — when it
-    returns a :class:`~threetears.evals.run.budget.CapBreach` (this run's accumulated cost
-    has exceeded its cap, or a result's spend could not be priced) the loop stops GRACEFULLY by raising
-    :class:`~threetears.evals.run.budget.BudgetStoppedError`, carrying that breach so the
-    stop reports the ceiling and the spend that crossed it rather than asserting
-    that one did. ``None`` from the gate means the run may proceed. The gate takes the spend
-    pending beyond what it has recorded — between cells, what the cells still running have spent and hold —
-    because a running cell asks it too, through its sink: each cell keeps its spend by source, each only ever
-    added to (:meth:`_CellSink.add_spend`), and holds the ceiling of every priced call it has in flight
-    (:meth:`_CellSink.reserve`), and every question of the cap counts the sum over every running cell. A cell
-    the cap stops that way is recorded excluded, no cell starts beside it, and the loop raises
-    :class:`~threetears.evals.run.budget.BudgetStoppedError` once every running cell is saved. **The bound on
-    overshoot**: a reserved call is refused before it is made when its ceiling would pass the cap, so a run
-    whose paid calls are all reserved — the simulator's, the judge phase's, and a kind's own when it reserves
-    them — never spends past its cap at any width. A call nobody can price holds nothing and is admitted only
-    while the cap is not reached, so such calls pass it by at most one per running cell; spend a kind neither
-    reserves nor reports is counted when its cell's result lands, one whole cell per running cell.
+    Per-run ceilings: the cost cap (``budget_gate``) and the metered-call ledger's ceiling are checked BEFORE
+    each cell, against what has LANDED: the spend and the metered calls of the cells already recorded
+    (``on_cost``, :meth:`~threetears.evals.run.metering.MeteredCallLedger.land`). When either has been reached
+    (the gate returns a :class:`~threetears.evals.run.budget.CapBreach`: this run's accumulated cost has
+    exceeded its cap, or a result's spend could not be priced), no new cell starts. The cells already
+    running are neither asked nor refused anything: they finish whole, are recorded, and the loop then raises
+    :class:`~threetears.evals.run.budget.BudgetStoppedError`, carrying a
+    :class:`~threetears.evals.schema.models.BudgetStop` for EVERY ceiling reached at that boundary, each with
+    the counters' numbers: the ceiling, what had landed at the stop and once the running cells finished, how
+    many were running and how many never started. **A run may therefore overshoot a ceiling by up to the
+    width's worth of cells, and that is the design**: a refusal inside a cell contaminated whichever cell
+    asked after the ceiling was spent, so identical runs at width above 1 contaminated different cells. A cell
+    that loops is bounded by the cell timeout, not by a ceiling. A host whose metered tools are declared
+    absent (``none_declared``) is the one in-cell refusal left, at dispatch, and it is no budget.
+
     Every already-run cell is saved before its successor's check, so nothing
     produced is lost; the job manager translates the raise into the
-    ``budget_stopped`` status. ``on_cost`` is invoked with each saved result's
+    ``budget_stopped`` status and records the stops on the run. ``on_cost`` is invoked with each saved result's
     ``cost_usd`` so the cap accumulates this run's spend in memory and trips on
     the next cell once it's over — ``None`` for a result whose spend went unpriced, which
     the cap counts as such. Both default ``None`` (no gating / no
@@ -3515,7 +3441,8 @@ async def execute_run(
     :raises ValueError: ``judge_service`` and ``run.judge_model`` disagree about whether this run is
         judged — one is set and the other is not. Refused before any cell runs, so nothing
         has been spent.
-    :raises BudgetStoppedError: The cost cap tripped before a cell, or inside one.
+    :raises BudgetStoppedError: A per-run ceiling (the cost cap, the metered-call ceiling, or both) had been
+        reached before a cell would start.
     :raises AccountExhaustedError: A cell's call was refused for the calling account.
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
     :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first.
@@ -3583,9 +3510,10 @@ async def execute_run(
     if width != options.max_concurrent_cells:
         options = replace(options, max_concurrent_cells=width)
     executor = options.cell_executor if options.cell_executor is not None else InProcessCellExecutor()
-    # The sinks of the cells running now. The cost cap reads them, so a cell asking it — and a cell
-    # about to start — is weighed against every other cell's spend in flight, not its own alone.
+    # The sinks of the cells running now, which the stop record counts when a ceiling stops the run.
     in_flight: list[_CellSink] = []
+    # Every cell that started, so the cells a stop kept from starting are counted rather than inferred.
+    started: list[_CellSink] = []
     # What stops the run, once a cell decided it. Later cells see it and never start; the cells
     # already running finish, are saved and reported, and the stop is raised once they all have.
     stop = _RunStop()
@@ -3596,28 +3524,19 @@ async def execute_run(
     # capturing at once would interleave their writes. They take turns; cells of different cases do not.
     case_turns: dict[str, asyncio.Lock] | None = {} if run.cassette_mode == "capture" and width > 1 else None
 
-    def spend_in_flight(excluding: _CellSink | None) -> float | None:
-        """Spend the running cells have made or hold and the run has not yet recorded; ``None`` when any is unpriced."""
-        pending: list[float] = []
-        for other in in_flight:
-            if other is excluding:
-                continue
-            if (usd := other.in_flight_usd) is None:
-                return None
-            pending.append(usd)
-        return math.fsum(pending)
-
-    def gate_for(sink: _CellSink) -> Callable[[float | None], CapBreach | None] | None:
-        """The cap as one cell asks it: its own pending spend plus every other cell's in flight."""
-        if budget_gate is None:
-            return None
-        gate = budget_gate
-
-        def ask(spent_usd: float | None) -> CapBreach | None:
-            others = spend_in_flight(sink)
-            return gate(None if spent_usd is None or others is None else spent_usd + others)
-
-        return ask
+    def ceilings_reached() -> list[_CeilingReached]:
+        """Every per-run ceiling the LANDED amounts have reached: the recorded cells', never the running ones'."""
+        reached: list[_CeilingReached] = []
+        if budget_gate is not None and (breach := budget_gate(0.0)) is not None:
+            reached.append(
+                _CeilingReached(
+                    "cost_usd", breach.max_cost_usd, breach.accumulated_usd, breach.unpriced_results, len(in_flight)
+                )
+            )
+        ledger = options.metered_calls
+        if ledger is not None and ledger.ceiling is not None and ledger.ceiling_reached:
+            reached.append(_CeilingReached("metered_calls", ledger.ceiling, ledger.landed_calls, 0, len(in_flight)))
+        return reached
 
     async def run_cell(k: int, tc: EvalTestCase) -> None:
         """One cell of the matrix, waiting its turn on its case first when the run captures."""
@@ -3633,27 +3552,24 @@ async def execute_run(
         # A stop decided while this cell waited for its turn reaches it here too.
         if stop.decided:
             return
-        # Cost cap: stop gracefully BEFORE spending on the next
-        # cell if this run's accumulated cost — with what the cells already running have
-        # reported — has exceeded its cap. Results already saved are preserved; the stop
-        # becomes a ``budget_stopped`` run.
-        # A running cell the cap already refused a call stops the run once it is saved; a cell starting now
-        # would only spend beside it, so it does not start.
-        breach = next((other.budget_breach for other in in_flight if other.budget_breach is not None), None)
-        if breach is None and budget_gate is not None:
-            breach = budget_gate(spend_in_flight(None))
-        if breach is not None:
-            log.warning(
-                "Eval run %s stopping: $%.4f priced spend and %d unpriced result(s) against its $%.4f cap "
-                "after %d/%d results",
-                run.id,
-                breach.accumulated_usd,
-                breach.unpriced_results,
-                breach.max_cost_usd,
-                done,
-                total,
-            )
-            stop.budget(breach)
+        # Both per-run ceilings, read here and nowhere inside a cell: stop gracefully BEFORE starting a cell
+        # once what the recorded cells landed has reached either. The cells already running are not asked
+        # and not refused anything; they finish whole and the run lands past a ceiling by up to the width's
+        # worth of cells. Results already saved are preserved; the stop becomes a ``budget_stopped`` run.
+        if reached := ceilings_reached():
+            for ceiling in reached:
+                log.warning(
+                    "Eval run %s stopping: %s landed %s against its ceiling of %s after %d/%d results, with %d "
+                    "cell(s) still running that will finish",
+                    run.id,
+                    ceiling.currency,
+                    ceiling.landed_at_stop,
+                    ceiling.ceiling,
+                    done,
+                    total,
+                    ceiling.cells_in_flight,
+                )
+            stop.budget(reached)
             return
         # Per-cell timeout: bound the WHOLE result execution (candidate turn + delivery drain +
         # judging) so a hung cell is capped here and the run proceeds to the rest, instead of
@@ -3664,7 +3580,7 @@ async def execute_run(
         # into, and the timeout arm reads: the spend already billed, the
         # per-role rows, the output so far, and what the cell was waiting on when it struck.
         sink = _CellSink()
-        sink.budget_gate = gate_for(sink)
+        started.append(sink)
         in_flight.append(sink)
         try:
             await run_and_record(k, tc, sink)
@@ -3817,9 +3733,6 @@ async def execute_run(
                 unfinished_judging=f"did not finish: the run failed on {type(defect).__name__}",
             )
             run_defect = defect
-        # The cell's whole spend is known now and is not recorded until it is saved; until then it is
-        # what this cell has in flight, for every other cell's question of the cap.
-        sink.conclude(result.cost_usd)
         # A write failure loses the cell — this loop holds no second copy that
         # could stand in for the lost record. Say so loudly and carry the answer
         # on the summary; the run still proceeds, because one unwritable cell is
@@ -3857,6 +3770,10 @@ async def execute_run(
         in_flight.remove(sink)
         if on_cost is not None:
             on_cost(result.cost_usd)
+        # The cell's metered calls land on the run in the step that records its result: the metered-call
+        # ceiling is read against these and never against calls a running cell has made.
+        if options.metered_calls is not None and sink.meter is not None:
+            options.metered_calls.land(sink.meter)
         if cancelled_in_cell or cancelled_while_saving:
             raise asyncio.CancelledError
         if run_defect is not None:
@@ -3884,17 +3801,6 @@ async def execute_run(
             )
             stop.exhausted(refusal)
             return
-        # The cell asked the cap mid-cell and was told it was reached, so it stopped making calls and
-        # was recorded excluded. The run stops here rather than at the next cell's gate, so a cut-short
-        # LAST cell still ends the run ``budget_stopped`` rather than ``completed``.
-        if sink.budget_breach is not None:
-            log.warning(
-                "Eval run %s stopping: its cost cap was reached inside a cell after %d/%d results",
-                run.id,
-                done,
-                total,
-            )
-            stop.budget(sink.budget_breach)
 
     try:
         await executor.execute([partial(run_cell, k, tc) for k, tc in order], width=width)
@@ -3910,21 +3816,35 @@ async def execute_run(
         raise AccountExhaustedError(
             done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=stop.refusal
         )
-    if stop.breach is not None:
-        # The breach the gate reports now counts every cell, which ``on_cost`` has recorded; the one the
-        # run was stopped on stands in only should that read come back inside the cap.
-        breach = (budget_gate(0.0) if budget_gate is not None else None) or stop.breach
-        log.warning(
-            "Eval run %s stopped by its cost cap: $%.4f priced spend and %d unpriced result(s) against its $%.4f cap "
-            "after %d/%d results",
-            run.id,
-            breach.accumulated_usd,
-            breach.unpriced_results,
-            breach.max_cost_usd,
-            done,
-            total,
+    if stop.ceilings:
+        # Every cell has ended and is recorded: what landed now is what the in-flight cells added.
+        cost_now = budget_gate(0.0) if budget_gate is not None else None
+        records = []
+        for reached in stop.ceilings:
+            if reached.currency == "cost_usd":
+                # The gate reads a breach for as long as the run is over its cap; the figure from the stop stands
+                # in only should that read come back inside it.
+                landed_final = cost_now.accumulated_usd if cost_now is not None else reached.landed_at_stop
+                unpriced = cost_now.unpriced_results if cost_now is not None else reached.unpriced_results
+            else:
+                landed_final = options.metered_calls.landed_calls if options.metered_calls is not None else 0
+                unpriced = 0
+            records.append(
+                BudgetStop(
+                    currency=reached.currency,
+                    ceiling=reached.ceiling,
+                    landed_at_stop=reached.landed_at_stop,
+                    landed_final=landed_final,
+                    cells_in_flight=reached.cells_in_flight,
+                    cells_not_started=len(order) - len(started),
+                    unpriced_results=unpriced,
+                )
+            )
+        error = BudgetStoppedError(
+            done, total, cost_now if any(r.currency == "cost_usd" for r in records) else None, stops=records
         )
-        raise BudgetStoppedError(done, total, breach)
+        log.warning("Eval run %s stopped by its ceiling: %s", run.id, error)
+        raise error
 
     # Every cell was excluded by an apparatus fault: the rig never worked, so the run measured
     # nothing at all. Ending it ``completed`` would publish a run with no measurement as a

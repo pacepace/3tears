@@ -479,10 +479,10 @@ async def test_a_kinds_own_refusals_are_added_to_the_runs_and_neither_is_dropped
     reading nothing would both be false. This is the only one of the four input combinations
     no other test reaches, and it is the one the whole narrowing turns on.
     """
-    # A ceiling of zero, so the one call this cell makes against the RUN's ledger is refused
+    # A host that declared no metered tools, so the one call this cell makes against the RUN's ledger is refused
     # and the runner's own slice reads 1. Both sides must be non-zero and DIFFERENT, or the
     # assertion below cannot tell a sum from either side winning outright.
-    ledger = MeteredCallLedger("run-1", ceiling=0)
+    ledger = MeteredCallLedger("run-1", ceiling=0, none_declared=True)
 
     class _MetersItsOwnProviderToo(_FakeSingleShotKind):
         """A kind that reaches the run's ledger AND keeps a second one the run cannot see."""

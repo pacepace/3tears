@@ -274,9 +274,9 @@ class TestTheStopSaysWhatItMeasured:
         assert "$0.0200" in message, "the cap that was crossed must be in the message"
 
     def test_the_error_cannot_be_raised_without_its_measurement(self):
-        """The breach is required: an unattributed stop is the defect, not a variant of it."""
-        with pytest.raises(TypeError):
-            BudgetStoppedError(2, 4)  # type: ignore[call-arg]
+        """A breach or stop records are required: an unattributed stop is the defect, not a variant of it."""
+        with pytest.raises(ValueError, match="names the ceiling"):
+            BudgetStoppedError(2, 4)
 
 
 class TestTheCeilingsOriginIsResolvedBesideIt:

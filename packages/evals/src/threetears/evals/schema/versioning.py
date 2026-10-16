@@ -158,6 +158,8 @@ the document, so extending one is a major. Each, and why:
 - The decision rule's clause ``kind`` tags (``rate_drop``, ``cost_lower``) — what a declared rule switches on; a new
   clause is a new model, which an older build would have to settle without knowing what it asks.
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
+- ``BudgetStop.currency`` — what a per-run ceiling counts; a stop in a currency an older build cannot name would be
+  stated in a unit it cannot read, and its dollars and its calls are not one quantity.
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
@@ -262,7 +264,14 @@ CORE_SCHEMA_VERSION: int = 15
 #:   rule is read from a question's words any more: a stored question whose text says ``Decision rule:`` reads as
 #:   stating none, and its page says so.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 3
+#: - **v15.4** — a per-run ceiling stops a run between cells, and the run records it: ``EvalRun.budget_stops`` (a list
+#:   of ``BudgetStop``: the currency, the ceiling, what had landed when the stop was decided and once the cells in
+#:   flight finished, the cells in flight and the cells never started; default None: no ceiling stopped the run, or it
+#:   was stored before the field existed). The cost cap and the metered-call ceiling no longer refuse a call inside a
+#:   cell, so ``metered_calls_refused`` (run and cell) is non-zero only for a host that declared no metered tools;
+#:   a value stored before this minor keeps the meaning it was written under.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 4
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

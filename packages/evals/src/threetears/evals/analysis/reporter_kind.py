@@ -63,7 +63,6 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateTelemetry,
     CellSink,
     CellSpanWindow,
-    CostCapReached,
     VariantConfig,
 )
 from threetears.evals.kernel.capped_completion import CappedCompletion, call_ceiling
@@ -825,8 +824,8 @@ class ReporterKind:
         (``account_refused``). Spend is reported on every exit that reached the provider, because
         a refused generation was still billed — and to ``sink`` as each call returns, because a
         generation is up to two calls and a deadline in the second must not lose the first. Each call is
-        reserved against the run's cost cap before it is sent; one the cap has no room for is not, and
-        the cell returns what the calls before it cost — the runner excludes it for the cap.
+        counted on the sink's candidate total as it returns; the run's cost cap is read between cells, so no
+        call is refused inside the cell.
 
         :param instance: What :meth:`prepare` bound.
         :ptype instance: PreparedReporter
@@ -845,9 +844,8 @@ class ReporterKind:
                 return CandidateOutput(infra_errors=[generation_input])
             case, bundle = generation_input
 
-            # Every generator call is held against the run's cost cap as it is sent — a generation is up to two
-            # calls, and the repair's prompt exists only once the first has returned — and one the cap has no
-            # room for is not sent.
+            # Every generator call's spend is reported to the sink as it returns — a generation is up to two
+            # calls, and the repair's prompt exists only once the first has returned.
             recorder = _RecordingClient(inner=CappedCompletion(self._client, sink=sink, source="candidate"))
             sink.report_progress(recorder.progress(instance.model))
             try:
@@ -864,10 +862,6 @@ class ReporterKind:
                         # A reporter run is how a host learns which writers to allow, so it measures any.
                         measuring_writers=True,
                     )
-            except CostCapReached:
-                # The cap had no room for the next call, so none was sent; the sink recorded the breach, and the
-                # runner excludes the cell for the cap and stops the run. What the calls already made cost stays.
-                return CandidateOutput(telemetry=recorder.telemetry(instance.model))
             except GenerationError as exc:
                 # A refused or truncated generation, or a prompt that does not ask for the memo contract:
                 # all the candidate's. SoundnessRefusal is a subclass and lands here too.

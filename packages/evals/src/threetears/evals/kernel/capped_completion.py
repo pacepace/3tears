@@ -1,12 +1,10 @@
 """A completion client held to the run's cost cap, one call at a time, through one cell's sink.
 
-A cell's paid calls are what a run's cost cap exists to bound, and the cap counts a cell's spend only
-once its result lands unless the cell reports it as it goes. :class:`CappedCompletion` is that report
-for a completion client, written once: before each call it reserves the call's ceiling on the cell's
-sink (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`) — or, for a client that cannot
-price the call, asks whether the cap is reached — and when the call returns it settles the reservation
-to what the call cost. A call the cap has no room for is never made: the reservation raises
-:class:`~threetears.evals.kernel.candidate_kind.CostCapReached` instead.
+A cell's paid calls are what a run's cost cap counts, once the cell's result is recorded; the cap is read
+between cells and refuses no call inside one. :class:`CappedCompletion` reports a cell's spend as it goes,
+for a completion client, written once: before each call it opens a reservation on the cell's sink
+(:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`), and when the call returns it settles the
+reservation to what the call cost.
 
 The engine wraps its own cell-side clients in it — the simulated user's
 (:func:`~threetears.evals.run.conversation.drive_conversation`) and the reporter kind's generator — and a
@@ -16,8 +14,7 @@ whose service sends it).
 
 **What a ceiling is comes from the client** (:meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling`):
 the engine knows neither a model's rates nor the output cap the client was built with. A client with no
-``price_ceiling``, or one answering ``None``, is unpriced: its calls hold nothing and are admitted only
-while the cap is not yet reached.
+``price_ceiling``, or one answering ``None``, is unpriced: its calls open a reservation with no ceiling.
 
 **A client may refresh its prices before they are read.** ``price_ceiling`` is synchronous, so a client whose rates
 come from somewhere that goes stale (the shipped client's catalogue) offers ``async refresh_prices()``, and the engine
@@ -121,7 +118,7 @@ class CappedCompletion:
         self._source: CellPending = source
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
-        """Reserve the call's ceiling, make it, and settle the reservation to what it cost.
+        """Open the call's reservation, make the call, and settle the reservation to what it cost.
 
         :param system: The system prompt.
         :ptype system: str
@@ -131,7 +128,6 @@ class CappedCompletion:
         :ptype response_format: dict[str, Any] | None
         :return: The client's completion, unchanged.
         :rtype: Any
-        :raises CostCapReached: The cap has no room for the call, which is not made.
         """
         await refresh_prices(self._inner)
         held = self._sink.reserve(

@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar
 
 from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, StorageError
-from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
+from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, BudgetStop, EvalRun
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
@@ -1113,7 +1113,9 @@ class EvalJobManager:
             # (an omitted override inherits the configured default), so filing it
             # as an error gave every capped run that bound a phantom in the count
             # operators scan for real faults.
-            await self._set_status(run_id, scope_id, "budget_stopped", budget_stop_reason=str(stop))
+            await self._set_status(
+                run_id, scope_id, "budget_stopped", budget_stop_reason=str(stop), budget_stops=list(stop.stops) or None
+            )
         except AccountExhaustedError as exhausted:
             # The provider account paying for the run refused a call — out of credit, or
             # the key refused. Delivered results are persisted, the refused cell's
@@ -1194,6 +1196,7 @@ class EvalJobManager:
         error: str | None = None,
         cancellation_reason: str | None = None,
         budget_stop_reason: str | None = None,
+        budget_stops: list[BudgetStop] | None = None,
     ) -> None:
         """Update an EvalRun's status in storage.
 
@@ -1298,6 +1301,8 @@ class EvalJobManager:
                 data["cancellation_reason"] = cancellation_reason
             if budget_stop_reason is not None:
                 data["budget_stop_reason"] = budget_stop_reason
+            if budget_stops is not None:
+                data["budget_stops"] = [stop.model_dump(mode="json") for stop in budget_stops]
             if record_empty_matrix and run.completeness is None:
                 data["completeness"] = summarize_completeness(run, []).to_dict()
             if status in TERMINAL_RUN_STATUSES:
