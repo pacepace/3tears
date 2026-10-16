@@ -16,6 +16,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.remedies import FIND_TEST_CASE
 from threetears.evals.run.authoring import admit_template_case
+from threetears.evals.run.definition_digests import TEMPLATE_CASE_FIELDS
 from threetears.evals.run.definition_seed import SeedCorpus, SeedTemplateCase
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
@@ -86,14 +87,10 @@ def _admit_renamed(host: EvalHost, case: EvalTestCase, name: str, scope_id: str)
     template = host.storage.load_template(case.template_id, scope_id)
     if template is None or template.candidate_kind == JUDGE_KIND:
         return
+    # The case's content is dumped whole, as the seed writes a corpus case into a stored one
+    # (``SeedTemplateCase.test_case``): the host's stimulus reaches its check without the engine reading it.
     admit_template_case(
-        SeedTemplateCase(
-            template=template.name,
-            name=name,
-            variation_params=case.variation_params,
-            host_payload=case.host_payload,
-            stratum=case.stratum,
-        ),
+        SeedTemplateCase(template=template.name, name=name, **case.model_dump(include=set(TEMPLATE_CASE_FIELDS))),
         checks=checks,
     )
 
