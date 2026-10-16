@@ -308,6 +308,7 @@ uv sync                      # install all packages in dev mode
 ./scripts/test.sh core       # a single package
 ./scripts/lint.sh            # ruff check + format
 ./scripts/typecheck.sh       # mypy (strict)
+./scripts/typecheck.sh evals # mypy on a single package
 ./scripts/test-integration.sh  # real NATS/Postgres containers; NOT run by check-all.sh
 ```
 
