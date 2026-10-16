@@ -24,7 +24,7 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
-from packages.evals.tests.test_reporter_case_actions import _fixture as reporter_fixture, _freeze as freeze
+from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture
 
 _SCOPE = TOYHOST_SCOPE
 
@@ -122,7 +122,7 @@ def test_a_write_landing_between_the_read_and_the_save_refuses_the_rename_rather
 ) -> None:
     fixture = reporter_fixture()
     host = fixture.host.eval_host
-    case_id = freeze(fixture).test_case_id
+    case_id = freeze_corpus_campaign(fixture).test_case_id
     read = host.storage.load_test_case_with_etag
 
     def retired_meanwhile(test_case_id: str, scope_id: str) -> tuple[EvalTestCase | None, str | None]:
