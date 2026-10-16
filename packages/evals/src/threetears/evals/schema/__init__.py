@@ -213,7 +213,7 @@ from threetears.evals.schema.job_lease import (
 )
 from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, KnownRefusalKind, RefusalField, RefusalKind
 from threetears.evals.schema.subject import SubjectSnapshot
-from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
+from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink, current_cell_identity
 from threetears.evals.schema.values import (
     IntervalScale,
     NominalScale,
@@ -457,6 +457,7 @@ __all__ = [
     "utc_now_iso",
     "CellIdentity",
     "CellTrace",
+    "current_cell_identity",
     "ExternalSpend",
     "IntervalScale",
     "NestedSchema",

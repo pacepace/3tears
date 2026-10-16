@@ -68,6 +68,7 @@
 "threetears.evals.schema.CoreUpgrader": "provisional",
 "threetears.evals.schema.COST_CAP_ORIGINS": "host-contract",
 "threetears.evals.schema.CostCapOrigin": "provisional",
+"threetears.evals.schema.current_cell_identity": "host-contract",
 "threetears.evals.schema.DEFAULT_JUDGE_TEMPERATURE": "stable",
 "threetears.evals.schema.DEFAULT_LAUNCH_K_RUNS": "provisional",
 "threetears.evals.schema.DimName": "provisional",

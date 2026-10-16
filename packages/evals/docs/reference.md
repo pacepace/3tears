@@ -74,6 +74,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 **Functions**
 
+- **`current_cell_identity`** · *host contract* · function · Return the cell the calling task is working for, or `None` outside any cell.
+  <br>`current_cell_identity() -> CellIdentity | None`
 - **`label_key_of`** · function · The label key of one judgement: `evidence` read on `dim`.
   <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
 - **`nested_schemas`** · *host contract* · function · Every schema written directly inside `schema`, in declaration order.

@@ -53,11 +53,13 @@ walk permits — a ``threetears.evals.*`` import, which is how the buckets below
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-__all__ = ["CellIdentity", "CellTrace", "TraceSink"]
+__all__ = ["CellIdentity", "CellTrace", "TraceSink", "current_cell_identity"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +80,45 @@ class CellIdentity:
     #: cell's own siblings; a sink scoping on the coordinates would pool a cell with the
     #: earlier siblings that share them and report a total covering all of it.
     cell_id: str
+
+
+#: The cell the running task is working for. Set by the engine around everything it does for one cell, so a host's
+#: log filter can stamp a record with the cell no matter which engine stage wrote it.
+_CURRENT_CELL: ContextVar[CellIdentity | None] = ContextVar("threetears_evals_current_cell", default=None)
+
+
+def current_cell_identity() -> CellIdentity | None:
+    """Return the cell the calling task is working for, or ``None`` outside any cell.
+
+    The engine binds it around the whole of a cell: its launch, the candidate's turn, the judge phase, the cell's
+    own log lines, the deadline and cancellation arms, and the recording of its result. A host's logging filter
+    reads it to stamp ``run_id``, ``test_case_id`` and ``cell_id`` on a record with no wiring of its own. Tasks
+    created inside a cell inherit it, and concurrently running cells each see their own, because a context
+    variable is per task. It is unbound again whenever the cell ends, however it ended.
+
+    :return: The running cell's identity, or ``None`` when the caller is outside every cell.
+    :rtype: CellIdentity | None
+    """
+    return _CURRENT_CELL.get()
+
+
+@contextmanager
+def bind_cell_identity(cell: CellIdentity) -> Iterator[None]:
+    """Make ``cell`` the answer of :func:`current_cell_identity` for the extent of the block.
+
+    Engine-internal: it is not in ``__all__``. The previous value is restored on exit, including when the block
+    is cancelled or raises.
+
+    :param cell: The cell the block's work belongs to.
+    :ptype cell: CellIdentity
+    :yield: Nothing.
+    :rtype: Iterator[None]
+    """
+    token = _CURRENT_CELL.set(cell)
+    try:
+        yield
+    finally:
+        _CURRENT_CELL.reset(token)
 
 
 @dataclass(slots=True)

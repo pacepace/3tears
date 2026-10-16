@@ -92,7 +92,7 @@ from threetears.evals.run.judge import defect_usage
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.kernel.host.timeouts import EvalCellTimeout
-from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
+from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink, bind_cell_identity
 from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
 from threetears.evals.schema.models import (
@@ -682,6 +682,9 @@ class _CellSink:
     #: Each judge call that has returned, in completion order — appended as each settles,
     #: so a deadline mid-phase keeps the calls already paid for.
     judged: list[tuple[str, JudgeOutcome]] = field(default_factory=list)
+    #: The cell's identity, minted by the run loop before the cell starts so that everything the loop does for the
+    #: cell, its own log lines included, runs under it; ``None`` for a direct caller, which has the cell mint it.
+    cell: CellIdentity | None = None
     #: The kind the cell dispatched to, once it has, for the record the deadline arm writes.
     kind_name: str | None = None
     #: What the kind's ``invoke`` returned, whole, once it has — the one source both the
@@ -990,6 +993,51 @@ async def run_one_result(
     """
     if sink is None:
         sink = _CellSink()
+    if sink.cell is None:
+        sink.cell = CellIdentity(
+            run_id=eval_run_id, test_case_id=test_case.id, cell_id=str(uuid.uuid7()), subject_id=subject_id
+        )
+    # Bound for the whole cell, the cassette flush included, so the judge phase and the cell's own log lines
+    # read the cell the way the kind's turn does. Re-binding the run loop's own binding is harmless.
+    with bind_cell_identity(sink.cell):
+        return await _run_one_result_and_flush(
+            host,
+            template=template,
+            test_case=test_case,
+            subject_id=subject_id,
+            model=model,
+            k_iteration=k_iteration,
+            eval_run_id=eval_run_id,
+            scope_id=scope_id,
+            judge_service=judge_service,
+            options=options,
+            variant=variant,
+            cassettes=cassettes,
+            subject_snapshot=subject_snapshot,
+            judge_model=judge_model,
+            sink=sink,
+        )
+
+
+async def _run_one_result_and_flush(
+    host: EvalHost,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    subject_id: str,
+    model: str,
+    k_iteration: int,
+    eval_run_id: str,
+    scope_id: str,
+    judge_service: JudgeService | None,
+    options: RunnerOptions,
+    variant: DerivedVariantIdentity,
+    cassettes: CassetteLane | None,
+    subject_snapshot: SubjectSnapshot | None,
+    judge_model: str | None,
+    sink: _CellSink,
+) -> CellOutcome:
+    """:func:`_run_one_result_in_its_slice`, then the write of what the cell's capture recorded."""
     try:
         return await _run_one_result_in_its_slice(
             host,
@@ -1268,7 +1316,8 @@ async def _run_one_result(
     # across them. Minted per execution, so nothing else can carry it.
     trace_scopes = _CellTraceScopes(
         sink=host.trace_sink,
-        cell=CellIdentity(
+        cell=sink.cell
+        or CellIdentity(
             run_id=eval_run_id,
             test_case_id=test_case.id,
             cell_id=str(uuid.uuid7()),
@@ -3581,11 +3630,21 @@ async def execute_run(
         # What the record needs survives on ``sink``, which this loop owns, the kind reports
         # into, and the timeout arm reads: the spend already billed, the
         # per-role rows, the output so far, and what the cell was waiting on when it struck.
-        sink = _CellSink()
+        sink = _CellSink(
+            cell=CellIdentity(
+                run_id=run.id,
+                test_case_id=tc.id,
+                cell_id=str(uuid.uuid7()),
+                subject_id=run.subject_snapshot.subject_id,
+            )
+        )
         cells_started += 1
         in_flight.append(sink)
         try:
-            await run_and_record(k, tc, sink)
+            # Everything the loop does for the cell, its deadline and cancellation arms and the recording of its
+            # result included, reads as the cell's: ``current_cell_identity`` is its identity until it is recorded.
+            with bind_cell_identity(sink.cell):
+                await run_and_record(k, tc, sink)
         finally:
             # Recorded (``on_cost``) or abandoned with the run: either way its spend is in flight no more.
             if sink in in_flight:

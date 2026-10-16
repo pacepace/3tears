@@ -137,6 +137,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "resets it on leaving, and the value names the ledger it meters for, so a call decided under one "
         "run's ledger is never counted by another host's cell"
     ),
+    ("threetears/evals/schema/traces.py", "_CURRENT_CELL"): (
+        "a ContextVar, so its value is per task, never per process: the run loop sets it around one cell's work, in "
+        "that cell's own task, and resets it on leaving; it holds that cell's identity, never a host, and a second "
+        "host in the same process cannot observe another task's value"
+    ),
     ("threetears/evals/kernel/runner_spend.py", "_SPEND"): (
         "a ContextVar, so its value is per task, never per process: the callable kind sets it around one runner "
         "call, in that cell's own task, and resets it on leaving; it holds that call's spend ledger, never a host"

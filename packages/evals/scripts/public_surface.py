@@ -556,6 +556,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.StopReason",
         "threetears.evals.kernel.host.CompletionRole",
         "threetears.evals.schema.TraceSink",
+        # What a host's log filter reads to stamp a record with the cell that wrote it.
+        "threetears.evals.schema.current_cell_identity",
         # The registries a profile holds: the host's vocabulary of levers, measures, bars and world.
         "threetears.evals.kernel.host.SHARED_CORE",
         "threetears.evals.kernel.host.Sweepable",
@@ -1179,7 +1181,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 518  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields.
+DECLARED_CEILING = 519  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Plus current_cell_identity (#809): the one accessor a host log filter reads.
 
 
 def tier_of(qualified: str) -> Tier:
