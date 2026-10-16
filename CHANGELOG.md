@@ -26,7 +26,9 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
   cells finished (+7); 12 cells not started`.
 - Breaking for a host that read them: `CapBreach.refused_call_usd` is gone, `CostCapReached` is no longer raised by
   the engine (it still imports), and `MeteredCallLedger.refusal_message` raises for a host that declared metered
-  tools. New: `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
+  tools. `MeteredCallLedger` refuses a ceiling below 1 unless `none_declared`, and an enforcing `EvalRunCostCap` a
+  ceiling that is not positive and finite: either would stop the run before it began. New:
+  `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
   `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
 
 ### 3tears-evals: a busy launch no longer loses its own job leases

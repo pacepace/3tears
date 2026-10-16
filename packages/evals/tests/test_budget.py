@@ -128,6 +128,13 @@ def test_an_unenforced_run_still_gets_a_cap_that_knows_its_ceiling():
     assert cap.exceeded is False
 
 
+@pytest.mark.parametrize("ceiling", [0.0, -1.0, float("inf"), float("nan")])
+def test_an_enforcing_cap_without_a_positive_finite_ceiling_is_refused(ceiling):
+    with pytest.raises(ValueError, match="positive, finite ceiling"):
+        EvalRunCostCap("run-x", ceiling, enabled=True)
+    assert EvalRunCostCap("run-x", ceiling, enabled=False).exceeded is False
+
+
 def test_enforcement_must_be_stated_rather_than_defaulted():
     """A cap that silently stops enforcing is worse than one that fails to construct."""
     with pytest.raises(TypeError):

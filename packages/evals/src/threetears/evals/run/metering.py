@@ -231,10 +231,14 @@ class MeteredCallLedger:
         :ptype ceiling: int | None
         :param none_declared: The host declared it has no metered tools; requires a ``ceiling`` of 0.
         :ptype none_declared: bool
-        :raises ValueError: ``none_declared`` with a ceiling other than 0.
+        :raises ValueError: ``none_declared`` with a ceiling other than 0, or a ceiling below 1 without it.
         """
         if none_declared and ceiling != 0:
             raise ValueError(f"a host declaring no metered tools allows no metered call; got ceiling={ceiling!r}")
+        if not none_declared and ceiling is not None and ceiling < 1:
+            # A between-cells ceiling of 0 would stop the run before its first cell with a stop record that
+            # cannot say so; a host with no metered calls to allow declares that instead.
+            raise ValueError(f"a metered-call ceiling allows at least one call, or is none_declared; got {ceiling!r}")
         self._none_declared = none_declared
         self._run_id = run_id
         self._ceiling = ceiling

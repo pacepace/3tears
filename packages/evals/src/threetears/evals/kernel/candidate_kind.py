@@ -716,7 +716,7 @@ class CandidateKind(Protocol):
             carries one, its own host payload.
         :ptype test_case: EvalTestCase
         :param sink: This cell's sink, for what the kind is waiting on, how to read the spend it has
-            billed so far, and holding each paid call against the run's cost cap as it is made
+            billed so far, and keeping each paid call in the cell's spend as it is made
             (:meth:`CellSink.reserve`, :meth:`CellSink.add_spend`). The cell's, like
             ``span_window``, not the kind's.
         :ptype sink: CellSink

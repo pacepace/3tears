@@ -152,3 +152,9 @@ def test_the_resolution_refuses_an_override_for_a_host_declaring_none():
 def test_a_ledger_declaring_none_with_a_ceiling_is_refused():
     with pytest.raises(ValueError, match="allows no metered call"):
         MeteredCallLedger("run-1", 5, none_declared=True)
+
+
+@pytest.mark.parametrize("ceiling", [0, -1])
+def test_a_ledger_with_a_ceiling_below_one_and_not_declaring_none_is_refused(ceiling):
+    with pytest.raises(ValueError, match="at least one call"):
+        MeteredCallLedger("run-1", ceiling)

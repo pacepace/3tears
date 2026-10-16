@@ -222,7 +222,10 @@ class EvalRunCostCap:
             switched on, and a cap that silently stops enforcing is worse
             than one that fails to construct.
         :ptype enabled: bool
+        :raises ValueError: An enforcing cap whose ceiling is not a positive, finite amount.
         """
+        if enabled and not 0.0 < max_cost_usd < float("inf"):
+            raise ValueError(f"an enforcing cost cap needs a positive, finite ceiling; got {max_cost_usd!r}")
         self._run_id = run_id
         self._max_cost_usd = max_cost_usd
         self._enabled = enabled

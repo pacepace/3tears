@@ -1627,8 +1627,8 @@ async def _run_judge_phase(
     :ptype settled: list[tuple[str, JudgeOutcome]]
     :param eval_run_id: The run, for the log line a judge failure writes.
     :ptype eval_run_id: str
-    :param sink: The cell's sink, which holds each call against the run's cost cap; ``None`` for a witnessed
-        cell, which no run's cap bounds.
+    :param sink: The cell's sink, which keeps each call in the cell's spend; ``None`` for a witnessed cell,
+        which no run's cap bounds.
     :ptype sink: CellSink | None
     :return: What the phase leaves on the result, and its wall clock in milliseconds.
     :rtype: tuple[_JudgeRecord, float]
@@ -3138,11 +3138,10 @@ async def judge_dims(
         completion order — so a caller whose deadline cancels this phase still holds the
         calls already paid for, which the return value cannot give it.
     :ptype settled: list[tuple[str, JudgeOutcome]] | None
-    :param sink: The cell's sink when the calls are a cell's, which holds each one against the run's cost cap:
-        a call is reserved at its ceiling (:meth:`JudgeService.price_ceiling`) before it is sent and
-        settled to what it cost when it returns, and one the cap has no room for is not sent — its dim
-        comes back unscored, its error naming the cap. ``None`` for calls no run's cap bounds (a re-judge,
-        whose calls are priced out of run).
+    :param sink: The cell's sink when the calls are a cell's, which keeps each one in the cell's spend: a
+        call is reserved at its ceiling (:meth:`JudgeService.price_ceiling`) before it is sent and settled
+        to what it cost when it returns. Nothing is refused here; the run's cost cap is read between cells.
+        ``None`` for calls no run's cap bounds (a re-judge, whose calls are priced out of run).
     :ptype sink: CellSink | None
     :return: ``(dim_id, outcome)`` for every call made, in dimension order.
     :rtype: list[tuple[str, JudgeOutcome]]
@@ -3167,8 +3166,8 @@ async def judge_dims(
                     outcome = await judge_service.score_request(request, case_id=context.case_id)
                 except CompletionProtocolDefect as defect:
                     # The host's completion type, not this dim's luck: every call would meet it, so it fails
-                    # the run rather than this dim. What its calls were billed is settled against the cap and
-                    # handed to the caller's record as this dim's outcome, so the run's spend still sums it.
+                    # the run rather than this dim. What its calls were billed is settled into the cell's spend
+                    # and handed to the caller's record as this dim's outcome, so the run's spend still sums it.
                     billed = defect_usage(defect)
                     if held is not None:
                         if billed is None:
@@ -3192,7 +3191,7 @@ async def judge_dims(
                     log.exception("Judge dim=%s raised for case=%s", dim_id, context.case_id)
                     outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
                 except BaseException:
-                    # A cancel — the cell's deadline, or its run's — holds nothing against the cap once it unwinds.
+                    # A cancel — the cell's deadline, or its run's — leaves no open reservation once it unwinds.
                     if held is not None:
                         held.release()
                     raise

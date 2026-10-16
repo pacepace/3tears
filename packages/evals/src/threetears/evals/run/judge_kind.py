@@ -900,9 +900,7 @@ class JudgeKind:
     async def invoke(self, instance: PreparedJudge, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Ask the judge under test the case's criterion over the frozen evidence, and grade its answer.
 
-        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). A call the
-        run's cost cap has no room for is not sent, and the cell returns empty — the runner excludes it for the cap
-        and stops the run. The judge's
+        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). The judge's
         own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was
         refused for the calling account, which excludes the cell and stops the run (``account_refused``). A reply
         that came back is a measurement whatever it says: a score, a "can't tell", or a reply that broke the
@@ -912,8 +910,8 @@ class JudgeKind:
         :ptype instance: PreparedJudge
         :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
         :ptype test_case: EvalTestCase
-        :param sink: This cell's sink, which holds the one call against the run's cost cap: reserved at its
-            ceiling before it is sent, settled to what it cost when it returns.
+        :param sink: This cell's sink, which keeps the one call in the cell's spend: reserved at its ceiling
+            before it is sent, settled to what it cost when it returns. It refuses nothing.
         :ptype sink: CellSink
         :return: The answer, its code grade on ``host_measures``, the trial on ``kind_payload``, and the call's spend as
             the ``judge`` role's usage.
@@ -951,7 +949,7 @@ class JudgeKind:
                     outcome = await service.score_request(request, case_id=test_case.id)
             except CompletionProtocolDefect as defect:
                 # The host's completion type fails the run (raised through ``invoke``), but its billed calls are
-                # settled against the cap and reported as this cell's spend, so the runner records them.
+                # settled and reported as this cell's spend, so the runner records them.
                 billed = defect_usage(defect)
                 if billed is None:
                     held.release()
