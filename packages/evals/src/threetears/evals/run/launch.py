@@ -2723,9 +2723,9 @@ def _largest_call_over_cap(
         refusal = (
             f"{what} cannot make {ceiling.call} under its ${cap:.2f} cap: even the smallest such call this arm could "
             f"make — its fixed parts alone, before any transcript or evidence is added — is reserved at "
-            f"${ceiling.usd:.4f} at most, more than the whole cap, so one such call alone would put the run past it. "
-            "A cap is read between cells and refuses no call inside one, so the run would make the call and stop "
-            f"budget_stopped before its next cell, after spending more than the cap on it. {refused}"
+            f"${ceiling.usd:.4f} before it is sent, more than the whole cap, so one such call alone would put the run "
+            "past it. A cap is read between cells and refuses no call inside one, so the run would make the call "
+            f"and stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
         )
         if needed <= host_ceiling:
             raise_it = (
@@ -2741,9 +2741,9 @@ def _largest_call_over_cap(
         return refusal, f"{raise_it}; or lower the call's floor: {ceiling.lowered_by}"
     refusal = (
         f"{what} cannot make its largest call under its ${cap:.2f} cap: {ceiling.call} is reserved at up to "
-        f"${ceiling.usd:.4f} at most, more than the whole cap, so one such call alone would put the run past it. A "
-        "cap is read between cells and refuses no call inside one, so the run would make the call and stop "
-        f"budget_stopped before its next cell, after spending more than the cap on it. {refused}"
+        f"${ceiling.usd:.4f} before it is sent, more than the whole cap, so one such call alone would put the run "
+        "past it. A cap is read between cells and refuses no call inside one, so the run would make the call and "
+        f"stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
     )
     room = (
         f" (${_cents_up(ceiling.usd + price.predicted_usd):.2f} also leaves room for the "
