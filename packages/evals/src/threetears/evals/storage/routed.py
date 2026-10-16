@@ -544,7 +544,10 @@ class RoutedDocumentStore:
         for scope_id in scope_ids:
             for doc_type in sorted(known):
                 for store in children.values():
-                    for _doc_id in store.iter_by_doc_type(doc_type, scope_id):
+                    # Drained before answering, as relocate and reset_core drain theirs: returning from inside the loop
+                    # would abandon the store's sweep part-way, and a store whose sweep holds a cursor or a connection
+                    # until it is read to the end would keep it until the iterator happened to be collected.
+                    if list(store.iter_by_doc_type(doc_type, scope_id)):
                         return True
         return False
 
