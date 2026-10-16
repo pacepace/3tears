@@ -28,11 +28,22 @@ the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
   40 characters; `ValidationFailedError`), a name another case of its template or of a case set listing it carries
   (`ConflictError`), and an unknown case (`NotFoundError`). A host that renamed a case by writing its document calls
   this instead.
+- **A rename refuses rather than undoes a concurrent write.** `case_rename` writes on the token it read the case with
+  (`EvalStorage.load_test_case_with_etag`, and `save_test_case(if_match=)`, both new): a retirement or an edit that
+  landed in between refuses the rename with `ConflictError`. A host's own store implementing `DefinitionStore` adds
+  the method and the keyword.
+- **`OpsHost.seed_corpus`, for a host that seeds template cases.** The `cases_rename` action reads it (and
+  `case_rename` takes it as `corpus=`), so renaming a template case seeded before seeds recorded a name records its
+  old name as its `seed_name`, and drift still finds it. Wire it as `lambda scope_id: load_seed_corpus(<your
+  directory>, scope_id)`; without it, such a case reads as new to the corpus once renamed.
+- **A quick call fills a stored case's name only when it has none**, so running the same quick eval again keeps a
+  name `case_rename` gave it.
 
 **The page**
 
 - **The declared question stands alone under the title**, quoted whole, and a subhead under it carries what the
-  question need not: each arm by the version that answered it, and the rule's sentence (`Switch to v2 only if …
+  question need not: each arm by the version that answered it, with the label every table calls it by in brackets
+  (`gpt-4o-2024-08-06 (gpt-4o)`), and the rule's sentence (`Switch to v2 only if …
   Otherwise stay on v1.`). The `Asked before the run: "…"` line is gone. The Decision section opens on its `Clauses`
   table, whose title links up to the subhead, so the rule is said once.
 - **A verdict names both arms, never "the control".** On the contrasts, the guardrails, the verdict line, the gate
@@ -40,10 +51,13 @@ the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
   measure's margin`, `v2 and v1 not separated`; a guardrail `held: v2 shown no worse than v1 by more than the
   margin`. Rung 3's console opens `invoices: nothing separated v2 from v1`.
 - **The outcome bar tells a failure's causes apart in ink alone**, one style per cause on every bar, and its key
-  names each (`failed: check`, `failed: judge`). In Trials, a judge's fail is named by its dimensions, else `failed by
+  names each (`failed: check`, `failed: judge`). There are five styles, one per failure cause, in the one failed hue:
+  solid, two lighter tones edged lighter and heavier, then hatched one way and cross-hatched, so a fourth cause no
+  longer repeats the first's swatch. In Trials, a judge's fail is named by its dimensions, else `failed by
   the judge`.
 - **The console lists its misses in the page's order**: the verdict's cases missed and the top misses as the Trials
-  table lists the failed trials, so rung 0 names `gdpr-delete` first on both surfaces.
+  table lists the failed trials, so rung 0 names `gdpr-delete` first on both surfaces. Both order by the stored case
+  id, and a generated `{template}-{index}` id by its number, so case 2 comes before case 10.
 
 **The surface**
 
@@ -51,7 +65,9 @@ the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
 
 **Machine-readable**
 
-- New fields: `TemplateChecks.kinds` (required), `TableBlock.title_ref` (the anchor a table's title links to).
+- New fields: `TemplateChecks.kinds` (required), `TableBlock.title_ref` (the anchor a table's title links to),
+  `OpsHost.seed_corpus`, `CaseResult.case_id` (the stored test case's id).
+- New: `EvalStorage.load_test_case_with_etag`, `save_test_case(if_match=)` and `case_rename(corpus=)`.
 - New: `IgnoresTemplateFields` (`threetears.evals.kernel.host`, `provisional`), the protocol `kinds` maps to and
   `refuse_ignored_template_fields`'s second parameter is typed as; a `LaunchableKind` satisfies it.
 
