@@ -1988,7 +1988,7 @@
     },
     "threetears.evals.kernel.JobLeases": {
       "kind": "class",
-      "signature": "JobLeases(store: LeaseStore, *, lease_s: float = 60.0, blocking_executor: Executor | None = None) -> None",
+      "signature": "JobLeases(store: LeaseStore, *, lease_s: float = 60.0) -> None",
       "tier": "stable"
     },
     "threetears.evals.kernel.JobRecordStore": {

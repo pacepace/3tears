@@ -38,7 +38,9 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
   (a launch of 8 runs at width 4 lost all nine leases at 60s while its cells kept landing results); and a renewal that
   lost three conditional writes to the run's own progress writes waited a whole interval. `JobLeases` now does its
   store round-trips on a small pool of its own, renews every held lease at once, and tries a contended renewal
-  again within the interval after a short jittered wait. `JobLeases(blocking_executor=)` is still accepted and ignored.
+  again within the interval after a short jittered wait.
+- **Removed: `JobLeases(blocking_executor=)`.** It was accepted and ignored since the pool above; no release carried it, so
+  nothing migrates. Lease round-trips never run on a host executor.
 
 ## v0.70.0 -- 2026-10-16
 

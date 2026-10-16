@@ -43,7 +43,7 @@ import random
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from concurrent.futures import Executor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal, cast
@@ -569,7 +569,6 @@ class JobLeases:
         store: LeaseStore,
         *,
         lease_s: float = DEFAULT_JOB_LEASE_S,
-        blocking_executor: Executor | None = None,
     ) -> None:
         """Bind the leases to the store the records live in.
 
@@ -577,16 +576,12 @@ class JobLeases:
         :ptype store: LeaseStore
         :param lease_s: How long a lease lasts unless renewed, in seconds; renewed every third of it.
         :ptype lease_s: float
-        :param blocking_executor: Deprecated and ignored: lease round-trips run on the leases' own pool, so they
-            never queue behind the host's job and cell work. Kept so a host that passes it still builds.
-        :ptype blocking_executor: Executor | None
         :raises ValueError: ``lease_s`` is not positive.
         """
         if not lease_s > 0:
             raise ValueError(f"a job lease lasts some time; lease_s must be positive, got {lease_s!r}")
         self._store = store
         self._lease_s = float(lease_s)
-        del blocking_executor  # see the docstring: the leases' own pool serves every hop
         self._executor: ThreadPoolExecutor | None = None
         self._holder_id = str(uuid.uuid7())
         self._held: dict[str, _Held] = {}

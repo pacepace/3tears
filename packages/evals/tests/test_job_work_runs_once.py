@@ -74,7 +74,7 @@ async def test_a_record_already_stored_under_the_works_id_is_never_written_over(
     work = action_job_work(TOYHOST_SCOPE, action="draft", run=spend.draft, discard=spend.discard, budget_s=60.0)
     there = work.record.model_copy(update={"outcome": "completed", "result": {"text": "an earlier run's"}})
     off_loop(storage.save_job_record, there.to_dict(), if_match=None)
-    leases = JobLeases(storage, blocking_executor=executor)
+    leases = JobLeases(storage)
 
     with pytest.raises(ConflictError):
         await run_job_work(work, store=storage, executor=executor, leases=leases)

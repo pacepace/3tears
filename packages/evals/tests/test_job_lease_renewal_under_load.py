@@ -5,7 +5,7 @@ expiry and the runs were written lost while the process was alive. Renewals ran 
 blocking executor, behind the cells' store work, and a renewal that lost three conditional writes to the holder's own
 progress writes waited a whole interval. Pinned, each against the shape that failed:
 
-- **Starved host pool**: leases renew though every worker of a ``blocking_executor`` is busy for longer than a lease.
+- **Starved host pool**: leases renew though every worker of the loop's default executor is busy for longer than a lease.
 - **One slow record** delays no other record's renewal.
 - **Contended renewal**: tried again within the interval, after a short wait, not a whole interval later.
 """
@@ -71,7 +71,8 @@ class _SpyLeases(JobLeases):
 async def test_leases_renew_though_every_worker_of_the_hosts_pool_is_busy_for_longer_than_a_lease() -> None:
     storage = _storage()
     host_pool = ThreadPoolExecutor(max_workers=2)
-    leases = _SpyLeases(storage, lease_s=LEASE_S, blocking_executor=host_pool)
+    asyncio.get_running_loop().set_default_executor(host_pool)
+    leases = _SpyLeases(storage, lease_s=LEASE_S)
     try:
         # the host's cells: every worker occupied for well over two leases
         for _ in range(2):
@@ -155,3 +156,4 @@ async def test_a_renewal_that_loses_its_races_is_tried_again_within_the_interval
         assert leases.expired == [] and not leases.fenced("run-a")
     finally:
         await leases.shut_down()
+

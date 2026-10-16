@@ -236,7 +236,7 @@ def _results(host: EvalHost, run_id: str) -> list[EvalResult]:
 async def _asked(host: EvalHost, run_id: str, scope_id: str, **options: Any) -> SecondJudgeReport:
     """A second judge's pass awaited in the foreground, as a script runs it: admitted, run to its end, its report
     read off the pass's own record."""
-    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    leases = JobLeases(host.storage)
     try:
         work = await second_judge_work(host, run_id, scope_id, **options)
         ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
