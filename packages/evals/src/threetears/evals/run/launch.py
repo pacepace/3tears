@@ -577,9 +577,7 @@ class LaunchHost:
                 f"host {profile.host_id!r} declares no world, so there is nothing to place a run in: "
                 "drop world_placements, or declare the world on the profile"
             )
-        leases = JobLeases(
-            self.eval_host.storage, lease_s=self.job_lease_s, blocking_executor=self.eval_host.blocking_executor
-        )
+        leases = JobLeases(self.eval_host.storage, lease_s=self.job_lease_s)
         object.__setattr__(self, "job_leases", leases)
         object.__setattr__(
             self,

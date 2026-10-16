@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a busy launch no longer loses its own job leases
+
+- **Fixed: under a busy launch, a healthy process's leases lapsed and its runs were written lost.** Renewals ran one
+  after another on the host's blocking executor, behind every cell's store work, so none returned inside the lease
+  (a launch of 8 runs at width 4 lost all nine leases at 60s while its cells kept landing results); and a renewal that
+  lost three conditional writes to the run's own progress writes waited a whole interval. `JobLeases` now does its
+  store round-trips on a small pool of its own, renews every held lease at once, and tries a contended renewal
+  again within the interval after a short jittered wait. `JobLeases(blocking_executor=)` is still accepted and ignored.
+
 ## v0.70.0 -- 2026-10-16
 
 ### 3tears-evals: the question under the title, verdicts by arm, and a case renamed through the package (evaladopt.33)
