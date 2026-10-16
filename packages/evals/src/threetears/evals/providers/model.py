@@ -241,8 +241,10 @@ class _Live:
         transport: httpx.AsyncBaseTransport | None,
         timeout: float | httpx.Timeout | None,
         headers: Mapping[str, str] | None,
+        catalogue_fetch_timeout: float | None,
     ) -> None:
         self.model_name = model_name
+        self._catalogue_fetch_timeout = catalogue_fetch_timeout
         self.provider: Provider = provider
         self._key = key
         self._url = (base_url or BASE_URLS[provider]).rstrip("/")
@@ -280,7 +282,7 @@ class _Live:
         if made is not None and made.held():
             made.consumed = True
             return made.read
-        return await self._catalogue.read()
+        return await self._catalogue.read(timeout=self._catalogue_fetch_timeout)
 
     def _catalogue_id(self) -> str | None:
         """The catalogue's id for this model: its own on OpenRouter, the matching row's elsewhere."""
@@ -424,7 +426,7 @@ class _Live:
         return float(dollars), source, None, self._catalogue.stale_since
 
     async def refresh_prices(self) -> PriceRefresh:
-        read = await self._catalogue.read()
+        read = await self._catalogue.read(timeout=self._catalogue_fetch_timeout)
         self.last_refresh = read
         self._made_read.set(
             _MadeRead(
@@ -533,6 +535,7 @@ class Model:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float | httpx.Timeout | None = None,
         headers: Mapping[str, str] | None = None,
+        catalogue_fetch_timeout: float | None = None,
     ) -> None:
         """Build the client; nothing is sent until the first call.
 
@@ -578,11 +581,18 @@ class Model:
             provider's key and version headers, which each request sets, win over one of the same name. Refused
             beside ``http``, whose own headers hold.
         :ptype headers: Mapping[str, str] | None
+        :param catalogue_fetch_timeout: How long this model's price-catalogue read waits, in seconds: on a fetch another
+            task started (it then gives up, unpriced, while that fetch goes on for its starter), and as the timeout of
+            a fetch it starts itself on a client the catalogue opens. ``None`` is
+            :data:`~threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S`. Models sharing a catalogue each keep their own.
+        :ptype catalogue_fetch_timeout: float | None
         :raises ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
             variable), ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it, or a
             setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
-            ``max_tokens``, an Anthropic budget below 1024).
+            ``max_tokens``, an Anthropic budget below 1024), or a ``catalogue_fetch_timeout`` that is not above zero.
         """
+        if catalogue_fetch_timeout is not None and catalogue_fetch_timeout <= 0:
+            raise ValueError(f"catalogue_fetch_timeout {catalogue_fetch_timeout} is not above zero seconds")
         if http is not None and (transport is not None or timeout is not None or headers is not None):
             raise ValueError(
                 "transport=, timeout= and headers= set up the client the model opens itself, and http= hands it one: "
@@ -604,6 +614,7 @@ class Model:
             "transport": transport,
             "timeout": timeout,
             "headers": headers,
+            "catalogue_fetch_timeout": catalogue_fetch_timeout,
         }
         #: The client handed in that :meth:`aclose` closes, live or replaying: ``http`` when the model owns it.
         self._owned_http = http if own_http else None
@@ -648,6 +659,7 @@ class Model:
             transport=transport,
             timeout=timeout,
             headers=headers,
+            catalogue_fetch_timeout=catalogue_fetch_timeout,
         )
         self._live = live
         if self.recording is None:

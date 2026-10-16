@@ -324,7 +324,9 @@ await model.aclose()  # closes the client it opened, and its transport
 ```
 
 A catalogue you hand an `http` client fetches with that client's timeout; `CATALOGUE_FETCH_TIMEOUT_S` (30 seconds) is
-the one it uses on its own.
+the one it uses on its own. `Model(catalogue_fetch_timeout=)` sets that per model: a model reading a catalogue another
+task is already fetching waits at most that long, then gives up and runs unpriced while the fetch goes on for the task
+that started it, so a host needs no timeout of its own around the read.
 
 **An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
 class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`

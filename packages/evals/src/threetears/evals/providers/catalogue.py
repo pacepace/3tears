@@ -386,17 +386,21 @@ class Catalogue:
         """When the rows held were fetched (UTC), or ``None`` while the catalogue holds none."""
         return self._read_at
 
-    async def read(self) -> PriceRefresh:
+    async def read(self, *, timeout: float | None = None) -> PriceRefresh:
         """:meth:`load`, saying what it found rather than raising: whether it fetched the rows anew, when the rows
-        held were fetched, and why the prices are not current. A first read that fails is logged at WARNING.
+        held were fetched, and why the prices are not current. A first read that fails, or that gives up waiting on
+        another task's fetch, is logged at WARNING.
 
+        :param timeout: How long to wait on another task's fetch in flight, in seconds, or ``None`` for
+            :data:`CATALOGUE_FETCH_TIMEOUT_S`; see :meth:`load`.
+        :ptype timeout: float | None
         :return: The outcome (:class:`PriceRefresh`).
         :rtype: PriceRefresh
         """
         before = self._read_at
         try:
-            await self.load()
-        except (httpx.HTTPError, ValueError) as failed:
+            await self.load(timeout=timeout)
+        except (httpx.HTTPError, ValueError, TimeoutError) as failed:
             failure = f"the price catalogue could not be read ({type(failed).__name__}: {failed})"
             log.warning("eval.providers catalogue unread url=%s: %s", self.url, failure)
             return PriceRefresh(refreshed=False, fetched_at=self._read_at, failure=failure)
@@ -408,7 +412,7 @@ class Catalogue:
         """Why the last refresh failed, while the rows are stale; ``None`` while they are fresh."""
         return self._refresh_failure
 
-    async def load(self) -> None:
+    async def load(self, *, timeout: float | None = None) -> None:
         """Fetch and read the catalogue unless the rows kept are younger than ``refresh_after``.
 
         A first read that fails raises and keeps nothing, so the next load fetches again. A refresh that fails keeps
@@ -417,22 +421,38 @@ class Catalogue:
         shorter) tries again; one that succeeds clears the mark. Loads made while one is in flight share it: one
         fetch, whose result or error each of them sees. A caller cancelled while waiting cancels only its own wait.
 
+        ``timeout`` bounds a caller's own wait on a fetch another task started, and the fetch it starts itself on a
+        client the catalogue opens: a joiner whose bound passes gives up, and the fetch goes on for the task that
+        started it, which keeps its own bound.
+
+        :param timeout: Seconds to wait on another task's fetch in flight, and the timeout of the fetch this call
+            starts on a client the catalogue opens; ``None`` is :data:`CATALOGUE_FETCH_TIMEOUT_S`.
+        :ptype timeout: float | None
         :raises httpx.HTTPError: The first fetch failed or answered with a failure status.
         :raises ValueError: The first fetch's body is not JSON, or holds no ``data`` list.
+        :raises TimeoutError: Another task's fetch was still in flight when ``timeout`` passed.
         """
         if self._rows is not None and time.monotonic() < self._due:
             return
+        bound = CATALOGUE_FETCH_TIMEOUT_S if timeout is None else timeout
         if self._in_flight is None:
-            self._in_flight = asyncio.create_task(self._load_once())
-        await asyncio.shield(self._in_flight)
+            self._in_flight = asyncio.create_task(self._load_once(bound))
+            await asyncio.shield(self._in_flight)
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(self._in_flight), bound)
+        except TimeoutError:
+            raise TimeoutError(
+                f"another task's fetch of the price catalogue at {self.url} had not finished in {bound:g} seconds"
+            ) from None
 
-    async def _load_once(self) -> None:
+    async def _load_once(self, timeout: float) -> None:
         """The one load every caller arriving while it runs awaits; it clears itself when it ends."""
         try:
             if self._rows is not None and time.monotonic() < self._due:
                 return
             try:
-                rows = await self._fetch()
+                rows = await self._fetch(timeout)
             except (httpx.HTTPError, ValueError) as failed:
                 if self._rows is None or self._read_at is None:
                     raise
@@ -459,8 +479,11 @@ class Catalogue:
         finally:
             self._in_flight = None
 
-    async def _fetch(self) -> dict[str, _Row]:
+    async def _fetch(self, timeout: float) -> dict[str, _Row]:
         """One fetch of the catalogue, read into rows.
+
+        :param timeout: The timeout of the client opened for it, when none was handed in.
+        :ptype timeout: float
 
         :raises httpx.HTTPError: The fetch failed or answered with a failure status.
         :raises ValueError: The body is not JSON, or holds no ``data`` list.
@@ -468,7 +491,7 @@ class Catalogue:
         if self._http is not None:
             response = await self._http.get(self.url)
         else:
-            async with httpx.AsyncClient(timeout=CATALOGUE_FETCH_TIMEOUT_S, follow_redirects=True) as owned:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as owned:
                 response = await owned.get(self.url)
         response.raise_for_status()
         payload = response.json()

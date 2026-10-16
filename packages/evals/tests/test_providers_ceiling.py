@@ -875,3 +875,80 @@ async def test_a_row_listing_a_price_the_client_cannot_read_leaves_the_call_unpr
     priced = await _compatible_completion("odd", {"prompt_tokens": 10, "completion_tokens": 4})
     assert priced.cost_usd is None
     assert "lists a `video_output` price (0.1) the client does not know the unit of" in (priced.pricing_failure or "")
+
+
+# --- a catalogue read bounded by the reader's own timeout ---------------------------------------------------------
+
+
+class _GatedServer:
+    """A catalogue endpoint that answers once released, counting the fetches that reached it."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self.fetches = 0
+
+    async def __call__(self, _: httpx.Request) -> httpx.Response:
+        self.fetches += 1
+        self.started.set()
+        await self.release.wait()
+        return httpx.Response(200, json={"data": ROWS})
+
+    def catalogue(self) -> Catalogue:
+        return Catalogue(http=httpx.AsyncClient(transport=httpx.MockTransport(self)))
+
+
+async def test_a_reader_joining_a_fetch_gives_up_at_its_own_timeout_while_a_longer_one_is_priced() -> None:
+    server = _GatedServer()
+    shared = server.catalogue()
+    starter = model("anthropic/claude-haiku-5.5", shared)
+    short = model("anthropic/claude-haiku-5.5", shared, catalogue_fetch_timeout=0.05)
+    long = model("anthropic/claude-haiku-5.5", shared, catalogue_fetch_timeout=5.0)
+    first = asyncio.create_task(starter.refresh_prices())
+    await server.started.wait()
+    longer = asyncio.create_task(long.refresh_prices())
+    gave_up = await short.refresh_prices()
+    assert not gave_up.refreshed and gave_up.failure is not None and "0.05 seconds" in gave_up.failure
+    assert not shared.loaded, "the short reader gave up while the fetch was still out"
+    assert not longer.done() and not first.done()
+    server.release.set()
+    assert (await first).refreshed and (await longer).refreshed
+    assert shared.loaded and server.fetches == 1, "the fetch went on for its starter, and nobody fetched again"
+    assert (await short.refresh_prices()).failure is None, "later reads are priced"
+    assert short.price_ceiling(system="", user="x") is not None
+
+
+async def test_a_model_without_a_catalogue_fetch_timeout_waits_as_before() -> None:
+    server = _GatedServer()
+    shared = server.catalogue()
+    first = asyncio.create_task(shared.read())
+    await server.started.wait()
+    default = asyncio.create_task(model("anthropic/claude-haiku-5.5", shared).refresh_prices())
+    await asyncio.sleep(0.05)
+    assert not default.done(), "no override: the joiner waits on the fetch, bounded by CATALOGUE_FETCH_TIMEOUT_S"
+    server.release.set()
+    assert (await default).failure is None
+    await first
+
+
+async def test_a_derived_model_keeps_the_catalogue_fetch_timeout() -> None:
+    server = _GatedServer()
+    shared = server.catalogue()
+    derived = model("anthropic/claude-haiku-5.5", shared, catalogue_fetch_timeout=0.05).derive(
+        temperature=None, catalogue=shared
+    )
+    first = asyncio.create_task(shared.read())
+    await server.started.wait()
+    assert (await derived.refresh_prices()).failure is not None
+    server.release.set()
+    await first
+
+
+def test_a_catalogue_fetch_timeout_not_above_zero_is_refused() -> None:
+    with pytest.raises(ValueError, match="catalogue_fetch_timeout 0"):
+        model("anthropic/claude-haiku-5.5", catalogue(), catalogue_fetch_timeout=0)
+
+
+async def test_the_fetch_a_starter_opens_takes_the_starters_timeout(opened: Opened) -> None:
+    await Catalogue().read(timeout=7.0)
+    assert opened.requests[-1].extensions["timeout"]["read"] == 7.0
