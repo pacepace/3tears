@@ -1935,9 +1935,8 @@ async def admit_launch(
     paid for there — and the runs start together. A transport admits in its call and starts in a job
     (:func:`~threetears.evals.ops.run_launch`), so its call waits on no model.
 
-    Args and Raises:
-        As :func:`start_run`, but for the refusals a kind's launcher makes, which :meth:`AdmittedLaunch.start`
-        raises.
+    Its parameters and refusals are :func:`start_run`'s, except the refusals a kind's launcher makes, which
+    :meth:`AdmittedLaunch.start` raises.
 
     :return: The admitted launch.
     :rtype: AdmittedLaunch
@@ -2169,12 +2168,11 @@ async def _admit_run(
 ) -> AdmittedLaunch:
     """:func:`admit_launch` under a settings snapshot its caller read.
 
-    Args as :func:`start_run`; ``settings`` is the one read every refusal and every arm's tail is made under.
+    Its parameters and refusals are :func:`start_run`'s; ``settings`` is the one read every refusal and every arm's
+    tail is made under.
 
     :return: The admitted launch: every refusal made and every arm priced, no launcher run.
     :rtype: AdmittedLaunch
-
-    Raises: see :func:`start_run`.
     """
     # NOTE: the "at least one model" refusal is NOT here, because it is not the same
     # refusal for every kind — each kind's plan (or, for one that plans nothing, its launcher) makes its own.
