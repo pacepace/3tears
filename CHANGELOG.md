@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.69.0 -- 2026-10-15
+
 ### The collection keys purge door takes proofs; develop's purge and export requests read tolerantly
 
 - `threetears.core.collections.key_purge`: develop's tool-pod purge, in the door scheme. The pod
