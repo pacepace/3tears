@@ -783,10 +783,18 @@ class HostProfile:
         self._require_apparatus("seats", dimension)
         if run.judge_model is None and dimension in _UNJUDGED_RUN_HAS_NO:
             return False
-        return self._kind_seats(run.candidate_kind, dimension)
+        return self.kind_seats(run.candidate_kind, dimension)
 
-    def _kind_seats(self, kind: str, dimension: str) -> bool:
-        """Whether ``kind``'s contract seats ``dimension`` — the declaration alone, before any run narrows it."""
+    def kind_seats(self, kind: str, dimension: str) -> bool:
+        """Whether ``kind``'s contract seats ``dimension`` — the declaration alone, before any run narrows it.
+
+        :param kind: A kind's name, as a template's ``candidate_kind`` spells it.
+        :ptype kind: str
+        :param dimension: The declared apparatus input name.
+        :ptype dimension: str
+        :return: True when the kind's contract seats it, or declares no seats and so holds the kind to every dimension.
+        :rtype: bool
+        """
         seated = self._seated(kind)
         return seated is None or dimension in seated
 
@@ -866,13 +874,13 @@ class HostProfile:
         # record narrowed the seat away (an unjudged run's judge configs) and that recorded a level anyway
         # is the narrowing's documented exception — a code grader's configs — so it is reported, unlogged.
         if contradicted := [
-            (run, value) for run, value in recorded if not self._kind_seats(run.candidate_kind, dimension)
+            (run, value) for run, value in recorded if not self.kind_seats(run.candidate_kind, dimension)
         ]:
             run, value = contradicted[0]
             log.warning(
                 "host %r: run %s (kind %r) has no seat for apparatus dimension %r, but it recorded %r — "
                 "reporting it rather than omitting it, because a recorded level is evidence the seat declaration "
-                "is wrong and dropping it would hide a real apparatus difference",
+                "or the host's reader for it is wrong and dropping it would hide a real apparatus difference",
                 self.host_id,
                 run.id,
                 run.candidate_kind,

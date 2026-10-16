@@ -26,6 +26,12 @@ module-scoped fixture, recorded once — in any order. Reading the caller's runs
 reader that writes to them do its damage in whichever case ran first, after which
 ``sweepable.mutates_nothing`` would compare the mutated state against itself and pass.
 
+**An unseated apparatus reads blank.** An apparatus dimension a run's kind does not seat
+(:attr:`~threetears.evals.kernel.host.kinds.KindContract.seats`) must come back blank from its reader on that
+run, and the declaration must say a blank there is indeterminate. A reader that stamps a value for a kind that has
+no such seat — a state reader tagging every non-persona run as "not a persona run" — turns
+``apparatus.blank_when_unseated`` red, since the engine would read the stamp as a recorded rig difference.
+
 **One broken promise turns one case red.** A case whose question rests on another's defers to it: the
 determinism and order cases skip a reader whose answer JSON cannot encode (``sweepable.json_safe``
 owns that), the order case skips a reader that is not deterministic (``sweepable.deterministic`` owns
@@ -247,6 +253,20 @@ def _every_run_derives_a_variant_key(sample: ReaderSample) -> None:
             ) from None
 
 
+def _an_unseated_apparatus_reads_blank(sample: ReaderSample) -> None:
+    for run, results in _copies(sample):
+        for declared in _declarations(sample):
+            if declared.role != "apparatus" or sample.profile.kind_seats(run.candidate_kind, declared.name):
+                continue
+            value = declared.read(run, results)
+            if not sample.profile.sweepables.is_indeterminate(declared.name, value):
+                raise ReaderConformanceFailure(
+                    f"{_where(declared, run)} returned {value!r} for kind {run.candidate_kind!r}, whose contract "
+                    f"seats no {declared.name!r} — a seat the kind does not have reads blank, because a value "
+                    "there is a level the run never recorded and reads as a recorded apparatus difference"
+                )
+
+
 #: Every promise, as a case. Parametrise over this tuple.
 READER_CONFORMANCE_CASES: tuple[ReaderConformanceCase, ...] = (
     ReaderConformanceCase(
@@ -279,6 +299,12 @@ READER_CONFORMANCE_CASES: tuple[ReaderConformanceCase, ...] = (
         "open_family.residual_json_safe",
         "an open family's residual reader returns content JSON can encode, or None",
         _a_residual_reads_comparable_content,
+    ),
+    ReaderConformanceCase(
+        "apparatus.blank_when_unseated",
+        "an apparatus reader returns blank for a run whose kind's contract does not seat that apparatus, so the "
+        "engine reads the seat as absent rather than as a level",
+        _an_unseated_apparatus_reads_blank,
     ),
     ReaderConformanceCase(
         "variant_levers.match_the_registry",

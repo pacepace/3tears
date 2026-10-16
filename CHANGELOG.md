@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the judge kind seats the spend ceiling it runs under, and the reader kit checks an unseated blank
+
+- `JUDGE_KIND_CONTRACT` now seats `max_cost_usd` (`host-contract`): every judge-kind run runs under the per-run cost
+  cap, so the ceiling is part of its rig rather than a dimension it does not have. It still seats nothing else. A host
+  whose profile compared judge-kind runs on the ceiling as unseated now sees it seated.
+- The reader conformance kit has a case, `apparatus.blank_when_unseated`: an apparatus reader must return blank (as the
+  declaration reads blank) for a run whose kind does not seat that apparatus. A reader that stamps a value there, such
+  as a state reader tagging every non-persona run, turns it red. `READER_CONFORMANCE_CASES` grows by one, so a host
+  parametrising it runs the new case over its own sample.
+- The warning logged when a run records a level for an apparatus its kind does not seat now reads "the seat declaration
+  or the host's reader for it is wrong", since either can be the cause.
+
 ### 3tears-evals: a host reads the analysis preparation bound rather than restating it
 
 - `threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S` (`host-contract`, 900 s) is exported: the bound on an
