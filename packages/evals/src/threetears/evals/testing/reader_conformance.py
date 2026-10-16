@@ -29,7 +29,7 @@ reader that writes to them do its damage in whichever case ran first, after whic
 **An unseated apparatus reads blank.** An apparatus dimension a run's kind does not seat
 (:attr:`~threetears.evals.kernel.host.kinds.KindContract.seats`) must come back blank from its reader on that
 run, and the declaration must say a blank there is indeterminate. A reader that stamps a value for a kind that has
-no such seat — a state reader tagging every non-persona run as "not a persona run" — turns
+no such seat — a state reader tagging every run of another kind as "not this kind" — turns
 ``apparatus.blank_when_unseated`` red, since the engine would read the stamp as a recorded rig difference.
 
 **One broken promise turns one case red.** A case whose question rests on another's defers to it: the
