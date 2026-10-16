@@ -6,6 +6,55 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the question under the title, verdicts by arm, and a case renamed through the package (evaladopt.33)
+
+Breaking for a host in one place: `TemplateChecks` takes a required `kinds`. Every typed verdict is unchanged; only
+the words printed for it moved. `packages/evals/MIGRATIONS.toml` has the detail.
+
+**The host contract**
+
+- **`TemplateChecks(kinds=...)` is required.** Breaking: it is the host's launch registry by kind name, the mapping
+  its `LaunchHost` is built with. `create_template`, `update_template`, the boot seed, a definition reset and its
+  drift read now refuse a template stating a field its kind's entry ignores (`LaunchableKind.ignored_template_fields`),
+  with the message the launch dispatch gives; an update that only sets `archived` is exempt, and a kind the registry
+  does not carry is refused nothing at authoring. To port, build `TemplateChecks` with `kinds=` your registry and drop
+  your own call to `refuse_ignored_template_fields` from `refuse_undeliverable_template`. The name stays exported
+  from `threetears.evals.run`, `host-contract`.
+- **A stored case is renamed through the package.** `case_rename(host, scope_id, case_id, name)`
+  (`threetears.evals.ops`) and the `cases_rename` write action (`test_case_id`, `case_name`) write the case's `name`
+  and nothing else, through the store's write path, and answer with a `CaseRenamed` (`test_case_id`, `old_name`,
+  `new_name`). The case keeps its id, its `content_hash`, its results and its seed record, and the next report calls
+  it by the new name. Refused: a name the report would print as `case N` (spaces, a bare number, a generated id, over
+  40 characters; `ValidationFailedError`), a name another case of its template or of a case set listing it carries
+  (`ConflictError`), and an unknown case (`NotFoundError`). A host that renamed a case by writing its document calls
+  this instead.
+
+**The page**
+
+- **The declared question stands alone under the title**, quoted whole, and a subhead under it carries what the
+  question need not: each arm by the version that answered it, and the rule's sentence (`Switch to v2 only if …
+  Otherwise stay on v1.`). The `Asked before the run: "…"` line is gone. The Decision section opens on its `Clauses`
+  table, whose title links up to the subhead, so the rule is said once.
+- **A verdict names both arms, never "the control".** On the contrasts, the guardrails, the verdict line, the gate
+  and the console: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within the
+  measure's margin`, `v2 and v1 not separated`; a guardrail `held: v2 shown no worse than v1 by more than the
+  margin`. Rung 3's console opens `invoices: nothing separated v2 from v1`.
+- **The outcome bar tells a failure's causes apart in ink alone**, one style per cause on every bar, and its key
+  names each (`failed: check`, `failed: judge`). In Trials, a judge's fail is named by its dimensions, else `failed by
+  the judge`.
+- **The console lists its misses in the page's order**: the verdict's cases missed and the top misses as the Trials
+  table lists the failed trials, so rung 0 names `gdpr-delete` first on both surfaces.
+
+**The surface**
+
+- **525 names are declared** (523 before): `case_rename` and `CaseRenamed`, both `host-contract`.
+
+**Machine-readable**
+
+- New fields: `TemplateChecks.kinds` (required), `TableBlock.title_ref` (the anchor a table's title links to).
+- New: `IgnoresTemplateFields` (`threetears.evals.kernel.host`, `provisional`), the protocol `kinds` maps to and
+  `refuse_ignored_template_fields`'s second parameter is typed as; a `LaunchableKind` satisfies it.
+
 ### 3tears-evals: a typed decision rule, and the host's checks on the host (evaladopt.32)
 
 Breaking for a host, with no alias: three keywords, one flag and the prose decision rule are gone, and each bullet
@@ -187,10 +236,10 @@ last.
 A new package (`pip install 3tears-evals`, import root `threetears.evals`). Run each version of a feature, from a
 classifier to a tool-using agent, over the same frozen cases. It reports what moved and with what uncertainty, and
 for an agent it reports what the agent did to a world the application declares, not only what it said. The public
-API has two stability tiers, recorded per name in `api/surface.json`: a `host-contract` name (what a host writes
-against, declared in `scripts/public_surface.py`'s `HOST_CONTRACT`) moves only with a deprecation cycle, the old name
-working beside the new one for a minor release, and any other (`closure`) name may move in any release. Either way
-every name that leaves a public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py
+API has three stability tiers, recorded per name in `api/surface.json` and declared in `scripts/public_surface.py`: a
+`host-contract` name (what a host writes against) moves only with a deprecation cycle, the old name working beside
+the new one for a minor release; a `stable` name may move in any release; and a `provisional` name is exported but
+promised nothing. Every name that leaves a public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py
 v<version>` prints a release's notes).
 
 - **Dependencies.** Python 3.14+, `pydantic` and `httpx`. The package depends on no other 3tears package. One
@@ -204,18 +253,18 @@ v<version>` prints a release's notes).
   host-contract so a host's import gate reads them rather than keep its own list, and `__version__`, the
   installed version, which a host records beside what it stores since no stored document or analysis bundle carries
   it.
-- **The quick path** (`threetears.evals.quick`). `run_eval(cases, candidate, expected=..., k=...)` grades any async
-  function from a case to an answer. `summary.misses()` lists each miss with its reason. `compare` runs arms
-  against a control and returns a typed verdict per measure: `improved`, `regressed`, `not_separated` or
-  `equivalent`. Only `equivalent` means "good enough", and it needs a margin (`margins=`, with `ranges=` for a
-  numeric scorer). The quick path also covers `Judge` (a model grades against a rubric), `Answer` (an arm's spend
-  and served model), `stratum_key=` (results per kind of case), `factors=` and `Comparison.against` (grids),
-  `guardrails=` (held, breached or undecided per arm, decided apart from capability), `tools=` with
-  `cassette_mode=` (capture and replay tool results), and `world=`, `seed=` and `goal_checks=` (grade what an
-  agent did to a world). Ten examples under `packages/evals/examples/` climb that ladder. Those that call a model
-  run live by default, against `claude-haiku-5-5` through the shipped adapter, and with no key replay a recording of
-  a live run kept beside them (`RecordedCompletions`; `RECORD=1` records it again), so they run offline on what
-  Claude said: no example has a scripted stand-in for a model, and the `_live.py` helper is gone.
+- **The quick path** (`threetears.evals`, `threetears.evals.quick`). `Eval(cases, runner, grader)` runs any function
+  from a case to an answer over a cases file, `k` times each, and `python -m threetears.evals <file>` runs every
+  `Eval` a file defines, or one TOML file with no Python. A grader is a field name, a function, a goal-check
+  expression over a world, or a `Judge` (a model grading against a rubric, checked against people's labels);
+  `grader(...)` declares a margin, a range or a guardrail on one. A runner mapping is a comparison: the first runner
+  is the control, and each reading gets a delta, an interval and a typed verdict (`improved`, `regressed`,
+  `not_separated`, `equivalent` or `untested`), guardrails decided apart; `Result.gate()` is the CI gate and
+  `Result.against` reads the same runs against another control. `World(State, tools=[...])` hosts an agent in a
+  seeded state, `Answer` carries an arm's spend and served model, and a case's reserved `stratum` splits every
+  reading. Four examples under `packages/evals/examples/` climb that ladder on cheap models through OpenRouter; with
+  no key each replays a recording of a live run kept beside it (`RECORD=1` records it again), so it runs offline on
+  what a model said, with no scripted stand-in for one.
 - **A command line.** `python -m threetears.evals` runs `run`, `ls`, `report`, `bundle`, `spend`, `gate`,
   `frontier` and `judge-temperature` against a host named as `--host module:factory`. `gate --fail-on
   regressed,breached` is a CI gate. A host adds its own subcommands (`HostCommand`). Exit codes are named:
@@ -387,13 +436,14 @@ v<version>` prints a release's notes).
   re-records it, never sent live. A recording made before `v0.67.0-evaladopt.25` (recorder format 1, with no
   `sent_settings`) is refused by name as older; format 2 records what each call was sent with, so re-record it. A recorder stands in for an analysis or out-of-run client too: it names its model
   and prices a call (a replay at $0).
-- **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
-  judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
-  background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
-  `docs/reference.md` is generated from the code. The adopter's guide marks six mechanisms the first adopter shaped
-  as provisional (`AsyncDelivery` and `AsyncExternalSpend`, the `inner_agent` and `external` usage roles,
-  `MeteredCallLedger`, triggered world dimensions, `ChartFont`, and `SeedSection`'s zones): a second adopter's use
-  decides whether each stays, and one removed later is announced in that release's `MIGRATIONS.toml` notes.
+- **Docs.** The package README; the ladder through the four examples; the concepts and their glossary; guides to
+  building an inventory, reading reports, evaluating agents, judges and calibration, measuring soundly, cost and
+  budgets, serving (the command line, the actions and MCP) and adopting a host; and the background pages (design,
+  with its prior art, and open problems). `docs/surface.md` maps the declared names by rung, and `docs/reference.md`
+  is generated from the code. The adopter's guide marks five mechanisms the first adopter shaped as provisional
+  (`AsyncDelivery` and `AsyncExternalSpend`, the `inner_agent` and `external` usage roles, `MeteredCallLedger`,
+  triggered world dimensions, and `SeedSection`'s zones): a second adopter's use decides whether each stays, and one
+  removed later is announced in that release's `MIGRATIONS.toml` notes.
 - **Pre-releases.** `v0.66.0-evaladopt.N` tags (through `.23`) and `v0.67.0-evaladopt.N` tags (`.24` and `.25`) were cut on
   `feature/eval-adopt` for one adopter and never published. Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold
   that pre-release's notes and the names that moved. **A store written before `v0.66.0-evaladopt.21` is not read:**
@@ -406,6 +456,14 @@ v<version>` prints a release's notes).
   `.25` or this release writes, so roll back no further than `.25`. Every pre-release before `.22`, `.21` included,
   stamped its cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so
   their corpora are re-captured.
+
+### Scripts: `typecheck.sh` takes one package, and lint and typecheck run the venv's own tools
+
+- **`./scripts/typecheck.sh <package>`** checks one package's import roots, the package named as `test.sh` names it
+  (`evals`, `agent/memory`); with none it checks every package, as before. Arguments after it pass through to mypy.
+- **`lint.sh` and `typecheck.sh` call `ruff` and `mypy` from a venv** (the active `$VIRTUAL_ENV`, then the
+  repository's `.venv`) rather than through `uv run`, which re-resolves the workspace on every call; a clone before
+  `uv sync` falls back to `uv run`.
 
 ## v0.68.0 -- 2026-10-14
 
