@@ -486,7 +486,9 @@ async def test_a_sweep_whose_renewals_fail_for_a_whole_lease_writes_nothing_more
 ) -> None:
     _held_extraction(monkeypatch)  # its first arm runs until the sweep has let go
     store = RenewalRefusingStore()
-    holder = off_loop(_sweeping_host, store, job_lease_s=0.3)
+    holder = off_loop(
+        _sweeping_host, store, job_lease_s=0.9
+    )  # not 0.3: its first arm must be running before a loaded loop can lapse the lease
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     sweep_id = job.job_id.removeprefix("sweep:")
     await _first_arm_running(holder, job.job_id)

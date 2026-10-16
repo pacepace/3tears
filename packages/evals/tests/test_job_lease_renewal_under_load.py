@@ -28,8 +28,10 @@ from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "scope-leases"
 
-#: A lease short enough to keep these tests fast; renewed every third of it.
-LEASE_S = 0.9
+#: A lease short enough to keep these tests fast; renewed every third of it (0.6 s). Twice the 0.9 s these first
+#: used: the margin each test leaves between a healthy renewal and a lapse (a lease less the renewal interval, 1.2 s)
+#: must outlast a scheduling stall on a machine running the whole suite, which a 0.6 s margin did not.
+LEASE_S = 1.8
 
 
 def _storage(store: InMemoryDocumentStore | None = None) -> EvalStorage:
@@ -76,12 +78,12 @@ async def test_leases_renew_though_every_worker_of_the_hosts_pool_is_busy_for_lo
     try:
         # the host's cells: every worker occupied for well over two leases
         for _ in range(2):
-            host_pool.submit(time.sleep, 2.6)
+            host_pool.submit(time.sleep, 5.2)
         ids = [f"run-{n}" for n in range(9)]
         for run_id in ids:
             _hold(leases, storage, run_id)
 
-        await asyncio.sleep(1.9)  # past two lease durations: a lease not renewed has lapsed
+        await asyncio.sleep(3.8)  # past two lease durations: a lease not renewed has lapsed
 
         assert all(_live(storage, run_id) for run_id in ids), "every lease was renewed while the host's pool was busy"
         assert leases.expired == [] and not any(leases.fenced(run_id) for run_id in ids)
@@ -106,14 +108,14 @@ class _SlowRecordStore(InMemoryDocumentStore):
 
 
 async def test_one_slow_record_delays_no_other_records_renewal() -> None:
-    store = _SlowRecordStore("run-slow", 1.5)
+    store = _SlowRecordStore("run-slow", 3.0)  # a stall longer than a lease
     storage = _storage(store)
     leases = _SpyLeases(storage, lease_s=LEASE_S)
     try:
         for run_id in ("run-slow", "run-b", "run-c"):  # the slow one is renewed first
             _hold(leases, storage, run_id)
 
-        await asyncio.sleep(1.4)
+        await asyncio.sleep(2.8)  # past one lease: a record waiting on the slow one would have lapsed
 
         assert _live(storage, "run-b") and _live(storage, "run-c")
         assert "run-b" not in leases.expired and "run-c" not in leases.expired
