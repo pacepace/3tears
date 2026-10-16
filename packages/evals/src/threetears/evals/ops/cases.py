@@ -13,7 +13,9 @@ from pydantic import Field
 from threetears.evals.analysis.style import CASE_LABEL_CHARS, humanize
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.remedies import FIND_TEST_CASE
+from threetears.evals.run.definition_seed import SeedCorpus
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import EvalTestCase
@@ -50,13 +52,42 @@ def _siblings(host: EvalHost, case: EvalTestCase, scope_id: str) -> dict[str, st
     return beside
 
 
-def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseRenamed:
-    """Rename a stored case: write its ``name`` and nothing else.
+def _found_by_name(host: EvalHost, case: EvalTestCase, scope_id: str, corpus: SeedCorpus | None) -> bool:
+    """Whether definition drift finds ``case`` as a corpus case by its name, as it finds a template case stored before
+    seeds recorded ``seed_name``: live on its template's current revision, recording no seed name, named as a corpus
+    case of that template, and no live case beside it recording that name."""
+    storage = host.storage
+    if corpus is None or case.seed_name is not None or case.name is None or case.archived or case.template_id is None:
+        return False
+    template = storage.load_template(case.template_id, scope_id)
+    if template is None or template.candidate_kind == JUDGE_KIND:
+        return False
+    current = storage.load_template_by_name(template.name, scope_id)
+    if current is None or current.id != template.id:
+        return False
+    if not any(own.template == template.name and own.name == case.name for own in corpus.template_cases):
+        return False
+    return not any(
+        other.seed_name == case.name and not other.archived
+        for other in storage.query_test_cases(scope_id, template_id=template.id)
+    )
+
+
+def case_rename(
+    host: EvalHost, scope_id: str, case_id: str, name: str, *, corpus: SeedCorpus | None = None
+) -> CaseRenamed:
+    """Rename a stored case: write its ``name``, and nothing else but the seed name drift would have found it by.
 
     The name is curation, as a run's labels are: no digest or identity key reads it, so the case keeps its id, its
-    ``content_hash``, its ``seed_name`` and ``seed_digest`` (a renamed seeded case still reads stale or customized by
-    its content alone) and every result measured against it. The write goes through the store's own path for a case
-    (``save_test_case``), so the host's routing and its write rules hold. The name already carried writes nothing.
+    ``content_hash``, its ``seed_name`` and ``seed_digest`` and every result measured against it. A rename never
+    changes how definition drift finds the case: drift finds a template case stored before seeds recorded
+    ``seed_name`` by its name, so when ``corpus`` names it so, the same write records its old name as ``seed_name``;
+    a case drift would not find by name gets none. The write goes through the store's own path for a case
+    (``save_test_case``), so the host's routing and its write rules hold, conditionally on the token read with the
+    case: a write that landed between the read and the save (a retirement, an edit) refuses the rename with
+    :class:`ConflictError` rather than being undone. The name already carried writes nothing. Two renames of sibling
+    cases to one name at once can both pass the duplicate check, since the check reads other documents than the one
+    each writes.
 
     Args:
         host: The host whose store holds the case.
@@ -64,6 +95,8 @@ def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseR
         case_id: The case, by its test case id.
         name: Its new name, as the report should call it: one token such as ``double-charge``, surrounding whitespace
             dropped.
+        corpus: The host's seed corpus for the scope (:func:`~threetears.evals.run.load_seed_corpus`), which says
+            whether drift finds the case by its name; ``None`` for a host that seeds no template cases.
 
     Returns:
         The case's id, and its name before and after.
@@ -73,7 +106,8 @@ def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseR
             inside, a bare number, a generated id, or one longer than a case label runs (``humanize("case", name)``
             is empty), so the page would name it ``case N``.
         NotFoundError: No case with that id in the scope.
-        ConflictError: Another case of its template, or of a case set listing it, already carries the name.
+        ConflictError: Another case of its template, or of a case set listing it, already carries the name; or the
+            case was written since it was read.
         StorageError: The write did not land.
     """
     given = name.strip()
@@ -84,7 +118,7 @@ def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseR
             remedy="name it the way its author would, such as double-charge",
         )
     storage = host.storage
-    case = storage.load_test_case(case_id, scope_id)
+    case, etag = storage.load_test_case_with_etag(case_id, scope_id)
     if case is None:
         raise NotFoundError("test case", case_id, remedy=FIND_TEST_CASE)
     if case.name == given:
@@ -103,7 +137,9 @@ def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseR
         )
     data = case.to_dict()
     data["name"] = given
-    storage.save_test_case(EvalTestCase.from_dict(data))
+    if _found_by_name(host, case, scope_id, corpus):
+        data["seed_name"] = case.name
+    storage.save_test_case(EvalTestCase.from_dict(data), if_match=etag)
     log.info("eval.case_rename case=%s scope=%s old=%s new=%s", case.id, scope_id, case.name, given)
     return CaseRenamed(test_case_id=case.id, old_name=case.name, new_name=given)
 

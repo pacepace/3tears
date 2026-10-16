@@ -18,12 +18,13 @@ from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standa
 from threetears.evals.analysis import assemble_context_bundle, build_code_only_report, get_campaign, report_markdown
 from threetears.evals.kernel import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.ops import CaseRenamed, case_rename
+from threetears.evals.ops import CaseRenamed, case_rename, reporter_case_archive
 from threetears.evals.schema import CaseSet, EvalTestCase, case_set_doc_id
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.test_reporter_case_actions import _fixture as reporter_fixture, _freeze as freeze
 
 _SCOPE = TOYHOST_SCOPE
 
@@ -116,6 +117,27 @@ def test_an_unknown_case_is_refused() -> None:
         case_rename(_host(), _SCOPE, "nope", "refund")
 
 
+def test_a_write_landing_between_the_read_and_the_save_refuses_the_rename_rather_than_undoing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = reporter_fixture()
+    host = fixture.host.eval_host
+    case_id = freeze(fixture).test_case_id
+    read = host.storage.load_test_case_with_etag
+
+    def retired_meanwhile(test_case_id: str, scope_id: str) -> tuple[EvalTestCase | None, str | None]:
+        loaded = read(test_case_id, scope_id)
+        reporter_case_archive(host, test_case_id, scope_id, archived=True, reason="orphaned")
+        return loaded
+
+    monkeypatch.setattr(host.storage, "load_test_case_with_etag", retired_meanwhile)
+    with pytest.raises(ConflictError, match="changed since it was read"):
+        case_rename(host, _SCOPE, case_id, "orphaned-memo")
+    stored = host.storage.load_test_case(case_id, _SCOPE)
+    assert stored is not None and stored.archived and stored.archived_reason == "orphaned"
+    assert stored.name != "orphaned-memo"
+
+
 # --- the action -----------------------------------------------------------------------------------------------------
 
 
@@ -176,4 +198,19 @@ async def test_the_page_names_a_renamed_case_by_its_new_name_and_keeps_its_resul
     campaign = off_loop(get_campaign, storage, result.campaign_id, scope)
     bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=result.host.profile)
     page = report_markdown(build_code_only_report(bundle, assembled_at="2026-10-15T00:00:00+00:00"))
+    assert "charged-twice" in page and "double-charge" not in page
+
+
+async def test_running_the_same_quick_eval_again_keeps_the_new_name() -> None:
+    cases = [{"id": "double-charge", "text": "refund me twice", "label": "billing"}]
+    first = await Eval(cases, _answer, ["label"], k=1, name="Renamed cases").run(store=":memory:")
+    storage, scope = first.host.storage, first.scope_id
+    (case,) = off_loop(storage.query_test_cases, scope)
+    off_loop(case_rename, first.host, scope, case.id, "charged-twice")
+
+    again = await Eval(cases, _answer, ["label"], k=1, name="Renamed cases").run(host=first.host, scope=scope)
+
+    stored = off_loop(storage.load_test_case, case.id, scope)
+    assert stored is not None and stored.name == "charged-twice"
+    page = report_markdown(again.report)
     assert "charged-twice" in page and "double-charge" not in page

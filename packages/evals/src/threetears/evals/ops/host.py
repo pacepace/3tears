@@ -17,6 +17,7 @@ from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.job_timeout import default_job_timeout
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
+from threetears.evals.run.definition_seed import SeedCorpus
 from threetears.evals.run.launch import LaunchHost, LaunchSettings
 from threetears.evals.schema import EvalRun, WorldPlacement
 
@@ -103,10 +104,14 @@ class OpsHost:
             the job manager every long-running operation is tracked by.
         generation: How an analysis is generated in the background; ``None`` for a host that does not
             generate analyses here, whose generation start is refused saying so.
+        seed_corpus: The host's seed corpus for a scope (``load_seed_corpus(its directory, scope_id)``), which a case
+            rename reads so a rename never changes how definition drift finds the case; ``None`` for a host that
+            seeds no template cases.
     """
 
     launch: LaunchHost
     generation: AnalysisGeneration | None = None
+    seed_corpus: Callable[[str], SeedCorpus] | None = None
 
     @classmethod
     def reading(cls, eval_host: EvalHost) -> OpsHost:

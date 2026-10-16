@@ -9,6 +9,7 @@ runner is called in a worker thread; one handed a world's tools must be async, a
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Mapping
 from typing import Any
@@ -164,6 +165,30 @@ async def test_a_comparison_reads_each_arms_results_and_misses_by_its_key() -> N
     assert len(comparison.results("careful")) == 3
     with pytest.raises(ValueError, match="'nobody' names no arm"):
         comparison.results("nobody")
+
+
+def misses_two_and_ten(case: Mapping[str, Any], answer: Any) -> bool:
+    return answer not in (2, 10)
+
+
+async def test_a_comparison_over_unnamed_cases_lists_its_misses_case_by_case_on_both_surfaces() -> None:
+    """The console and the page's Trials table share one order, case 2 before case 10, then arm, for cases called by
+    their position."""
+
+    async def twin(case: Mapping[str, Any]) -> int:
+        return int(case["n"])
+
+    comparison = await Eval([{"n": n} for n in range(12)], {"a": hasty_n, "b": twin}, [misses_two_and_ten], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    arm_of = {variant: arm for arm, variant in comparison.arm_variants.items()}
+    page = [
+        (trial.case_id.rsplit("-", 1)[1], arm_of[trial.arm])
+        for trial in comparison.report.bundle.trials
+        if trial.state == "failed"
+    ]
+    console = re.findall(r"^  case (\d+) \((\w+), repeat 1\): ", comparison.render(), flags=re.M)
+    assert page == console == [("2", "a"), ("2", "b"), ("10", "a"), ("10", "b")]
 
 
 async def test_a_sync_runner_runs_in_a_worker_thread() -> None:

@@ -54,7 +54,11 @@ if [ -n "$PACKAGE" ]; then
     # Every import root under src/threetears/: a directory with an __init__.py is a root, one
     # without is a namespace (agent/, media/) and is descended into.
     collect_roots() {
-        local dir
+        # nullglob for this walk alone: without it a directory with no subdirectory yields a literal `*`, which has
+        # no __init__.py, so the walk recursed into it forever.
+        local dir restore
+        restore=$(shopt -p nullglob || true)
+        shopt -s nullglob
         for dir in "$1"/*/; do
             dir="${dir%/}"
             [ "$(basename "$dir")" = "__pycache__" ] && continue
@@ -64,6 +68,7 @@ if [ -n "$PACKAGE" ]; then
                 collect_roots "$dir" "$2.$(basename "$dir")"
             fi
         done
+        eval "$restore"
     }
     collect_roots "packages/$PACKAGE/src/threetears" threetears
 else

@@ -821,8 +821,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine`
 - **`campaigns_list`** · function · The scope's campaigns.
   <br>`campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing`
-- **`case_rename`** · *host contract* · function · Rename a stored case: write its `name` and nothing else.
-  <br>`case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseRenamed`
+- **`case_rename`** · *host contract* · function · Rename a stored case: write its `name`, and nothing else but the seed name drift would have found it by.
+  <br>`case_rename(host: EvalHost, scope_id: str, case_id: str, name: str, *, corpus: SeedCorpus | None = None) -> CaseRenamed`
 - **`case_set_mint`** · function · Store the next version of a named case set: append-only, so a change is a new version, never an edit.
   <br>`case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> CaseSetLine`
 - **`case_sets_list`** · function · The scope's case sets — every version, or every version of one name.

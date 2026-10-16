@@ -27,6 +27,7 @@ Part of the bundle assembler (:mod:`threetears.evals.analysis.bundle.assemble`).
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -70,6 +71,30 @@ _AXIS_NAMES: dict[str, str] = {TRANSCRIPT_DIM_ID: "transcript", OUTCOME_DIM_ID: 
 
 #: How much worse a lost or failed trial is than a passed one, for keeping trials under the cap: lost first.
 _KEEP_WEIGHT: dict[TrialState, int] = {"lost": 2, "failed": 1, "passed": 0}
+
+#: A case id ending in a number, as a generated ``{template}-{index}`` id does.
+_NUMBERED_ID = re.compile(r"(.*)-(\d+)")
+
+
+def trial_order(case_id: str, arm_position: int, repeat: int) -> tuple[str, int, str, int, int]:
+    """A trial's place in the order the page's Trials table lists them and the console lists its misses: case by
+    case, then arm, then repeat.
+
+    A case id ending in ``-<number>`` sorts by that number under its prefix, so a generated ``{template}-2``
+    precedes ``{template}-10``; any other id sorts as its text.
+
+    Args:
+        case_id: The trial's stored test case id.
+        arm_position: Its arm's place among the arms as the bundle lists them.
+        repeat: Which repeat of the case it is.
+
+    Returns:
+        The sort key.
+    """
+    numbered = _NUMBERED_ID.fullmatch(case_id)
+    if numbered is None:
+        return (case_id, -1, case_id, arm_position, repeat)
+    return (numbered.group(1), int(numbered.group(2)), case_id, arm_position, repeat)
 
 
 @dataclass(frozen=True)
@@ -187,7 +212,12 @@ def trials_and_census(
     by_arm = {arm: [result for result in results if result.variant_key == arm] for arm in arms}
     scoreboard = [_census(arm, by_arm[arm], readings) for arm in arms]
     ordered = sorted(
-        results, key=lambda result: (result.test_case_id, position.get(result.variant_key, len(position)), _key(result))
+        results,
+        key=lambda result: (
+            trial_order(result.test_case_id, position.get(result.variant_key, len(position)), result.k_iteration),
+            result.eval_run_id,
+            result.id,
+        ),
     )
     kept, omitted = _capped(ordered, MAX_TRIALS, weight=lambda result: _KEEP_WEIGHT[readings[result.id].state])
     traces = {result.id: load_trace(result) if result.has_trace else None for result in kept}
@@ -201,11 +231,6 @@ def trials_and_census(
         trials=rows,
         trials_omitted=omitted,
     )
-
-
-def _key(result: EvalResult) -> tuple[int, str, str]:
-    """A trial's place among its case's trials on one arm: its repeat, then its run and id, for a stable order."""
-    return (result.k_iteration, result.eval_run_id, result.id)
 
 
 def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, TrialReading]) -> ArmScoreboard:
