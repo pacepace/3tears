@@ -689,8 +689,17 @@ class JobLeases:
         self._let_go.add(record_id)
 
     def fenced(self, record_id: str) -> bool:
-        """Whether this process let go of ``record_id``'s lease (:meth:`let_go`) and its job has not yet ended."""
-        return record_id in self._let_go
+        """Whether this process let go of ``record_id``'s lease (:meth:`let_go`) and its job has not yet ended.
+
+        A held lease whose last successful renewal is a whole :attr:`lease_s` old is fenced too, before its own
+        renewal task gets to :meth:`_expire` it: each record renews in a task of its own, so a job stopped by
+        another record's expiry (a launch cancelling its runs) would otherwise write its own ending past a lease
+        that has lapsed by this process's count.
+        """
+        if record_id in self._let_go:
+            return True
+        held = self._held.get(record_id)
+        return held is not None and time.monotonic() - held.renewed_at >= self._lease_s
 
     def forget(self, record_id: str) -> None:
         """Forget a record this process let go of: its job has ended, and writes nothing more. Idempotent."""
