@@ -37,6 +37,7 @@ TOYHOST_TEMPLATE_CHECKS = TemplateChecks(
     refuse_undeclared_world_seed=_admit,
     refuse_undeliverable_template=_admit,
     kinds={},
+    refuse_inadmissible_template_case=_admit,
 )
 
 

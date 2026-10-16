@@ -53,6 +53,7 @@ from threetears.evals.kernel.host.eval_host import (
     CompletionRole,
     EvalHost,
     IgnoresTemplateFields,
+    TemplateCaseFields,
     TemplateChecks,
 )
 from threetears.evals.kernel.host.kinds import (
@@ -155,6 +156,7 @@ __all__ = [
     "FamilyMemberTest",
     "HostProfile",
     "IgnoresTemplateFields",
+    "TemplateCaseFields",
     "Interval",
     "KindContract",
     "KindContractError",

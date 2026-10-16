@@ -15,7 +15,8 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Validat
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.remedies import FIND_TEST_CASE
-from threetears.evals.run.definition_seed import SeedCorpus
+from threetears.evals.run.authoring import admit_template_case
+from threetears.evals.run.definition_seed import SeedCorpus, SeedTemplateCase
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import EvalTestCase
@@ -73,6 +74,30 @@ def _found_by_name(host: EvalHost, case: EvalTestCase, scope_id: str, corpus: Se
     )
 
 
+def _admit_renamed(host: EvalHost, case: EvalTestCase, name: str, scope_id: str) -> None:
+    """Hold a template's own case, under the name it would carry, to the host's check over a template case.
+
+    A case of no template, or of a judge template, is not a template case and is not asked. A host supplying no
+    template checks is not asked either: a rename admits no template.
+    """
+    checks = host.template_checks
+    if checks is None or case.template_id is None:
+        return
+    template = host.storage.load_template(case.template_id, scope_id)
+    if template is None or template.candidate_kind == JUDGE_KIND:
+        return
+    admit_template_case(
+        SeedTemplateCase(
+            template=template.name,
+            name=name,
+            variation_params=case.variation_params,
+            host_payload=case.host_payload,
+            stratum=case.stratum,
+        ),
+        checks=checks,
+    )
+
+
 def case_rename(
     host: EvalHost, scope_id: str, case_id: str, name: str, *, corpus: SeedCorpus | None = None
 ) -> CaseRenamed:
@@ -106,6 +131,8 @@ def case_rename(
     :raises ValidationFailedError: The report could not call the case by the name: a blank name, one with whitespace
         inside, a bare number, a generated id, or one longer than a case label runs (``humanize("case", name)``
         is empty), so the page would name it ``case N``.
+    :raises ValidationFailedError: (also) The case is a template's own, and the host's check over a template case
+        (``TemplateChecks.refuse_inadmissible_template_case``) refuses it under the new name: its reason is given.
     :raises NotFoundError: No case with that id in the scope.
     :raises ConflictError: Another case of its template, or of a case set listing it, already carries the name; or the
         case was written since it was read.
@@ -136,6 +163,7 @@ def case_rename(
             + ", and a report names each case once",
             remedy="choose a name no other case of its template or case sets carries, or rename that case first",
         )
+    _admit_renamed(host, case, given, scope_id)
     data = case.to_dict()
     data["name"] = given
     if _found_by_name(host, case, scope_id, corpus):

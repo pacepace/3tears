@@ -646,6 +646,7 @@
 "threetears.evals.kernel.host.SweepableReader": "provisional",
 "threetears.evals.kernel.host.SweepableRegistry": "host-contract",
 "threetears.evals.kernel.host.SweepableRole": "provisional",
+"threetears.evals.kernel.host.TemplateCaseFields": "host-contract",
 "threetears.evals.kernel.host.TemplateChecks": "host-contract",
 "threetears.evals.kernel.host.ToneRegister": "provisional",
 "threetears.evals.kernel.host.ToolActionReader": "provisional",

@@ -60,7 +60,7 @@ from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost, TemplateChecks
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, JudgeCase
-from threetears.evals.run.authoring import admit_template, validated_kind_spec
+from threetears.evals.run.authoring import admit_template, admit_template_case, validated_kind_spec
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.definition_digests import (
     case_set_digest,
@@ -836,6 +836,12 @@ def reset_definitions(
             )
     admitted, invalid = _admitted(host, corpus, [corpus_templates[name] for name in templates], checks)
     refusals += invalid
+    for name in templates:
+        for case_key, own in survey.own_of(name):
+            try:
+                admit_template_case(own, checks=checks)
+            except ValidationFailedError as e:
+                refusals.append(_Refusal(case_key, f"the host refuses it: {e}"))
     for name in sets:
         corpus_set = corpus_sets[name]
         ids = _current_case_ids(survey, corpus_set)

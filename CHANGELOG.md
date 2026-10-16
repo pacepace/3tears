@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: TemplateChecks checks a template case, and no template case is nameless
+
+Host contract change: `TemplateChecks` gains a required field.
+
+- **`TemplateChecks.refuse_inadmissible_template_case`** (new, required, no default: a host with nothing to refuse
+  passes a function that returns `None`) is handed each `SeedTemplateCase`, `host_payload` included, typed as the
+  structural `threetears.evals.kernel.host.TemplateCaseFields` (new, `host-contract`; the kernel cannot import the run
+  package's case) and raises `ValidationFailedError` to refuse. The seed and a definition reset ask it for every
+  corpus case they would write, and `case_rename` for a template's own case under its new name, before any of them
+  writes: a refused case is written by none, and each refusal reaches the caller with the host's reason (the seed
+  and a reset refuse whole, naming every case). `run.admit_template_case` is the one door all three use. A host adds the
+  field to every `TemplateChecks(...)` it builds. `DECLARED_CEILING` is 519.
+- **No template case is nameless.** `SeedTemplateCase.name` refuses a blank name where the case is built, and `admit_template_case`
+  asks again before the host's check, for a case built another way.
+- The host guide shows a classifier bank moving onto `template_cases` with its check.
+
 ### 3tears-evals: the seed names a stored case whose name is empty
 
 - **The seed fills an empty name, and only an empty one.** A stored template case with no `name` whose content (its

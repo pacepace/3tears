@@ -74,7 +74,7 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND, toyhost_template
@@ -1004,6 +1004,7 @@ def test_a_reset_and_create_template_read_one_host_s_checks_and_a_host_with_none
             refuse_undeclared_world_seed=lambda _template: None,
             refuse_undeliverable_template=_refuse,
             kinds={},
+            refuse_inadmissible_template_case=lambda _case: None,
         ),
     )
     unchecked = toyhost_host(storage=storage, template_checks=None)
@@ -1134,3 +1135,42 @@ def test_the_seed_never_overwrites_a_stored_name_with_the_corpus_s() -> None:
 
     assert not boot.named
     assert _cases_on(storage, _subject(storage))[0].name == "double-charge"
+
+
+def _refusing_cases(*, refuse: str) -> Any:
+    """A toy host whose check over a template case refuses the case named ``refuse``, with its own reason."""
+
+    def check(case: Any) -> None:
+        if case.name == refuse:
+            persona = case.host_payload.get("persona")
+            raise ValidationFailedError(f"label {persona!r} is not in the bank", remedy="fix it")
+
+    return replace(
+        toyhost_host(),
+        template_checks=replace(TOYHOST_TEMPLATE_CHECKS, refuse_inadmissible_template_case=check),
+    )
+
+
+def test_a_template_case_the_hosts_check_refuses_is_written_by_none_of_the_seed_the_reset_and_the_rename() -> None:
+    storage, _ = memory_storage()
+    base = _refusing_cases(refuse="bad")
+    host = replace(base, storage=storage)
+
+    with pytest.raises(ValidationFailedError, match=r"bad: label 'buyer bad' is not in the bank"):
+        seed_eval_definitions(host, _own_corpus(_own("good"), _own("bad")))
+    assert storage.query_templates(TOYHOST_SCOPE) == [], "nothing was written"
+
+    _boot(storage, _own_corpus(_own("good")))
+    with pytest.raises(ValidationFailedError, match=r"bad: label 'buyer bad' is not in the bank|host refuses it"):
+        reset_definitions(host, _own_corpus(_own("good"), _own("bad")), [TEMPLATE_KEY], overwrite_customized=True)
+    assert [c.name for c in _cases_on(storage, _subject(storage))] == ["good"]
+
+    (case,) = _cases_on(storage, _subject(storage))
+    with pytest.raises(ValidationFailedError, match="is not in the bank"):
+        case_rename(host, TOYHOST_SCOPE, case.id, "bad")
+    assert _cases_on(storage, _subject(storage))[0].name == "good"
+
+
+def test_a_template_case_with_a_blank_name_is_refused_at_authoring() -> None:
+    with pytest.raises(ValueError, match="at least 1 character"):
+        _own("   ")

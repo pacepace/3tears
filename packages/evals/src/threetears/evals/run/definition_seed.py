@@ -154,7 +154,7 @@ from threetears.evals.schema.models import (
     JudgeConfig,
     JudgedArtifact,
 )
-from threetears.evals.run.authoring import active_judge_config_in, admit_template
+from threetears.evals.run.authoring import active_judge_config_in, admit_template, admit_template_case
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.definition_digests import (
     TEMPLATE_CASE_FIELDS,
@@ -712,6 +712,9 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
         store nor the corpus holds, a judge template of another kind, a criterion the template's
         rubric lacks, a verdict its scale cannot hold). Raised before anything is written, naming
         every refused definition and why.
+    :raises ValidationFailedError: (also) A corpus template case the host's check
+        (``TemplateChecks.refuse_inadmissible_template_case``) refuses, or one with no name; raised before anything is
+        written, with the host's reason.
     :raises RefusedInput: The host supplies no template checks.
     """
     checks = host.checks_for("the definition seed")
@@ -737,6 +740,18 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
             f"the seed corpus for scope {corpus.scope_id!r} carries templates authoring would refuse, so nothing "
             f"was seeded: {'; '.join(refusals)}",
             remedy="correct each template the refusals name in the seed corpus, and seed again",
+        )
+    case_refusals: list[str] = []
+    for own in corpus.template_cases:
+        try:
+            admit_template_case(own, checks=checks)
+        except ValidationFailedError as refused:
+            case_refusals.append(f"{own.template}/{own.name}: {refused}")
+    if case_refusals:
+        raise ValidationFailedError(
+            f"the seed corpus for scope {corpus.scope_id!r} carries template cases the host refuses, so nothing "
+            f"was seeded: {'; '.join(case_refusals)}",
+            remedy="correct each case the refusals name in the seed corpus, and seed again",
         )
 
     storage = host.storage

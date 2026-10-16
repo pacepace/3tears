@@ -3226,9 +3226,14 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.host.TemplateCaseFields": {
+      "kind": "protocol",
+      "signature": "TemplateCaseFields{host_payload: Mapping[str, object]; name: str; stratum: str | None; template: str; variation_params: Mapping[str, str]}",
+      "tier": "host-contract"
+    },
     "threetears.evals.kernel.host.TemplateChecks": {
       "kind": "dataclass",
-      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, IgnoresTemplateFields])",
+      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, IgnoresTemplateFields], refuse_inadmissible_template_case: Callable[[TemplateCaseFields], None])",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ToneRegister": {
