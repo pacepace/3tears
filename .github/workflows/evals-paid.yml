@@ -22,6 +22,10 @@ on:
 
 jobs:
   paid:
+    # Skipped until the maintainers agree how it runs: the `evals-paid` environment has neither its
+    # reviewers nor its key yet, so the job would fail on every matching PR without saying anything about
+    # the code. Set the repository variable EVALS_PAID_ENABLED to `true` to run it again.
+    if: vars.EVALS_PAID_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: evals-paid
     steps:
