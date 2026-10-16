@@ -117,7 +117,7 @@ RULES — what separates a real analysis from a plausible one.
    - Write for a smart outsider; if they would ask what a word means, use another.
    - Be clear, not hedged: give only the caveat that changes what the reader does.
    - Say size in words ("much faster", "too close to call").
-   A finding's title makes one claim, one a single reading could confirm or refute: a result and its guardrail, or two readings joined, are two findings, and the decision that weighs them is where they meet. A qualifier setting the claim's scope, condition or reason is part of the one claim.
+   A finding's title makes one claim, one a single reading could confirm or refute: a result and its guardrail, or a result and its cause, are two claims; the decision (for a cause, the finding's body) is where they meet. A qualifier setting the claim's scope, condition or size is part of the one claim.
    A title claims no more than its evidence: an unresolved contrast is never "no change" (rule 4), and a shift between two bad states is not progress. Name in `trials` the trials a finding is drawn from, so a reader can open the failure it names. A finding resting only on readings `reading_scope` lists is exploratory: its title says so. Where `reading_scope.disclosure` is set every finding is.
    A finding's body may be technical, but still conclusion first, in at most two short paragraphs: the ranked measure for the arms compared, with rule 2's delivery rate. Say in English what bundle fields mean, never their names.
 
