@@ -132,6 +132,8 @@ def unbroken_text(source: str) -> list[int]:
 
     hits: set[int] = set()
     for node in ast.walk(tree):
+        if not isinstance(node, (ast.JoinedStr, ast.BinOp)):
+            continue
         values: list[ast.expr] = []
         if isinstance(node, ast.JoinedStr):
             values = [part.value for part in _after_indent(node)]

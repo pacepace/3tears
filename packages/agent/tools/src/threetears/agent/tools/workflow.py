@@ -216,8 +216,8 @@ def _declare_workflow(tool_context: ToolContextManager, plan: str, steps: list[s
     was = _plan_before(before) if before else "No plan was there before."
     state = tool_context.declare_workflow(plan, steps)
     step_list = [line for i, s in enumerate(steps) for line in under(s, "     ", first=f"  {i + 1}. ")]
-    plan = under(str(state["plan"]), "    ", first="  Plan: ") or ["  Plan:"]
-    return "\n".join([f"Workflow declared. {was}", *plan, "  Steps:", *step_list])
+    plan_lines = under(str(state["plan"]), "    ", first="  Plan: ") or ["  Plan:"]
+    return "\n".join([f"Workflow declared. {was}", *plan_lines, "  Steps:", *step_list])
 
 
 def _plan_before(state: dict[str, Any]) -> str:
