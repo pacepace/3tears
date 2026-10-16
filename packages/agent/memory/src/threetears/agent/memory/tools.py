@@ -3045,8 +3045,8 @@ async def load_chunk_search_tool(
             when = _fmt_dt(row_of.get(chunk_id, {}).get("date_created"), zone)
             if when:
                 facts.append(f"written {when}")
-            lines.append(f"[chunk:{chunk_id}] ({', '.join(facts)})")
-            lines.extend(under(preview, "  "))
+            # one block per hit: the hits are parted by a blank line, a hit's own lines are not
+            lines.append("\n".join([f"[chunk:{chunk_id}] ({', '.join(facts)})", *under(preview, "  ")]))
             if ledger_callback is not None:
                 try:
                     await ledger_callback(chunk_id, "chunk", content[:80])
