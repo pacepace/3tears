@@ -126,17 +126,17 @@ pass it to every entrypoint. It holds:
   `withhold_failure_detail` is the honest one for an app with no error types of its own;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
-- your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the three
-  questions about a template only you can answer, and the kinds you launch. `require_known_tools_allowed` asks whether
-  each tool it allows is in your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your
-  world can seed, and `refuse_undeliverable_template` whether its kind can honour what it declares. Each raises
-  `ValidationFailedError` to refuse and returns `None` to admit. `kinds` is the registry your `LaunchHost` is built
-  with (the same mapping): every path that admits a template refuses one stating a field its kind's entry declares it
-  never acts on (`LaunchableKind.ignored_template_fields`), through the launch dispatch's own refusal, so your
+- your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
+  about a template only you can answer, and the kinds you launch. `require_known_tools_allowed` asks whether each tool
+  it allows is in your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your world can
+  seed, and `refuse_undeliverable_template` whether its kind can honour what it declares; each raises
+  `ValidationFailedError` to refuse and returns `None` to admit. `kinds` (required) is the registry your `LaunchHost`
+  is built with, the same mapping: a template stating a field its kind's entry never acts on
+  (`LaunchableKind.ignored_template_fields`) is refused with the launch dispatch's own message, so your
   `refuse_undeliverable_template` no longer calls `refuse_ignored_template_fields`. `create_template`,
-  `update_template`, the boot seed, a definition reset and the `definitions_reset` action read them off the host they
-  are handed, so every path admits a template under the same checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it admitted
-  would go unchecked; a check with nothing to refuse is a function that returns `None`.
+  `update_template`, the boot seed, a definition reset and the `definitions_reset` action read the checks off the host
+  they are handed, so every path admits a template under the same checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it
+  admitted would go unchecked; a check with nothing to refuse is a function that returns `None`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -1206,7 +1206,7 @@ in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `schedu
 `generation_ceiling_s` and `judge_phase_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
 generation or a judge phase. Derive each outer budget from a field, never from a number you copied: a release that
 raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The six names the
-fields stand for are still exported where they were in `.32` and leave in `.33`.
+fields stand for are still exported where they were, for a host that has not moved to the fields yet.
 
 ### Hearing about a regression when a run completes
 

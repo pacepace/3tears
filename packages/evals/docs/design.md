@@ -118,10 +118,10 @@ Whether the prose is accurate and useful is measured by evaluating the analysis 
 could not answer this, because X, and fixing X costs Y" is a legitimate bottom line.
 
 **The first screen carries the result and every fact that changes how it reads; the rest is one step down.**
-The title, the declared question quoted whole, the design, the verdict and the scoreboard come first; contrasts
-follow as one table, and cases, trials, what was not tested, the methods and the glossary start folded. A figure
-is stated in the reader's terms (a rate as a percent, its change in points) with its interval beside it, and the
-only picture besides the outcome bar is each interval drawn in the row that states it
+The title, the declared question quoted whole, the arms and the design, the decision rule, the verdict and the
+scoreboard come first; contrasts follow as one table, and cases, trials, what was not tested, the methods and the
+glossary start folded. A figure is stated in the reader's terms (a rate as a percent, its change in points) with its
+interval beside it, and the only picture besides the outcome bar is each interval drawn in the row that states it
 ([the page](reading-reports.md#the-report-one-page-result-first)).
 
 ### The engine itself
