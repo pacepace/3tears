@@ -62,7 +62,7 @@ pip install "3tears-evals[fastmcp]"
 To install a pre-release or an unreleased checkout, install from the repository at a tag instead:
 
 ```bash
-pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@v0.69.0-evaladopt.33#subdirectory=packages/evals"
+pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"
 ```
 
 In a checkout of this repo, `uv sync` at the root does it, and the commands above run from `packages/evals` with
