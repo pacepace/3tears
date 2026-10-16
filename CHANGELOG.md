@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.70.0 -- 2026-10-16
+
 ### 3tears-evals: the question under the title, verdicts by arm, and a case renamed through the package (evaladopt.33)
 
 Breaking for a host in one place: `TemplateChecks` takes a required `kinds`. Every typed verdict is unchanged; only
@@ -482,9 +484,10 @@ v<version>` prints a release's notes).
 
 - **`./scripts/typecheck.sh <package>`** checks one package's import roots, the package named as `test.sh` names it
   (`evals`, `agent/memory`); with none it checks every package, as before. Arguments after it pass through to mypy.
-- **`lint.sh` and `typecheck.sh` call `ruff` and `mypy` from a venv** (the active `$VIRTUAL_ENV`, then the
-  repository's `.venv`) rather than through `uv run`, which re-resolves the workspace on every call; a clone before
-  `uv sync` falls back to `uv run`.
+- **`lint.sh` and `typecheck.sh` call `ruff` and `mypy` from a venv** (the repository's own `.venv`, then the
+  active `$VIRTUAL_ENV`) rather than through `uv run`, which re-resolves the workspace on every call. The checkout's
+  `.venv` comes first because it is the environment uv itself uses here, so a shell left activated in another venv
+  does not check this tree with that venv's tools; a clone before `uv sync` falls back to `uv run`.
 
 ## v0.69.0 -- 2026-10-15
 

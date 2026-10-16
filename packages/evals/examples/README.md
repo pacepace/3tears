@@ -139,7 +139,7 @@ Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.
 Every rung replays the recordings beside it when it runs with no key, so it calls nothing and costs nothing, and its
 output is a real model's, as of that recording. There is no scripted stand-in for a model anywhere in them.
 
-**Outside a checkout** (once 0.69.0 is on PyPI and you installed `3tears-evals` with pip): the examples are
+**Outside a checkout** (once 0.70.0 is on PyPI and you installed `3tears-evals` with pip): the examples are
 not part of the installed package, so fetch this whole directory from the repository, at the tag you installed (the
 [README's install step](../README.md#install) names it). This fetches only the examples:
 

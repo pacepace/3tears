@@ -53,8 +53,8 @@ An intra-family API addition ships in a MINOR bump
      newest final release tag (`v<x>.<y>.<z>`) at or below its `pyproject.toml` version wherever that tag
      is, so `develop`, which never merges `main` back, follows a release tagged on `main`. A pre-release
      tag (any suffix) is never followed and gets no section. Only names that a final release shipped are
-     recorded: a name added and dropped between two releases needs no entry. 0.69.0 is the package's
-     first release, so its section is `since = "v0.68.0"` (a release with no `packages/evals`, which needs
+     recorded: a name added and dropped between two releases needs no entry. 0.70.0 is the package's
+     first release, so its section is `since = "v0.69.0"` (a release with no `packages/evals`, which needs
      no section of its own) and records no names.
 2. PR into `develop`.
 3. PR `develop` into `main`, with no version bump on that second PR.
