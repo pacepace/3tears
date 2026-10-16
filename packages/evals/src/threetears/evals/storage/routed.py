@@ -437,11 +437,19 @@ class RoutedDocumentStore:
         descending: bool = True,
         limit: int | None = None,
         exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
         """Return documents of one type within a scope, from the store the type is kept in."""
         return self._routed(doc_type).by_doc_type(
-            doc_type, scope_id, order_by=order_by, descending=descending, limit=limit, exclude=exclude, **field_eq
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
         )
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
@@ -515,7 +523,8 @@ class RoutedDocumentStore:
         The question a host's start asks of tables it is about to adopt: an empty set of stores can take a fresh
         record, and one with documents in it has to be relocated first. It asks the way :meth:`relocate` moves,
         every registered type (:data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`) and the host's own, in
-        every store and every named scope, and stops at the first document it finds. Like :meth:`relocate`, it
+        every store and every named scope, and answers at the first document it finds, after draining the sweep of the
+        store that holds it so none is left part-way read. Like :meth:`relocate`, it
         reaches only the scopes and host types it is told of: the port has no scope-free read.
 
         It ignores the router's own placement record. That record is kept in the routing scope, which is not a
@@ -529,14 +538,17 @@ class RoutedDocumentStore:
         :ptype scope_ids: Iterable[str]
         :param host_doc_types: The host's own ``doc_type`` values in these stores.
         :ptype host_doc_types: Iterable[str]
-        :return: ``True`` at the first document found; ``False`` when no store holds one in any named scope.
+        :return: ``True`` once a document is found; ``False`` when no store holds one in any named scope.
         :rtype: bool
         """
         known = (set(DOC_TYPE_FACTS) | set(host_doc_types)) - {ROUTING_RECORD_DOC_TYPE}
         for scope_id in scope_ids:
             for doc_type in sorted(known):
                 for store in children.values():
-                    for _doc_id in store.iter_by_doc_type(doc_type, scope_id):
+                    # Drained before answering, as relocate and reset_core drain theirs: returning from inside the loop
+                    # would abandon the store's sweep part-way, and a store whose sweep holds a cursor or a connection
+                    # until it is read to the end would keep it until the iterator happened to be collected.
+                    if list(store.iter_by_doc_type(doc_type, scope_id)):
                         return True
         return False
 

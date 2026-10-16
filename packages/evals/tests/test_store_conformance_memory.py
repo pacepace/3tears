@@ -292,6 +292,74 @@ class _LimitsBeforeOrdering(InMemoryDocumentStore):
         return rows
 
 
+class _FieldInIgnored(InMemoryDocumentStore):
+    """``by_doc_type`` drops ``field_in``, so a membership read returns every document the rest of it matches."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        kwargs.pop("field_in", None)
+        return super().by_doc_type(doc_type, scope_id, **kwargs)
+
+
+class _FieldInComparesPythonEquality(InMemoryDocumentStore):
+    """``field_in`` is compared with Python ``in``, so a listed ``1`` matches ``true`` and a listed ``0`` ``false``."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = kwargs.pop("field_in", None) or {}
+        rows = super().by_doc_type(doc_type, scope_id, **kwargs)
+        return [d for d in rows if all(d.get(field) in list(values) for field, values in field_in.items())]
+
+
+class _FieldInEmptyMatchesAll(InMemoryDocumentStore):
+    """An empty ``field_in`` sequence is read as no predicate on its field."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = {field: values for field, values in (kwargs.pop("field_in", None) or {}).items() if len(values)}
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
+class _FieldInReadsOncePerValue(InMemoryDocumentStore):
+    """``field_in`` is answered by one equality read per listed value, concatenated, so a repeated value repeats."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = kwargs.pop("field_in", None) or {}
+        if len(field_in) != 1:
+            return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+        ((field, values),) = field_in.items()
+        return [row for value in values for row in super().by_doc_type(doc_type, scope_id, **{**kwargs, field: value})]
+
+
+class _FieldInOverridesFieldEq(InMemoryDocumentStore):
+    """A field named in both ``field_in`` and ``field_eq`` is accepted, the membership predicate winning."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = kwargs.pop("field_in", None) or {}
+        for field in field_in:
+            kwargs.pop(field, None)
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
+class _FieldInReadsAStringAsOneValue(InMemoryDocumentStore):
+    """A string where ``field_in`` wants a sequence is read as the one value it names, not refused."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = {
+            field: [values] if isinstance(values, str) else values
+            for field, values in (kwargs.pop("field_in", None) or {}).items()
+        }
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
+class _FieldInSkipsNonScalars(InMemoryDocumentStore):
+    """A value of ``field_in`` that is not a scalar is dropped from the list, not refused."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = {
+            field: [v for v in values if v is None or isinstance(v, str | int | float)]
+            for field, values in (kwargs.pop("field_in", None) or {}).items()
+        }
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
 class _NoEtags(InMemoryDocumentStore):
     """A store without conditional writes: no token, and ``if_match`` ignored."""
 
@@ -616,6 +684,13 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _OrdersAsText: frozenset({"order.by_stored_type"}),
     _MissingSortsHighest: frozenset({"order.missing_sorts_lowest"}),
     _LimitsBeforeOrdering: frozenset({"order.limit_after_ordering"}),
+    _FieldInIgnored: frozenset({"query.field_in_matches_any", "query.field_in_empty_matches_nothing"}),
+    _FieldInComparesPythonEquality: frozenset({"query.field_in_matches_any"}),
+    _FieldInEmptyMatchesAll: frozenset({"query.field_in_empty_matches_nothing"}),
+    _FieldInReadsOncePerValue: frozenset({"query.field_in_matches_any"}),
+    _FieldInOverridesFieldEq: frozenset({"query.field_in_and_field_eq_refused"}),
+    _FieldInReadsAStringAsOneValue: frozenset({"query.field_in_string_refused"}),
+    _FieldInSkipsNonScalars: frozenset({"query.field_in_non_scalar_refused"}),
     _NoEtags: frozenset({"etag.found_document_has_one", "etag.stale_write_is_refused"}),
     _IgnoresIfMatch: frozenset(
         {
@@ -681,6 +756,13 @@ def test_a_document_without_its_scope_or_id_is_refused() -> None:
         store.upsert({"id": "d1", "doc_type": "eval_run"})
     with pytest.raises(KeyError):
         store.upsert({"scope_id": _SCOPE, "doc_type": "eval_run"})
+
+
+def test_field_in_given_a_string_is_refused_rather_than_read_as_its_characters() -> None:
+    store = InMemoryDocumentStore()
+    store.upsert(_doc("d1", run="r"))
+    with pytest.raises(TypeError, match="sequence of values"):
+        store.by_doc_type("eval_run", _SCOPE, field_in={"run": "r1"})
 
 
 def test_a_sweep_may_delete_as_it_goes() -> None:

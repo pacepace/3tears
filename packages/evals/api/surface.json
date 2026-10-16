@@ -103,7 +103,7 @@
     },
     "threetears.evals.schema.AsyncDocumentStore": {
       "kind": "protocol",
-      "signature": "AsyncDocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, exclude: Sequence[str] = (), **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> AsyncIterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}",
+      "signature": "AsyncDocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, exclude: Sequence[str] = (), field_in: Mapping[str, Sequence[Any]] | None = None, **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> AsyncIterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}",
       "tier": "host-contract"
     },
     "threetears.evals.schema.AsyncExternalSpend": {
@@ -378,7 +378,7 @@
     },
     "threetears.evals.schema.DocumentStore": {
       "kind": "protocol",
-      "signature": "DocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, exclude: Sequence[str] = (), **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}",
+      "signature": "DocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, exclude: Sequence[str] = (), field_in: Mapping[str, Sequence[Any]] | None = None, **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}",
       "tier": "host-contract"
     },
     "threetears.evals.schema.DSLError": {
@@ -500,6 +500,11 @@
       "kind": "type alias",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.schema.field_in_values": {
+      "kind": "function",
+      "signature": "field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]) -> dict[str, list[Any]]",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.fingerprint_criterion": {
       "kind": "function",

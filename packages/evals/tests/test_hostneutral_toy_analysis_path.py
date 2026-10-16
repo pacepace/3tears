@@ -24,6 +24,7 @@ import copy
 import hashlib
 import json
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -253,6 +254,13 @@ class _FlagOnlyStorage(ToyhostStorage):
 
     def analysis_archived(self, analysis_id: str, scope_id: str) -> bool | None:
         return self._archived.get(analysis_id) if scope_id == TOYHOST_SCOPE else None
+
+    def analyses_archived(self, analysis_ids: Sequence[str], scope_id: str) -> dict[str, bool]:
+        return {
+            analysis_id: archived
+            for analysis_id in analysis_ids
+            if (archived := self.analysis_archived(analysis_id, scope_id)) is not None
+        }
 
 
 class TestRetractionReadsOnlyTheArchivedFlag:

@@ -63,7 +63,7 @@ from threetears.evals.kernel.usage_capture import count_substituted_deliveries, 
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
-    from threetears.evals.schema.models import EvalResult, EvalTrace, RubricScore
+    from threetears.evals.schema.models import EvalResult, JudgeEvidence, RubricScore
 
 
 #: How a reserved judge axis is named on a trial, where a reader sees it: never by its stored id.
@@ -186,7 +186,7 @@ def trials_and_census(
     criteria: Mapping[str, str],
     rubric_threshold: int,
     catalog: Mapping[str, MetricDescriptor],
-    load_trace: Callable[[EvalResult], EvalTrace | None],
+    load_judge_evidence: Callable[[Sequence[str]], Mapping[str, JudgeEvidence]],
     names: Mapping[str, str] | None = None,
 ) -> TrialsAndCensus:
     """Every trial's row and every arm's census, over the campaign's results.
@@ -207,8 +207,10 @@ def trials_and_census(
     :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog.
     :ptype catalog: Mapping[str, MetricDescriptor]
-    :param load_trace: Reads one result's stored trace, or None; called only for a result that has one and is kept.
-    :ptype load_trace: Callable[[EvalResult], EvalTrace | None]
+    :param load_judge_evidence: Reads what each named result's judge was handed, by result id, omitting a result with
+        none. Called once, with every kept result that records a trace (``EvalResult.has_trace``), so the trials cost
+        one read however many are kept; not called when none does.
+    :ptype load_judge_evidence: Callable[[Sequence[str]], Mapping[str, JudgeEvidence]]
     :return: The census, the kept rows and how many were left out. The losses by cause and the differential-loss flag
         are the bundle's ``exclusions`` and ``differential_exclusions``, which the assembler counts off the same
         :func:`~threetears.evals.kernel.result_condition.trial_exclusion`, never counted again here.
@@ -228,10 +230,19 @@ def trials_and_census(
         ),
     )
     kept, omitted = _capped(ordered, MAX_TRIALS, weight=lambda result: _KEEP_WEIGHT[readings[result.id].state])
-    traces = {result.id: load_trace(result) if result.has_trace else None for result in kept}
-    labels = _case_labels(kept, strata, traces, names or {})
+    traced = [result.id for result in kept if result.has_trace]
+    evidence = load_judge_evidence(traced) if traced else {}
+    labels = _case_labels(kept, strata, evidence, names or {})
     rows = [
-        _row(f"T{index}", result, readings[result.id], labels[result.test_case_id], strata, criteria, traces[result.id])
+        _row(
+            f"T{index}",
+            result,
+            readings[result.id],
+            labels[result.test_case_id],
+            strata,
+            criteria,
+            evidence.get(result.id),
+        )
         for index, result in enumerate(kept, start=1)
     ]
     return TrialsAndCensus(
@@ -278,7 +289,7 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
 def _case_labels(
     kept: Sequence[EvalResult],
     strata: Mapping[str, str | None],
-    traces: Mapping[str, EvalTrace | None],
+    evidence: Mapping[str, JudgeEvidence],
     names: Mapping[str, str],
 ) -> dict[str, str]:
     """Each kept case's label: the name its author gave it; else its stratum, then the first input its first kept
@@ -295,8 +306,8 @@ def _case_labels(
         if (given := names.get(result.test_case_id)) is not None:
             labels[result.test_case_id] = given
             continue
-        trace = traces.get(result.id)
-        asked = trace.judge_evidence.case_material if trace is not None and trace.judge_evidence is not None else ""
+        shown = evidence.get(result.id)
+        asked = shown.case_material if shown is not None else ""
         words = " ".join(asked.split())
         lead = capped_text(words, MAX_LABEL_INPUT_CHARS) if words else result.test_case_id
         stratum = strata.get(result.test_case_id)
@@ -311,10 +322,9 @@ def _row(
     label: str,
     strata: Mapping[str, str | None],
     criteria: Mapping[str, str],
-    trace: EvalTrace | None,
+    evidence: JudgeEvidence | None,
 ) -> TrialRow:
     """One trial's row, every text in it capped."""
-    evidence = trace.judge_evidence if trace is not None else None
     scores: list[RubricScore] = [
         *result.rubric_scores,
         *(score for score in (result.transcript_score, result.outcome_score) if score is not None),

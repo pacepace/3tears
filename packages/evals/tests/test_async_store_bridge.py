@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import threading
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -75,11 +75,19 @@ class _FakeAsyncStore(AsyncDocumentStore):
         descending: bool = True,
         limit: int | None = None,
         exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
         self._seen()
         return self.inner.by_doc_type(
-            doc_type, scope_id, order_by=order_by, descending=descending, limit=limit, exclude=exclude, **field_eq
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
         )
 
     async def iter_by_doc_type(self, doc_type: str, scope_id: str) -> AsyncIterator[str]:

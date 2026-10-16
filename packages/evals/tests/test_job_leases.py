@@ -51,7 +51,7 @@ from threetears.evals.kernel import (
     settle_job_record,
 )
 from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_cancel, job_poll, run_job_id, run_launch
-from threetears.evals.ops import LaunchArguments, SweepArguments, SweepArm, sweep_launch
+from threetears.evals.ops import LaunchArguments, SweepArguments, SweepArm, generation_key, sweep_launch
 from threetears.evals.run import sweep_abandoned_runs
 from threetears.evals.schema import EvalRun, JobLease
 from threetears.evals.storage import InMemoryDocumentStore
@@ -532,8 +532,7 @@ async def test_a_start_whose_slot_claim_fails_ends_its_attempt_and_releases_its_
     )
     assert attempt.outcome == "failed" and attempt.error is not None
     assert "generation slot could not be claimed" in attempt.error, "nothing is left reading running"
-    (writer,) = fixture.writers
-    assert writer.closed == 1 and not writer.calls, "the client the start built was released, and never called"
+    assert fixture.writers == [], "the start built no client: that is its job's"
 
 
 class AttemptRefusingStore(InMemoryDocumentStore):
@@ -546,14 +545,14 @@ class AttemptRefusingStore(InMemoryDocumentStore):
         super().upsert(document, if_match=if_match, create_only=create_only)
 
 
-async def test_a_start_whose_attempt_cannot_be_written_releases_its_client() -> None:
+async def test_a_start_whose_attempt_cannot_be_written_starts_nothing() -> None:
     fixture = off_loop(ops_fixture, store=AttemptRefusingStore())
 
     with pytest.raises(StorageError, match="refused the attempt"):
         await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
-    (writer,) = fixture.writers
-    assert writer.closed == 1 and not writer.calls
+    assert fixture.writers == [], "no client was built"
+    assert fixture.host.launch.job_manager.active_task_ids(generation_key(fixture.campaign.id, TOYHOST_SCOPE)) == []
 
 
 # =============================================================================

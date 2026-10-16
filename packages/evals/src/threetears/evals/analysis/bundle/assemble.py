@@ -39,7 +39,7 @@ took four passes: this line said "only ``window``/``created_at``", so pinning
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
@@ -162,11 +162,16 @@ from threetears.evals.analysis.bundle.surface import _measure_catalog
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
-    from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, EvalTrace
+    from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
 
 
 class CampaignReadStore(Protocol):
-    """The nine reads assembling a campaign's context bundle needs.
+    """The nine reads assembling a campaign's context bundle needs, each a batch.
+
+    **Every read is one store call however large the campaign.** A host's store may open a connection per call, so a
+    read per run, per template, per insight or per trial grows with the campaign until it outruns the host's call
+    budget: assembly asks each of these once, or twice for the ratings (the runs', then, only when a judged score
+    carries a label key, the scope's).
 
     Cut to what :func:`assemble_context_bundle` calls rather than to what a
     storage layer offers: the bundle reads member runs (in one batch, without the
@@ -174,8 +179,8 @@ class CampaignReadStore(Protocol):
     stratum each of their cases declares, the
     people's calibration ratings of those results, the templates the runs were judged
     against and the scope's stored judge profiles (for the tier of a judge whose own
-    evidence decides none), the trace of each trial the bundle keeps (what its case asked and what its judge was
-    handed), the subject's prior insights, and — for an insight that names one — whether the
+    evidence decides none), the judge evidence of the trials the bundle keeps, in one read (what each case asked and
+    what its judge was handed), the subject's prior insights, and — for an insight that names one — whether the
     analysis that minted it is archived, and writes nothing at all. That flag is read
     because archiving an analysis RETRACTS what it minted (:func:`retracted_insights`),
     and it is a fact about the analysis, not the insight. Only the flag is asked for, so
@@ -209,8 +214,8 @@ class CampaignReadStore(Protocol):
         """
         ...
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        """Every result belonging to one run within a scope."""
+    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        """Every result belonging to any of the named runs within a scope, in one read."""
         ...
 
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
@@ -221,24 +226,28 @@ class CampaignReadStore(Protocol):
         """
         ...
 
-    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]:
-        """Every calibration rating within a scope, or of one run's results, oldest first — unpaged."""
+    def query_calibration_ratings(
+        self, scope_id: str, /, *, run_ids: Sequence[str] | None = None
+    ) -> list[CalibrationRating]:
+        """Every calibration rating within a scope, or of the results of any of several runs, oldest first, in one read
+        — unpaged."""
         ...
 
     def query_insights(self, scope_id: str, /, *, subject_id: str) -> list[EvalInsight]:
         """Every insight recorded against a subject in a scope, newest observation first."""
         ...
 
-    def analysis_archived(self, analysis_id: str, scope_id: str, /) -> bool | None:
-        """Whether one stored analysis is archived, or ``None`` when it no longer resolves in the scope."""
+    def analyses_archived(self, analysis_ids: Sequence[str], scope_id: str, /) -> dict[str, bool]:
+        """Whether each named stored analysis is archived, by id, in one read; one that no longer resolves is absent."""
         ...
 
-    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
-        """One template within a scope, or ``None`` when it does not resolve there.
+    def load_templates(self, template_ids: Sequence[str], scope_id: str, /) -> list[EvalTemplate]:
+        """The named templates within a scope, archived or not, in one read; one that does not resolve is absent.
 
-        Read for one thing: the wording of each criterion the campaign's judges were asked, which a stored judge
-        profile is keyed by (#628). A template edited after a run read another wording, and the run's judges'
-        criterion then reads as unknown.
+        Read for the name and revision of each (two revisions of one template never pool), and the wording of each
+        criterion the campaign's judges were asked, which a stored judge profile is keyed by (#628) and each trial
+        shows. A template edited after a run read another wording, and the run's judges' criterion then reads as
+        unknown.
         """
         ...
 
@@ -246,11 +255,12 @@ class CampaignReadStore(Protocol):
         """Every stored judge profile in a scope — unpaged, since a judge's profile is looked up among them (#628)."""
         ...
 
-    def load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None:
-        """One result's stored trace, or ``None`` when it has none.
+    def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str, /) -> dict[str, JudgeEvidence]:
+        """What each named result's judge was handed, by result id, in one read; a result with none is absent.
 
         Read for what each kept trial shows a reader — what its case asked and the tail of what the judge was handed —
-        and only for a result that records a trace (``EvalResult.has_trace``) among the trials the bundle keeps.
+        once, for every result that records a trace (``EvalResult.has_trace``) among the trials the bundle keeps. Only
+        the evidence is asked for, so a trace's turns and spans are never shipped.
         """
         ...
 
@@ -350,13 +360,15 @@ def assemble_context_bundle(
 
     # Deterministic input order → deterministic lens output → stable fingerprint.
     runs = sorted(resolved, key=lambda r: (r.created_at, r.id))
+    # Every template the member runs ran, read once: the revision refusal, the judges' criteria and the trials all
+    # read them.
+    templates = {
+        template.id: template
+        for template in storage.load_templates(sorted({run.template_id for run in runs if run.template_id}), scope_id)
+    }
     # Before anything pools them: runs of two revisions of one template are two datasets (`revisions`), and the cell
     # algebra below has no coordinate that would keep them apart.
-    refuse_pooled_revisions(
-        (run.template_id for run in runs),
-        lambda template_id: storage.load_template(template_id, scope_id),
-        what=f"campaign {campaign.name!r}",
-    )
+    refuse_pooled_revisions((run.template_id for run in runs), templates.get, what=f"campaign {campaign.name!r}")
     # When the campaign's evidence began: its earliest member run, archived ones included (an archived run's results
     # existed all the same). A question asked after it confirms nothing (`preregistered_questions`).
     first_run_at = min((run.created_at for run in loaded.values()), default=None)
@@ -366,10 +378,19 @@ def assemble_context_bundle(
     run_ids = [run.id for run in runs]
     known_run_ids = set(run_ids)
 
-    results_by_run: dict[str, list[EvalResult]] = {}
-    for run in runs:
-        run_results = storage.query_eval_results_by_run(run.id, scope_id)
-        results_by_run[run.id] = sorted(run_results, key=lambda r: r.id)
+    declared_control = resolve_declared_control(campaign.declared_design)
+    # The archived members' results are read only when a declared control might have been curated out (below), and
+    # then in the same call as the resolved members': one read of results however many runs the campaign holds.
+    read_archived = bool(declared_control.variant_keys and archived)
+    every_result: dict[str, list[EvalResult]] = {
+        run_id: [] for run_id in (*run_ids, *(archived if read_archived else ()))
+    }
+    for result in storage.query_eval_results_by_runs(list(every_result), scope_id):
+        if result.eval_run_id in every_result:
+            every_result[result.eval_run_id].append(result)
+    results_by_run: dict[str, list[EvalResult]] = {
+        run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
+    }
     # Before anything reads them: a classifier's failure is a miss in every rate, not absent from them all.
     results_by_run = _failures_as_misses(results_by_run)
     # Before anything reads them either: latency read under concurrency is left out of every lens, never
@@ -401,15 +422,14 @@ def assemble_context_bundle(
     # for good, and the key its lever map re-keys to under this one. `_campaign_design` matches them against
     # the arms and is the only place that does: every lens below reads its answer (`design.control_arm`),
     # never `declared_design.control`, so no two of them can disagree about which cell is the control.
-    declared_control = resolve_declared_control(campaign.declared_design)
     # Read only when a declared control might have been curated out, and only over the archived
     # set: "the runs carrying your control were archived" and "nothing ever ran it" are different
     # operator actions, and the archived runs' results are the only place the difference lives.
     # Every other path pays nothing for the distinction.
     archived_control_variants: set[str] = set()
-    if declared_control.variant_keys and archived:
+    if read_archived:
         for run_id in archived:
-            archived_key = variant_key_of_run(storage.query_eval_results_by_run(run_id, scope_id))
+            archived_key = variant_key_of_run(sorted(every_result[run_id], key=lambda r: r.id))
             if archived_key is not None:
                 archived_control_variants.add(archived_key)
     # One answer, shared by every lens, to "did a resolved surface move on its own" — the design's
@@ -501,7 +521,11 @@ def assemble_context_bundle(
         for insight in storage.query_insights(scope_id, subject_id=campaign.subject_id)
         if insights_as_of is None or insight.observed_at < insights_as_of
     ]
-    retracted = retracted_insights(ledger, lambda analysis_id: storage.analysis_archived(analysis_id, scope_id))
+    # Every minting analysis the ledger names, asked about in one read.
+    standing = storage.analyses_archived(
+        sorted({insight.source_analysis_id for insight in ledger if insight.source_analysis_id}), scope_id
+    )
+    retracted = retracted_insights(ledger, standing.get)
     prior_insights, prior_insights_omitted = _prior_insights(
         [insight for insight in ledger if insight.id not in retracted]
     )
@@ -517,7 +541,7 @@ def assemble_context_bundle(
     # leaves undetermined reads its tier from the stored profile of that very judge and criterion when the profile
     # decides one (#628); the entry names the profile, so the tier is never presented as the campaign's own, and the
     # profile's identity is in the fingerprint's pre-image with it.
-    tiers = judges_tiers(storage, scope_id, runs, results)
+    tiers = judges_tiers(storage, scope_id, runs, results, ratings=ratings, templates=templates)
     person_scores = person_scores_by_result(ratings, results)
     bundle = AnalysisContextBundle(
         campaign_id=campaign.id,
@@ -765,10 +789,10 @@ def assemble_context_bundle(
         ],
         strata=case_strata,
         names=case_names,
-        criteria=_criteria(runs, storage, scope_id),
+        criteria=_criteria(runs, templates),
         rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
         catalog=bundle.measure_catalog,
-        load_trace=lambda result: storage.load_eval_trace(result.id, scope_id),
+        load_judge_evidence=lambda result_ids: storage.load_judge_evidence(result_ids, scope_id),
     )
     bundle.scoreboard = census.scoreboard
     bundle.trials = census.trials
@@ -800,15 +824,16 @@ def assemble_context_bundle(
     return bundle
 
 
-def _criteria(runs: Sequence[EvalRun], storage: CampaignReadStore, scope_id: str) -> dict[str, str]:
+def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
     """Each judged dimension's criterion as the member runs' templates word it, by dimension name.
 
     The words a trial shows beside the judge's score: what the judge was asked. A template that no longer resolves
-    names no criterion, and a dimension two templates word differently keeps the first template's words, by id.
+    (absent from ``templates``) names no criterion, and a dimension two templates word differently keeps the first
+    template's words, by id.
     """
     criteria: dict[str, str] = {}
     for template_id in sorted({run.template_id for run in runs if run.template_id}):
-        template = storage.load_template(template_id, scope_id)
+        template = templates.get(template_id)
         if template is None:
             continue
         for dimension in template.rubric:

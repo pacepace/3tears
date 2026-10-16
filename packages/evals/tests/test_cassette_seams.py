@@ -709,7 +709,7 @@ class FakeUnreadableStore(InMemoryDocumentStore):
     def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
         raise ConnectionError("the database went away")
 
-    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+    def by_doc_type(self, doc_type: str, scope_id: str, *, field_in: Any = None, **kwargs: Any) -> list[dict[str, Any]]:
         raise ConnectionError("the database went away")
 
 

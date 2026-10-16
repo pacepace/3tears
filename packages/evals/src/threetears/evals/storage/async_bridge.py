@@ -35,7 +35,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
-from collections.abc import Callable, Coroutine, Iterator, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from datetime import datetime
 from functools import partial
 from typing import Any
@@ -133,6 +133,7 @@ class AsyncStoreBridge:
         descending: bool = True,
         limit: int | None = None,
         exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
         """See :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`."""
@@ -145,6 +146,7 @@ class AsyncStoreBridge:
                 descending=descending,
                 limit=limit,
                 exclude=exclude,
+                field_in=field_in,
                 **field_eq,
             )
         )

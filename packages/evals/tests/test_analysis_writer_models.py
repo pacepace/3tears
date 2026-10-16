@@ -52,11 +52,14 @@ class TestAnalysisGenerate:
         assert len(fixture.writers[0].calls) == 1
 
     async def test_the_hosts_default_writer_is_held_to_the_list_too(self) -> None:
+        """Checked in the job, once its client names the default writer: the job ends refused, before any call."""
         fixture = off_loop(ops_fixture, profile=_allowing("vendor/some-other-writer"))
 
-        with pytest.raises(ValidationFailedError, match="default writer"):
-            await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+        (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+        status = await settled(fixture.host, job.job_id)
 
+        assert status.state == "failed" and status.detail is not None
+        assert status.detail.startswith("refused before any call: ") and "default writer" in status.detail
         (writer,) = fixture.writers
         assert writer.calls == [] and writer.priced == [], "nothing was sent or priced"
         assert writer.closed == 1, "the client it built was released"

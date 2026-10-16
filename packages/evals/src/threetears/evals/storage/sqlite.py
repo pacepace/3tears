@@ -42,10 +42,10 @@ import os
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-from threetears.evals.schema.store_port import StoreConflict, keep_fields, omit_paths
+from threetears.evals.schema.store_port import StoreConflict, field_in_values, keep_fields, omit_paths
 
 __all__ = ["SQLITE_STORE_LAYOUT", "SqliteDocumentStore"]
 
@@ -91,6 +91,37 @@ def _predicate(field: str, value: Any) -> tuple[str, list[Any]]:
     if isinstance(value, str):
         return "(json_type(body, ?) = 'text' AND json_extract(body, ?) = ?)", [path, path, value]
     raise TypeError(f"by_doc_type compares a field to a scalar, not {type(value).__name__}: {field}={value!r}")
+
+
+def _membership(field: str, values: Sequence[Any]) -> tuple[str, list[Any]]:
+    """One membership predicate on the stored JSON type, as SQL and its parameters: the field equals any of ``values``.
+
+    The values are grouped by the JSON type they can equal, and each group travels as ONE JSON array read back with
+    ``json_each``, so the parameter count is fixed whatever the number of values and no list outgrows SQLite's
+    bound-parameter limit. The values are scalars: :func:`~threetears.evals.schema.store_port.field_in_values`
+    refused any other before this is reached.
+    """
+    path = _path(field)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if any(value is None for value in values):
+        clauses.append("(json_type(body, ?) IS NULL OR json_type(body, ?) = 'null')")
+        params += [path, path]
+    flags = sorted({"true" if value else "false" for value in values if isinstance(value, bool)})
+    if flags:
+        clauses.append("json_type(body, ?) IN (SELECT value FROM json_each(?))")
+        params += [path, json.dumps(flags)]
+    numbers = [value for value in values if isinstance(value, int | float) and not isinstance(value, bool)]
+    if numbers:
+        clauses.append(
+            "(json_type(body, ?) IN ('integer', 'real') AND json_extract(body, ?) IN (SELECT value FROM json_each(?)))"
+        )
+        params += [path, path, json.dumps(numbers)]
+    texts = [value for value in values if isinstance(value, str)]
+    if texts:
+        clauses.append("(json_type(body, ?) = 'text' AND json_extract(body, ?) IN (SELECT value FROM json_each(?)))")
+        params += [path, path, json.dumps(texts)]
+    return f"({' OR '.join(clauses)})", params
 
 
 class SqliteDocumentStore:
@@ -220,13 +251,16 @@ class SqliteDocumentStore:
         descending: bool = True,
         limit: int | None = None,
         exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """Return documents of one type within a scope, matching ANDed equality predicates.
+        """Return documents of one type within a scope, matching ANDed equality and membership predicates.
 
         A predicate compares on the stored JSON type: ``True`` matches only ``true``, never ``1``, and a number
-        never matches its text. A ``None`` predicate matches a field that is absent or null. Under ``order_by``,
-        documents without the field (or with it null) sort as lower than every document that has it.
+        never matches its text. A ``None`` predicate matches a field that is absent or null. A membership predicate
+        (``field_in``) matches a field equal, by the same comparison, to any of its values; one with no values matches
+        nothing, and SQLite is not asked. Under ``order_by``, documents without the field (or with it null) sort as
+        lower than every document that has it.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -240,18 +274,29 @@ class SqliteDocumentStore:
         :ptype limit: int | None
         :param exclude: Dotted paths left out of every returned document.
         :ptype exclude: Sequence[str]
+        :param field_in: Field-membership predicates: field → the values it may equal.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
         :ptype field_eq: Any
         :return: The matching documents.
         :rtype: list[dict[str, Any]]
-        :raises TypeError: A predicate's value is not a scalar.
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A predicate's value is not a scalar, or a ``field_in`` entry is a string rather than a
+            sequence of values.
         """
+        members = field_in_values(field_in, field_eq)
         clauses = ["scope_id = ?", "doc_type = ?"]
         params: list[Any] = [scope_id, doc_type]
         for field, value in field_eq.items():
             clause, values = _predicate(field, value)
             clauses.append(clause)
             params += values
+        for field, listed in members.items():
+            clause, values = _membership(field, listed)
+            clauses.append(clause)
+            params += values
+        if any(not listed for listed in members.values()):
+            return []
         sql = f"SELECT body FROM documents WHERE {' AND '.join(clauses)}"  # noqa: S608
         if order_by is not None:
             # SQLite sorts NULL lowest: first ascending, last descending, which is the port's rule for a

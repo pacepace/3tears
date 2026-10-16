@@ -148,6 +148,15 @@ def _expect_value_error(call: Callable[[], object], what: str) -> None:
     raise StoreConformanceFailure(f"{what} was accepted; expected ValueError")
 
 
+def _expect_type_error(call: Callable[[], object], what: str) -> None:
+    try:
+        call()
+    except TypeError:
+        # NOSILENT: the refusal IS the conformance check passing; the failure is the call being accepted
+        return
+    raise StoreConformanceFailure(f"{what} was accepted; expected TypeError")
+
+
 def _found(store: DocumentStore, doc_id: str) -> dict[str, Any]:
     document = store.get(doc_id, _SCOPE)
     if document is None:
@@ -344,6 +353,104 @@ def _a_none_predicate_matches_absent_or_null(store: DocumentStore) -> None:
         sorted(_ids(store.by_doc_type(_TYPE, _SCOPE, parent=None))), ["absent", "null"], "by_doc_type(parent=None)"
     )
     _expect_equal(_ids(store.by_doc_type(_TYPE, _SCOPE, parent="p")), ["set"], "by_doc_type(parent='p')")
+
+
+def _field_in_matches_any_listed_value(store: DocumentStore) -> None:
+    store.upsert(_doc("r1_m1", run="r1", model="m1"))
+    store.upsert(_doc("r2_m1", run="r2", model="m1"))
+    store.upsert(_doc("r3_m1", run="r3", model="m1"))
+    store.upsert(_doc("r1_m2", run="r1", model="m2"))
+    store.upsert(_doc("text_one", n="1"))
+    store.upsert(_doc("int_one", n=1))
+    store.upsert(_doc("bool_true", n=True))
+    store.upsert(_doc("int_zero", n=0))
+    store.upsert(_doc("bool_false", n=False))
+    store.upsert(_doc("null_n", n=None))
+    _expect_equal(
+        sorted(_ids(store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1", "r2"]}))),
+        ["r1_m1", "r1_m2", "r2_m1"],
+        "by_doc_type(field_in={'run': ['r1', 'r2']})",
+    )
+    _expect_equal(
+        sorted(_ids(store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1", "r2"]}, model="m1"))),
+        ["r1_m1", "r2_m1"],
+        "by_doc_type(field_in={'run': ['r1', 'r2']}, model='m1') — ANDed with an equality",
+    )
+    _expect_equal(
+        sorted(_ids(store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1", "r3"], "model": ["m1"]}))),
+        ["r1_m1", "r3_m1"],
+        "by_doc_type(field_in={'run': ['r1', 'r3'], 'model': ['m1']}) — two fields ANDed",
+    )
+    _expect_equal(
+        _ids(store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r2", "r2", "r2"]})),
+        ["r2_m1"],
+        "by_doc_type(field_in={'run': ['r2', 'r2', 'r2']}) — a repeated value returns each document once",
+    )
+    _expect_equal(
+        _ids(store.by_doc_type(_TYPE, _SCOPE, field_in={"n": [1]})),
+        ["int_one"],
+        "by_doc_type(field_in={'n': [1]}) — a number never equals its text, nor a boolean",
+    )
+    _expect_equal(
+        _ids(store.by_doc_type(_TYPE, _SCOPE, field_in={"n": [True]})),
+        ["bool_true"],
+        "by_doc_type(field_in={'n': [True]}) — true is not 1",
+    )
+    _expect_equal(
+        sorted(_ids(store.by_doc_type(_TYPE, _SCOPE, field_in={"n": [0, "1"]}))),
+        ["int_zero", "text_one"],
+        "by_doc_type(field_in={'n': [0, '1']}) — 0 is not false, and text matches text",
+    )
+    _expect_equal(
+        sorted(_ids(store.by_doc_type(_TYPE, _SCOPE, field_in={"n": [None, False]}))),
+        ["bool_false", "null_n", "r1_m1", "r1_m2", "r2_m1", "r3_m1"],
+        "by_doc_type(field_in={'n': [None, False]}) — a listed None matches the field absent or null",
+    )
+    _expect_equal(
+        _ids(
+            store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1", "r2", "r3"]}, model="m1", order_by="run", limit=2)
+        ),
+        ["r3_m1", "r2_m1"],
+        "the top two by run, descending, of field_in={'run': ['r1', 'r2', 'r3']} and model='m1'",
+    )
+
+
+def _an_empty_field_in_matches_nothing(store: DocumentStore) -> None:
+    store.upsert(_doc("d1", run="r1", model="m1"))
+    _expect_equal(store.by_doc_type(_TYPE, _SCOPE, field_in={"run": []}), [], "by_doc_type(field_in={'run': []})")
+    _expect_equal(
+        store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1"], "model": []}),
+        [],
+        "by_doc_type(field_in={'run': ['r1'], 'model': []})",
+    )
+
+
+def _a_field_in_both_field_in_and_field_eq_is_refused(store: DocumentStore) -> None:
+    store.upsert(_doc("d1", run="r1"))
+    _expect_value_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1"]}, run="r1"),
+        "by_doc_type(field_in={'run': ['r1']}, run='r1')",
+    )
+
+
+def _a_field_in_string_in_place_of_a_sequence_is_refused(store: DocumentStore) -> None:
+    store.upsert(_doc("d1", run="r1"))
+    _expect_type_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, field_in={"run": "r1"}),
+        "by_doc_type(field_in={'run': 'r1'}) — a string where a sequence of values belongs",
+    )
+
+
+def _a_field_in_value_that_is_not_a_scalar_is_refused(store: DocumentStore) -> None:
+    store.upsert(_doc("d1", run="r1"))
+    _expect_type_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1", {"a": 1}]}),
+        "by_doc_type(field_in={'run': ['r1', {'a': 1}]}) — a mapping among the values",
+    )
+    _expect_type_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, field_in={"run": [["r1"]]}),
+        "by_doc_type(field_in={'run': [['r1']]}) — a list among the values",
+    )
 
 
 def _order_by_sorts_by_stored_type_in_both_directions(store: DocumentStore) -> None:
@@ -723,6 +830,32 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
         "query.none_matches_absent_or_null",
         "a None predicate matches a field that is absent or null",
         _a_none_predicate_matches_absent_or_null,
+    ),
+    StoreConformanceCase(
+        "query.field_in_matches_any",
+        "a field_in predicate matches a field equal to any listed value on the stored type (a listed None matching "
+        "absent or null), ANDed with every other predicate, each document returned once",
+        _field_in_matches_any_listed_value,
+    ),
+    StoreConformanceCase(
+        "query.field_in_empty_matches_nothing",
+        "a field_in predicate with no values matches nothing",
+        _an_empty_field_in_matches_nothing,
+    ),
+    StoreConformanceCase(
+        "query.field_in_and_field_eq_refused",
+        "a field named in both field_in and field_eq raises ValueError",
+        _a_field_in_both_field_in_and_field_eq_is_refused,
+    ),
+    StoreConformanceCase(
+        "query.field_in_string_refused",
+        "a field_in field given a string in place of a sequence of values raises TypeError",
+        _a_field_in_string_in_place_of_a_sequence_is_refused,
+    ),
+    StoreConformanceCase(
+        "query.field_in_non_scalar_refused",
+        "a field_in value that is not a scalar (str, int, float, bool, None) raises TypeError",
+        _a_field_in_value_that_is_not_a_scalar_is_refused,
     ),
     StoreConformanceCase(
         "order.by_stored_type",

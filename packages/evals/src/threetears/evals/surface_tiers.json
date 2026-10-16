@@ -101,6 +101,7 @@
 "threetears.evals.schema.extract_paths": "provisional",
 "threetears.evals.schema.ExtractedPaths": "provisional",
 "threetears.evals.schema.FaultsField": "provisional",
+"threetears.evals.schema.field_in_values": "host-contract",
 "threetears.evals.schema.fingerprint_criterion": "provisional",
 "threetears.evals.schema.fingerprint_judged_output": "provisional",
 "threetears.evals.schema.Firings": "provisional",

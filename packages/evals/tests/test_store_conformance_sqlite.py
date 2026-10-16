@@ -71,6 +71,20 @@ def test_an_object_predicate_is_refused() -> None:
         store.by_doc_type("eval_run", "scope-a", payload={"a": 1})
 
 
+def test_an_object_in_field_in_is_refused() -> None:
+    with SqliteDocumentStore(":memory:") as store, pytest.raises(TypeError, match="scalar"):
+        store.by_doc_type("eval_run", "scope-a", field_in={"payload": [{"a": 1}]})
+
+
+def test_field_in_takes_more_values_than_sqlite_binds_parameters() -> None:
+    """The values travel as one JSON array per type, so no list is too long for SQLite's bound-parameter limit."""
+    with SqliteDocumentStore(":memory:") as store:
+        store.upsert(_doc("r1", run="run-4999"))
+        store.upsert(_doc("r2", run="run-elsewhere"))
+        wanted = [f"run-{index}" for index in range(40_000)]
+        assert [d["id"] for d in store.by_doc_type("eval_run", "scope-a", field_in={"run": wanted})] == ["r1"]
+
+
 def test_a_file_of_a_later_layout_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "evals.sqlite"
     SqliteDocumentStore(path).close()
