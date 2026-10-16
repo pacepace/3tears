@@ -75,8 +75,8 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   After that an arm is its given label (`production`), the control marked `▸` in a table. Only the arms line and the
   verdict name a model.
 - **The rule**, the subhead's second line where the question declares one: not words but typed clauses
-  (`Question.decision`), stated in the sentence code writes (`Switch to v2 only if … Otherwise stay on v1.`). It is
-  said once on the page: the Decision section opens on its clauses, the table's title linking up to it.
+  (`Question.decision`), stated in the sentence code writes (`Switch to v2 only if … Otherwise stay on v1.`), and
+  only here: the Decision section links up to it.
 - **Verdict**, written by code and never by a memo, result first: one sentence for the decision, a second only for
   a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
   models.`, the arm, the cause, the fix); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
@@ -114,26 +114,24 @@ reading.
 The sections follow in this order, each reached from a sticky nav; Cases, Trials, Not tested, Methods and the
 Glossary start folded, and a nav link opens the one it lands on.
 
-- **Decision**: the declared decision rule, its sentence the first screen's subhead (`Switch to v2 only if no pass
-  rate drops by more than 2 points and v2 costs less per reply. Otherwise stay on v1.`; a clause naming one reading
-  says `no tone rate drops by more than 2 points`), which the `Clauses` table's title links up to: one row per clause
-  and reading, the clause's own sentence first, each arm's column headed by its name, then the clause's own outcome, `keep`,
-  `switch` or `unsettled`, with the reason in words, the counts and the margin naming the arms (`keep: v2 passed 14
-  of 60 to v1's 29, a drop of 25 points against a margin of 10`; `unsettled: v2's drop is not shown to stay within
-  10 points (it could be as much as 53.6)`). One line under the table says what unsettled means: `Keep is the
-  default: a switch needs every clause shown, so an unsettled rule keeps v1 for now. A clause reads the interval a
-  switch reads, which can be wider than the contrasts table's.` So a clause can read keep or unsettled beside a
-  contrast that is not separated. Keep settles on what the run observed: a drop past the margin, or a higher cost.
-  Switch needs
-  sampling evidence: every arm at the case floor, and for every rate the clause reads (the pass rate and each
-  check's) the contrast's bounded interval keeping the drop within the margin; for cost, the interval wholly below
-  zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds its error rate on a
-  few coarse cases, where the t interval does not
+- **Decision**: the declared rule clause by clause, in the `Clauses` table, whose title links up to the rule's
+  sentence in the subhead rather than say it again: one row per clause and reading, the clause's own sentence first (a
+  clause naming one reading says `no tone rate drops by more than 2 points`), each arm's column headed by its name,
+  then the clause's own outcome, `keep`, `switch` or `unsettled`, with the reason in words, the counts and the margin
+  naming the arms (`keep: v2 passed 14 of 60 to v1's 29, a drop of 25 points against a margin of 10`; `unsettled: v2's
+  drop is not shown to stay within 10 points (it could be as much as 53.6)`). One line under the table says what
+  unsettled means: `Keep is the default: a switch needs every clause shown, so an unsettled rule keeps v1 for now. A
+  clause reads the interval a switch reads, which can be wider than the contrasts table's.` So a clause can read keep
+  or unsettled beside a contrast that is not separated. Keep settles on what the run observed: a drop past the margin,
+  or a higher cost. Switch needs sampling evidence: every arm at the case floor, and for every rate the clause reads
+  (the pass rate and each check's) the contrast's bounded interval keeping the drop within the margin; for cost, the
+  interval wholly below zero. The bounded interval is not the one the Contrasts table prints, and is wider: it holds
+  its error rate on a few coarse cases, where the t interval does not
   ([why](measuring-soundly.md#a-switch-reads-the-bounded-interval)). On a handful of cases only a sweep settles a
   10-point clause. A run that shows neither is unsettled ("the cost difference did not separate"); a bundle shaped
   before 55 reads "(this bundle predates the interval a switch needs)". A question stored with its rule written as
-  prose in its words, and none typed, opens the section with `This question's rule was written as prose, which is
-  no longer read; declare it as a rule.`, and its verdict is exploratory: no rule was applied.
+  prose in its words, and none typed, opens the section with `This question's rule was written as prose, which is no
+  longer read; declare it as a rule.`, and its verdict is exploratory: no rule was applied.
 - **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
   readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Where a
@@ -353,7 +351,7 @@ A campaign's declared questions say what it set out to learn. A reading on no ax
 **exploratory**: worth reporting as a lead for the next campaign, never as a confirmed answer. Where
 questions are declared, the bundle lists those readings (`reading_scope`), the code-only report names them
 under the questions, and a finding resting only on them carries a `Scope` fact. Where none are declared,
-every finding is exploratory: line 2 of the report says so, every finding carries the `Scope` fact, and the analysis
+every finding is exploratory: the verdict line says so, every finding carries the `Scope` fact, and the analysis
 writer may adopt nothing. A campaign
 that declared no design at all is an exploratory campaign, and that sentence says so: its readings confirm
 nothing, and the design its comparisons read was inferred from the runs, not declared
