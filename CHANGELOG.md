@@ -13,6 +13,15 @@ packages (bumped in lock-step).
   readings joined, are two findings, the decision that weighs them is where they meet, and a qualifier that sets the
   claim's scope, condition or reason stays inside the one claim. No new rule: the rule and character budgets are
   unchanged. `GEN_PROMPT_RULES.md` names the failure that bought the clause.
+
+### 3tears-evals: an action parameter's description says what the value is
+
+- **A parameter's description says what the value is, not what its action does with it.** `cases_rename`'s
+  `test_case_id` read "The case to rename, by its id", so a host action could not use the name for another meaning when
+  it merged the package's actions into one tool surface. `test_case_id` now reads "A test case's id, as
+  judge_cases_list or results_list names it", and `case_name`, `run_ids`, `result_ids`, `criteria` and
+  `judged_result_ids` drop the action from theirs. No name or type changes.
+
 ### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
 
 Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).
