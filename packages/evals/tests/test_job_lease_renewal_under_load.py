@@ -7,15 +7,18 @@ progress writes waited a whole interval. Pinned, each against the shape that fai
 
 - **Starved host pool**: leases renew though every worker of the loop's default executor is busy for longer than a lease.
 - **One slow record** delays no other record's renewal.
+- **A hung renewal** never returns, and its record still lapses at its own deadline, the others untouched.
 - **Contended renewal**: tried again within the interval, after a short wait, not a whole interval later.
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from collections.abc import Callable
 from typing import Any
 
 
@@ -38,11 +41,11 @@ def _storage(store: InMemoryDocumentStore | None = None) -> EvalStorage:
     return EvalStorage(store or InMemoryDocumentStore())
 
 
-def _hold(leases: JobLeases, storage: EvalStorage, run_id: str) -> None:
+def _hold(leases: JobLeases, storage: EvalStorage, run_id: str, stop: Callable[[], object] = lambda: None) -> None:
     """Store a running run carrying a fresh lease and start renewing it (as a job manager starts a job)."""
     run = make_eval_run(id=run_id, scope_id=SCOPE, status="running", lease=off_loop(leases.grant))
     off_loop(storage.save_job_record, run.to_dict(), if_match=None, create_only=True)
-    leases.hold(RUN_JOB, run_id, SCOPE, cancel=lambda _reason: None, stop=lambda: None)
+    leases.hold(RUN_JOB, run_id, SCOPE, cancel=lambda _reason: None, stop=stop)
 
 
 def _stored(storage: EvalStorage, run_id: str) -> EvalRun:
@@ -159,3 +162,50 @@ async def test_a_renewal_that_loses_its_races_is_tried_again_within_the_interval
     finally:
         await leases.shut_down()
 
+
+class _HangingRenewalStore(InMemoryDocumentStore):
+    """A store whose first conditional write of one record never returns (until ``release``), as a hung hop does."""
+
+    def __init__(self, hung_id: str) -> None:
+        super().__init__()
+        self.hung_id = hung_id
+        self.release = threading.Event()  # never set while a test asserts; set after, so the worker thread ends
+        self.hung = threading.Event()
+        self._hang_next = True
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Block the first conditional write of the hung record; every other write goes through."""
+        if document.get("id") == self.hung_id and if_match is not None and self._hang_next:
+            self._hang_next = False
+            self.hung.set()
+            self.release.wait()
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_renewal_that_never_returns_expires_its_own_record_at_the_lease_and_no_other() -> None:
+    store = _HangingRenewalStore("run-hung")
+    storage = _storage(store)
+    leases = _SpyLeases(storage, lease_s=LEASE_S)
+    stopped: list[str] = []
+    try:
+        for run_id in ("run-hung", "run-b"):
+            _hold(leases, storage, run_id, stop=lambda run_id=run_id: stopped.append(run_id))
+
+        # the lease, the interval its expiry check waits for, and two bounded writes of the expiry, with a margin
+        # for a loaded machine; the hung call itself is never released while this waits
+        started = time.monotonic()
+        for _ in range(100):
+            if stopped:
+                break
+            await asyncio.sleep(0.1)
+
+        assert time.monotonic() - started < 2 * LEASE_S, "stopped within about one lease, not left to hang"
+        assert store.hung.is_set(), "the renewal's store call is the one that hangs"
+        assert stopped == ["run-hung"], "the job whose renewal hung was stopped, and only that one"
+        assert leases.expired == ["run-hung"] and leases.fenced("run-hung") and not leases.fenced("run-b")
+        assert _live(storage, "run-b"), "another record's renewals went on"
+        faults = _stored(storage, "run-hung").faults
+        assert any("had not returned" in fault for fault in faults), f"a fault names the hung renewal: {faults}"
+    finally:
+        store.release.set()
+        await leases.shut_down()

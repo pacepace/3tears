@@ -41,6 +41,12 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
   again within the interval after a short jittered wait.
 - **Removed: `JobLeases(blocking_executor=)`.** It was accepted and ignored since the pool above; no release carried it, so
   nothing migrates. Lease round-trips never run on a host executor.
+- **Fixed: a store call that hangs never expired its own lease record.** A renewal whose store call never returned
+  was skipped by every later interval, so its holder kept writing under a lease every reader read as lapsed. Each
+  renewal's store call is now given only what is left of its lease by the holder's own count; a call still out then
+  counts as a failed renewal for a whole lease, the record is expired and the job stopped, with a fault naming the
+  hung renewal, whether or not the call ever returns. The expiry's own two writes are bounded by a lease too, so a
+  hung store cannot hold the stop back. Other records' renewals are unaffected.
 - **Fixed: the lease tests that failed only under a loaded suite.** The renewal-under-load tests ran a 0.9s lease and
   the two lease-expiry tests a 0.3s one, margins a stalled scheduler spent; the first now run 1.8s (every wait doubled
   with it) and the second 0.9s, each asserting what it did.
