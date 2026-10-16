@@ -11,7 +11,7 @@ So a text that can hold line breaks goes through :func:`under`, which indents
 every line, or :func:`one_line`, which makes it one. It lives here, in the
 leaf every package depends on, so a package held to the leaf floor (search,
 SR-L7) uses it as any other does. The enforcement check
-:func:`threetears.core.testing.text_blocks.unbroken_text` finds a free text
+:func:`threetears.enforcement.text_blocks.unbroken_text` finds a free text
 interpolated after an indent that went through neither.
 """
 
@@ -33,12 +33,16 @@ def under(text: str, indent: str, *, first: str | None = None) -> list[str]:
     :ptype text: str
     :param indent: what every line starts with
     :ptype indent: str
-    :param first: what the first line starts with in place of ``indent``: a list marker (``"  - "``)
+    :param first: what the first line starts with in place of ``indent``: a list marker (``"  - "``),
+        or the item's heading (``"- [chunk:<id>] "``)
     :ptype first: str | None
-    :return: the lines, ``[]`` for a text with nothing in it
+    :return: the lines; for a text with nothing in it, ``first`` alone (trimmed) when given, so
+        the heading and the id it carries are still shown, else ``[]``
     :rtype: list[str]
     """
     lines = [line.rstrip() for line in textwrap.dedent(text.expandtabs(4)).splitlines() if line.strip()]
+    if not lines:
+        return [first.rstrip()] if first is not None else []
     return [((first if first is not None and i == 0 else indent) + line) for i, line in enumerate(lines)]
 
 

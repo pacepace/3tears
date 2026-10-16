@@ -26,6 +26,7 @@ import ast
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from threetears.observe import BuildOnce, get_logger
 
@@ -33,6 +34,7 @@ __all__ = [
     "SKIP_DIRS",
     "clear_parse_cache",
     "iter_python_files",
+    "nodes_by_type",
     "note_unscanned",
     "parse_python_file",
     "parse_python_path",
@@ -228,6 +230,79 @@ def _unchanged_on_disk(parse: _Parse) -> bool:
 _PARSES: BuildOnce[Path, _Parse] = BuildOnce(is_current=_unchanged_on_disk)
 
 
+@dataclass(frozen=True)
+class _NodeIndex:
+    """one parse's nodes grouped by their exact type, each group in :func:`ast.walk` order.
+
+    :ivar parse: the parse the nodes came from; the index is current while it is
+    :ivar by_type: node type -> its nodes
+    """
+
+    parse: _Parse
+    by_type: dict[type[ast.AST], tuple[ast.AST, ...]]
+
+
+def _index(path: Path) -> _NodeIndex:
+    """walk *path*'s cached tree once and group its nodes by type.
+
+    :param path: the file
+    :ptype path: Path
+    :return: the index
+    :rtype: _NodeIndex
+    :raises SyntaxError: when the file is not valid python
+    :raises UnicodeDecodeError: when the file is not valid utf-8
+    :raises OSError: when the file cannot be read
+    """
+    parse = _PARSES.get(path, lambda: _parse(path))
+    if not isinstance(parse.outcome, ast.Module):
+        raise type(parse.outcome)(*parse.outcome.args) from None
+    groups: dict[type[ast.AST], list[ast.AST]] = {}
+    for node in ast.walk(parse.outcome):
+        groups.setdefault(type(node), []).append(node)
+    return _NodeIndex(parse=parse, by_type={kind: tuple(nodes) for kind, nodes in groups.items()})
+
+
+def _index_unchanged_on_disk(index: _NodeIndex) -> bool:
+    """whether the file is still the one *index* was built from.
+
+    :param index: a cached index
+    :ptype index: _NodeIndex
+    :return: ``True`` while the file's stamp is the one its parse was made at
+    :rtype: bool
+    :raises OSError: when the file can no longer be read
+    """
+    return _unchanged_on_disk(index.parse)
+
+
+#: every file's nodes by type, beside :data:`_PARSES` and released with it. a gate that keeps one
+#: node type reads it here instead of walking the whole tree, so the walk is paid once per file
+#: however many gates ask.
+_NODE_INDEXES: BuildOnce[Path, _NodeIndex] = BuildOnce(is_current=_index_unchanged_on_disk)
+
+
+def nodes_by_type[T: ast.AST](path: Path, node_type: type[T]) -> tuple[T, ...]:
+    """every node of exactly *node_type* in *path*'s tree, in :func:`ast.walk` order.
+
+    the same nodes, in the same order, as ``[n for n in ast.walk(parse_python_path(path)) if
+    isinstance(n, node_type)]`` for a node type no other node type subclasses -- which is every
+    concrete node :func:`ast.parse` produces. the tree is walked once per file and the grouping
+    cached beside the parse, current while the parse is and released by
+    :func:`clear_parse_cache`. the nodes are the shared tree's: read them, never mutate them.
+
+    :param path: file to read
+    :ptype path: Path
+    :param node_type: the concrete node class wanted, e.g. ``ast.ClassDef``
+    :ptype node_type: type[T]
+    :return: the nodes
+    :rtype: tuple[T, ...]
+    :raises SyntaxError: when the file is not valid python
+    :raises UnicodeDecodeError: when the file is not valid utf-8
+    :raises OSError: when the file cannot be read
+    """
+    index = _NODE_INDEXES.get(path, lambda: _index(path))
+    return cast(tuple[T, ...], index.by_type.get(node_type, ()))
+
+
 def parse_python_path(path: Path) -> ast.Module:
     """parse a python file as utf-8: ``ast.parse(path.read_text(encoding="utf-8"))``, once.
 
@@ -286,7 +361,7 @@ def parse_python_file(path: Path) -> ast.Module | None:
 
 
 def clear_parse_cache() -> None:
-    """release every tree :func:`parse_python_path` has cached.
+    """release every tree :func:`parse_python_path` has cached, and every :func:`nodes_by_type` index.
 
     a whole repository's trees run to hundreds of megabytes; a process that
     has finished scanning, and goes on to other work, calls this to give them
@@ -296,6 +371,7 @@ def clear_parse_cache() -> None:
     :rtype: None
     """
     _PARSES.clear()
+    _NODE_INDEXES.clear()
 
 
 def relative_posix_path(path: Path, root: Path) -> str:

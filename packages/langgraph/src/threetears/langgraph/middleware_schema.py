@@ -260,9 +260,9 @@ def _render_table(table: dict[str, Any]) -> str:
     for column in table.get("columns", []) or []:
         col_name = column.get("name", "")
         col_type = column.get("type")
-        col_desc = column.get("description")
+        col_desc = one_line(str(column.get("description") or ""))
         suffix = f" ({col_type})" if col_type else ""
-        lines.append(f"- {col_name}{suffix}" + (f" -- {one_line(str(col_desc))}" if col_desc else ""))
+        lines.append(f"- {col_name}{suffix}" + (f" -- {col_desc}" if col_desc else ""))
     # datasource-honesty coverage overlay: columns that are all-zero across the whole
     # table (unloaded). a 0 read from one is missing data, not a measured zero -- the
     # agent must be told BEFORE it queries (a bare SUM hides the all-zero pattern from

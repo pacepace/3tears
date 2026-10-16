@@ -174,12 +174,10 @@ class ToolRouter:
         # Build description string
         descriptions: list[str] = []
         for t in tool_llms:
-            descriptions.extend(
-                under(str(t.get("description") or ""), "  ", first=f"- {t['name']}: ") or [f"- {t['name']}"]
-            )
+            descriptions.extend(under(str(t.get("description") or ""), "  ", first=f"- {t['name']}: "))
         for t in mcp_tools:
             head = f"- mcp:{t['name']}: "
-            descriptions.extend(under(str(t.get("description") or ""), "  ", first=head) or [head.rstrip()])
+            descriptions.extend(under(str(t.get("description") or ""), "  ", first=head))
         tool_descriptions = "\n".join(descriptions)
 
         prompt_text = self._routing_prompt.format(tool_descriptions=tool_descriptions)

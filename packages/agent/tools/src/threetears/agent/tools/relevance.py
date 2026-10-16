@@ -545,7 +545,7 @@ def tool_hit_line(tool: BaseTool) -> str:
     """
     head = f"- {tool.name}{tool_arguments(tool)}: "
     # a description of many lines sits under its tool, or its later lines read as the next tool's
-    return "\n".join(under(tool.description or "", "  ", first=head) or [head.rstrip()])
+    return "\n".join(under(tool.description or "", "  ", first=head))
 
 
 def tool_families(catalog: Sequence[BaseTool], group_of: Callable[[BaseTool], str | None]) -> dict[str, list[BaseTool]]:

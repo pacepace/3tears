@@ -229,11 +229,10 @@ def _footnotes(candidate_set: CandidateSet) -> str:
     ]
     notes: list[str] = []
     for disposition in unmet:
-        notes.append(
-            f"- the {disposition.criterion_key} filter was not applied"
-            + (f": {one_line(disposition.detail)}" if disposition.detail else "")
-        )
-    notes.extend(f"- {one_line(str(notice))}" for notice in candidate_set.notices)
+        detail = one_line(disposition.detail or "")
+        notes.append(f"- the {disposition.criterion_key} filter was not applied" + (f": {detail}" if detail else ""))
+    # a notice with nothing in it says nothing: no bare "- " line
+    notes.extend(f"- {notice}" for notice in (one_line(str(n)) for n in candidate_set.notices) if notice)
     if not notes:
         return ""
     return "What this search could not do:\n" + "\n".join(notes)

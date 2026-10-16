@@ -523,7 +523,7 @@ def _want_line(want: IntentionEntity, zone: tzinfo | None, note: str | None) -> 
     written = render_local_time(want.date_created, zone)
     tail = f" ({note})" if note else ""
     head = f"- [intention:{want.intention_id}] {want.status}, written {written}: "
-    return "\n".join(under(f"{want.content}{tail}", "  ", first=head) or [head.rstrip()])
+    return "\n".join(under(f"{want.content}{tail}", "  ", first=head))
 
 
 async def _notes_for(notes: WantNotes | None, wants: Sequence[IntentionEntity]) -> Mapping[UUID, str]:

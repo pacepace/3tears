@@ -21,6 +21,11 @@ def test_an_empty_text_is_no_lines() -> None:
     assert under("", "  ") == [] and under("\n  \n", "  ") == []
 
 
+def test_an_empty_text_under_a_heading_is_the_heading_alone() -> None:
+    assert under("", "  ", first="- [chunk:7] ") == ["- [chunk:7]"]
+    assert under(" \n\n", "    ", first="  Plan: ") == ["  Plan:"]
+
+
 def test_one_line_joins_lines_and_keeps_the_spacing_inside_one() -> None:
     assert one_line(" a\n\tb   c \n") == "a b   c"
     assert one_line("/notes/a.md  (3 chars)") == "/notes/a.md  (3 chars)"

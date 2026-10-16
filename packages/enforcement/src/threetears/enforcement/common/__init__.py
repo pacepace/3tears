@@ -8,6 +8,7 @@ reaching into submodule paths.
 from threetears.enforcement.common.ast_helpers import (
     clear_parse_cache,
     iter_python_files,
+    nodes_by_type,
     note_unscanned,
     parse_python_file,
     parse_python_path,
@@ -102,6 +103,7 @@ __all__ = [
     "iter_python_files",
     "l2_live_registries",
     "names_a_live_client",
+    "nodes_by_type",
     "note_unscanned",
     "parse_exemptions_with_rationale",
     "parse_python_file",

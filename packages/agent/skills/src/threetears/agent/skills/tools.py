@@ -967,7 +967,10 @@ def _render_prose_introspect(entity: AgentSkillEntity) -> str:
     :rtype: str
     """
     body = entity.body or ""
-    body_block = "\n".join(under(body, "  ")) if body.strip() else "  (no body)"
+    # the stored body exactly, every line indented: skill_update replaces it whole, so a body read
+    # here, edited and written back must keep its blank lines and its own indentation
+    body_lines = ["  " + line if line.strip() else "" for line in body.splitlines()]
+    body_block = "\n".join(body_lines) if body.strip() else "  (no body)"
     lines: list[str] = [
         f"[skill:{entity.skill_id}]",
         f"name: {entity.name}",
@@ -1007,7 +1010,7 @@ def _render_tool_introspect(payload: SkillToolIntrospect) -> str:
     ]
     if payload.args:
         for arg_name, arg_desc in payload.args.items():
-            lines.extend(under(str(arg_desc), "    ", first=f"  {arg_name}: ") or [f"  {arg_name}:"])
+            lines.extend(under(str(arg_desc), "    ", first=f"  {arg_name}: "))
     else:
         lines.append("  (no arguments)")
     lines.append("example:")

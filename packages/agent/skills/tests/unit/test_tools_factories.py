@@ -974,6 +974,23 @@ class TestSkillIntrospect:
         out = await tool.ainvoke({"name_or_id": "manual-deploy"})
         assert "kind: prose" in out
 
+    async def test_prose_body_is_shown_whole_so_it_round_trips_through_update(self) -> None:
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        coll = FakeSkillsCollection()
+        body = "Check the queue.\n\nThen deploy:\n    make deploy\n  and watch it."
+        await _seed_skill(coll, agent_id=agent_id, user_id=user_id, name="manual-deploy", body=body)
+        [tool] = load_skill_introspect_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            registry=FakeRegistry(),
+        )
+        out = await tool.ainvoke({"name_or_id": "manual-deploy"})
+        shown = "  Check the queue.\n\n  Then deploy:\n      make deploy\n    and watch it."
+        assert shown in out
+        assert "\n".join(line.removeprefix("  ") for line in shown.splitlines()) == body
+
     async def test_tool_skill_via_registry(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()

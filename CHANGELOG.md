@@ -17,11 +17,12 @@ read as the next item's. (Found in metallm, 2026-10-16: an agent gave one note's
 note above it, reading a scratch search whose excerpts had this shape.)
 
 **Added (observe):** `threetears.observe.text_block.under(text, indent, *, first=None) -> list[str]`
-(every line indented, blank lines dropped, its own indentation kept relative) and `one_line(text)`
+(every line indented, blank lines dropped, its own indentation kept relative; an empty text under
+a heading is the heading alone, so an item with no text still shows its id) and `one_line(text)`
 (its lines joined by one space, spacing inside a line kept). In observe so search, held to the leaf
 floor (SR-L7), uses it as any package does.
 
-**Added (core, testing):** `threetears.core.testing.text_blocks.unbroken_text(source)` and
+**Added (enforcement):** `threetears.enforcement.text_blocks.unbroken_text(source)` and
 `unbroken_text_in(roots)`: the lines that put free text after an indent or a list marker without
 `under`, `one_line` or `untrusted_fence`, or a `# one line: <why>` comment. Enforced for every
 package by `tests/enforcement/test_text_sits_under_its_heading.py`; a consumer runs it over its own
@@ -32,7 +33,10 @@ tree.
 candidates), intention and todo listings, skill catalog, introspect and history, tool search lines,
 the tool router's descriptions, the context manager's variables and previews, workflow plans and
 steps, wake refusal notes and datasource column descriptions now keep each text under its item. A
-text of one line reads exactly as before.
+text of one line reads exactly as before. `skill_introspect` shows a skill's body exactly as stored,
+every line indented and its blank lines kept, so a body read, edited and written back with
+`skill_update` keeps its paragraphs. A whitespace-only web search filter detail or notice, schema
+column description or wake refusal detail no longer leaves a dangling `: `, ` -- `, `()` or bare `- `.
 
 **Fixed (tests):** the hook-installer tests run git with the test repository's config only; a
 machine whose global `core.hooksPath` is a directory they may not write failed all of them.
@@ -55,6 +59,13 @@ machine whose global `core.hooksPath` is a directory they may not write failed a
   not once per import: 1,045,907 `stat` calls on this repo became about 48,600. A `stat` that
   misses costs about 120 us on a Docker Desktop bind mount, where that scan's setup had taken
   461 s.
+- `threetears.enforcement.common.nodes_by_type(path, node_type)` returns every node of one type in
+  a file's tree, in `ast.walk` order, from an index built once per file beside the parse cache and
+  released with it by `clear_parse_cache()`. `underscore_access` reads it instead of walking each
+  file's whole tree once per shape, and its shape F skips the scope walk for a file with no
+  reflective call it could flag. Every shape reports exactly what it did. Here, with the parse cache
+  warm, shape F went from 7.8 s to 1.0 s under a profiler; unprofiled, shape D went from 0.5 s to
+  0.03 s and shape I from 1.3 s to 0.25 s.
 
 ## v0.69.0 -- 2026-10-15
 

@@ -19,6 +19,8 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from threetears.enforcement.common import iter_python_files, parse_python_file
+
 __all__ = ["FREE_TEXT", "MARKER", "unbroken_text", "unbroken_text_in"]
 
 #: A name that says its value is text someone wrote, and so can hold line breaks.
@@ -111,8 +113,19 @@ def unbroken_text(source: str) -> list[int]:
     :return: the line numbers, ascending
     :rtype: list[int]
     """
-    tree = ast.parse(source)
-    lines = source.splitlines()
+    return _unbroken_lines(ast.parse(source), source.splitlines())
+
+
+def _unbroken_lines(tree: ast.Module, lines: list[str]) -> list[int]:
+    """The lines of a parsed module that put free text after an indent with no ``under``, ``one_line`` or marker.
+
+    :param tree: the module, parsed
+    :ptype tree: ast.Module
+    :param lines: its source lines, for the ``# one line:`` marker
+    :ptype lines: list[str]
+    :return: the line numbers, ascending
+    :rtype: list[int]
+    """
     parents: dict[ast.AST, ast.AST] = {}
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
@@ -150,6 +163,10 @@ def unbroken_text(source: str) -> list[int]:
 def unbroken_text_in(roots: Iterable[Path]) -> list[str]:
     """Every such line under ``roots``, as ``path:line: code``.
 
+    The files are the ones every enforcement walker reads (:func:`iter_python_files`), decoded as
+    utf-8 and parsed once per run through the shared parse cache; a file that does not parse is
+    reported through ``note_unscanned`` and skipped.
+
     :param roots: directories whose ``*.py`` files are read
     :ptype roots: Iterable[Path]
     :return: one entry per line found
@@ -157,8 +174,10 @@ def unbroken_text_in(roots: Iterable[Path]) -> list[str]:
     """
     found: list[str] = []
     for root in roots:
-        for path in sorted(root.rglob("*.py")):
-            source = path.read_text()
-            lines = source.splitlines()
-            found.extend(f"{path}:{n}: {lines[n - 1].strip()}" for n in unbroken_text(source))
+        for path in iter_python_files(root):
+            tree = parse_python_file(path)
+            if tree is None:
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            found.extend(f"{path}:{n}: {lines[n - 1].strip()}" for n in _unbroken_lines(tree, lines))
     return found

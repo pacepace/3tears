@@ -6,7 +6,7 @@ rest reads as the next item's (metallm acceptance run, 2026-10-16: an agent gave
 one note's size and tag to the note above it). Every such value goes through
 ``threetears.observe.text_block.under`` or ``one_line``, or says on its line why
 it is one line (``# one line: <why>``). The checker is
-:func:`threetears.core.testing.text_blocks.unbroken_text`.
+:func:`threetears.enforcement.text_blocks.unbroken_text`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.core.testing.text_blocks import unbroken_text, unbroken_text_in
+from threetears.enforcement.text_blocks import unbroken_text, unbroken_text_in
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -415,7 +415,7 @@ def _memory_line(row: dict[str, Any], zone: tzinfo | None, *, quote: int | None 
         content = _cut(content, quote, f"memory_recall reads [memory:{mid}] whole")
     head = f"{line}{_mark_text(marks_of(row), zone)}"
     # a caller puts its list marker before the first line; the rest of the text sits under it
-    return "\n".join(under(content, "  ", first=head) or [head.rstrip()])
+    return "\n".join(under(content, "  ", first=head))
 
 
 def _quoted(row: dict[str, Any]) -> str:

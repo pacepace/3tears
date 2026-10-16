@@ -1527,9 +1527,10 @@ def load_wake_fires_tool(
             lines.append("Refused deliveries, newest first, counted per reason and minute:")
             for row in refusals:
                 why = _REFUSAL_SAID.get(row["reason"], row["reason"])
+                detail = one_line(str(row["detail"] or ""))
                 lines.append(
                     f"- {format_wake_time(row['last_refused_at'], zone)} · {row['refusals']} refused · {why}"
-                    + (f" ({one_line(str(row['detail']))})" if row["detail"] else "")
+                    + (f" ({detail})" if detail else "")
                     + f" · answered {row['status_code']}"
                 )
         else:

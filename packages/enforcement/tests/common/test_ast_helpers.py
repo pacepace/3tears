@@ -19,6 +19,7 @@ from threetears.enforcement.common.ast_helpers import (
     is_private_name,
     is_suppress_call,
     iter_python_files,
+    nodes_by_type,
     parse_python_file,
     parse_python_path,
     receiver,
@@ -187,6 +188,45 @@ class TestParsePythonPath:
     def test_shares_its_cache_with_parse_python_file(self, tmp_path: Path) -> None:
         path = _touch(tmp_path / "mod.py", "x = 1\n")
         assert parse_python_path(path) is parse_python_file(path)
+
+
+class TestNodesByType:
+    """a gate that keeps one node type reads it from a per-file index, walked once."""
+
+    _SOURCE = "class A:\n    class B: ...\n\ndef f():\n    class C: ...\nclass D(A): ...\nx[0]\n"
+
+    def test_the_nodes_and_their_order_are_the_filtered_walk(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", self._SOURCE)
+        walked = [n for n in ast.walk(parse_python_path(path)) if isinstance(n, ast.ClassDef)]
+        assert list(nodes_by_type(path, ast.ClassDef)) == walked
+        assert [n.name for n in walked] == ["A", "D", "B", "C"]
+
+    def test_the_nodes_are_the_shared_trees(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", self._SOURCE)
+        assert nodes_by_type(path, ast.ClassDef)[0] is parse_python_path(path).body[0]
+
+    def test_a_type_the_file_does_not_hold_is_empty(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        assert nodes_by_type(path, ast.ClassDef) == ()
+
+    def test_a_rewritten_file_is_indexed_again(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "class A: ...\n")
+        assert [n.name for n in nodes_by_type(path, ast.ClassDef)] == ["A"]
+        path.write_text("class First: ...\nclass Second: ...\n")
+        assert [n.name for n in nodes_by_type(path, ast.ClassDef)] == ["First", "Second"]
+
+    def test_clearing_the_parse_cache_releases_the_index(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "class A: ...\n")
+        first = nodes_by_type(path, ast.ClassDef)[0]
+        clear_parse_cache()
+        again = nodes_by_type(path, ast.ClassDef)[0]
+        assert again is not first
+        assert again is parse_python_path(path).body[0]
+
+    def test_a_file_that_does_not_parse_raises_as_parse_python_path_does(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "bad.py", "def f(:\n")
+        with pytest.raises(SyntaxError):
+            nodes_by_type(path, ast.ClassDef)
 
 
 class TestRelativePosixPath:
