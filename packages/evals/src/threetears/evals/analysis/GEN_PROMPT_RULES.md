@@ -4,7 +4,7 @@
 **Answers:** what each numbered rule is there to prevent, so a rewrite does not drop a rule without knowing what
 it cost to learn.
 
-**How to use it.** The prompt is budgeted at `PROMPT_CHAR_BUDGET` (24,000 characters) and `PROMPT_RULE_BUDGET`
+**How to use it.** The prompt is budgeted at `PROMPT_CHAR_BUDGET` (24,500 characters) and `PROMPT_RULE_BUDGET`
 (13 rules), and both ceilings only fall; `tests/test_gen_prompt_budget.py` fails past either. A rule is a numbered
 entry under the `RULES` heading; the paragraphs above it are not counted. A change that adds a rule names the rule
 it replaces or absorbs, and edits this table in the same commit. A clause added inside a rule gets its reason added

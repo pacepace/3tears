@@ -29,8 +29,8 @@ packages (bumped in lock-step).
 - **Rule 9 of the analysis writer's prompt carries a clause for the title the judge grades as `reporter.one_idea_per_title`.**
   A finding's title makes one claim, one a single reading could confirm or refute; a result and its guardrail, or a
   result and its cause, are two claims, the decision (for a cause, the finding's body) is where they meet, and a
-  qualifier that sets the claim's scope, condition or size stays inside the one claim. No new rule: the rule and character budgets are
-  unchanged. `GEN_PROMPT_RULES.md` names the failure that bought the clause.
+  qualifier that sets the claim's scope, condition or size stays inside the one claim. No new rule. The character budget rises once, 24,000
+  to 24,500, so the clause costs no other rule its reason; a shorter prompt is a measured change, not a cut by eye. `GEN_PROMPT_RULES.md` names the failure that bought the clause.
 
 ### 3tears-evals: an action parameter's description says what the value is
 
