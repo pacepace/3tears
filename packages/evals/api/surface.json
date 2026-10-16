@@ -336,6 +336,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.current_cell_identity": {
+      "kind": "function",
+      "signature": "current_cell_identity() -> CellIdentity | None",
+      "tier": "host-contract"
+    },
     "threetears.evals.schema.DEFAULT_JUDGE_TEMPERATURE": {
       "kind": "constant (float)",
       "signature": "",

@@ -34,6 +34,16 @@ packages (bumped in lock-step).
   judge_cases_list or results_list names it", and `case_name`, `run_ids`, `result_ids`, `criteria` and
   `judged_result_ids` drop the action from theirs. No name or type changes.
 
+### 3tears-evals: `current_cell_identity()` names the cell a log line or call belongs to, judge phase included
+
+- **`threetears.evals.schema.current_cell_identity() -> CellIdentity | None`** (host-contract). The run loop binds the
+  cell's `CellIdentity` in a context variable around everything it does for the cell: launch, the candidate's turn,
+  the judge phase, the cell's own log lines, the timeout and cancellation arms and the recording of its result. A host's
+  logging filter reads it to stamp `run_id`, `test_case_id` and `cell_id` with no further wiring. Concurrent cells each
+  see their own, tasks created inside a cell inherit it, and it is `None` outside every cell and again after a cell
+  ends, however it ended. The same identity is the one handed to the sink's `cell_identity` scope.
+  Run-level lines (the ceiling stop decided between cells) belong to no cell and read `None`.
+
 ### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
 
 Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).
