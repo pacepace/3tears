@@ -34,6 +34,17 @@ packages (bumped in lock-step).
   Breaking for a host that implements `CampaignReadStore`, `TierReadStore` or `LensStore` itself: they name these in
   place of `query_eval_results_by_run`, `load_template`, `analysis_archived` and `run_id=`. `judges_tiers` takes the
   `ratings` and `templates` its caller already read.
+- **Changed: `analysis_generate` returns its job before assembling anything; the job prepares and prices.** The call
+  now checks only that the host generates analyses, the campaign exists, no generation of it is running and a named
+  writer is allowed, records the attempt `running` with its lease, and returns. The job assembles the bundle, resolves
+  the prompt, builds the client, holds the host's default writer to its allowed list and prices the first call. A
+  refusal there (an empty bundle, an unknown prompt, a default writer the host does not allow, a first call over the
+  cap or unpriceable under it) no longer raises to the caller: the job ends `failed` with `refused before any call:
+  <why>` and the refusal's kind, which `job_poll` reads, with no call made and the client released. The running
+  attempt names the writer asked for (`(the host's default writer, not yet resolved)` when none was) and an empty
+  `bundle_fingerprint` until the job has assembled the bundle; no stored field changed. `analysis_estimate` still
+  answers in its call, over the batched bundle reads. `running_analysis_attempt` takes the attempt's fields
+  rather than a `PreparedGeneration`, and `prepare_analysis_generation` takes `attempt_id` and `on_assembled`.
 - **Fixed: `RoutedDocumentStore.holds_documents` abandoned a store's sweep part-way**, returning at its first id; it
   now reads the ids through before answering, as `relocate` already did.
 

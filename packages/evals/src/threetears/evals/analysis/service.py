@@ -205,8 +205,9 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
 class PreparedGeneration(NamedTuple):
     """Everything an analysis generation needs before it spends anything, checked and built.
 
-    Split from the spend so a background start can refuse an unknown campaign, an empty bundle or
-    an unknown preset to its caller BEFORE returning, rather than in a task nobody is waiting on.
+    Split from the spend so every refusal (an unknown campaign, an empty bundle, an unknown preset, a writer the host
+    does not allow, a first call over the cap) is raised before any call is made: to the caller of an estimate, and,
+    in a background generation, inside its job, which ends its recorded attempt refused with it.
     """
 
     campaign_id: str
@@ -544,14 +545,19 @@ async def prepare_analysis_generation(
     model: str | None,
     resolve_prompt: Callable[[], Awaitable[str]],
     out_of_run_cap_usd: float | None,
+    attempt_id: str | None = None,
+    on_assembled: Callable[[AnalysisContextBundle, str], Awaitable[None]] | None = None,
 ) -> PreparedGeneration:
     """Check and build everything a generation needs before it spends anything, its first call priced and admitted.
 
     The refusals a generation documents for a missing campaign, an empty bundle, an unknown
-    preset and a first call over the cap (or unpriceable under it) are all raised here, so a background
-    start raises them to its caller. A host that admits one generation per campaign at a time checks that
-    BEFORE calling this, because preparing builds a client and resolves the prompt, work a refused second
-    request need not pay for. Every store read runs on the host's blocking executor.
+    preset, a writer the host does not allow and a first call over the cap (or unpriceable under it) are all raised
+    here, before any call. Assembling the bundle reads every member run's results, so a background start
+    (:func:`~threetears.evals.ops.analysis_generate`) calls this inside its job, after recording the attempt, and
+    ends the attempt refused with what this raised; :func:`estimate_analysis_generation` makes the same checks in
+    its caller's request. A host that admits one generation per campaign at a time checks that BEFORE calling this,
+    because preparing builds a client and resolves the prompt, work a refused second request need not pay for. Every
+    store read runs on the host's blocking executor.
 
     :param host: The host: where the campaign's runs, results and insights are read, the vocabulary
         the bundle is assembled in, and the client factory the generator is built from.
@@ -569,6 +575,13 @@ async def prepare_analysis_generation(
         out-of-run cap — or ``None`` when the host enforces none (each call is still priced where the
         client can say, and ledgered). Required, so every caller decides what bounds the spend.
     :ptype out_of_run_cap_usd: float | None
+    :param attempt_id: The id of the attempt this generation runs as: the one a background start recorded before
+        its job started. ``None`` mints one.
+    :ptype attempt_id: str | None
+    :param on_assembled: Awaited once the bundle is assembled and the client built and held to the host's allowed
+        writers, before the first call is priced, with the bundle and the writer the client resolved — so a recorded
+        attempt can name both, even when the price then refuses it. A raise releases the client and propagates.
+    :ptype on_assembled: Callable[[AnalysisContextBundle, str], Awaitable[None]] | None
     :return: The prepared generation. It holds a built generator client, which the run enters and
         releases; one prepared and never run keeps its transport open until it is collected.
     :rtype: PreparedGeneration
@@ -582,9 +595,12 @@ async def prepare_analysis_generation(
     calls = BudgetedGenerator(_generation_budget(host, assembled, out_of_run_cap_usd), assembled.client)
     first = assembled.first_call
     try:
+        if on_assembled is not None:
+            await on_assembled(assembled.bundle, assembled.client.model_name)
         await refresh_prices(assembled.client)
         calls.admit(first.system, first.user, first.response_format)
-    except ValidationFailedError:
+    except BaseException:
+        # A refusal, a failed hook, or a cancellation while prices were refreshed: nothing will run this client.
         await _release(assembled.client)
         raise
     return PreparedGeneration(
@@ -595,40 +611,88 @@ async def prepare_analysis_generation(
         prompt=assembled.prompt,
         client=assembled.client,
         resolved_model=assembled.client.model_name,
-        attempt_id=str(uuid.uuid7()),
+        attempt_id=attempt_id or str(uuid.uuid7()),
         calls=calls,
     )
 
 
+#: What a running attempt's ``generator_model`` reads while the host's default writer is not yet resolved: the attempt
+#: is recorded before its job builds the client that names it (:func:`running_analysis_attempt`).
+DEFAULT_WRITER_UNRESOLVED = "(the host's default writer, not yet resolved)"
+
+
 def running_analysis_attempt(
-    prepared: PreparedGeneration, *, prompt_id: str, started_at: str | None = None
+    *,
+    attempt_id: str,
+    campaign_id: str,
+    scope_id: str,
+    model: str | None,
+    prompt_id: str,
+    started_at: str | None = None,
 ) -> EvalAnalysisAttempt:
-    """The attempt a background generation writes as it starts: ``running``, nothing sent yet.
+    """The attempt a background generation writes as it starts: ``running``, nothing prepared or sent yet.
 
     Written before the generation's job starts — carrying the job's lease, which the caller stamps — so the job is
-    answered from the store in every process from its first poll; :func:`run_analysis_generation` writes it again
-    as it ends.
+    answered from the store in every process from its first poll. It is written before the bundle is assembled or
+    the client built, since assembling reads every member run's results and the start returns before that, so what
+    only they can say is not on it yet: ``generator_model`` is the writer asked for, or
+    :data:`DEFAULT_WRITER_UNRESOLVED` when none was named, and ``bundle_fingerprint`` is empty. The job writes the
+    resolved writer and the bundle's fingerprint over it once it has assembled the bundle and built the client
+    (:func:`assembled_analysis_attempt`), before its first call is priced, and :func:`run_analysis_generation` writes both again as it ends; an attempt refused while
+    it prepared keeps what was known.
 
-    :param prepared: The prepared generation.
-    :ptype prepared: PreparedGeneration
-    :param prompt_id: The registry key its prompt was resolved under.
+    :param attempt_id: The attempt's id: the generation's, and its job's.
+    :ptype attempt_id: str
+    :param campaign_id: The campaign to analyse.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param model: The writer asked for, or ``None`` for the host's default.
+    :ptype model: str | None
+    :param prompt_id: The registry key its prompt is resolved under.
     :ptype prompt_id: str
     :param started_at: When it was started; now when omitted.
     :ptype started_at: str | None
-    :return: The attempt, ``running``, its id the generation's.
+    :return: The attempt, ``running``.
     :rtype: EvalAnalysisAttempt
     """
     return EvalAnalysisAttempt(
-        id=prepared.attempt_id,
-        scope_id=prepared.scope_id,
-        campaign_id=prepared.campaign_id,
+        id=attempt_id,
+        scope_id=scope_id,
+        campaign_id=campaign_id,
         outcome="running",
         analysis_id=None,
         error=None,
-        generator_model=prepared.resolved_model,
+        generator_model=model or DEFAULT_WRITER_UNRESOLVED,
         prompt_id=prompt_id,
-        bundle_fingerprint=prepared.bundle.fingerprint(),
+        bundle_fingerprint="",
         started_at=started_at or utc_now_iso(),
+    )
+
+
+def assembled_analysis_attempt(
+    started: EvalAnalysisAttempt, bundle: AnalysisContextBundle, resolved_model: str
+) -> EvalAnalysisAttempt:
+    """``started`` with what its job's preparation resolved: the writer its client names and the bundle's fingerprint.
+
+    What :func:`prepare_analysis_generation`'s ``on_assembled`` is handed, written over the running attempt before the
+    first call is priced.
+
+    :param started: The running attempt :func:`running_analysis_attempt` recorded.
+    :ptype started: EvalAnalysisAttempt
+    :param bundle: The bundle the generation assembled.
+    :ptype bundle: AnalysisContextBundle
+    :param resolved_model: The writer its client resolved.
+    :ptype resolved_model: str
+    :return: The attempt, still ``running``, to write over the stored one.
+    :rtype: EvalAnalysisAttempt
+    """
+    return started.model_copy(
+        update={
+            "generator_model": resolved_model,
+            "bundle_fingerprint": bundle.fingerprint(),
+            "created_at": utc_now_iso(),
+        }
     )
 
 
@@ -1957,6 +2021,7 @@ __all__ = [
     "AnalysisGenerationEstimate",
     "AnalysisStore",
     "BudgetedGenerator",
+    "DEFAULT_WRITER_UNRESOLVED",
     "PreparedGeneration",
     "analysis_report",
     "describe_insight_id_filters",
@@ -1972,6 +2037,7 @@ __all__ = [
     "running_analysis_attempt",
     "list_insights",
     "prepare_analysis_generation",
+    "assembled_analysis_attempt",
     "reporter_calibration",
     "reporter_case_bank",
     "run_analysis_generation",

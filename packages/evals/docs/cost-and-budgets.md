@@ -249,8 +249,11 @@ anything else, so the call can price it. The package never plans, admits and mak
 planner returns the `PlannedCall` (`gen.plan_draft` for a proposal, `kernel.plan_variation_calls` for a
 generation), the caller quotes it and admits it under its `OutOfRunBudget` in its call, and the executor
 (`gen.propose_draft`, `gen.generate_variations`) takes the admitted call and only makes it, on the client it was
-priced on. The engine's own jobs (an analysis generation, a second judge, a judge repeat, a temperature
-comparison) admit in their call the same way, and each has an estimate that quotes the same plan.
+priced on. The engine's own jobs (a second judge, a judge repeat, a temperature comparison) admit in their call
+the same way, and each has an estimate that quotes the same plan. An analysis generation is the one exception: its
+plan is built from the campaign's whole bundle, which takes longer to assemble than a host's call budget allows for
+a large campaign, so its job assembles, prices and admits before its first call, and its estimate quotes the same
+plan in its own call.
 
 **Case generation.** Generation runs before any run exists, so its calls are outside every run's cost cap
 and metered-call ceiling. In the launch's call, the engine builds the writer from the host's client factory,
@@ -268,9 +271,10 @@ it in the action's job with `propose_draft(client, admitted, budget=..., axis=..
 releases the client. A client admitted and never made is the host's to release.
 
 **Analysis generation.** An analysis generation is held to the host's out-of-run cap
-(`LaunchSettings.max_out_of_run_cost_usd`): its first call is priced before the job starts
-(`analysis_estimate` prices it without spending), its one repair round-trip before that is sent, and each
-call is ledgered under purpose `analysis`, so `scope_out_of_run_spend` reads it.
+(`LaunchSettings.max_out_of_run_cost_usd`): its first call is priced in its job before it is sent, and one the
+cap refuses ends the job `failed` with `refused before any call: ...` and nothing spent, which `job_poll` reads
+(`analysis_estimate` prices it in its call, without spending); its one repair round-trip is priced before that is
+sent, and each call is ledgered under purpose `analysis`, so `scope_out_of_run_spend` reads it.
 
 **Judge repeats.** A judge repeat (`judge_repeat`) is held to the same cap, every call — parse retries
 included — priced and admitted before the first is sent, and ledgered under purpose `judge` with the run's
