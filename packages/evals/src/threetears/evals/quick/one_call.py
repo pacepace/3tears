@@ -1501,6 +1501,7 @@ def _launch_host(
         require_known_tools_allowed=_admit_nothing_to_check,
         refuse_undeclared_world_seed=_admit_nothing_to_check,
         refuse_undeliverable_template=_admit_nothing_to_check,
+        refuse_inadmissible_template_case=_admit_nothing_to_check,
         kinds={
             kind_name: LaunchableKind(
                 launch=launch,

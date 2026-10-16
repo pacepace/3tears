@@ -3630,20 +3630,19 @@ async def execute_run(
         # What the record needs survives on ``sink``, which this loop owns, the kind reports
         # into, and the timeout arm reads: the spend already billed, the
         # per-role rows, the output so far, and what the cell was waiting on when it struck.
-        sink = _CellSink(
-            cell=CellIdentity(
-                run_id=run.id,
-                test_case_id=tc.id,
-                cell_id=str(uuid.uuid7()),
-                subject_id=run.subject_snapshot.subject_id,
-            )
+        cell = CellIdentity(
+            run_id=run.id,
+            test_case_id=tc.id,
+            cell_id=str(uuid.uuid7()),
+            subject_id=run.subject_snapshot.subject_id,
         )
+        sink = _CellSink(cell=cell)
         cells_started += 1
         in_flight.append(sink)
         try:
             # Everything the loop does for the cell, its deadline and cancellation arms and the recording of its
             # result included, reads as the cell's: ``current_cell_identity`` is its identity until it is recorded.
-            with bind_cell_identity(sink.cell):
+            with bind_cell_identity(cell):
                 await run_and_record(k, tc, sink)
         finally:
             # Recorded (``on_cost``) or abandoned with the run: either way its spend is in flight no more.
