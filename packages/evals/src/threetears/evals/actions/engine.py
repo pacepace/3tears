@@ -1044,8 +1044,14 @@ async def _judge_cases_list(host: OpsHost, caller: Caller, params: JudgeCasesLis
 
 async def _cases_rename(host: OpsHost, caller: Caller, params: CasesRenameParams) -> CaseRenamed:
     eval_host = host.eval_host
+    corpus = None if host.seed_corpus is None else host.seed_corpus(caller.scope_id)
     return await run_blocking(
-        eval_host.blocking_executor, case_rename, eval_host, caller.scope_id, params.test_case_id, params.case_name
+        eval_host.blocking_executor,
+        partial(case_rename, corpus=corpus),
+        eval_host,
+        caller.scope_id,
+        params.test_case_id,
+        params.case_name,
     )
 
 
@@ -2101,7 +2107,8 @@ def engine_actions() -> tuple[Action, ...]:
             detail=(
                 "A case's name is in no digest and no identity key, so the case keeps its id, its content and every "
                 "result measured against it, and the next report calls it by the new name. A seeded case keeps its "
-                "seed record, so its drift still reads by its content. Refused: a name the report would not print "
+                "seed record, and one seeded before seeds recorded a name takes its old name as that record (read "
+                "off the host's seed corpus), so drift finds it as before. Refused: a name the report would not print "
                 "(spaces, a bare number, a generated id, over 40 characters), a name another case of its template or "
                 "of a case set listing it carries, and an unknown case. Calls no model."
             ),

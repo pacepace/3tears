@@ -6553,7 +6553,7 @@
     },
     "threetears.evals.ops.case_rename": {
       "kind": "function",
-      "signature": "case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseRenamed",
+      "signature": "case_rename(host: EvalHost, scope_id: str, case_id: str, name: str, *, corpus: SeedCorpus | None = None) -> CaseRenamed",
       "tier": "host-contract"
     },
     "threetears.evals.ops.case_set_mint": {
@@ -6888,7 +6888,7 @@
     },
     "threetears.evals.ops.OpsHost": {
       "kind": "dataclass",
-      "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None)",
+      "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None, seed_corpus: Callable[[str], SeedCorpus] | None = None)",
       "tier": "stable"
     },
     "threetears.evals.ops.out_of_run_spend_text": {
