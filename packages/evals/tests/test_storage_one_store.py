@@ -172,3 +172,26 @@ def test_the_reclaim_settles_runs_only_in_the_scopes_it_is_named() -> None:
 def test_a_host_cannot_declare_an_engine_doc_type_as_its_own(claimed: str) -> None:
     with pytest.raises(ValueError, match=claimed):
         EvalStorage(InMemoryDocumentStore(), host_doc_types=[claimed])
+
+
+class _StoreWithoutFieldIn(InMemoryDocumentStore):
+    """A store written before ``field_in``: ``by_doc_type`` takes it into ``**field_eq`` as an equality."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **field_eq: Any) -> list[dict[str, Any]]:  # type: ignore[override]
+        return super().by_doc_type(doc_type, scope_id, **field_eq)
+
+
+def test_a_store_whose_by_doc_type_does_not_declare_field_in_is_refused_when_given() -> None:
+    with pytest.raises(TypeError, match="does not declare a `field_in` parameter"):
+        EvalStorage(_StoreWithoutFieldIn())
+
+
+def test_a_store_that_declares_and_forwards_field_in_is_accepted() -> None:
+    assert EvalStorage(InMemoryDocumentStore()).query_eval_results_by_runs([], _HOME) == []
+
+
+def test_the_judge_evidence_projection_is_addressed_on_the_stored_trace() -> None:
+    from threetears.evals.kernel.storage import _JUDGE_EVIDENCE_FIELDS
+    from threetears.evals.schema.versioning import CORE_ADDRESSING_FIELDS
+
+    assert set(_JUDGE_EVIDENCE_FIELDS) <= CORE_ADDRESSING_FIELDS["eval_trace"]

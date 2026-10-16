@@ -61,7 +61,7 @@ class _RecordingRepo:
         return next((d for d in self.written if d["id"] == item_id), None)
 
     def by_doc_type(
-        self, doc_type: str, scope_id: str, *, exclude: list[str] | None = None, **field_eq: Any
+        self, doc_type: str, scope_id: str, *, exclude: list[str] | None = None, field_in: Any = None, **field_eq: Any
     ) -> list[dict[str, Any]]:
         self.queried_doc_types.append(doc_type)
         return [omit_paths(d, exclude or ()) for d in self.written if d["doc_type"] == doc_type]

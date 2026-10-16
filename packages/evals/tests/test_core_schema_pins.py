@@ -114,7 +114,19 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "eval_result": frozenset({"id", "doc_type", "schema_version", "scope_id", "eval_run_id", "test_case_id", "model"}),
-    "eval_trace": frozenset({"id", "doc_type", "schema_version", "scope_id"}),
+    "eval_trace": frozenset(
+        {
+            "id",
+            "doc_type",
+            "schema_version",
+            "scope_id",
+            "result_id",
+            "eval_run_id",
+            "judge_evidence",
+            "judged_artifact",
+            "schema_minor",
+        }
+    ),
     "eval_out_of_run_spend": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "purpose", "launch_group_id", "template_id", "created_at"}
     ),

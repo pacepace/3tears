@@ -148,6 +148,15 @@ def _expect_value_error(call: Callable[[], object], what: str) -> None:
     raise StoreConformanceFailure(f"{what} was accepted; expected ValueError")
 
 
+def _expect_type_error(call: Callable[[], object], what: str) -> None:
+    try:
+        call()
+    except TypeError:
+        # NOSILENT: the refusal IS the conformance check passing; the failure is the call being accepted
+        return
+    raise StoreConformanceFailure(f"{what} was accepted; expected TypeError")
+
+
 def _found(store: DocumentStore, doc_id: str) -> dict[str, Any]:
     document = store.get(doc_id, _SCOPE)
     if document is None:
@@ -421,6 +430,26 @@ def _a_field_in_both_field_in_and_field_eq_is_refused(store: DocumentStore) -> N
     _expect_value_error(
         lambda: store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1"]}, run="r1"),
         "by_doc_type(field_in={'run': ['r1']}, run='r1')",
+    )
+
+
+def _a_field_in_string_in_place_of_a_sequence_is_refused(store: DocumentStore) -> None:
+    store.upsert(_doc("d1", run="r1"))
+    _expect_type_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, field_in={"run": "r1"}),
+        "by_doc_type(field_in={'run': 'r1'}) — a string where a sequence of values belongs",
+    )
+
+
+def _a_field_in_value_that_is_not_a_scalar_is_refused(store: DocumentStore) -> None:
+    store.upsert(_doc("d1", run="r1"))
+    _expect_type_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, field_in={"run": ["r1", {"a": 1}]}),
+        "by_doc_type(field_in={'run': ['r1', {'a': 1}]}) — a mapping among the values",
+    )
+    _expect_type_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, field_in={"run": [["r1"]]}),
+        "by_doc_type(field_in={'run': [['r1']]}) — a list among the values",
     )
 
 
@@ -817,6 +846,16 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
         "query.field_in_and_field_eq_refused",
         "a field named in both field_in and field_eq raises ValueError",
         _a_field_in_both_field_in_and_field_eq_is_refused,
+    ),
+    StoreConformanceCase(
+        "query.field_in_string_refused",
+        "a field_in field given a string in place of a sequence of values raises TypeError",
+        _a_field_in_string_in_place_of_a_sequence_is_refused,
+    ),
+    StoreConformanceCase(
+        "query.field_in_non_scalar_refused",
+        "a field_in value that is not a scalar (str, int, float, bool, None) raises TypeError",
+        _a_field_in_value_that_is_not_a_scalar_is_refused,
     ),
     StoreConformanceCase(
         "order.by_stored_type",

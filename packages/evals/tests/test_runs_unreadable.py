@@ -33,10 +33,10 @@ class _AnsweringStore(InMemoryDocumentStore):
         super().__init__()
         self.down = False
 
-    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+    def by_doc_type(self, doc_type: str, scope_id: str, *, field_in: Any = None, **kwargs: Any) -> list[dict[str, Any]]:
         if self.down and doc_type == "eval_run":
             raise ConnectionError("the database went away")
-        return super().by_doc_type(doc_type, scope_id, **kwargs)
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in, **kwargs)
 
 
 def _fixture() -> tuple[OpsFixture, _AnsweringStore]:

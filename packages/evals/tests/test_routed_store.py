@@ -678,8 +678,9 @@ class _RowLevelSecured:
         found = self._table.get_many(doc_type, doc_ids, scope_id, **kwargs)
         return [d for d in found if self._mine(d["id"], scope_id)]
 
-    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
-        return [d for d in self._table.by_doc_type(doc_type, scope_id, **kwargs) if self._mine(d["id"], scope_id)]
+    def by_doc_type(self, doc_type: str, scope_id: str, *, field_in: Any = None, **kwargs: Any) -> list[dict[str, Any]]:
+        found = self._table.by_doc_type(doc_type, scope_id, field_in=field_in, **kwargs)
+        return [d for d in found if self._mine(d["id"], scope_id)]
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Any:
         return (i for i in self._table.iter_by_doc_type(doc_type, scope_id) if self._mine(i, scope_id))

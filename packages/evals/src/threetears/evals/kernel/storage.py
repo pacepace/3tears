@@ -36,6 +36,7 @@ failing the list, as does the operator's scan that names such rows (:meth:`EvalS
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
@@ -752,6 +753,40 @@ class CassetteStore(Protocol):
         ...
 
 
+def _require_field_in(store: DocumentStore) -> None:
+    """Refuse a store whose ``by_doc_type`` does not declare the ``field_in`` parameter the port requires.
+
+    A store written before ``field_in`` takes the call's ``field_in={...}`` into its ``**field_eq`` as an equality
+    against a mapping, which matches no document: every membership read (a campaign's results by run, its ratings)
+    would answer an empty list, as though the campaign had no evidence. Nothing in that answer says the store is the
+    cause, so the engine asks once, when it is given the store, and refuses there. The test is the declared
+    signature, not a probe call: a probe would reach the host's backend at construction, and a store that accepts
+    ``field_in`` only as part of ``**kwargs`` cannot be told from one that swallows it, so a store (a wrapper
+    among them) must name ``field_in`` and forward it.
+
+    :param store: The store the host handed to :class:`EvalStorage`.
+    :ptype store: DocumentStore
+    :raises TypeError: ``by_doc_type`` has no parameter named ``field_in`` (``**kwargs`` does not count).
+    """
+    try:
+        parameters = inspect.signature(store.by_doc_type).parameters
+    except TypeError, ValueError:
+        # NOSILENT: a callable with no introspectable signature (a builtin, a native extension) cannot be checked
+        # here; the conformance cases (query.field_in_*) are what holds such a store to the port.
+        return
+    declared = parameters.get("field_in")
+    if declared is None or declared.kind not in (
+        inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    ):
+        raise TypeError(
+            f"{type(store).__name__}.by_doc_type does not declare a `field_in` parameter, which DocumentStore."
+            "by_doc_type requires: without it the engine's membership reads would match nothing. Add "
+            "`field_in: Mapping[str, Sequence[Any]] | None = None` (keyword-only) and implement it, and check the "
+            "store with the conformance cases (threetears.evals.testing.STORE_CONFORMANCE_CASES, query.field_in_*)"
+        )
+
+
 class EvalStorage:
     """Storage for eval documents over one document store.
 
@@ -773,10 +808,12 @@ class EvalStorage:
         :ptype host_doc_types: Sequence[str]
         :raises ValueError: A host type is also one of :data:`EVAL_DOC_TYPES` — the engine's own, which
             the host does not get to declare twice.
+        :raises TypeError: The store's ``by_doc_type`` does not declare ``field_in``: see :func:`_require_field_in`.
         """
         claimed = set(host_doc_types) & set(EVAL_DOC_TYPES)
         if claimed:
             raise ValueError(f"host_doc_types names the engine's own doc types: {sorted(claimed)}")
+        _require_field_in(store)
         self._document_store = store
         self._host_doc_types = tuple(host_doc_types)
 

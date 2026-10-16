@@ -338,6 +338,28 @@ class _FieldInOverridesFieldEq(InMemoryDocumentStore):
         return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
 
 
+class _FieldInReadsAStringAsOneValue(InMemoryDocumentStore):
+    """A string where ``field_in`` wants a sequence is read as the one value it names, not refused."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = {
+            field: [values] if isinstance(values, str) else values
+            for field, values in (kwargs.pop("field_in", None) or {}).items()
+        }
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
+class _FieldInSkipsNonScalars(InMemoryDocumentStore):
+    """A value of ``field_in`` that is not a scalar is dropped from the list, not refused."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        field_in = {
+            field: [v for v in values if v is None or isinstance(v, str | int | float)]
+            for field, values in (kwargs.pop("field_in", None) or {}).items()
+        }
+        return super().by_doc_type(doc_type, scope_id, field_in=field_in or None, **kwargs)
+
+
 class _NoEtags(InMemoryDocumentStore):
     """A store without conditional writes: no token, and ``if_match`` ignored."""
 
@@ -667,6 +689,8 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _FieldInEmptyMatchesAll: frozenset({"query.field_in_empty_matches_nothing"}),
     _FieldInReadsOncePerValue: frozenset({"query.field_in_matches_any"}),
     _FieldInOverridesFieldEq: frozenset({"query.field_in_and_field_eq_refused"}),
+    _FieldInReadsAStringAsOneValue: frozenset({"query.field_in_string_refused"}),
+    _FieldInSkipsNonScalars: frozenset({"query.field_in_non_scalar_refused"}),
     _NoEtags: frozenset({"etag.found_document_has_one", "etag.stale_write_is_refused"}),
     _IgnoresIfMatch: frozenset(
         {
