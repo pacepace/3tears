@@ -1246,6 +1246,23 @@ async def test_ping_round_trips_after_the_pending_buffer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_public_round_trip_on_a_raw_connection_follows_its_pending_sub() -> None:
+    """a raw connection's SUB goes out before the PING whose PONG the caller takes as proof of it.
+
+    nats-py's own flush writes the PING first, so a subscribe-then-flush could return before the
+    server knew the subscription; ``round_trip`` is the barrier a raw-connection caller uses instead.
+    """
+    from threetears.nats import round_trip
+
+    fake = _FakeNatsPyClient()
+    fake.is_connected = True
+    fake.queue_pending(b"SUB events 1\r\n")
+    await round_trip(fake, timeout=1.5)
+    assert fake.wire == ["SUB events 1", "PING"]
+    assert fake.pending_buffer() == ([], 0)
+
+
+@pytest.mark.asyncio
 async def test_a_ping_on_a_backpressured_socket_answers_false_within_its_timeout() -> None:
     """a socket the server stopped reading is what a health probe exists to catch.
 

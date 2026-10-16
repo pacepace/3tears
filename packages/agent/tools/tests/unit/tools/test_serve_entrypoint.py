@@ -101,6 +101,33 @@ async def test_identity_path_hands_toolserver_a_verifiable_token(
 
 
 @pytest.mark.asyncio
+async def test_the_builtin_pod_proves_delegations_with_its_registration_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the built-in pod's ToolServer is given the key its registration is signed with as its door key.
+
+    The registry binds each call's delegated token to that key, so without it the pod forwards the
+    caller's bearer token, and a delegated token sent without its proof is refused at every door.
+    """
+    from threetears.core.security import RegistrationKey, jwk_thumbprint  # noqa: PLC0415
+
+    pem = _signing_key_pem()
+    _set_signing_key_ref(monkeypatch, pem)
+    monkeypatch.setenv("THREETEARS_TOOL_POD_ID", _POD_ID)
+    monkeypatch.setenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", _ISSUER)
+
+    with patch("threetears.agent.tools.serve.ToolServer") as tool_server_cls:
+        tool_server_cls.return_value = MagicMock()
+        await _entrypoint_bootstrap(monkeypatch).build_server()
+
+    door_key = tool_server_cls.call_args.kwargs["registration_key"]
+    key = door_key()
+    assert isinstance(key, RegistrationKey)
+    registration = IdentityMinter.from_pem(pem, kid=_POD_ID, issuer=_ISSUER).registration_key
+    assert jwk_thumbprint(key.key.public_key()) == jwk_thumbprint(registration.key.public_key())
+
+
+@pytest.mark.asyncio
 async def test_identity_path_resolves_a_k8s_ref(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

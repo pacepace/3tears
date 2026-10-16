@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from uuid import uuid7
 
-import pytest
-from pydantic import ValidationError
 
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.registry.proxy import ProxyCallRequest
@@ -41,14 +39,13 @@ class TestProxyCallRequestAuthFields:
         )
         assert req.pop == "x"
 
-    def test_still_forbids_a_genuinely_unknown_field(self) -> None:
-        with pytest.raises(ValidationError):
-            ProxyCallRequest(
-                tool_name="test.stub",
-                tool_version="1.0",
-                arguments={},
-                nonsense="x",  # type: ignore[call-arg]
-            )
+    def test_ignores_a_field_a_newer_agent_adds(self) -> None:
+        """a tolerant reader: a registry predating a field still routes the call (owner ruling 2026-10-07)."""
+        request = ProxyCallRequest.model_validate(
+            {"tool_name": "test.stub", "tool_version": "1.0", "arguments": {}, "nonsense": "x"}
+        )
+        assert request.tool_name == "test.stub"
+        assert "nonsense" not in request.model_dump()
 
     def test_forwards_identity_token_in_context(self) -> None:
         ctx = CallContext(agent_id=uuid7(), identity_token="eyJ.tok")

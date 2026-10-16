@@ -1,0 +1,31 @@
+# Receivers that still trust what arrives on their subject, each under the audit row it is tracked by.
+#
+# This list only shrinks. A site declares an open row with "# sender-posture: <posture> open <ROW>",
+# and tests/enforcement/test_subscribers_declare_sender_posture.py fails when a site declares a row
+# this list does not carry, when a line names a row no site in that file still declares, and when
+# the number of sites declaring it differs from the line's pinned count -- so a new receiver cannot
+# ride an existing line.
+#
+# A row stays open until its door REFUSES the old form: a proof shipped inside a dated window
+# (optional before its date) does not close it. The line goes in the commit that deletes the
+# window and the door's optional path, never before.
+#
+# Rows are those of .prawduct/artifacts/security-audit-nats-receivers.md in the hub repo; N rows are
+# receivers that audit did not list. The chunk is that repo's fix plan's chunk
+# (.prawduct/artifacts/build-plan-nats-receiver-trust.md); "backlog" is a WEAK row the plan defers.
+#
+# path :: row :: sites :: chunk :: why it is still open
+packages/agent/audit/src/threetears/agent/audit/persist.py :: H1 :: 1 :: 06 :: a forged event reaching the audit stream is persisted as a genuine record
+packages/channels/src/threetears/channels/presence/fanout.py :: S7 :: 1 :: backlog :: room frames go to browser sockets with no sender check; not wired in any repo today
+packages/core/src/threetears/core/collections/registry.py :: S3 :: 1 :: backlog :: the invalidation body names the key and L2 scope to evict
+packages/epoch/src/threetears/epoch/listener.py :: G12 :: 1 :: backlog :: a forged broadcast epoch is taken as last seen without confirming it against KV
+packages/epoch/src/threetears/epoch/listener.py :: G13 :: 1 :: backlog :: same listener; a forged huge epoch delays revocations until the catch-up tick
+packages/nats/src/threetears/nats/auth_callout_responder.py :: H3 :: 1 :: 11 :: the request JWT is not verified, so a pod can take over another connection's owner row
+packages/nats/src/threetears/nats/client.py :: S2 :: 1 :: 06 :: a renewal request is judged by the runner's door (the hub's envelope) when it passes one; without one, or inside the SDK door's window, is_mine alone decides
+packages/nats/src/threetears/nats/client.py :: S1 :: 1 :: 06 :: a credential refusal is judged by the runner's door (the hub's envelope) when it passes one; without one, or inside the SDK door's window, is_mine alone decides
+packages/nats/src/threetears/nats/cross_worker_cancel.py :: S7 :: 1 :: backlog :: a cancel is acted on with no sender check; not wired in any repo today
+packages/registry/src/threetears/registry/discovery.py :: R6 :: 1 :: backlog :: lists tools for the agent the body names
+packages/registry/src/threetears/registry/health.py :: R5 :: 1 :: backlog :: a heartbeat marks the pod_id in its body available
+packages/registry/src/threetears/registry/registration.py :: R4 :: 1 :: backlog :: the bootstrap JWT is not bound to the body and carries no jti
+packages/scrape/src/threetears/scrape/operator_control.py :: R7 :: 1 :: backlog :: a control message needs only the session id
+packages/scrape/src/threetears/scrape/operator_pipe.py :: R7 :: 1 :: backlog :: an attach to the display needs only the session id

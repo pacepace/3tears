@@ -77,12 +77,13 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
+from threetears.core.wire import TolerantWireModel
 
 __all__ = ["AuditEvent"]
 
 
-class AuditEvent(BaseModel):
+class AuditEvent(TolerantWireModel):
     """typed wire-format envelope for every platform audit event.
 
     single canonical envelope shared by every producing domain and
@@ -165,8 +166,6 @@ class AuditEvent(BaseModel):
         paths
     :ptype details: dict[str, Any]
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     id: UUID
     timestamp: datetime

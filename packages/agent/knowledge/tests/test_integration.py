@@ -197,6 +197,40 @@ class TestPublishSoftFail:
         await integration.publish_command(cast("KnowledgeDraftCommand", object()))
 
 
+class TestPublishCarriesTheCallersTokens:
+    """the hub takes a draft's customer from the agent's token and its author from the user assertion."""
+
+    async def test_a_draft_and_a_command_carry_the_agent_token_and_the_user_assertion(self) -> None:
+        from threetears.knowledge import KnowledgeDraftCommand, KnowledgeDraftEvent
+
+        published: list[Any] = []
+
+        class _Nats:
+            async def publish(self, *, subject: Any, message: Any) -> None:
+                published.append(message)
+
+        integration = KnowledgeIntegration(nats_client=_Nats(), identity_token_provider=lambda: "agent-token")
+        event = KnowledgeDraftEvent(
+            draft_id=uuid7(),
+            target="entry",
+            customer_id=uuid7(),
+            user_id=uuid7(),
+            datasource_id=uuid7(),
+            title="t",
+            body="b",
+            conversation_id=uuid7(),
+            message_id_source=uuid7(),
+            turn_count=1,
+        )
+        await integration.publish_draft(event, user_identity_token="user-assertion")
+        await integration.publish_command(
+            KnowledgeDraftCommand(draft_id=uuid7(), target="entry", op="confirm", user_id=uuid7()),
+            user_identity_token="user-assertion",
+        )
+
+        assert [(m.identity_token, m.user_identity_token) for m in published] == [("agent-token", "user-assertion")] * 2
+
+
 class TestListOwnDrafts:
     async def test_unions_entry_and_concept_drafts(self) -> None:
         integration = KnowledgeIntegration(

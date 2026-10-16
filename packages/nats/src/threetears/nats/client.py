@@ -109,6 +109,7 @@ from threetears.observe.resilience import retry_until_done
 from threetears.nats.diagnostics import permissions_violation_remedy
 from threetears.nats._nats_py_internals import (
     force_reconnect,
+    install_csprng_nuid,
     pull_subscription_inbox,
     send_unsubscribe,
     take_queued_messages,
@@ -141,6 +142,7 @@ from threetears.nats.errors import (
     StreamSubjectsOverlapError,
     SubscribeError,
 )
+from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
 from threetears.nats.subject_permissions import SERVER_USER_INFO_SUBJECT, kv_stream_name
 from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subject, Subjects, set_default_namespace
@@ -852,6 +854,7 @@ class Subscription:
         :return: the nats-py subscription on it
         :rtype: Any
         """
+        # sender-posture: primitive -- moves a caller's subscription to a successor connection
         return await connection.subscribe(self._subject.path, queue=self._queue)
 
     def move_to(self, raw_subscription: Any, connection: Any) -> asyncio.Task[None]:
@@ -1602,6 +1605,11 @@ class JetStreamResultWaiter:
     whenever it was published" -- so the ordering between opening the consumer and the answer
     arriving stops being a race at all.
 
+    **Only the waiter's own consumer can answer.** Any client in the account can get bytes delivered
+    onto an inbox it can name, so a message on the inbox counts only when it carries the ack reply
+    of this waiter's consumer, whose name is random (:mod:`threetears.nats.own_consumer`). Anything
+    else is dropped unacked and logged, and the wait goes on.
+
     **The consumer is made on whichever connection is current when it is made.** A credential
     renewal replaces the connection mid-wait and later retires the old one; the waiter then sees
     its subscription end, and the replacement it makes lands on the successor -- where
@@ -1702,9 +1710,10 @@ class JetStreamResultWaiter:
         :rtype: None
         :raises Exception: when the create fails or is not answered within its ceiling
         """
-        name = f"{_RESULT_WAITER_CONSUMER_PREFIX}{uuid.uuid7().hex}"
+        name = random_consumer_name(_RESULT_WAITER_CONSUMER_PREFIX)
         connection = self._connection()
         inbox = connection.new_inbox()
+        # sender-posture: own-consumer -- a result counts only with this waiter's own consumer's ack reply
         sub = await connection.subscribe(inbox)
         config = _NatsConsumerConfig(
             name=name,
@@ -1758,21 +1767,24 @@ class JetStreamResultWaiter:
                 await self._rebuild()
                 last_heard = time.monotonic()
                 continue
+            if time.monotonic() - last_heard >= silence:
+                # measured from the last frame that counts -- an own delivery or a heartbeat -- so
+                # neither an empty poll nor a stream of refused forgeries can hold it off.
+                log.warning(
+                    "result waiter consumer went quiet; replacing it (subject=%s stream=%s consumer=%s)",
+                    self._subject.path,
+                    self._stream,
+                    self._consumer_name,
+                )
+                await self._rebuild()
+                last_heard = time.monotonic()
+                continue
             poll = min(self._poll_seconds, max(deadline - time.monotonic(), _RESULT_WAITER_MIN_POLL_SECONDS))
             try:
                 msg = await self._sub.next_msg(timeout=poll)
             except _NatsTimeoutError:
-                # NOSILENT: an empty poll is the ordinary case -- the tool is still running. only a
-                # consumer that has also stopped heartbeating is replaced, and that is logged.
-                if time.monotonic() - last_heard >= silence:
-                    log.warning(
-                        "result waiter consumer went quiet; replacing it (subject=%s stream=%s consumer=%s)",
-                        self._subject.path,
-                        self._stream,
-                        self._consumer_name,
-                    )
-                    await self._rebuild()
-                    last_heard = time.monotonic()
+                # NOSILENT: an empty poll is the ordinary case -- the tool is still running. a
+                # consumer that has also stopped heartbeating is replaced at the top of the loop.
                 continue
             except asyncio.CancelledError:
                 raise
@@ -1786,14 +1798,19 @@ class JetStreamResultWaiter:
                 await self._rebuild()
                 last_heard = time.monotonic()
                 continue
-            last_heard = time.monotonic()
             headers = msg.headers or {}
             status = headers.get("Status") if not msg.data else None
+            # a status frame carries no ack reply, so it cannot be traced to this waiter's consumer:
+            # the barrier for it is the inbox name, drawn from the CSPRNG. a heartbeat counts as
+            # proof of life; any other status replaces the consumer onto a fresh random inbox,
+            # which a sender that forged it does not know.
             if status == _STATUS_IDLE_HEARTBEAT:
+                last_heard = time.monotonic()
                 continue
             if status is not None:
                 log.warning(
-                    "result waiter consumer ended by the server (%s %s); replacing it (subject=%s consumer=%s)",
+                    "result waiter got a status frame on its inbox (%s %s); replacing its consumer "
+                    "(subject=%s consumer=%s)",
                     status,
                     headers.get("Description", ""),
                     self._subject.path,
@@ -1801,6 +1818,13 @@ class JetStreamResultWaiter:
                 )
                 await self._rebuild()
                 continue
+            if not delivered_by_own_consumer(
+                msg, stream=self._stream, consumer=self._consumer_name or "", receiver="result waiter"
+            ):
+                # dropped, never acked, and no proof of life: a forgery must not keep a consumer the
+                # broker lost looking alive. the answer is still to come from the waiter's own consumer.
+                continue
+            last_heard = time.monotonic()
             await msg.ack()
             payload = bytes(msg.data)
         if payload is None:
@@ -1931,6 +1955,51 @@ async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_S
         await asyncio.wait_for(asyncio.shield(pong), timeout=timeout)
     except TimeoutError:
         raise _NatsFlushTimeoutError from None
+
+
+def _decoded(data: bytes | bytearray | memoryview, model: type[_T]) -> _T | None:
+    """``data`` as ``model``, or ``None`` (logged) when it is not one.
+
+    :param data: the message bytes
+    :ptype data: bytes | bytearray | memoryview
+    :param model: the wire model
+    :ptype model: type[_T]
+    :return: the decoded message, or ``None``
+    :rtype: _T | None
+    """
+    decoded: _T | None = None
+    try:
+        decoded = model.model_validate_json(bytes(data))
+    except ValidationError as exc:
+        log.warning(
+            "a malformed %s was ignored",
+            model.__name__,
+            extra={"extra_data": {"errors": exc.error_count()}},
+        )
+    return decoded
+
+
+async def round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SECONDS) -> None:
+    """the barrier nats-py's ``flush`` is not: proof the server processed everything sent before now.
+
+    For a raw nats-py connection a caller holds on purpose (a callout responder logging in as the
+    auth user, a test standing in for another service). nats-py's ``Client.flush`` writes its
+    ``PING`` ahead of a ``SUB`` still in the pending buffer, so subscribe-then-flush can return
+    before the server knows the subscription, and a message published at once from another
+    connection is answered "no responders" or dropped. Await this after ``subscribe`` instead.
+    :class:`NatsClient` does it already in its own ``subscribe`` and ``flush``.
+
+    :param connection: the nats-py connection
+    :ptype connection: Any
+    :param timeout: seconds to wait for the ``PONG``
+    :ptype timeout: float
+    :return: nothing
+    :rtype: None
+    :raises nats.errors.ConnectionClosedError: when the connection is closed
+    :raises NatsClientError: when the connection is not currently connected
+    :raises nats.errors.FlushTimeoutError: when no ``PONG`` arrives within ``timeout``
+    """
+    await _round_trip(connection, timeout=timeout)
 
 
 async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> None:
@@ -3909,6 +3978,7 @@ class NatsClient:
             async with self._handover_lock:
                 moving: list[tuple[Subscription, Any]] = []
                 for sub in [s for s in self._subscriptions if not s.is_closed]:
+                    # sender-posture: primitive -- moves every caller's subscription to a successor connection
                     moving.append((sub, await sub.subscribe_on(successor)))
                 await _round_trip(successor, timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)
                 # the one step that changes the current connection, refused once the client stopped
@@ -4350,6 +4420,7 @@ class NatsClient:
         *,
         inbox_prefix: str,
         is_mine: Callable[[CredentialRenewalRequest], bool],
+        admits: Callable[[bytes], Awaitable[bool]] | None = None,
     ) -> Subscription:
         """renew this client's connection at once whenever its credential's minter asks.
 
@@ -4365,9 +4436,18 @@ class NatsClient:
         :ptype inbox_prefix: str
         :param is_mine: whether a request is for this runner; read at the moment it arrives
         :ptype is_mine: Callable[[CredentialRenewalRequest], bool]
+        :param admits: whether the request's bytes prove the minter sent them (the runner's
+            :class:`~threetears.core.security.service_envelope.ServiceEnvelopeDoor`), asked before
+            ``is_mine``; ``None`` takes every request, as before the door existed
+        :ptype admits: Callable[[bytes], Awaitable[bool]] | None
         :return: the subscription, for :meth:`unsubscribe`
         :rtype: Subscription
         """
+
+        async def _on_message(msg: IncomingMessage) -> None:
+            request = _decoded(msg.data, CredentialRenewalRequest)
+            if request is not None and (admits is None or await admits(bytes(msg.data))):
+                await _on_request(request)
 
         async def _on_request(request: CredentialRenewalRequest) -> None:
             if not is_mine(request):
@@ -4378,10 +4458,10 @@ class NatsClient:
                 return
             self._start_successor_move(why=f"its credential's minter asked for a renewal ({request.reason.value})")
 
-        return await self.subscribe_typed(
+        # sender-posture: signed-envelope open S2 -- the hub's envelope when the runner passes its door; else is_mine alone
+        return await self.subscribe(
             subject=Subjects.credential_renewal_request(inbox_prefix),
-            cb=_on_request,
-            message_type=CredentialRenewalRequest,
+            cb=_on_message,
             deadletter_on_failure=False,
         )
 
@@ -4475,6 +4555,7 @@ class NatsClient:
         *,
         inbox_prefix: str,
         is_mine: Callable[[CredentialRefusal], bool],
+        admits: Callable[[bytes], Awaitable[bool]] | None = None,
     ) -> Subscription:
         """abandon this client the moment the auth-callout says it refused this client's credential.
 
@@ -4490,9 +4571,18 @@ class NatsClient:
         :ptype inbox_prefix: str
         :param is_mine: whether a refusal names this runner; read at the moment it arrives
         :ptype is_mine: Callable[[CredentialRefusal], bool]
+        :param admits: whether the refusal's bytes prove the hub sent them (the runner's
+            :class:`~threetears.core.security.service_envelope.ServiceEnvelopeDoor`), asked before
+            ``is_mine``; ``None`` takes every refusal, as before the door existed
+        :ptype admits: Callable[[bytes], Awaitable[bool]] | None
         :return: the subscription, for :meth:`unsubscribe`
         :rtype: Subscription
         """
+
+        async def _on_message(msg: IncomingMessage) -> None:
+            refusal = _decoded(msg.data, CredentialRefusal)
+            if refusal is not None and (admits is None or await admits(bytes(msg.data))):
+                await _on_refusal(refusal)
 
         async def _on_refusal(refusal: CredentialRefusal) -> None:
             if not is_mine(refusal):
@@ -4509,10 +4599,10 @@ class NatsClient:
                     name=f"nats-abandon:{self._client_name}",
                 )
 
-        return await self.subscribe_typed(
+        # sender-posture: signed-envelope open S1 -- the hub's envelope when the runner passes its door; else is_mine alone
+        return await self.subscribe(
             subject=Subjects.credential_refusal(inbox_prefix),
-            cb=_on_refusal,
-            message_type=CredentialRefusal,
+            cb=_on_message,
             deadletter_on_failure=False,
         )
 
@@ -5242,6 +5332,7 @@ class NatsClient:
         async with self._handover_lock:
             connection = self._raw
             try:
+                # sender-posture: primitive -- the core subscribe behind subscribe and subscribe_typed
                 raw_sub = await connection.subscribe(subject.path, queue=wire_queue)
             except Exception as exc:
                 raise SubscribeError(f"subscribe failed: subject={subject.path} queue={queue!r}: {exc}") from exc
@@ -6193,6 +6284,7 @@ class NatsClient:
             :return: the nats-py push subscription
             :rtype: Any
             """
+            # sender-posture: primitive -- the push consumer behind jetstream_subscribe_durable
             return await js.subscribe(
                 subject.path,
                 durable=durable,
@@ -6445,6 +6537,7 @@ class NatsClient:
             :return: the nats-py pull subscription
             :rtype: Any
             """
+            # sender-posture: primitive -- the pull consumer behind jetstream_pull_subscribe
             return await self.jetstream_context().pull_subscribe(
                 subject.path,
                 durable=durable,
@@ -6644,6 +6737,10 @@ async def _establish_connection(
     :raises NatsClientError: if connection fails
     """
     nc = _NatsPyClient()
+    # every inbox, request token and ephemeral consumer this connection names is drawn from a
+    # CSPRNG: nats-py's own NUID is sequential, so one reply subject a peer sees would predict the
+    # next, and any client in the account can get bytes delivered onto a subject it can name.
+    install_csprng_nuid(nc)
     # the options are heterogeneous by nature (callbacks, bounds, credentials); nats-py types each
     # keyword separately, which an options dict cannot express.
     connect_options: dict[str, Any] = dict(options)

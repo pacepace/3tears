@@ -196,9 +196,9 @@ last interval's rows are lost.
 
 - **Revocation checks:** a revoked key is an L1 hit in steady state, and other pods see a new
   revocation through the invalidation broadcast. A key that is NOT revoked -- nearly every
-  check -- is answered by an absent-marker in L1 (or L2, on a pod that has not asked yet),
-  after one NATS read of the table's write generation: what the KV-backed check costs today,
-  and no L3 query.
+  check -- is answered by an absent-marker in the pod's L1 after one NATS read of the table's
+  write generation, and no L3 query. Absences live in L1 only (Pace's ruling R1, 2026-10-15), so
+  each pod asks L3 once per key per generation.
 - **Counter increments:** L2 CAS, the NATS round trips they already pay, with L3 batched per
   flush interval.
 - **Nonces:** memory plus one extra NATS request on a fresh nonce. No L3.
@@ -233,8 +233,10 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    a miss in every tier caches nothing, so every "not revoked" check would reach L3.
 
    *How it answers.* A reader reads the table's write generation BEFORE its L3 lookup; a full
-   miss is recorded as an absent-marker in its L1 and in L2 under that generation. A marker
-   answers only while its stamp is the current generation. Every committed write advances the
+   miss is recorded as an absent-marker in its L1 under that generation (never in L2: L1 only,
+   capped by count per table, and every marker under a generation the table has moved past is
+   dropped when a read sees the move). A marker answers only while its stamp is the current
+   generation. Every committed write advances the
    generation, so a marker recorded from an L3 read that predated a write carries a
    generation the write already moved past.
 

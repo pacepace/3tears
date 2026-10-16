@@ -16,7 +16,8 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
 
-from pydantic import BaseModel, ConfigDict, SerializerFunctionWrapHandler, model_serializer, model_validator
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer, model_validator
+from threetears.core.wire import TolerantWireModel
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import TearsTool, ToolResult
@@ -71,6 +72,13 @@ from threetears.core.security.identity_token import (
     principal_from_claims,
     verify_identity_token,
 )
+from threetears.core.security.delegated_token import (
+    DelegatedKeyNotFoundError,
+    DelegatedTokenError,
+    verify_delegation_at_pod,
+)
+from threetears.core.security.door_request import RegistrationKey
+from threetears.core.security.identity_token import principal_from
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
     SYNC_REPLY_BUDGET_SECONDS,
@@ -202,6 +210,7 @@ _UNHEALTHY_EXIT_THRESHOLD: int = 3
 
 if TYPE_CHECKING:
     from threetears.core.coordination.replay_anchor import ReplayAnchor
+    from threetears.core.security.door_request import PopKey
 
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
@@ -432,6 +441,11 @@ class RegistrationManifest(BaseModel):
     :param customer_id: owning-customer UUID for agent-spun pods;
         ``None`` for platform-built-in pods
     :ptype customer_id: UUID | None
+    :param proves_delegation: whether this pod proves a call's delegated token with its
+        registration key (``ToolServer(registration_key=)`` gives one): the registry then sends it the
+        delegation in place of the agent's own token, which it never holds. A registry that predates
+        the field ignores it and keeps sending both
+    :ptype proves_delegation: bool
     """
 
     pod_id: str
@@ -439,6 +453,7 @@ class RegistrationManifest(BaseModel):
     bootstrap_token: str | None = None
     owner_agent_id: UUID | None = None
     customer_id: UUID | None = None
+    proves_delegation: bool = False
 
 
 class RefusedTool(BaseModel):
@@ -632,7 +647,7 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
 )
 
 
-class CallRequest(BaseModel):
+class CallRequest(TolerantWireModel):
     """incoming tool call request from NATS.
 
     per-call identity dimensions (conversation_id, user_id, customer_id,
@@ -686,28 +701,13 @@ class CallRequest(BaseModel):
         buy itself more time than the pod allows, and the pod does not spend
         time the caller has already given up waiting for.
 
-        **Rollout: this release ACCEPTS the field; no client sends it yet.**
-        :attr:`model_config` is ``extra="forbid"``, so a client that sends
-        this to a server predating it gets its whole call rejected -- not a
-        degraded call, a refused one. The server side therefore ships and
-        deploys a release before any caller is taught to populate it, which is
-        the same order ``result_subject`` went out under.
-
-        **That order is necessary and was not sufficient, and this note used
-        to say otherwise.** Not populating a field does not keep it off the
-        wire: every DECLARED field is serialized, so this one crossed as an
-        explicit ``null`` from the moment it was added, and a receiver that
-        forbids extras refuses an unknown null exactly as it refuses an
-        unknown value. A 0.23.11 pod refused every call from a 0.24.1 registry
-        for three days on this field, before any caller sent it. What makes the
-        rollout order true is the registry proxy pruning unset top-level
-        optionals from the envelope (0.24.3) -- so any OTHER sender of this
-        model must prune likewise, and adding a field here is not safe on the
-        strength of this paragraph alone
+        The model is a tolerant reader (:class:`~threetears.core.wire.TolerantWireModel`): a
+        server predating a field ignores it, so a caller may send it before every pod has
+        upgraded. Pods released while this model still forbade extras refuse the whole call on an
+        unknown key, explicit ``null`` included, which is why the registry proxy prunes unset
+        top-level optionals from the envelope
     :ptype deadline_seconds: float | None
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     tool_name: str
     tool_version: str
@@ -1061,6 +1061,8 @@ class ToolServer:
         max_concurrent_calls: int | None = None,
         max_call_seconds: float | None = None,
         result_delivery_retry_seconds: float = _RESULT_DELIVERY_RETRY_SECONDS,
+        registration_key: "Callable[[], RegistrationKey | None] | None" = None,
+        pop_key: "Callable[[], PopKey | None] | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -1208,6 +1210,14 @@ class ToolServer:
             result after a transient failure -- long enough for a reconnect to complete, short
             enough to fit every attempt inside a caller's timeout. Must be >= 0.
         :ptype result_delivery_retry_seconds: float
+        :param registration_key: a TOOL POD's provider of its registration key -- the key its verified
+            registration is signed with, which the registry binds each call's delegated token to. With
+            it a tool presents that token, proven, instead of forwarding the caller's bearer token, and
+            the pod declares ``proves_delegation`` so the registry stops sending it the agent's token
+        :ptype registration_key: Callable[[], RegistrationKey | None] | None
+        :param pop_key: an agent's IN-PROCESS server's provider of the key the agent's own token binds;
+            its calls carry that token, which a tool proves with it
+        :ptype pop_key: Callable[[], PopKey | None] | None
         :param assertion_replay_anchor: the durable first-existence record for the
             self-provisioned assertion replay guard, so it can tell a first run from a wiped
             bucket. ``None`` for a pod with nowhere to record one, which leaves that guard
@@ -1297,6 +1307,14 @@ class ToolServer:
         # presented to NATS on connect INSTEAD of user/password AND re-minted for each registration
         # manifest so the registry-layer verifier always sees a fresh JWT. None -> static fallback.
         self._auth_token = auth_token
+        # the key a call's door credential is proven with (ToolCallScope.credential), read per call
+        if registration_key is not None and pop_key is not None:
+            raise ValueError(
+                "a ToolServer is a tool pod (registration_key) or an agent's in-process server (pop_key), never both"
+            )
+        self._door_key: Callable[[], PopKey | RegistrationKey | None] | None = (
+            registration_key if registration_key is not None else pop_key
+        )
         self._context_factory = context_factory
         self._customer_id = customer_id
         # defense-in-depth: the pod re-verifies the Hub identity token AND the proxy's body-bound
@@ -2006,6 +2024,7 @@ class ToolServer:
         #
         # Heartbeat publishes are write-only and still need no queue group.
         call_subject = Subjects.tools_internal(self._pod_id)
+        # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
         await self._nc.subscribe(subject=call_subject, queue=call_subject.path, cb=self.handle_call)
         log.info(
             "subscribed to call subject",
@@ -2013,6 +2032,7 @@ class ToolServer:
         )
 
         probe_subject = Subjects.tools_probe(self._pod_id)
+        # sender-posture: read-only -- answers a probe ack and nothing else
         await self._nc.subscribe(subject=probe_subject, queue=probe_subject.path, cb=self.handle_probe)
         log.info(
             "subscribed to probe subject",
@@ -2401,6 +2421,7 @@ class ToolServer:
             bootstrap_token=manifest_token,
             owner_agent_id=self._manifest_owner_agent_id,
             customer_id=self._customer_id,
+            proves_delegation=self._proves_delegation(),
         )
 
         subject = Subjects.tools_register()
@@ -2701,6 +2722,13 @@ class ToolServer:
         :rtype: tuple[CallRequest, str | None, bool]
         """
         context = request.context
+        if (
+            context is not None
+            and context.identity_token is None
+            and context.delegated_token
+            and self._proves_delegation()
+        ):
+            return await self._verify_delegation(request, context)
         # shared across the handshake + user-assertion verifications so the reactive Hub refresh (on
         # a kid-not-in-cache miss) fires at most ONCE per dispatch, not once per token.
         refreshed = [False]
@@ -2819,6 +2847,82 @@ class ToolServer:
             }
         )
         return request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod
+
+    def _proves_delegation(self) -> bool:
+        """whether this server proves a call's delegated token: its door key is a registration key.
+
+        Declared on every registration manifest, so the registry sends a call to this pod the
+        delegation in place of the agent's own token.
+
+        :return: whether it declares
+        :rtype: bool
+        """
+        return isinstance(self._door_key() if self._door_key is not None else None, RegistrationKey)
+
+    async def _verify_delegation(
+        self, request: CallRequest, context: CallContext
+    ) -> tuple[CallRequest, str | None, bool]:
+        """verify a declaring pod's call by its delegation, and re-stamp the caller from it.
+
+        The registry sends a pod that declared ``proves_delegation`` the call's delegated token in
+        place of the agent's own token and user assertion. The delegation must be the registry's,
+        name this pod as its actor and this call's correlation id; the caller is then the agent,
+        customer and user it names, exactly as :meth:`_verify_identity` re-stamps them from the
+        agent's token. Fail-closed: on any failure the call is rejected.
+
+        :param request: the parsed inbound call request
+        :ptype request: CallRequest
+        :param context: its context, carrying the delegation and no identity token
+        :ptype context: CallContext
+        :return: ``(request, reason, principal_is_tool_pod)``, as :meth:`_verify_identity` answers
+        :rtype: tuple[CallRequest, str | None, bool]
+        """
+        token = context.delegated_token or ""
+        correlation = str(context.correlation_id) if context.correlation_id is not None else ""
+        result: tuple[CallRequest, str | None, bool]
+        try:
+            if self._jwks_provider is None:
+                raise IdentityTokenError("no JWKS provider configured for pod identity verification")
+            try:
+                claims = verify_delegation_at_pod(
+                    token, jwks=self._load_pod_jwks(request.tool_name), pod_id=self._pod_id, correlation_id=correlation
+                )
+            except DelegatedKeyNotFoundError:
+                # a registry re-key, or a stale cache, and only that: refresh once (debounced there)
+                if self._jwks_refresh is not None:
+                    await self._jwks_refresh()
+                claims = verify_delegation_at_pod(
+                    token, jwks=self._load_pod_jwks(request.tool_name), pod_id=self._pod_id, correlation_id=correlation
+                )
+            # the conversation is the one the registry signed into the delegation, never the
+            # context's: the registry's signatures cover the body, not the context, so a
+            # conversation the delegation does not sign is one anyone on the bus could have added.
+            # A delegation from a registry that predates the claim signs none, and its call runs in
+            # no conversation; one that names another conversation than the call's is refused.
+            conversation = str(context.conversation_id) if context.conversation_id is not None else None
+            if claims.conversation_id is not None and claims.conversation_id != conversation:
+                raise DelegatedTokenError("the delegation was minted for another conversation than the call's")
+            signed_conversation = context.conversation_id if claims.conversation_id is not None else None
+            # the one reading a token's principal gets, so a tool pod's call keeps its mark
+            principal = principal_from(claims.agent_id, claims.customer_id)
+            verified_context = context.model_copy(
+                update={
+                    "agent_id": principal.principal_id,
+                    "user_id": UUID(claims.user_id) if claims.user_id is not None else None,
+                    "customer_id": principal.customer_id,
+                    "conversation_id": signed_conversation,
+                }
+            )
+        except (DelegatedTokenError, IdentityTokenError, ValueError) as exc:
+            reason = type(exc).__name__
+            log.warning(
+                "pod delegation verification failed; rejecting call",
+                extra={"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}},
+            )
+            result = (request, f"delegation verification failed ({reason})", False)
+        else:
+            result = (request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod)
+        return result
 
     async def _verify_proxy_assertion(self, request: CallRequest) -> _AssertionGateRefusal | None:
         """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
@@ -3227,18 +3331,16 @@ class ToolServer:
                 content="",
                 error=f"malformed call request: {exc}",
             )
-            # NOSILENT: this branch refuses the call at the border and, until now, wrote
-            # nothing anywhere -- the reason travelled only in the reply, to a caller that
-            # is usually a model. :attr:`CallRequest.model_config` is ``extra="forbid"``,
-            # so the ordinary way to arrive here is a CALLER NEWER THAN THIS POD sending a
-            # field this version does not know: an envelope-compatibility failure that
-            # rejects every call identically and is invisible in the pod's own log. That is
-            # the shape most worth naming, because nothing else about the pod looks wrong
-            # while it happens -- it registers, heartbeats, and answers probes throughout.
+            # NOSILENT: this branch refuses the call at the border, and the reason would
+            # otherwise travel only in the reply, to a caller that is usually a model. A
+            # CallRequest ignores fields it does not know, so arriving here means a declared
+            # field failed validation or a retired one was sent: an envelope-compatibility
+            # failure that can reject every call identically while the pod registers,
+            # heartbeats and answers probes throughout.
             log.warning(
-                "refusing a call whose envelope this pod cannot parse; a caller newer than "
-                "this pod sending an unknown field is the usual cause (CallRequest forbids "
-                "extras), and it refuses every call the same way",
+                "refusing a call whose envelope this pod cannot parse; a declared field that "
+                "failed validation or a retired field is the usual cause, and it refuses every "
+                "call the same way",
                 extra={"extra_data": {"pod_id": self._pod_id, "error": str(exc)}},
             )
             await self._respond(msg, error_response)
@@ -3833,6 +3935,7 @@ class ToolServer:
             object_store=self._object_store,
             object_resolver=self._object_resolver,
             engagement_resolver=self._engagement_resolver,
+            door_key=self._door_key() if self._door_key is not None else None,
         )
 
     async def _heartbeat_loop(self) -> None:

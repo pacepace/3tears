@@ -462,11 +462,12 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
 
     #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
     #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
-    write_generation = WRITE_GENERATION
+    # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
 
     primary_key_column: str = "id"
     schema = TableSchema(
         name="datasources",
+        write_generation=WRITE_GENERATION,
         primary_key="id",
         columns=[
             Column("id", UUID_TYPE),

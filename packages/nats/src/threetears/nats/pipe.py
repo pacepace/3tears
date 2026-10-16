@@ -495,6 +495,7 @@ class PipeStream:
         :rtype: None
         :raises SubscribeError: if the subscription cannot be registered
         """
+        # sender-posture: primitive -- a pipe end hands frames to the caller that opened it
         self._sub = await self._nats.subscribe(
             self._inbound,
             cb=self._on_frame,
@@ -1053,6 +1054,7 @@ async def serve_pipe(
         task.add_done_callback(running.discard)
         return encode_attach_reply(endpoint)
 
+    # sender-posture: primitive -- serve_pipe hands each attach to its caller's handler
     async with serve_owner(nats, key, _on_attach, family=family):
         try:
             yield

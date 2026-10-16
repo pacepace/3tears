@@ -2,9 +2,12 @@
 
 The contract this pins:
 
-- a negative-caching collection records a full miss in L1 and L2, stamped with the table's write
-  generation, so repeated lookups of a key nobody wrote reach L3 once per generation, across
-  replicas;
+- a negative-caching collection records a full miss in its pod's L1 only, stamped with the table's
+  write generation, so repeated lookups of a key nobody wrote reach L3 once per pod per generation;
+  nothing is recorded in L2, and an absent-marker an older release left there is never trusted;
+- recorded absences are bounded by count, never by time: a table holds at most its cap in a pod's
+  L1, and every marker recorded under a generation the table has moved past is dropped when a
+  read sees the move;
 - a recorded absence never answers after a committed write: every write advances the generation,
   so the absence is invalidated whatever happened to L2 in between -- a peer listener deleting the
   writer's fresh value, a writer in another principal scope, a reader whose L3 read straddled the
@@ -40,20 +43,22 @@ from threetears.nats import KvError
 _SCOPE = "test-principal"
 _OTHER_SCOPE = "other-principal"
 _TABLE = "denylist_entries"
+_OTHER_TABLE = "other_denylist_entries"
 _MAX_AGE = timedelta(seconds=60)
 
 
 def _metadata() -> MetaData:
     metadata = MetaData()
-    Table(
-        _TABLE,
-        metadata,
-        Column("id", String(255), primary_key=True),
-        Column("reason", String(255)),
-        Column("expires_at", DateTime(timezone=True)),
-        Column("date_created", DateTime(timezone=True)),
-        Column("date_updated", DateTime(timezone=True)),
-    )
+    for name in (_TABLE, _OTHER_TABLE):
+        Table(
+            name,
+            metadata,
+            Column("id", String(255), primary_key=True),
+            Column("reason", String(255)),
+            Column("expires_at", DateTime(timezone=True)),
+            Column("date_created", DateTime(timezone=True)),
+            Column("date_updated", DateTime(timezone=True)),
+        )
     return metadata
 
 
@@ -153,15 +158,28 @@ class _Expiring(_DenylistCollection):
     expires_at_column: ClassVar[str | None] = "expires_at"
 
 
-class _NegativeCachingSweepingInPairs(_NegativeCaching):
-    """a negative-caching collection whose sweep deletes two markers per query, so a backlog spans batches."""
+class _NegativeCachingCappedAtFive(_NegativeCaching):
+    """a negative-caching collection whose table may hold five recorded absences per pod."""
 
-    negative_cache_sweep_batch: ClassVar[int] = 2
+    negative_cache_max_entries: ClassVar[int] = 5
 
 
 class _NegativeCachingAndExpiring(_DenylistCollection):
     negative_cache_max_age: ClassVar[timedelta | None] = _MAX_AGE
     expires_at_column: ClassVar[str | None] = "expires_at"
+
+
+class _OtherTableCappedAtFive(_NegativeCachingCappedAtFive):
+    """a negative-caching collection over a second table, sharing a backend with the first."""
+
+    @property
+    def table_name(self) -> str:
+        return _OTHER_TABLE
+
+
+def _markers(l1: SQLiteBackend) -> list[dict[str, Any]]:
+    """the recorded absences this backend holds for the test's table."""
+    return l1.execute_query("SELECT key, generation FROM collection_absent_markers WHERE table_name = ?", (_TABLE,))
 
 
 class _HookedBucket(FakeKvBucket):
@@ -245,13 +263,15 @@ def _wire() -> tuple[_HookedNats, _Store, _FakeGenerations]:
 
 class TestNegativeCaching:
     @pytest.mark.asyncio
-    async def test_a_key_nobody_wrote_reaches_l3_once_across_replicas(self) -> None:
+    async def test_a_key_nobody_wrote_reaches_l3_once_per_pod(self) -> None:
         nats, store, gens = _wire()
         a, b = _replica(_NegativeCaching, nats, store, gens), _replica(_NegativeCaching, nats, store, gens)
         assert await a.get("never-revoked") is None
-        assert await a.get("never-revoked") is None  # L1 marker
-        assert await b.get("never-revoked") is None  # L2 marker, for a replica that never asked
+        assert await a.get("never-revoked") is None  # a's L1 marker
         assert store.fetches == 1
+        assert await b.get("never-revoked") is None  # b records its own; L2 holds no absence
+        assert await b.get("never-revoked") is None
+        assert store.fetches == 2
 
     @pytest.mark.asyncio
     async def test_without_opting_in_every_miss_reaches_l3(self) -> None:
@@ -325,51 +345,88 @@ class TestNegativeCaching:
         assert await reader.get("tok") is not None, "an L3-only writer left the reader's absence answering"
 
     @pytest.mark.asyncio
-    async def test_expired_l1_markers_are_swept_without_their_keys_being_read_again(
+    async def test_a_marker_answers_while_the_generation_is_unmoved_with_no_clock_involved(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # a denylist checks a different key per token, so a marker's own key is rarely seen twice;
-        # expiry has to reach rows nobody looks up again.
-        clock = [1_000.0]
-        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        # the clock is frozen: what ends a marker's answer is the generation moving, nothing else.
+        monkeypatch.setattr(time, "monotonic", lambda: 1_000.0)
+        nats, store, gens = _wire()
+        coll = _replica(_NegativeCaching, nats, store, gens)
+        for _ in range(10):
+            assert await coll.get("tok") is None
+        assert store.fetches == 1, "a marker under the unmoved generation did not answer"
+        await gens.advance(_TABLE)
+        assert await coll.get("tok") is None
+        assert store.fetches == 2, "a marker answered after its generation moved"
+
+    @pytest.mark.asyncio
+    async def test_a_generation_move_drops_every_marker_recorded_under_the_old_one(self) -> None:
+        # a denylist checks a new key per token, so a dead marker's own key is rarely read again;
+        # the move itself has to collect them.
         nats, store, gens = _wire()
         l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
         coll = _replica(_NegativeCaching, nats, store, gens, l1=l1)
         for n in range(5):
             assert await coll.get(f"token-{n}") is None
-        assert len(l1.execute_query("SELECT key FROM collection_absent_markers")) == 5
-
-        clock[0] += _MAX_AGE.total_seconds() + 61.0  # past every deadline and the sweep interval
-        assert await coll.get("a-new-token") is None  # a marker write triggers the sweep
-        remaining = l1.execute_query("SELECT key FROM collection_absent_markers")
-        assert len(remaining) == 1, "expired markers for keys nobody read again were left in L1"
+        assert len(_markers(l1)) == 5
+        await gens.advance(_TABLE)
+        assert await coll.get("a-new-token") is None
+        assert [row["generation"] for row in _markers(l1)] == [await gens.current(_TABLE)], (
+            "markers recorded under a generation the table moved past were left in L1"
+        )
 
     @pytest.mark.asyncio
-    async def test_one_sweep_drains_a_backlog_larger_than_its_batch(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # a sweep capped at one batch per interval falls behind any miss rate above batch/interval,
-        # and the table then grows without bound.
-        clock = [1_000.0]
-        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    async def test_recorded_absences_stay_within_the_cap_under_a_flood_of_distinct_keys(self) -> None:
         nats, store, gens = _wire()
         l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
-        coll = _replica(_NegativeCachingSweepingInPairs, nats, store, gens, l1=l1)
-        for n in range(7):
+        coll = _replica(_NegativeCachingCappedAtFive, nats, store, gens, l1=l1)
+        for n in range(200):
             assert await coll.get(f"token-{n}") is None
-
-        clock[0] += _MAX_AGE.total_seconds() + 61.0
-        assert await coll.get("a-new-token") is None
-        remaining = l1.execute_query("SELECT key FROM collection_absent_markers")
-        assert len(remaining) == 1, "the sweep stopped after one batch and left the backlog"
+            assert len(_markers(l1)) <= 5
+        fetched = store.fetches
+        for n in range(195, 200):  # the newest five are the ones kept, and still answer
+            assert await coll.get(f"token-{n}") is None
+        assert store.fetches == fetched
+        assert await coll.get("token-0") is None  # the oldest was dropped: L3 is asked again
+        assert store.fetches == fetched + 1
 
     @pytest.mark.asyncio
-    async def test_an_l2_marker_leaves_the_bucket_when_its_lifetime_passes(self) -> None:
+    async def test_the_cap_is_per_table(self) -> None:
+        # one table's flood does not evict another's absences on the same backend
+        nats, store, gens = _wire()
+        l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
+        quiet = _replica(_NegativeCaching, nats, store, gens, l1=l1)
+        assert await quiet.get("kept") is None
+        loud = _replica(_OtherTableCappedAtFive, nats, store, gens, l1=l1)
+        for n in range(50):
+            assert await loud.get(f"token-{n}") is None
+        fetched = store.fetches
+        assert await quiet.get("kept") is None
+        assert store.fetches == fetched, "another table's flood evicted this table's absence"
+
+    @pytest.mark.asyncio
+    async def test_no_absence_is_recorded_in_l2(self) -> None:
         nats, store, gens = _wire()
         a = _replica(_NegativeCaching, nats, store, gens)
         assert await a.get("k") is None
-        key = f"{_SCOPE}.{_TABLE}.k"
-        assert await nats.bucket.get(key=key) is not None
-        nats.bucket.advance_clock(_MAX_AGE)
-        assert await nats.bucket.get(key=key) is None, "a marker nobody reads again stayed in the bucket"
+        assert await nats.bucket.get(key=f"{_SCOPE}.{_TABLE}.k") is None
+
+    @pytest.mark.asyncio
+    async def test_an_older_releases_l2_marker_is_not_trusted_and_is_removed(self) -> None:
+        nats, store, gens = _wire()
+        coll = _replica(_NegativeCaching, nats, store, gens)
+        key = f"{_SCOPE}.{_TABLE}.tok"
+        generation = await gens.current(_TABLE)
+        await nats.bucket.put(key=key, value=b"\x00threetears.collections.absent\x00" + generation.encode())
+        store.rows["tok"] = {"id": "tok", "reason": "revoked", "expires_at": None}
+        assert await coll.get("tok") is not None, "an L2 marker answered over the row L3 holds"
+        del store.rows["tok"]
+        await nats.bucket.put(key=key, value=b"\x00threetears.collections.absent\x00" + generation.encode())
+        fresh = _replica(_NegativeCaching, nats, store, gens)
+        fetched = store.fetches
+        assert await fresh.get("tok") is None
+        assert store.fetches == fetched + 1, "an L2 marker answered without L3"
+        assert await nats.bucket.get(key=key) is None, "the older release's marker was left in L2"
 
     @pytest.mark.asyncio
     async def test_an_unreadable_generation_trusts_and_records_no_absence(self) -> None:
@@ -394,23 +451,25 @@ class TestNegativeCaching:
 
     @pytest.mark.asyncio
     async def test_a_marker_in_l2_does_not_break_a_cas_mutation(self) -> None:
+        # an older release's marker: this release writes none
         nats, store, gens = _wire()
         coll = _replica(_OrderedNegativeCaching, nats, store, gens)
-        assert await coll.get("k") is None  # L2 now holds a marker for k
+        generation = await gens.current(_TABLE)
+        await nats.bucket.put(
+            key=f"{_SCOPE}.{_TABLE}.k", value=b"\x00threetears.collections.absent\x00" + generation.encode()
+        )
         await coll.l2_cas_mutate("k", lambda row: ("upsert", {"id": "k", "reason": "set"}))
         raw = await nats.bucket.get(key=f"{_SCOPE}.{_TABLE}.k")
         assert raw is not None and json.loads(raw)["reason"] == "set"
 
     @pytest.mark.asyncio
-    async def test_an_undecodable_l2_entry_is_replaced_by_a_marker(self) -> None:
+    async def test_an_undecodable_l2_entry_is_removed(self) -> None:
         nats, store, gens = _wire()
         coll = _replica(_NegativeCaching, nats, store, gens)
         key = f"{_SCOPE}.{_TABLE}.k"
         await nats.bucket.put(key=key, value=b'{"id": "k", "date_created": "not-a-time"}')
         assert await coll.get("k") is None
-        other = _replica(_NegativeCaching, nats, store, gens)
-        assert await other.get("k") is None
-        assert store.fetches == 1, "the poisoned entry kept sending lookups to L3"
+        assert await nats.bucket.get(key=key) is None, "the poisoned entry was left in L2"
 
 
 class TestFailedL2Writes:
@@ -485,12 +544,12 @@ class TestUnsoundWiringIsRefused:
             class _TooShort(_DenylistCollection):
                 negative_cache_max_age: ClassVar[timedelta | None] = timedelta(milliseconds=500)
 
-    def test_a_sweep_batch_under_one_is_refused_at_class_definition(self) -> None:
-        """a batch of zero would select nothing, so no expired marker would ever be swept."""
-        with pytest.raises(TypeError, match="negative_cache_sweep_batch"):
+    def test_a_cap_under_one_is_refused_at_class_definition(self) -> None:
+        """a cap of zero could record no absence at all."""
+        with pytest.raises(TypeError, match="negative_cache_max_entries"):
 
-            class _NeverSweeps(_NegativeCaching):
-                negative_cache_sweep_batch: ClassVar[int] = 0
+            class _RecordsNothing(_NegativeCaching):
+                negative_cache_max_entries: ClassVar[int] = 0
 
 
 class TestRowExpiry:

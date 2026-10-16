@@ -273,6 +273,15 @@ class ReplayGuard:
         return self._bucket_name
 
     @property
+    def retention(self) -> timedelta:
+        """how long a recorded nonce is remembered, so a verifier can check it outlives its artifacts.
+
+        :return: the configured ttl
+        :rtype: timedelta
+        """
+        return self._ttl
+
+    @property
     def verifier_future_tolerance(self) -> timedelta:
         """the verifier future tolerance this guard's wipe check was sized for.
 

@@ -24,9 +24,9 @@ _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_every_jws_verifier_in_this_package_pins_eddsa() -> None:
-    """All three, not just the identity token.
+    """Every one, not just the identity token.
 
-    `pop.py` and `proxy_assertion.py` verify JWS on the request path and were outside this
+    `pop.py`, `proxy_assertion.py`, `service_envelope.py`, `turn_assertion.py` and `delegated_token.py` verify JWS on the request path and were outside this
     gate. `_ALG` is pinned by name in each because it is what `jwt.encode` uses -- the walker
     checks decode calls, so without the constant pin the SIGNING algorithm could be repointed
     without tripping anything.
@@ -53,6 +53,28 @@ def test_every_jws_verifier_in_this_package_pins_eddsa() -> None:
                 ),
                 PinnedModule(
                     path=security / "proxy_assertion.py",
+                    allowed_algorithms=frozenset({"EdDSA"}),
+                    pinned_constants={"_ALG": "EdDSA"},
+                    require_audience=True,
+                ),
+                PinnedModule(
+                    # A delegated token names the doors it may reach: `aud` is checked against the door.
+                    path=security / "delegated_token.py",
+                    allowed_algorithms=frozenset({"EdDSA"}),
+                    pinned_constants={"_ALG": "EdDSA"},
+                    require_audience=True,
+                ),
+                PinnedModule(
+                    # A turn assertion is addressed to the turn path: `aud` keeps an identity token
+                    # from being taken for one.
+                    path=security / "turn_assertion.py",
+                    allowed_algorithms=frozenset({"EdDSA"}),
+                    pinned_constants={"_ALG": "EdDSA"},
+                    require_audience=True,
+                ),
+                PinnedModule(
+                    # A service envelope is addressed to one door: `aud` is what refuses it at another.
+                    path=security / "service_envelope.py",
                     allowed_algorithms=frozenset({"EdDSA"}),
                     pinned_constants={"_ALG": "EdDSA"},
                     require_audience=True,

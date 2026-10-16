@@ -57,6 +57,7 @@ from threetears.observe import get_logger
 from threetears.nats._publish import publish_bounded, run_bounded
 from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
 from threetears.nats.errors import OpLogError, OpLogSequenceConflict
+from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.subjects import Subjects
 
 if TYPE_CHECKING:
@@ -95,6 +96,8 @@ _DEDUP_WINDOW_SECONDS: Final[float] = 300.0
 #: Replay fetch batch size and per-fetch timeout (seconds).
 _REPLAY_BATCH: Final[int] = 256
 _REPLAY_FETCH_TIMEOUT: Final[float] = 2.0
+#: what a replay consumer's random name starts with, so an operator can tell whose it is.
+_REPLAY_CONSUMER_PREFIX: Final[str] = "oplog-replay-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +443,10 @@ class OpLog:
         and returns cleanly. Read-only (``AckPolicy.NONE``); the
         ephemeral consumer is torn down on exit.
 
+        The consumer is named at random and a fetched message counts only when it carries that
+        consumer's ack reply: any client in the account can get bytes delivered onto the fetch
+        inbox, and a forged op replayed into a materialise would be written as if logged.
+
         :param from_seq: first stream sequence to deliver (1-based); a value past the current end yields nothing
         :ptype from_seq: int
         :return: async iterator over logged ops in sequence order
@@ -460,13 +467,20 @@ class OpLog:
             # Past the end (includes an empty stream where last_seq == 0): nothing to yield.
             return
 
+        consumer = random_consumer_name(_REPLAY_CONSUMER_PREFIX)
         config = ConsumerConfig(
+            name=consumer,
+            filter_subject=self._subject,
             deliver_policy=DeliverPolicy.BY_START_SEQUENCE,
             opt_start_seq=from_seq,
             ack_policy=AckPolicy.NONE,
         )
         try:
-            psub = await js.pull_subscribe(self._subject, stream=self._stream, config=config)
+            # the create nats-py's pull_subscribe makes, with a name this replay chose rather than
+            # one nats-py keeps to itself, so each fetched message can be checked against it.
+            await js.add_consumer(self._stream, config=config)
+            # sender-posture: own-consumer -- an op counts only with the replay consumer's own ack reply
+            psub = await js.pull_subscribe_bind(consumer=consumer, stream=self._stream)
         except Exception as exc:
             raise OpLogError(f"op-log replay failed (subscribe): stream={self._stream}: {exc!r}") from exc
 
@@ -503,6 +517,10 @@ class OpLog:
                 except Exception as exc:  # noqa: BLE001 - any non-timeout fetch failure surfaces loudly, never as a clean tail
                     raise OpLogError(f"op-log replay failed (fetch): stream={self._stream}: {exc!r}") from exc
                 for msg in msgs:
+                    if not delivered_by_own_consumer(
+                        msg, stream=self._stream, consumer=consumer, receiver="op-log replay"
+                    ):
+                        continue
                     seq = int(msg.metadata.sequence.stream)
                     headers = msg.headers or {}
                     op_id = headers.get(Header.MSG_ID, "")

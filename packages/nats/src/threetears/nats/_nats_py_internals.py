@@ -1,6 +1,6 @@
 """the one owner of every nats-py private attribute this package touches.
 
-nats-py has no public way to do four things :class:`threetears.nats.NatsClient` needs, and each
+nats-py has no public way to do five things :class:`threetears.nats.NatsClient` needs, and each
 was reached for where it was needed until the private surface was spread across ``client.py``
 with no owner. This module is now the only place in ``threetears.nats`` that reads or writes a
 nats-py name with a leading underscore. ``client.py`` calls the functions below, never the
@@ -13,9 +13,10 @@ an entry with its reason in ``tests/enforcement/_underscore_exemptions.txt``; no
 workspace reads or writes them on a nats-py object, and no access carries an inline pragma.
 
 **Verified against nats-py 2.15.0 and 2.16.0** (``nats/aio/client.py``,
-``nats/aio/subscription.py`` and ``nats/js/client.py`` read in both; every attribute below is
-unchanged between them). ``packages/nats/pyproject.toml`` caps nats-py below the first release
-not verified here. Moving the cap: read the same three files in the new release, check every
+``nats/aio/subscription.py``, ``nats/js/client.py`` and ``nats/nuid.py`` read in both; every
+attribute below is unchanged between them). ``packages/nats/pyproject.toml`` caps nats-py below the first release
+not verified here. Moving the cap: read the same four files in the new release, and every other
+nats-py module that calls ``_nuid.next()`` (``js/object_store.py``, ``micro/service.py``), check every
 entry of :data:`PRIVATE_SURFACE` against them, run the unit and integration suites on it, and
 add the version to this paragraph.
 
@@ -44,26 +45,43 @@ The surface, and why each is used:
 ``Client._process_op_err``
     :func:`force_reconnect`. nats-py has no public force-reconnect; this is the entry its own
     read loop uses when a connection goes stale.
+``Client._nuid``
+    :func:`install_csprng_nuid`. nats-py names every inbox and request token from one NUID per
+    connection: a random 12-character prefix, then a sequence that grows by a fixed step. One
+    observed reply subject predicts that connection's next inboxes, and any client in the account
+    can get bytes delivered onto a subject it can name. :class:`CsprngNuid` draws every token from
+    ``secrets`` instead. Every nats-py consumer of ``_nuid`` calls only ``next()``: the request mux
+    prefix and request tokens and ``new_inbox()`` (``aio/client.py``), JetStream's async-publish
+    reply prefix and token, ephemeral pull-consumer names and push deliver subjects
+    (``js/client.py``), object-store chunk ids (``js/object_store.py``) and a micro service's id
+    (``micro/service.py``). Two of them slice ``msg.subject[len(inbox_prefix) + 22 + 2:]`` and one
+    calls ``.extend()`` on the result, so ``next()`` returns a fresh, mutable ``bytearray`` of
+    exactly 22 bytes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import secrets
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from nats.aio.client import PING_PROTO, Client
 from nats.aio.subscription import Subscription
 from nats.js.client import JetStreamContext
+from nats.nuid import NUID
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
 
 __all__ = [
+    "NUID_LENGTH",
     "PRIVATE_SURFACE",
+    "CsprngNuid",
     "PrivateAttribute",
     "force_reconnect",
+    "install_csprng_nuid",
     "missing_private_attributes",
     "pull_subscription_inbox",
     "send_unsubscribe",
@@ -102,7 +120,46 @@ PRIVATE_SURFACE: Final[tuple[PrivateAttribute, ...]] = (
     PrivateAttribute("Subscription", "_pending_queue", asyncio.Queue),
     PrivateAttribute("Subscription", "_pending_size", int),
     PrivateAttribute("PullSubscription", "_sub", Subscription),
+    PrivateAttribute("Client", "_nuid", NUID),
 )
+
+#: the length nats-py slices every inbox token at (``msg.subject[len(prefix) + 22 + 2:]``).
+NUID_LENGTH: Final[int] = 22
+
+#: nats-py's NUID alphabet: base62, so a token is a valid subject token.
+_NUID_DIGITS: Final[bytes] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+class CsprngNuid(NUID):
+    """a drop-in for nats-py's ``NUID`` whose every token is drawn from ``secrets``.
+
+    Each token is :data:`NUID_LENGTH` base62 characters, about 131 bits, with no shared prefix and
+    no step between one token and the next: seeing any number of them says nothing about another.
+    It subclasses ``NUID`` so the client's attribute keeps its declared type; the prefix and
+    sequence state ``NUID.__init__`` sets up is never read, because ``next`` is the only method
+    nats-py calls.
+    """
+
+    def next(self) -> bytearray:
+        """a fresh token, as nats-py's ``NUID.next`` returns one.
+
+        :return: a new, mutable ``bytearray`` of :data:`NUID_LENGTH` base62 bytes
+        :rtype: bytearray
+        """
+        return bytearray(secrets.choice(_NUID_DIGITS) for _ in range(NUID_LENGTH))
+
+
+def install_csprng_nuid(connection: Client) -> None:
+    """make ``connection`` name every inbox, request token and consumer from :class:`CsprngNuid`.
+
+    Called between constructing the client and ``connect()``, before anything has drawn a token.
+
+    :param connection: a nats-py client not yet connected
+    :ptype connection: Client
+    :return: nothing
+    :rtype: None
+    """
+    connection._nuid = CsprngNuid()
 
 
 def write_pending_then_ping(connection: Client, pong: asyncio.Future[bool]) -> None:

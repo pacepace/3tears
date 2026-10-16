@@ -115,6 +115,8 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_
 packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_size
 # rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
 packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
+# rationale: nats-py Client._nuid: nats-py names every inbox, request token and ephemeral consumer from a sequential NUID one observed name predicts, and offers no public way to supply the generator; the CSPRNG one is installed before connect
+packages/nats/src/threetears/nats/_nats_py_internals.py:install_csprng_nuid#0:_nuid
 
 # rationale: opentelemetry-api trace._TRACER_PROVIDER_SET_ONCE: the set-once guard on set_tracer_provider (>= 1.39) has no public reset, and init_telemetry must install a provider again after shutdown_telemetry
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE

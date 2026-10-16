@@ -28,6 +28,9 @@ from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.coordination.migrations import PACKAGE_NAME, register
 from threetears.core.coordination.migrations.v001_create_coordination_tables import create_coordination_tables
 from threetears.core.coordination.migrations.v002_add_l2_order_columns import add_l2_order_columns
+from threetears.core.coordination.migrations.v003_create_collection_write_marks import (
+    create_collection_write_marks,
+)
 from threetears.core.coordination.tables import (
     COORDINATION_TABLE_SCHEMAS,
     CoordinationClaimsCollection,
@@ -251,7 +254,11 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
 
     def test_v002_adds_the_order_columns_and_is_registered_after_v001(self) -> None:
         versions = register(MigrationRunner()).versions
-        assert versions == {1: create_coordination_tables, 2: add_l2_order_columns}
+        assert versions == {
+            1: create_coordination_tables,
+            2: add_l2_order_columns,
+            3: create_collection_write_marks,
+        }
 
     @pytest.mark.asyncio
     async def test_v002_adds_both_columns_then_backfills_each_compare_and_swap_table(self) -> None:

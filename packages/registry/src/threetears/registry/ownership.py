@@ -133,12 +133,16 @@ class PublisherStanding:
     :param enforced: ``False`` only in open mode -- a registry with no authenticator, which has
         no identity or ownership data to decide with and enforces nothing
     :ptype enforced: bool
+    :param holder_jkt: the key thumbprint the verified publisher signed with (a tool pod's), which
+        delegated tokens for calls to its copies bind; ``None`` when not known
+    :ptype holder_jkt: str | None
     """
 
     verified: bool
     platform_shared: bool
     owned_nodes: tuple[str, ...]
     enforced: bool = True
+    holder_jkt: str | None = None
 
     @classmethod
     def unenforced(cls) -> PublisherStanding:

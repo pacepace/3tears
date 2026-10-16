@@ -46,6 +46,13 @@ class ChannelDeliveryMessage(BaseModel):
     :ptype content: str
     :param date_created: answer-ready timestamp (timezone-aware UTC)
     :ptype date_created: datetime
+    :param turn_id: the answered turn's CSPRNG id (signed in its turn assertion); keys the dedup
+        key, so a forger cannot pre-claim it. ``None`` from an agent that predates it
+    :ptype turn_id: str | None
+    :param turn_assertion: the hub's turn assertion the answered turn carried
+        (:mod:`threetears.core.security.turn_assertion`): the delivery worker posts only an answer to
+        a turn the hub signed, for this agent and conversation. ``None`` from an agent that predates it
+    :ptype turn_assertion: str | None
     """
 
     correlation_id: UUID
@@ -57,6 +64,9 @@ class ChannelDeliveryMessage(BaseModel):
     thread_ref: str | None = None
     content: str
     date_created: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # 32 hex characters (``new_turn_id``), so it is always a valid KV key segment
+    turn_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    turn_assertion: str | None = None
 
     @property
     def dedup_key(self) -> str:
@@ -69,7 +79,12 @@ class ChannelDeliveryMessage(BaseModel):
         raises ``InvalidKeyError``. both halves are 32-char hex, so ``-`` is
         unambiguous.
 
-        :return: dedup key ``{conversation_hex}-{correlation_hex}``
+        keyed on the turn's CSPRNG id when the answer carries one: a correlation id is known to
+        every tool pod in the turn, so a forged answer sent first under it would claim the key and
+        suppress the real one; a turn id is not.
+
+        :return: dedup key ``{conversation_hex}-{turn_id}``, or ``{conversation_hex}-{correlation_hex}``
+            for an answer from an agent that predates the turn id
         :rtype: str
         """
-        return f"{self.conversation_id.hex}-{self.correlation_id.hex}"
+        return f"{self.conversation_id.hex}-{self.turn_id or self.correlation_id.hex}"

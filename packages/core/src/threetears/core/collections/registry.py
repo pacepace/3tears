@@ -949,6 +949,7 @@ class CollectionRegistry:
         # rather than run on silently as an island. Both fields stay unset on
         # that path, so a failed start leaves nothing behind for ``stop`` to
         # find and a retry is a clean first start.
+        # sender-posture: unauthenticated open S3 -- the body names what to evict and the L2 scope
         subscription = await nats_client.subscribe_typed(
             subject=Subjects.cache_invalidate(),
             message_type=CacheInvalidationMessage,

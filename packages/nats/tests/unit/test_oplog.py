@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from nats.aio.msg import Msg
 from nats.js.api import Header, StorageType
 
 from threetears.nats import (
@@ -253,13 +254,83 @@ class _ReplayJetStream:
 
     def __init__(self, *, last_seq: int, fetch_error: BaseException) -> None:
         self._last_seq = last_seq
-        self.psub = _FakePullSub(fetch_error)
+        self.psub: Any = _FakePullSub(fetch_error)
+        self.created: list[tuple[str, Any]] = []
+        self.bound: list[tuple[str, str]] = []
 
     async def stream_info(self, name: str) -> _FakeStreamInfo:
         return _FakeStreamInfo(self._last_seq)
 
-    async def pull_subscribe(self, subject: str, *, stream: str, config: Any) -> _FakePullSub:
+    async def add_consumer(self, stream: str, *, config: Any) -> Any:
+        self.created.append((stream, config))
+        return object()
+
+    async def pull_subscribe_bind(self, *, consumer: str, stream: str) -> Any:
+        self.bound.append((consumer, stream))
         return self.psub
+
+
+# parity-exempt: fakes the external nats pull subscription handing back one scripted batch, then the drained-tail timeout; external lib, no threetears parity
+class _ScriptedPullSub:
+    def __init__(self, batch: list[Any]) -> None:
+        self._batches = [batch]
+        self.unsubscribed = False
+
+    async def fetch(self, batch: int, timeout: float) -> list[Any]:
+        if self._batches:
+            return self._batches.pop(0)
+        raise TimeoutError("nats: timeout")
+
+    async def unsubscribe(self) -> None:
+        self.unsubscribed = True
+
+
+def _fetched(seq: int, payload: bytes, *, consumer: str, stream: str) -> Msg:
+    """a message as a pull fetch hands it over, its stream sequence in the ack reply."""
+    reply = f"$JS.ACK.{stream}.{consumer}.1.{seq}.{seq}.1700000000000000000.0"
+    return Msg(_client=None, subject="oplog", reply=reply, data=payload, headers={"Nats-Msg-Id": f"op-{seq}"})  # type: ignore[arg-type]
+
+
+def _published(payload: bytes) -> Msg:
+    """bytes a plain publish put on the fetch inbox: no reply at all."""
+    return Msg(_client=None, subject="oplog", reply="", data=payload, headers=None)  # type: ignore[arg-type]
+
+
+class _OwnConsumerJetStream(_ReplayJetStream):
+    """fake JS whose fetch inbox receives forgeries beside the replay consumer's own deliveries."""
+
+    async def pull_subscribe_bind(self, *, consumer: str, stream: str) -> Any:
+        self.bound.append((consumer, stream))
+        self.psub = _ScriptedPullSub(
+            [
+                _fetched(1, b"forged by another consumer", consumer="forger-consumer", stream=stream),
+                _fetched(1, b"forged on another stream", consumer=consumer, stream="OBJ_forger"),
+                _published(b"forged by a plain publish"),
+                _fetched(1, b"op one", consumer=consumer, stream=stream),
+                _fetched(2, b"op two", consumer=consumer, stream=stream),
+            ]
+        )
+        return self.psub
+
+
+async def test_replay_reads_only_its_own_randomly_named_consumer() -> None:
+    """a forged op on the fetch inbox is never replayed; the logged ops are.
+
+    any client in the account can get bytes delivered onto the fetch inbox. a fetched message is an
+    op only when it carries the ack reply of the replay's own consumer, whose name is random.
+    """
+    js = _OwnConsumerJetStream(last_seq=2, fetch_error=TimeoutError("unused"))
+    oplog = _make_oplog(js)  # type: ignore[arg-type]
+
+    replayed = [record async for record in oplog.replay(from_seq=1)]
+
+    assert [(r.seq, r.payload) for r in replayed] == [(1, b"op one"), (2, b"op two")]
+    ((created_stream, config),) = js.created
+    assert created_stream == oplog.stream
+    assert config.name.startswith("oplog-replay-") and len(config.name.removeprefix("oplog-replay-")) == 32
+    assert config.filter_subject == oplog.subject
+    assert js.bound == [(config.name, oplog.stream)]
+    assert js.psub.unsubscribed
 
 
 async def test_replay_surfaces_transport_error_never_silently_truncates() -> None:

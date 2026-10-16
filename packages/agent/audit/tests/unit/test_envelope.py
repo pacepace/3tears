@@ -171,13 +171,13 @@ def test_empty_event_type_rejected() -> None:
         AuditEvent(**kwargs)  # type: ignore[arg-type]
 
 
-def test_extra_fields_rejected() -> None:
-    """``extra='forbid'`` rejects any field not declared on the envelope."""
+def test_a_field_a_newer_producer_adds_is_ignored() -> None:
+    """a tolerant reader: an older consumer records the event without the field it does not know."""
     kwargs = _base_kwargs()
     kwargs["mystery_field"] = "oops"
 
-    with pytest.raises(ValidationError):
-        AuditEvent(**kwargs)  # type: ignore[arg-type]
+    envelope = AuditEvent(**kwargs)  # type: ignore[arg-type]
+    assert "mystery_field" not in envelope.model_dump()
 
 
 def test_round_trip_preserves_every_field() -> None:

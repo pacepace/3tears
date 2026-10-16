@@ -306,6 +306,7 @@ async def start_audit_persister(
 
     # the dead-letter subject is a SIBLING token ({ns}.audit-deadletter), so the wildcard never
     # re-consumes what it parked: an event that cannot be persisted is kept, not dropped
+    # sender-posture: unauthenticated open H1 -- records whatever the audit stream captured, forged events included
     consumer = await nats_client.jetstream_pull_subscribe(
         subject=Subjects.audit_wildcard(),
         durable=durable,

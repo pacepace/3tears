@@ -199,6 +199,7 @@ class HeartbeatSubscriber:
         """
         self._nc = nc
         subject = Subjects.tools_heartbeat_wildcard()
+        # sender-posture: unauthenticated open R5 -- marks the body's pod_id available
         self._sub = await nc.subscribe(subject=subject, cb=self.handle_heartbeat)
         self._check_loop.start()
         log.info(

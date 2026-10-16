@@ -87,6 +87,7 @@ from typing import TYPE_CHECKING, Annotated, Final
 from uuid import UUID, uuid7
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_serializer
+from threetears.core.wire import TolerantWireModel
 from threetears.nats.hub_requests import ask_hub
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger
@@ -228,7 +229,7 @@ def _fitting_layer_name(name: str) -> str:
     return name
 
 
-class GeoLayersReloadedRequest(BaseModel):
+class GeoLayersReloadedRequest(TolerantWireModel):
     """a tool pod's report that it has written a new generation of some layers' shapes.
 
     :param identity_token: the pod's CURRENT hub-minted identity token; a ``SecretStr`` so a
@@ -239,8 +240,6 @@ class GeoLayersReloadedRequest(BaseModel):
     :param generations: layer name -> the generation now fully written
     :ptype generations: dict[str, int]
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     identity_token: SecretStr
     correlation_id: UUID

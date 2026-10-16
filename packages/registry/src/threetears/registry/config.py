@@ -22,6 +22,7 @@ __all__ = [
     "get_identity_signing_key_ref",
     "get_jwks_request_timeout",
     "get_mcp_timeout",
+    "get_delegated_token_signing_key_ref",
     "get_proxy_assertion_signing_key_ref",
     "get_nats_proxy_timeout_ms",
     "get_probe_timeout",
@@ -224,6 +225,24 @@ def get_proxy_assertion_signing_key_ref() -> str:
     return os.environ.get(
         "THREETEARS_REGISTRY_PROXY_ASSERTION_SIGNING_KEY_REF",
         "env://THREETEARS_PROXY_ASSERTION_SIGNING_KEY",
+    )
+
+
+def get_delegated_token_signing_key_ref() -> str:
+    """read the secret reference to the registry's delegated-token signing key.
+
+    env var: ``THREETEARS_REGISTRY_DELEGATED_TOKEN_SIGNING_KEY_REF`` (a ``scheme://locator`` secret
+    reference); defaults to ``env://THREETEARS_DELEGATED_TOKEN_SIGNING_KEY``. A key of its own, not
+    the proxy-assertion key: the hub publishes its public half in the JWKS the doors trust. When the
+    reference does not resolve, the registry mints no delegated token and tool pods keep acting with
+    their caller's own tokens until the doors' windows close.
+
+    :return: the secret reference
+    :rtype: str
+    """
+    return os.environ.get(
+        "THREETEARS_REGISTRY_DELEGATED_TOKEN_SIGNING_KEY_REF",
+        "env://THREETEARS_DELEGATED_TOKEN_SIGNING_KEY",
     )
 
 

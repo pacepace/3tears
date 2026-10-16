@@ -21,7 +21,9 @@ from threetears.core.testing.replay_guard import FakeReplayGuard
 import asyncio
 import base64
 import json
+import itertools
 import time
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid7
@@ -86,10 +88,12 @@ class _ScopeRecordingTool(TearsTool):
 
     def __init__(self) -> None:
         self.contexts: list[Any] = []
+        self.pod_marks: list[bool] = []
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         scope = current_scope()
         self.contexts.append(scope.context if scope is not None else None)
+        self.pod_marks.append(scope.principal_is_tool_pod if scope is not None else False)
         return ToolResult(success=True, content=json.dumps(kwargs))
 
     def mcp_schema(self) -> MCPToolDefinition:
@@ -172,12 +176,18 @@ class _ProxyNats:
 
 # parity-exempt: subset stand-in for NatsClient: the caller's typed request delivered in-process to the real proxy
 class _CallerNats:
-    def __init__(self, proxy: CallProxy, proxy_nats: _ProxyNats) -> None:
+    def __init__(self, proxy: CallProxy, proxy_nats: _ProxyNats, *, conversation_id: UUID | None = None) -> None:
         self._proxy = proxy
         self._proxy_nats = proxy_nats
+        self._conversation_id = conversation_id
 
     async def request(self, *, subject: Subject, message: Any, response_type: Any, timeout: timedelta) -> Any:
         del timeout
+        if self._conversation_id is not None:
+            # an agent's call carries its conversation; the proof covers the body, not the context
+            message = message.model_copy(
+                update={"context": message.context.model_copy(update={"conversation_id": self._conversation_id})}
+            )
         before = len(self._proxy_nats.replies)
         await self._proxy.handle_call(
             IncomingMessage(
@@ -329,3 +339,225 @@ class TestAToolsOwnRefusalCode:
 
         # the client's own placeholder for a failure the answer did not name
         assert excinfo.value.error_code == "UNKNOWN"
+
+
+class TestTheForwardedCallCarriesADelegatedToken:
+    """the tool pod gets a call-scoped token bound to its own key, not just the caller's."""
+
+    @staticmethod
+    async def _forward(
+        *,
+        pod_key: Ed25519PrivateKey | None,
+        declares: bool = False,
+        hub_publishes_key: bool = True,
+        conversation: UUID | None = None,
+        proxy_jwks: Callable[[dict[str, Any]], Callable[[], dict[str, Any]]] | None = None,
+        calls: int = 1,
+    ) -> tuple[_ProxyNats, Any, Any, _ScopeRecordingTool]:
+        from threetears.core.security import DelegatedTokenSigner, RegistrationKey  # noqa: PLC0415
+
+        hub_priv, hub_pub = generate_signing_keypair()
+        seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
+        proxy_signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
+        delegated_key = Ed25519PrivateKey.generate()
+        delegated = DelegatedTokenSigner(signing_key=delegated_key, kid=jwk_thumbprint(delegated_key.public_key()))
+        jwks = {
+            "keys": [
+                *build_jwks({"kid-1": hub_pub})["keys"],
+                *proxy_signer.public_jwks()["keys"],
+                *build_jwks({delegated.kid: delegated_key.public_key()})["keys"],
+            ]
+        }
+        catalog = ToolCatalog()
+        await catalog.register(
+            uniform_entry(
+                tool_name=_TOOL,
+                tool_version=_VERSION,
+                full_name=f"{_TOOL}@{_VERSION}",
+                description="echo",
+                input_schema={"type": "object", "properties": {}},
+                endpoints=[
+                    ToolEndpoint(
+                        pod_id=_SERVING_POD,
+                        status="available",
+                        holder_jkt=jwk_thumbprint(pod_key.public_key()) if pod_key is not None else None,
+                        proves_delegation=declares,
+                    )
+                ],
+                timeout_seconds=5.0,
+            )
+        )
+        pod_nats = _PodNats()
+        tool = _ScopeRecordingTool()
+        server = ToolServer(
+            nats_client=pod_nats,  # type: ignore[arg-type]
+            pod_id=_SERVING_POD,
+            jwks_provider=lambda: jwks,
+            assertion_replay_guard=FakeReplayGuard(),
+            registration_key=(lambda: RegistrationKey(pod_key)) if declares and pod_key is not None else None,
+        )
+        server.register(tool)
+        proxy = CallProxy(
+            catalog,
+            AllowAllAuthorizer(),
+            FakeReplayGuard(),
+            limit_guard=AllowAllLimitGuard(),
+            namespace=_NS,
+            jwks_provider=(
+                proxy_jwks(jwks)
+                if proxy_jwks is not None
+                else lambda: jwks if hub_publishes_key else {"keys": build_jwks({"kid-1": hub_pub})["keys"]}
+            ),
+            proxy_signer=proxy_signer,
+            delegated_signer=delegated,
+        )
+        hop = _ProxyNats(server, pod_nats)
+        await proxy.start(hop)  # type: ignore[arg-type]
+        caller_key = Ed25519PrivateKey.generate()
+        caller = uuid7()
+        token = _pod_token(hub_priv, pod_id=caller, holder_key=caller_key, customer_claim=PLATFORM_CUSTOMER_SENTINEL)
+        client = ToolCallClient(
+            _CallerNats(proxy, hop, conversation_id=conversation),  # type: ignore[arg-type]
+            principal_id=caller,
+            identity_token=lambda: token,
+            pop_signer=_Signer(caller_key),
+        )
+        for _ in range(calls):
+            await client.call(_TOOL, _VERSION, {"text": "hi"})
+        return hop, jwks, caller, tool
+
+    @pytest.mark.asyncio
+    async def test_the_pod_can_act_as_its_caller_only_with_its_own_key(self) -> None:
+        from threetears.core.security import (  # noqa: PLC0415
+            DelegatedTokenError,
+            canonical_call_hash,
+            make_pop_proof,
+            verify_door_caller,
+        )
+        from threetears.core.security.pop import access_token_hash  # noqa: PLC0415
+
+        pod_key = Ed25519PrivateKey.generate()
+        hop, jwks, caller, _tool = await self._forward(pod_key=pod_key)
+        delegated = hop.forwarded[0].context.delegated_token  # type: ignore[union-attr]
+        assert delegated
+        body = canonical_call_hash("l3.query", {"sql": "select 1"}, None)
+
+        def _proof(key: Ed25519PrivateKey) -> str:
+            return make_pop_proof(
+                holder_key=key,
+                access_token_hash=access_token_hash(delegated),
+                body_hash=body,
+                nonce="n",
+                iat=int(time.time()),
+            )
+
+        door = verify_door_caller(
+            delegated, _proof(pod_key), jwks=jwks, hub_issuer="hub", door="hub.object.resolve", body_hash=body
+        )
+        assert (door.agent_id, door.pod_id) == (f"{caller}", _SERVING_POD)
+        with pytest.raises(DelegatedTokenError):
+            verify_door_caller(
+                delegated,
+                _proof(Ed25519PrivateKey.generate()),
+                jwks=jwks,
+                hub_issuer="hub",
+                door="hub.object.resolve",
+                body_hash=body,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_pod_whose_key_the_registry_does_not_know_gets_no_delegated_token(self) -> None:
+        hop, _jwks, _caller, _tool = await self._forward(pod_key=None)
+        assert hop.forwarded[0].context.delegated_token is None  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_a_declaring_pod_runs_the_call_as_its_caller_without_the_token(self) -> None:
+        """a pod that declares it proves gets the delegation in place of the agent's token."""
+        pod_key = Ed25519PrivateKey.generate()
+        hop, _jwks, caller, tool = await self._forward(pod_key=pod_key, declares=True)
+        forwarded = hop.forwarded[0].context
+        assert forwarded is not None
+        assert forwarded.delegated_token
+        assert forwarded.identity_token is None
+        assert forwarded.user_identity_token is None
+        (context,) = tool.contexts
+        assert context.agent_id == caller
+        assert context.identity_token is None
+        # the caller is a tool pod (the platform sentinel): it keeps its mark without its own token
+        assert tool.pod_marks == [True]
+        assert context.customer_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_pod_that_does_not_declare_is_unchanged(self) -> None:
+        pod_key = Ed25519PrivateKey.generate()
+        hop, _jwks, _caller, tool = await self._forward(pod_key=pod_key)
+        forwarded = hop.forwarded[0].context
+        assert forwarded is not None
+        assert forwarded.delegated_token
+        assert forwarded.identity_token
+        (context,) = tool.contexts
+        assert context.identity_token
+
+    @pytest.mark.asyncio
+    async def test_a_declaring_pod_keeps_the_token_while_the_hub_does_not_publish_the_key(self) -> None:
+        """a registry whose delegation key the hub does not publish yet sends the agent's token beside it."""
+        pod_key = Ed25519PrivateKey.generate()
+        hop, _jwks, _caller, tool = await self._forward(pod_key=pod_key, declares=True, hub_publishes_key=False)
+        forwarded = hop.forwarded[0].context
+        assert forwarded is not None
+        assert forwarded.delegated_token
+        assert forwarded.identity_token
+        (context,) = tool.contexts
+        assert context.identity_token
+
+    @pytest.mark.asyncio
+    async def test_the_delegation_signs_the_calls_conversation_and_the_pod_runs_it_there(self) -> None:
+        """an agent's call in a conversation reaches a declaring pod with that conversation signed in."""
+        from threetears.core.security import verify_delegation_at_pod  # noqa: PLC0415
+
+        conversation = UUID("06ac4016-baf3-7422-8000-000000000c01")
+        pod_key = Ed25519PrivateKey.generate()
+        hop, jwks, _caller, tool = await self._forward(pod_key=pod_key, declares=True, conversation=conversation)
+        forwarded = hop.forwarded[0].context
+        assert forwarded is not None
+        assert forwarded.identity_token is None
+        assert forwarded.delegated_token
+        claims = verify_delegation_at_pod(
+            forwarded.delegated_token, jwks=jwks, pod_id=_SERVING_POD, correlation_id=f"{forwarded.correlation_id}"
+        )
+        assert claims.conversation_id == f"{conversation}"
+        (context,) = tool.contexts
+        assert context.conversation_id == conversation
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_hub_jwks_keeps_the_token_on_the_call_and_says_so_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the registry cannot tell whether the hub publishes its key, so it strips nothing."""
+
+        def _flaky_hub(jwks: dict[str, Any]) -> Callable[[], dict[str, Any]]:
+            # a hub that fails every third fetch: a forwarded call reads the key set twice to verify
+            # its caller (the token, then its proof), and a third time to learn whether the hub
+            # publishes the delegation key, which is the read that fails
+            fetches = itertools.count(1)
+
+            def _provider() -> dict[str, Any]:
+                if next(fetches) % 3 == 0:
+                    raise RuntimeError("the hub is unreachable")
+                return jwks
+
+            return _provider
+
+        pod_key = Ed25519PrivateKey.generate()
+        with caplog.at_level("WARNING"):
+            hop, _jwks, _caller, tool = await self._forward(
+                pod_key=pod_key, declares=True, proxy_jwks=_flaky_hub, calls=2
+            )
+        assert len(hop.forwarded) == 2
+        for forwarded in hop.forwarded:
+            assert forwarded.context is not None
+            assert forwarded.context.delegated_token
+            assert forwarded.context.identity_token
+        assert all(context.identity_token for context in tool.contexts)
+        assert len(tool.contexts) == 2
+        assert sum("hub JWKS unreadable" in record.getMessage() for record in caplog.records) == 1

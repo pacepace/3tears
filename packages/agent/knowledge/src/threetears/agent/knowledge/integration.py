@@ -30,6 +30,7 @@ design mandates.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -190,6 +191,7 @@ class KnowledgeIntegration:
         embedding_model: Any = None,
         concept_collection: Any = None,
         nats_client: Any = None,
+        identity_token_provider: Callable[[], str | None] | None = None,
     ) -> None:
         """Initialize knowledge integration with optional components.
 
@@ -206,6 +208,10 @@ class KnowledgeIntegration:
         :param nats_client: connected NATS client for publishing draft events /
             commands; ``None`` disables the write path
         :ptype nats_client: Any
+        :param identity_token_provider: returns this agent's current hub identity token, read on
+            every publish; the hub takes the draft's customer from it. ``None`` sends none, which
+            the hub refuses from its door's date
+        :ptype identity_token_provider: Callable[[], str | None] | None
         :return: nothing
         :rtype: None
         """
@@ -213,8 +219,17 @@ class KnowledgeIntegration:
         self.embedding_model = embedding_model
         self.concept_collection = concept_collection
         self.nats_client = nats_client
+        self.identity_token_provider = identity_token_provider
 
-    async def publish_draft(self, event: KnowledgeDraftEvent) -> None:
+    def _agent_token(self) -> str | None:
+        """this agent's current hub identity token, or ``None`` when no provider is wired.
+
+        :return: the token
+        :rtype: str | None
+        """
+        return self.identity_token_provider() if self.identity_token_provider is not None else None
+
+    async def publish_draft(self, event: KnowledgeDraftEvent, *, user_identity_token: str | None = None) -> None:
         """Publish a NEW correction-harvest draft to the hub (KNW-51).
 
         The agent cannot write the hub's tables (the broker read-only carve-out
@@ -230,6 +245,8 @@ class KnowledgeIntegration:
 
         :param event: the new-draft event to publish
         :ptype event: KnowledgeDraftEvent
+        :param user_identity_token: the turn's hub user assertion; the hub takes the author from it
+        :ptype user_identity_token: str | None
         :return: nothing
         :rtype: None
         """
@@ -238,10 +255,12 @@ class KnowledgeIntegration:
             return
         await self.nats_client.publish(
             subject=Subjects.knowledge_draft(),
-            message=KnowledgeDraftMessage.for_event(event),
+            message=KnowledgeDraftMessage.for_event(
+                event, identity_token=self._agent_token(), user_identity_token=user_identity_token
+            ),
         )
 
-    async def publish_command(self, command: KnowledgeDraftCommand) -> None:
+    async def publish_command(self, command: KnowledgeDraftCommand, *, user_identity_token: str | None = None) -> None:
         """Publish a draft lifecycle command to the hub (KNW-54).
 
         The ``knowledge_drafts`` tool's confirm / edit / discard ops travel the
@@ -253,6 +272,9 @@ class KnowledgeIntegration:
 
         :param command: the lifecycle command to publish
         :ptype command: KnowledgeDraftCommand
+        :param user_identity_token: the turn's hub user assertion; the hub acts only on that user's
+            own drafts
+        :ptype user_identity_token: str | None
         :return: nothing
         :rtype: None
         """
@@ -261,7 +283,9 @@ class KnowledgeIntegration:
             return
         await self.nats_client.publish(
             subject=Subjects.knowledge_draft(),
-            message=KnowledgeDraftMessage.for_command(command),
+            message=KnowledgeDraftMessage.for_command(
+                command, identity_token=self._agent_token(), user_identity_token=user_identity_token
+            ),
         )
 
     async def list_own_drafts(self, user_id: UUID, *, customer_scope: UUID) -> list[DraftView]:

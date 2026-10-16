@@ -41,13 +41,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import time
-import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_checkable
 
 from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
+from nats.errors import NotJSMessageError
 from nats.js.api import (
     AckPolicy,
     ConsumerConfig,
@@ -74,6 +74,7 @@ from threetears.nats.errors import (
     StreamSubjectsOverlapError,
 )
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
+from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.raw_errors import is_bucket_not_found
 from threetears.nats.subject_permissions import kv_stream_name
 
@@ -2477,6 +2478,7 @@ class NatsKvBucket:
                 name_prefix=_KEY_LISTING_CONSUMER_PREFIX,
                 headers_only=True,
                 timeout_seconds=self._timings.key_listing_timeout_seconds,
+                receiver="key listing",
             ),
             failure=failure,
         )
@@ -2497,6 +2499,8 @@ class _KeyWatchConsumer:
     :ptype subscription: Any
     :param name: the consumer's name
     :ptype name: str
+    :param stream: the bucket's backing stream, which the consumer reads
+    :ptype stream: str
     :param subject: the watched key's subject
     :ptype subject: str
     :param heartbeat: the consumer's idle heartbeat
@@ -2508,13 +2512,14 @@ class _KeyWatchConsumer:
     :ptype pending: int
     """
 
-    __slots__ = ("_client", "_heartbeat", "_name", "_pending", "_subject", "_subscription")
+    __slots__ = ("_client", "_heartbeat", "_name", "_pending", "_stream", "_subject", "_subscription")
 
     def __init__(
         self,
         *,
         subscription: _NatsSubscription,
         name: str,
+        stream: str,
         subject: str,
         heartbeat: timedelta,
         client: NatsClient,
@@ -2522,6 +2527,7 @@ class _KeyWatchConsumer:
     ) -> None:
         self._subscription = subscription
         self._name = name
+        self._stream = stream
         self._subject = subject
         self._heartbeat = heartbeat
         self._client = client
@@ -2571,8 +2577,9 @@ class _KeyWatchConsumer:
         raw = client.raw
         if raw.is_closed:
             raise KvError(f"cannot watch {subject}: the NATS connection is closed")
-        name = f"{_KEY_WATCH_CONSUMER_PREFIX}{uuid.uuid7().hex}"
+        name = random_consumer_name(_KEY_WATCH_CONSUMER_PREFIX)
         inbox = raw.new_inbox()
+        # sender-posture: own-consumer -- an update counts only with the watch consumer's own ack reply
         subscription = await raw.subscribe(inbox)
         config = ConsumerConfig(
             name=name,
@@ -2595,6 +2602,7 @@ class _KeyWatchConsumer:
             consumer = cls(
                 subscription=subscription,
                 name=name,
+                stream=stream,
                 subject=subject,
                 heartbeat=heartbeat,
                 client=client,
@@ -2625,6 +2633,10 @@ class _KeyWatchConsumer:
     async def updates(self, *, key: str | None, key_prefix: str = "") -> AsyncGenerator[KvKeyUpdate]:
         """every message the consumer delivers, until its heartbeats stop.
 
+        A message counts only when it carries this consumer's own ack reply: any client in the
+        account can get bytes delivered onto the inbox, and only the server's delivery for this
+        consumer names it. Anything else is dropped and logged.
+
         :param key: the watched key, carried onto each update; ``None`` for a prefix watch, whose
             updates carry the key their subject names
         :ptype key: str | None
@@ -2636,9 +2648,15 @@ class _KeyWatchConsumer:
         :raises KvError: when the NATS connection is closed
         """
         silence = self._heartbeat.total_seconds() * _KEY_WATCH_MISSED_HEARTBEATS
+        # the consumer is alive while its own deliveries or heartbeats keep arriving; a refused
+        # forgery does not count, so the silence is measured from the last frame that did.
+        last_heard = time.monotonic()
         while True:
+            remaining = max(silence - (time.monotonic() - last_heard), 0.0)
             try:
-                msg = await self._subscription.next_msg(timeout=silence)
+                if remaining <= 0.0:
+                    raise TimeoutError
+                msg = await self._subscription.next_msg(timeout=remaining)
             except _NatsConnectionClosedError as exc:
                 if self._client.is_closed:
                     raise KvError(f"key watch on {self._subject} ended: the NATS connection is closed") from exc
@@ -2664,14 +2682,19 @@ class _KeyWatchConsumer:
                 return
             headers = msg.headers or {}
             status = headers.get(Header.STATUS) if not msg.data else None
+            # a status frame carries no ack reply, so it cannot be traced to this consumer: the
+            # barrier for it is the inbox name, drawn from the CSPRNG. a status that ends the
+            # consumer moves the watch onto a fresh random inbox, which a sender that forged it
+            # does not know.
             if status == _STATUS_IDLE_HEARTBEAT:
                 # proof of life, and nothing to yield
+                last_heard = time.monotonic()
                 continue
             if status is not None:
-                # the server ended the consumer (``409 Consumer Deleted``, and its kin): replace it
-                # now rather than wait out the heartbeats it will never send.
+                # the server ends a consumer this way (``409 Consumer Deleted``, and its kin): replace
+                # it now rather than wait out the heartbeats it will never send.
                 log.info(
-                    "key watch consumer %s on %s ended by the server (%s %s); replacing it",
+                    "key watch consumer %s on %s got a status frame on its inbox (%s %s); replacing it",
                     self._name,
                     self._subject,
                     status,
@@ -2679,29 +2702,36 @@ class _KeyWatchConsumer:
                     extra={"extra_data": {"subject": self._subject, "consumer": self._name, "status": status}},
                 )
                 return
-            yield self._update_of(msg, key=key if key is not None else msg.subject[len(key_prefix) :])
+            if not delivered_by_own_consumer(msg, stream=self._stream, consumer=self._name, receiver="key watch"):
+                # no proof of life: a forgery must not keep a consumer the broker lost looking alive
+                continue
+            last_heard = time.monotonic()
+            update = self._update_of(msg, key=key if key is not None else msg.subject[len(key_prefix) :])
+            if update is not None:
+                yield update
 
-    def _update_of(self, msg: Msg, *, key: str) -> KvKeyUpdate:
-        """the update a delivered data message carries.
+    def _update_of(self, msg: Msg, *, key: str) -> KvKeyUpdate | None:
+        """the update a delivered data message carries, or ``None`` when its revision cannot be read.
 
-        :param msg: the delivered message
+        :param msg: the delivered message, already known to be this consumer's own
         :ptype msg: Msg
         :param key: the watched key
         :ptype key: str
-        :return: the update
-        :rtype: KvKeyUpdate
+        :return: the update, or ``None`` for a message dropped because its ack reply names no sequence
+        :rtype: KvKeyUpdate | None
         """
         headers = msg.headers or {}
         try:
             revision = int(msg.metadata.sequence.stream)
-        except Exception as exc:  # noqa: BLE001 -- the value is still delivered; only its revision is unknown
+        except (NotJSMessageError, ValueError, IndexError) as exc:
+            # a value with no revision cannot be ordered against the next one: dropped, not applied
             log.warning(
-                "key watch message on %s carries no stream sequence; delivering it with revision 0: %s",
+                "key watch message on %s carries no stream sequence; dropped: %s",
                 self._subject,
                 exc,
                 extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
             )
-            revision = 0
+            return None
         removed = headers.get(_KV_OPERATION_HEADER) in _KV_REMOVAL_OPERATIONS
         return KvKeyUpdate(key=key, value=None if removed else bytes(msg.data), revision=revision)
 
