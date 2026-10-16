@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Text a model reads stays under the item it belongs to
+
+A list line that put a many-line text after an indent or a list marker indented its first line
+only; the rest sat at the margin, where nothing said which item it belonged to. A web search
+snippet, a memory's content, a document passage, a tool's description, a skill's notes: each could
+read as the next item's. (Found in metallm, 2026-10-16: an agent gave one note's size and tag to the
+note above it, reading a scratch search whose excerpts had this shape.)
+
+**Added (observe):** `threetears.observe.text_block.under(text, indent, *, first=None) -> list[str]`
+(every line indented, blank lines dropped, its own indentation kept relative) and `one_line(text)`
+(its lines joined by one space, spacing inside a line kept). In observe so search, held to the leaf
+floor (SR-L7), uses it as any package does.
+
+**Added (core, testing):** `threetears.core.testing.text_blocks.unbroken_text(source)` and
+`unbroken_text_in(roots)`: the lines that put free text after an indent or a list marker without
+`under`, `one_line` or `untrusted_fence`, or a `# one line: <why>` comment. Enforced for every
+package by `tests/enforcement/test_text_sits_under_its_heading.py`; a consumer runs it over its own
+tree.
+
+**Changed:** web search results (title, snippet, footnotes), memory listings (`memory_search`,
+`memory_recall`, `chunk_recall`, the context block, the dream's consolidation prompt, extraction
+candidates), intention and todo listings, skill catalog, introspect and history, tool search lines,
+the tool router's descriptions, the context manager's variables and previews, workflow plans and
+steps, wake refusal notes and datasource column descriptions now keep each text under its item. A
+text of one line reads exactly as before.
+
+**Fixed (tests):** the hook-installer tests run git with the test repository's config only; a
+machine whose global `core.hooksPath` is a directory they may not write failed all of them.
+
 ## v0.69.0 -- 2026-10-15
 
 ### The collection keys purge door takes proofs; develop's purge and export requests read tolerantly

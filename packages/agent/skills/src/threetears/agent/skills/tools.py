@@ -54,6 +54,7 @@ from threetears.agent.skills.entities import AgentSkillEntity, AgentSkillInvocat
 from threetears.agent.skills.rendering import render_skill_body_block
 from threetears.agent.skills.types import PromptMode, SkillKindFilter, SkillOutcome
 from threetears.core.utils.local_time import render_local_time, resolve_zone
+from threetears.observe.text_block import one_line, under
 from threetears.observe import get_logger
 
 __all__ = [
@@ -776,7 +777,7 @@ def _format_skill_summary(entity: AgentSkillEntity) -> str:
     catalog rendering is consistent.
     """
     enabled_marker = "" if entity.enabled else " [disabled]"
-    return f"[skill:{entity.skill_id}] {entity.name}{enabled_marker} -- {entity.summary}"
+    return f"[skill:{entity.skill_id}] {entity.name}{enabled_marker} -- {one_line(entity.summary)}"
 
 
 def _skill_tool_lines(entity: AgentSkillEntity, bindable: Collection[str] | None) -> list[str]:
@@ -966,7 +967,7 @@ def _render_prose_introspect(entity: AgentSkillEntity) -> str:
     :rtype: str
     """
     body = entity.body or ""
-    body_block = "  " + body.replace("\n", "\n  ") if body else "  (no body)"
+    body_block = "\n".join(under(body, "  ")) if body.strip() else "  (no body)"
     lines: list[str] = [
         f"[skill:{entity.skill_id}]",
         f"name: {entity.name}",
@@ -1006,7 +1007,7 @@ def _render_tool_introspect(payload: SkillToolIntrospect) -> str:
     ]
     if payload.args:
         for arg_name, arg_desc in payload.args.items():
-            lines.append(f"  {arg_name}: {arg_desc}")
+            lines.extend(under(str(arg_desc), "    ", first=f"  {arg_name}: ") or [f"  {arg_name}:"])
     else:
         lines.append("  (no arguments)")
     lines.append("example:")
@@ -1356,7 +1357,8 @@ def load_skill_list_tool(
         for entry in combined:
             marker = "" if entry["enabled"] else " [disabled]"
             lines.append(
-                f"- [skill:{entry['skill_id']}] {entry['name']}{marker} (kind={entry['kind']}) -- {entry['summary']}"
+                f"- [skill:{entry['skill_id']}] {entry['name']}{marker} (kind={entry['kind']}) "
+                f"-- {one_line(str(entry['summary']))}"
             )
         return "\n".join(lines)
 
@@ -2094,13 +2096,13 @@ def _render_use(use: AgentSkillInvocationEntity, zone: tzinfo | None) -> list[st
     went = use.outcome or "no outcome reported"
     line = f"- {render_local_time(use.invoked_at, zone)}, {how}: {went}"
     if use.outcome_notes:
-        line += f" -- {use.outcome_notes}"
+        line += f" -- {one_line(use.outcome_notes)}"
     line += f" [conversation:{use.conversation_id}]"
     if use.message_id is not None:
         line += f" [message:{use.message_id}]"
     lines = [line]
     if use.notes:
-        lines.append(f"  why it was invoked: {use.notes}")
+        lines.extend(under(use.notes, "    ", first="  why it was invoked: "))
     return lines
 
 

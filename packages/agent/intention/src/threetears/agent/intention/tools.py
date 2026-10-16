@@ -31,6 +31,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
+from threetears.observe.text_block import under
 from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.langgraph.events import FrameworkEvent, dispatch_event
 from threetears.observe import get_logger
@@ -521,7 +522,8 @@ def _want_line(want: IntentionEntity, zone: tzinfo | None, note: str | None) -> 
     """One want as a listing shows it: handle, status, when written, the text, and the consumer's note."""
     written = render_local_time(want.date_created, zone)
     tail = f" ({note})" if note else ""
-    return f"- [intention:{want.intention_id}] {want.status}, written {written}: {want.content}{tail}"
+    head = f"- [intention:{want.intention_id}] {want.status}, written {written}: "
+    return "\n".join(under(f"{want.content}{tail}", "  ", first=head) or [head.rstrip()])
 
 
 async def _notes_for(notes: WantNotes | None, wants: Sequence[IntentionEntity]) -> Mapping[UUID, str]:

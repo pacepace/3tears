@@ -52,6 +52,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.observe.text_block import under
 from threetears.observe import get_logger
 from threetears.tool_schema.self_contained import declared_type
 
@@ -542,7 +543,9 @@ def tool_hit_line(tool: BaseTool) -> str:
     :return: ``- name(arguments): description``
     :rtype: str
     """
-    return f"- {tool.name}{tool_arguments(tool)}: {tool.description or ''}"
+    head = f"- {tool.name}{tool_arguments(tool)}: "
+    # a description of many lines sits under its tool, or its later lines read as the next tool's
+    return "\n".join(under(tool.description or "", "  ", first=head) or [head.rstrip()])
 
 
 def tool_families(catalog: Sequence[BaseTool], group_of: Callable[[BaseTool], str | None]) -> dict[str, list[BaseTool]]:

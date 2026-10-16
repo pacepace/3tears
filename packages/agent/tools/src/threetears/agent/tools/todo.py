@@ -22,6 +22,7 @@ from uuid import UUID
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
+from threetears.observe.text_block import one_line
 from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.observe import get_logger
 
@@ -555,7 +556,7 @@ def load_todo_tools(
                     if changed and changed != added:
                         dates.append(f"changed {changed}")
                     when = f" ({'; '.join(dates)})" if dates else ""
-                    lines.append(f"- {mark} {t['title']} {todo_handle(t['todo_id'])}{when}")
+                    lines.append(f"- {mark} {one_line(str(t['title']))} {todo_handle(t['todo_id'])}{when}")
                 lines.append("")
 
             return "\n".join(lines).rstrip("\n")

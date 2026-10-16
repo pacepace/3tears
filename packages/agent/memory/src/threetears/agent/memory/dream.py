@@ -43,6 +43,7 @@ from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.messages import HumanMessage, SystemMessage
+from threetears.observe.text_block import under
 from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
 
 from threetears.agent.memory.origin import UNATTENDED_TAG, origin_of
@@ -509,7 +510,10 @@ class DreamService:
         # Stored memories: what they say came from conversations and tools, so
         # they are read as material, fenced, and the call is told so.
         sources_section = untrusted_fence(
-            mint_nonce(), "\n".join(f"- [{m['type_memory']}] {m['content']}" for m in members)
+            mint_nonce(),
+            "\n".join(
+                line for m in members for line in under(str(m["content"]), "  ", first=f"- [{m['type_memory']}] ")
+            ),
         )
         prompt = self._prompts.consolidation.format(sources_section=sources_section)
         try:

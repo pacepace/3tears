@@ -36,6 +36,7 @@ from typing import Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from threetears.observe import get_logger
+from threetears.observe.text_block import one_line, under
 from threetears.search.call import search
 from threetears.search.contracts import (
     EGRESS_DIRECT,
@@ -196,11 +197,12 @@ def render_prose(
     """
     lines: list[str] = []
     for position, candidate in enumerate(candidate_set.candidates[:max_candidates], 1):
-        lines.append(f"{position}. {candidate.title or 'Untitled'}")
+        lines.append(f"{position}. {one_line(candidate.title or '') or 'Untitled'}")
         lines.append(f"   URL: {candidate.identity}")
         lines.append(f"   {result_facts(candidate, zone)}")
         if candidate.snippet:
-            lines.append(f"   {candidate.snippet}")
+            # every line of a snippet under its own result, or the next lines read as the next result's
+            lines.extend(under(candidate.snippet, "   "))
         lines.append("")
     body = "\n".join(lines).strip() if lines else NO_RESULTS_PROSE
     footnotes = _footnotes(candidate_set)
@@ -227,9 +229,11 @@ def _footnotes(candidate_set: CandidateSet) -> str:
     ]
     notes: list[str] = []
     for disposition in unmet:
-        detail = f": {disposition.detail}" if disposition.detail else ""
-        notes.append(f"- the {disposition.criterion_key} filter was not applied{detail}")
-    notes.extend(f"- {notice}" for notice in candidate_set.notices)
+        notes.append(
+            f"- the {disposition.criterion_key} filter was not applied"
+            + (f": {one_line(disposition.detail)}" if disposition.detail else "")
+        )
+    notes.extend(f"- {one_line(str(notice))}" for notice in candidate_set.notices)
     if not notes:
         return ""
     return "What this search could not do:\n" + "\n".join(notes)

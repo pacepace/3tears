@@ -9,6 +9,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.observe.text_block import under
 from threetears.observe import get_logger
 
 from threetears.core.utils.local_time import resolve_zone
@@ -214,8 +215,9 @@ def _declare_workflow(tool_context: ToolContextManager, plan: str, steps: list[s
     before = tool_context.workflow_state
     was = _plan_before(before) if before else "No plan was there before."
     state = tool_context.declare_workflow(plan, steps)
-    step_list = "\n".join(f"  {i + 1}. {s}" for i, s in enumerate(steps))
-    return f"Workflow declared. {was}\n  Plan: {state['plan']}\n  Steps:\n{step_list}"
+    step_list = [line for i, s in enumerate(steps) for line in under(s, "     ", first=f"  {i + 1}. ")]
+    plan = under(str(state["plan"]), "    ", first="  Plan: ") or ["  Plan:"]
+    return "\n".join([f"Workflow declared. {was}", *plan, "  Steps:", *step_list])
 
 
 def _plan_before(state: dict[str, Any]) -> str:

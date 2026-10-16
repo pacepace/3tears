@@ -70,6 +70,7 @@ from langchain.agents.middleware.types import AgentState, ExtendedModelResponse
 from langchain_core.messages import SystemMessage
 from langgraph.config import get_config
 from langgraph.types import Command
+from threetears.observe.text_block import one_line
 from threetears.langgraph.state import merge_metadata
 from threetears.observe import get_logger
 
@@ -261,8 +262,7 @@ def _render_table(table: dict[str, Any]) -> str:
         col_type = column.get("type")
         col_desc = column.get("description")
         suffix = f" ({col_type})" if col_type else ""
-        detail = f" -- {col_desc}" if col_desc else ""
-        lines.append(f"- {col_name}{suffix}{detail}")
+        lines.append(f"- {col_name}{suffix}" + (f" -- {one_line(str(col_desc))}" if col_desc else ""))
     # datasource-honesty coverage overlay: columns that are all-zero across the whole
     # table (unloaded). a 0 read from one is missing data, not a measured zero -- the
     # agent must be told BEFORE it queries (a bare SUM hides the all-zero pattern from

@@ -46,6 +46,7 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 from uuid_utils import uuid7
 
+from threetears.observe.text_block import one_line
 from threetears.agent.wake.collections import (
     WakeFireCollection,
     WakeScheduleCollection,
@@ -1526,10 +1527,10 @@ def load_wake_fires_tool(
             lines.append("Refused deliveries, newest first, counted per reason and minute:")
             for row in refusals:
                 why = _REFUSAL_SAID.get(row["reason"], row["reason"])
-                note = f" ({row['detail']})" if row["detail"] else ""
                 lines.append(
-                    f"- {format_wake_time(row['last_refused_at'], zone)} · {row['refusals']} refused · "
-                    f"{why}{note} · answered {row['status_code']}"
+                    f"- {format_wake_time(row['last_refused_at'], zone)} · {row['refusals']} refused · {why}"
+                    + (f" ({one_line(str(row['detail']))})" if row["detail"] else "")
+                    + f" · answered {row['status_code']}"
                 )
         else:
             lines.append("No delivery has been refused.")
