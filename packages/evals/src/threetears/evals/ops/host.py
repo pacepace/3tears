@@ -56,7 +56,7 @@ class AnalysisGeneration:
             pre-spend disclosure.
         budget_s: The job's wall-clock ceiling on its generator calls; a generation that outruns it is recorded
             ``timed_out``. Derive it ABOVE the generation's own ceiling
-            (:func:`~threetears.evals.analysis.generation_ceiling_s`, over the host's own ceiling for one
+            (``Ceilings().generation_ceiling_s`` of :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for one
             request on its client): a budget below it cancels a repair round-trip still writing inside
             its cap, after both calls were billed.
     """

@@ -1,6 +1,6 @@
 """Tests for the wall-clock ceilings the engine derives over a host's requests.
 
-:func:`~threetears.evals.analysis.generation_ceiling_s`, :func:`~threetears.evals.analysis.judge_phase_ceiling_s`
+:func:`~threetears.evals.kernel.inner_ceilings.generation_ceiling_s`, :func:`~threetears.evals.kernel.inner_ceilings.judge_phase_ceiling_s`
 and :func:`~threetears.evals.analysis.reporter_cell_timeout_s` each count requests and multiply by the host's own
 ceiling for one request (:data:`~threetears.evals.schema.RequestCeiling`). The host owns that answer because only
 it knows its client: how many provider calls one request can become and how long the client sleeps between them. The
@@ -21,7 +21,8 @@ import pytest
 
 import threetears.evals.kernel as kernel
 import threetears.evals.schema as schema
-from threetears.evals.analysis import generation_ceiling_s, judge_phase_ceiling_s, reporter_cell_timeout_s
+from threetears.evals.analysis import reporter_cell_timeout_s
+from threetears.evals.kernel.inner_ceilings import generation_ceiling_s, judge_phase_ceiling_s
 
 _GENERATOR_MAX_TOKENS = 8_000
 _JUDGE_MAX_TOKENS = 3_000

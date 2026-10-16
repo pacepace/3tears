@@ -14,7 +14,6 @@ from __future__ import annotations
 from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
 from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
 from threetears.evals.gen.proposers import (
-    PROPOSER_MAX_TOKENS,
     RUBRIC_PROPOSAL_CONTRACT,
     ProposedDraft,
     default_system_prompt,
@@ -28,7 +27,6 @@ from threetears.evals.gen.variation_gen import EvalTestCaseStore, GeneratedVaria
 __all__ = [
     "EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",
     "EVAL_PROPOSER_TEMPLATE_DEFAULT",
-    "PROPOSER_MAX_TOKENS",
     "RUBRIC_PROPOSAL_CONTRACT",
     "EvalTestCaseStore",
     "GeneratedVariations",

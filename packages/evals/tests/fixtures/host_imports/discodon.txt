@@ -29,9 +29,7 @@ threetears.evals.analysis.first_request
 threetears.evals.analysis.format_number
 threetears.evals.analysis.freeze_reporter_case
 threetears.evals.analysis.generate_analysis
-threetears.evals.analysis.generation_ceiling_s
 threetears.evals.analysis.humanize
-threetears.evals.analysis.judge_phase_ceiling_s
 threetears.evals.analysis.prompt_content_version
 threetears.evals.analysis.refuse_undeliverable_reporter_template
 threetears.evals.analysis.reporter_cell_timeout_s
@@ -39,7 +37,6 @@ threetears.evals.analysis.reporter_kind_contract
 threetears.evals.analysis.serialize_report
 threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
 threetears.evals.gen.EVAL_PROPOSER_TEMPLATE_DEFAULT
-threetears.evals.gen.PROPOSER_MAX_TOKENS
 threetears.evals.gen.generate_variations
 threetears.evals.gen.plan_draft
 threetears.evals.gen.propose_draft
@@ -132,6 +129,7 @@ threetears.evals.kernel.host.SeedRefused
 threetears.evals.kernel.host.StyleProfile
 threetears.evals.kernel.host.Sweepable
 threetears.evals.kernel.host.SweepableRegistry
+threetears.evals.kernel.host.TemplateChecks
 threetears.evals.kernel.host.Triggered
 threetears.evals.kernel.host.UnsupportedSchemaError
 threetears.evals.kernel.host.WorldConformanceReport
@@ -191,6 +189,7 @@ threetears.evals.ops.templates_list
 threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S
 threetears.evals.providers.Catalogue
 threetears.evals.providers.Model
+threetears.evals.providers.PriceRefresh
 threetears.evals.providers.PriceSource
 threetears.evals.providers.ProviderError
 threetears.evals.providers.describe_failure
@@ -199,6 +198,7 @@ threetears.evals.run.AbandonedRunSweepReport
 threetears.evals.run.ArmPlan
 threetears.evals.run.CallCeiling
 threetears.evals.run.CandidateTurn
+threetears.evals.run.Ceilings
 threetears.evals.run.CellContext
 threetears.evals.run.DefinitionReset
 threetears.evals.run.FidelityContract
@@ -213,14 +213,12 @@ threetears.evals.run.LaunchSettings
 threetears.evals.run.LaunchableKind
 threetears.evals.run.MeteredCallLedger
 threetears.evals.run.MeteredCallTally
-threetears.evals.run.SCHEDULER_CALL_ATTEMPTS
-threetears.evals.run.SIMULATOR_ANSWER_BUDGET_TOKENS
-threetears.evals.run.SIMULATOR_MAX_TOKENS
 threetears.evals.run.SIMULATOR_REQUEST_SETTINGS
 threetears.evals.run.SeedCaseSet
 threetears.evals.run.SeedCorpus
 threetears.evals.run.SeedJudgeCase
 threetears.evals.run.SeedOutcome
+threetears.evals.run.SeedTemplateCase
 threetears.evals.run.SimulatorTurn
 threetears.evals.run.SubjectResolver
 threetears.evals.run.TemplateField

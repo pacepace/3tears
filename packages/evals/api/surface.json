@@ -4161,11 +4161,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.SCHEDULER_CALL_ATTEMPTS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
-    },
     "threetears.evals.run.SECOND_JUDGE_JOB": {
       "kind": "constant (LeasedJobKind)",
       "signature": "",
@@ -4245,16 +4240,6 @@
       "kind": "function",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.run.SIMULATOR_ANSWER_BUDGET_TOKENS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
-    },
-    "threetears.evals.run.SIMULATOR_MAX_TOKENS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
     },
     "threetears.evals.run.SIMULATOR_REASONING_ALLOWANCE_TOKENS": {
       "kind": "constant (int)",
@@ -4966,11 +4951,6 @@
       "signature": "generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]",
       "tier": "host-contract"
     },
-    "threetears.evals.analysis.generation_ceiling_s": {
-      "kind": "function",
-      "signature": "generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float",
-      "tier": "host-contract"
-    },
     "threetears.evals.analysis.GenerationError": {
       "kind": "exception",
       "signature": "",
@@ -5115,11 +5095,6 @@
       "kind": "function",
       "signature": "judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings",
       "tier": "stable"
-    },
-    "threetears.evals.analysis.judge_phase_ceiling_s": {
-      "kind": "function",
-      "signature": "judge_phase_ceiling_s(*, judge_dims: int, judge_concurrency: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float",
-      "tier": "host-contract"
     },
     "threetears.evals.analysis.judge_profiles_of": {
       "kind": "function",
@@ -6100,11 +6075,6 @@
       "kind": "class",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.gen.PROPOSER_MAX_TOKENS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
     },
     "threetears.evals.gen.RUBRIC_PROPOSAL_CONTRACT": {
       "kind": "constant (OutputContract)",
