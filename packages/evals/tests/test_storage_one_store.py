@@ -191,7 +191,27 @@ def test_a_store_that_declares_and_forwards_field_in_is_accepted() -> None:
 
 
 def test_the_judge_evidence_projection_is_addressed_on_the_stored_trace() -> None:
-    from threetears.evals.kernel.storage import _JUDGE_EVIDENCE_FIELDS
+    from collections.abc import Sequence
+
     from threetears.evals.schema.versioning import CORE_ADDRESSING_FIELDS
 
-    assert set(_JUDGE_EVIDENCE_FIELDS) <= CORE_ADDRESSING_FIELDS["eval_trace"]
+    kept: list[Sequence[str]] = []
+
+    class _KeepRecordingStore(InMemoryDocumentStore):
+        def get_many(
+            self,
+            doc_type: str,
+            doc_ids: Sequence[str],
+            scope_id: str,
+            *,
+            exclude: Sequence[str] = (),
+            keep: Sequence[str] = (),
+        ) -> list[dict[str, Any]]:
+            if doc_type == "eval_trace":
+                kept.append(keep)
+            return super().get_many(doc_type, doc_ids, scope_id, exclude=exclude, keep=keep)
+
+    EvalStorage(_KeepRecordingStore()).load_judge_evidence(["result-1"], _HOME)
+
+    assert len(kept) == 1 and kept[0]
+    assert set(kept[0]) <= CORE_ADDRESSING_FIELDS["eval_trace"]
