@@ -77,21 +77,22 @@ class TestOneModelsLimit:
 
 
 class TestTheFactoryGivesEachModelItsOwn:
-    def test_two_models_on_one_provider_and_key_get_two_rate_limit_breakers(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_two_models_on_one_provider_and_key_get_two_rate_limit_breakers(self) -> None:
+        from uuid import uuid4
+
         from threetears.models import factory
         from threetears.models.circuit_breaker import CircuitBreakerCallback
 
-        registry = CircuitBreakerRegistry(failure_threshold=2)
-        monkeypatch.setattr(factory, "_DEFAULT_BREAKER_REGISTRY", registry)
+        # the shared registry keys a breaker by its key, so a key of this test's own starts closed
+        key = f"k-{uuid4()}"
 
         def _breaker_callback(model_id: str) -> CircuitBreakerCallback:
-            model = factory.create_chat_model(model_id=model_id, api_key="k", provider="openrouter")
+            model = factory.create_chat_model(model_id=model_id, api_key=key, provider="openrouter")
             return next(c for c in model.config["callbacks"] if isinstance(c, CircuitBreakerCallback))
 
         flash, sonnet = _breaker_callback("deepseek/deepseek-v4.1-flash"), _breaker_callback("anthropic/claude")
-        for _ in range(2):
+        # the shared registry's threshold
+        for _ in range(5):
             flash.on_llm_error(_limited())
         sonnet.on_chat_model_start({}, [[]])
         with pytest.raises(CircuitOpenError):
