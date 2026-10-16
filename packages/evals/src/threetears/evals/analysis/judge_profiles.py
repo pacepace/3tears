@@ -318,18 +318,21 @@ def tiers_with_judge_profiles(
 
 
 class TierReadStore(Protocol):
-    """The reads deciding the evidence tiers of the judges behind some runs' scores need."""
+    """The reads deciding the evidence tiers of the judges behind some runs' scores need — each one call, however
+    many runs and templates they span."""
 
-    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]:
-        """Calibration ratings in a scope, optionally of one run's results."""
+    def query_calibration_ratings(
+        self, scope_id: str, /, *, run_ids: Sequence[str] | None = None
+    ) -> list[CalibrationRating]:
+        """Calibration ratings in a scope, oldest first, optionally of the results of any of several runs, in one read."""
         ...
 
     def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
         """Every stored judge profile in a scope."""
         ...
 
-    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
-        """One template, or None."""
+    def load_templates(self, template_ids: Sequence[str], scope_id: str, /) -> list[EvalTemplate]:
+        """The named templates in a scope, in one read; one that does not resolve is absent."""
         ...
 
 
@@ -341,7 +344,8 @@ def judged_ratings(
     A rating anywhere in the scope whose label key — the judged output and the criterion — is a key one of the
     results' judge scores carries is a person's label of an output these judges scored, and is read too (#628).
     Read per run, in run order, then the scope's other ratings oldest first, so the list is deterministic; the scope
-    is read only when a score carries a key at all.
+    is read only when a score carries a key at all. The runs' ratings are one read, put in run order here, so the
+    store is asked twice at most however many runs there are.
 
     :param storage: The store.
     :ptype storage: TierReadStore
@@ -354,7 +358,12 @@ def judged_ratings(
     :return: The ratings, each once.
     :rtype: list[CalibrationRating]
     """
-    ratings = [rating for run in runs for rating in storage.query_calibration_ratings(scope_id, run_id=run.id)]
+    order = {run.id: index for index, run in enumerate(runs)}
+    # Stable, so each run's ratings keep the store's oldest-first order, as a read per run returned them.
+    ratings = sorted(
+        storage.query_calibration_ratings(scope_id, run_ids=list(order)),
+        key=lambda rating: order.get(rating.run_id or "", len(order)),
+    )
     keys = {
         key
         for result in results
@@ -373,7 +382,13 @@ def judged_ratings(
 
 
 def judges_tiers(
-    storage: TierReadStore, scope_id: str, runs: Sequence[EvalRun], results: Sequence[EvalResult]
+    storage: TierReadStore,
+    scope_id: str,
+    runs: Sequence[EvalRun],
+    results: Sequence[EvalResult],
+    *,
+    ratings: Sequence[CalibrationRating] | None = None,
+    templates: Mapping[str, EvalTemplate] | None = None,
 ) -> list[JudgeEvidenceTier]:
     """The evidence tier of every judge behind ``runs``' judged scores, decided as a campaign's bundle decides them.
 
@@ -390,6 +405,12 @@ def judges_tiers(
     :ptype runs: Sequence[EvalRun]
     :param results: Their results.
     :ptype results: Sequence[EvalResult]
+    :param ratings: What :func:`judged_ratings` reads over the same runs and results, when the caller has already
+        read it; read here otherwise.
+    :ptype ratings: Sequence[CalibrationRating] | None
+    :param templates: The runs' templates by id, when the caller has already read them; read here otherwise, in one
+        call.
+    :ptype templates: Mapping[str, EvalTemplate] | None
     :return: One tier per judge and dimension.
     :rtype: list[JudgeEvidenceTier]
     """
@@ -402,14 +423,14 @@ def judges_tiers(
     results_by_run: dict[str, list[EvalResult]] = {}
     for result in results:
         results_by_run.setdefault(result.eval_run_id, []).append(result)
-    templates = {
-        template_id: template
-        for template_id in sorted({run.template_id for run in runs if run.template_id})
-        if (template := storage.load_template(template_id, scope_id)) is not None
-    }
+    if templates is None:
+        template_ids = sorted({run.template_id for run in runs if run.template_id})
+        templates = {template.id: template for template in storage.load_templates(template_ids, scope_id)}
+    if ratings is None:
+        ratings = judged_ratings(storage, scope_id, runs, results)
     return tiers_with_judge_profiles(
         judge_evidence_tiers(
-            judge_agreement(judged_ratings(storage, scope_id, runs, results), results),
+            judge_agreement(list(ratings), results),
             judge_self_agreement(results),
             keys,
         ),

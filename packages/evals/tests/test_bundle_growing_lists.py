@@ -10,6 +10,7 @@ it restates instead of adding a row per regeneration (#614).
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from threetears.evals.analysis import prepare_analysis_generation, run_analysis_generation
@@ -99,8 +100,8 @@ class TestPriorInsightsAreBounded:
         campaign, storage = toyhost_campaign(insights=[retracted, _insight(2)])
 
         class _Archived(ToyhostStorage):
-            def analysis_archived(self, analysis_id: str, scope_id: str) -> bool | None:
-                return True if analysis_id == "an-archived" else None
+            def analyses_archived(self, analysis_ids: Sequence[str], scope_id: str) -> dict[str, bool]:
+                return {analysis_id: True for analysis_id in analysis_ids if analysis_id == "an-archived"}
 
         archived = _Archived([], {})
         archived.__dict__.update(storage.__dict__)

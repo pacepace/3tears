@@ -25,6 +25,17 @@ packages (bumped in lock-step).
   `STORE_CONFORMANCE_CASES` gains `query.field_in_matches_any`, `query.field_in_empty_matches_nothing` and
   `query.field_in_and_field_eq_refused`. The in-memory, SQLite, routed and async-bridged stores implement it; the
   SQLite store passes each type's values as one JSON array, so no list outgrows its bound-parameter limit.
+- **Fixed: every other read of a campaign's bundle grew with the campaign too.** Assembly read results once per run
+  (and again per archived run when a declared control needed them), each template up to three times, ratings once per
+  run twice over, and the archived flag once per minting analysis. Each is now one store call, so a bundle costs nine
+  or ten calls whatever its size. New on `EvalStorage`: `query_eval_results_by_runs(run_ids, scope_id)` (one
+  `by_doc_type` with `field_in`), `load_templates(template_ids, scope_id)`, `analyses_archived(analysis_ids,
+  scope_id)` (each a `get_many`, the last projected to the flag) and `query_calibration_ratings(..., run_ids=)`.
+  Breaking for a host that implements `CampaignReadStore`, `TierReadStore` or `LensStore` itself: they name these in
+  place of `query_eval_results_by_run`, `load_template`, `analysis_archived` and `run_id=`. `judges_tiers` takes the
+  `ratings` and `templates` its caller already read.
+- **Fixed: `RoutedDocumentStore.holds_documents` abandoned a store's sweep part-way**, returning at its first id; it
+  now reads the ids through before answering, as `relocate` already did.
 
 ### 3tears-evals: a busy launch no longer loses its own job leases
 

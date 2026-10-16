@@ -318,6 +318,12 @@ class ToyhostStorage:
         """Every observation of this batch in this scope."""
         return [r for r in self._results_by_run.get(run_id, []) if r.scope_id == scope_id]
 
+    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
+        """Every observation of these batches in this scope, in one read."""
+        return [
+            result for run_id in dict.fromkeys(run_ids) for result in self.query_eval_results_by_run(run_id, scope_id)
+        ]
+
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str) -> list[EvalCaseStratum]:
         """The stratum each named document declares in this scope: none, since the toy host sorts its documents into no kinds."""
         if scope_id != TOYHOST_SCOPE:
@@ -340,13 +346,17 @@ class ToyhostStorage:
         """Hold a reviewer's rating, replacing that reviewer's earlier rating of the same thing, as the real store does."""
         self._ratings[rating.id] = rating
 
-    def query_calibration_ratings(self, scope_id: str, *, run_id: str | None = None) -> list[CalibrationRating]:
-        """The ratings in one scope, narrowed by run, oldest first."""
+    def query_calibration_ratings(
+        self, scope_id: str, *, run_id: str | None = None, run_ids: Sequence[str] | None = None
+    ) -> list[CalibrationRating]:
+        """The ratings in one scope, narrowed by run or by several runs, oldest first."""
         return sorted(
             (
                 rating
                 for rating in self._ratings.values()
-                if rating.scope_id == scope_id and (run_id is None or rating.run_id == run_id)
+                if rating.scope_id == scope_id
+                and (run_id is None or rating.run_id == run_id)
+                and (run_ids is None or rating.run_id in run_ids)
             ),
             key=lambda rating: rating.rated_at,
         )
@@ -373,10 +383,26 @@ class ToyhostStorage:
         analysis = self.load_analysis(analysis_id, scope_id)
         return None if analysis is None else analysis.archived
 
+    def analyses_archived(self, analysis_ids: Sequence[str], scope_id: str) -> dict[str, bool]:
+        """Whether each named analysis in this scope is archived, by id; one that does not resolve is absent."""
+        return {
+            analysis_id: archived
+            for analysis_id in analysis_ids
+            if (archived := self.analysis_archived(analysis_id, scope_id)) is not None
+        }
+
     def load_template(self, template_id: str, scope_id: str) -> EvalTemplate | None:
         """The template with this id in this scope, or None."""
         template = self.templates.get(template_id)
         return template if template is not None and template.scope_id == scope_id else None
+
+    def load_templates(self, template_ids: Sequence[str], scope_id: str) -> list[EvalTemplate]:
+        """The templates with these ids in this scope; one that does not resolve is absent."""
+        return [
+            template
+            for template_id in dict.fromkeys(template_ids)
+            if (template := self.load_template(template_id, scope_id))
+        ]
 
     def save_judge_profile(self, profile: EvalJudgeProfile) -> None:
         """Hold a judge profile, replacing the one of the same judge and criterion, as the real store does."""

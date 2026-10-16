@@ -201,16 +201,19 @@ class LensStore(Protocol):
         """Load one campaign within a scope, or ``None`` when it does not resolve there."""
         ...
 
-    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]:
-        """Calibration ratings in a scope, optionally of one run's results — what a judge's tier is read from."""
+    def query_calibration_ratings(
+        self, scope_id: str, /, *, run_ids: Sequence[str] | None = None
+    ) -> list[CalibrationRating]:
+        """Calibration ratings in a scope, optionally of several runs' results in one read — what a judge's tier is
+        read from."""
         ...
 
     def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
         """Every stored judge profile in a scope."""
         ...
 
-    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
-        """One template, or None — whose criterion a judge's stored profile is keyed by."""
+    def load_templates(self, template_ids: Sequence[str], scope_id: str, /) -> list[EvalTemplate]:
+        """The named templates, in one read — whose criteria a judge's stored profile is keyed by."""
         ...
 
     def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:

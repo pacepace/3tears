@@ -88,7 +88,7 @@ if TYPE_CHECKING:
     from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
     from threetears.evals.kernel.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
-    from threetears.evals.schema.models import EvalRun, EvalTemplate
+    from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
     from threetears.evals.kernel.host.eval_host import EvalHost
     from concurrent.futures import Executor
 
@@ -171,6 +171,22 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
 
     def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
         """Load one template as stored in a scope, or ``None`` when it does not resolve — the calibration read's raw read."""
+        ...
+
+    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
+        """Every result of one run within a scope — the calibration read's."""
+        ...
+
+    def query_calibration_ratings(
+        self, scope_id: str, /, *, run_id: str | None = None, run_ids: Sequence[str] | None = None
+    ) -> list[CalibrationRating]:
+        """Calibration ratings in a scope, oldest first, of one run's results (the calibration read) or of several
+        runs' (the bundle's)."""
+        ...
+
+    def analysis_archived(self, analysis_id: str, scope_id: str, /) -> bool | None:
+        """Whether one stored analysis is archived, or ``None`` when it no longer resolves — what a generation's
+        insight write asks of each ledger insight's minting analysis."""
         ...
 
     def save_test_case(self, test_case: EvalTestCase, /) -> None:
