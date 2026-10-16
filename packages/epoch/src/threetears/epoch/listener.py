@@ -310,6 +310,7 @@ class EpochListener:
             await on_bump(message.epoch, message.payload)
 
         try:
+            # sender-posture: unauthenticated open G12,G13 -- the broadcast epoch is not confirmed against KV
             await self._nats.subscribe_typed(
                 subject=subject,
                 message_type=EpochBumpMessage,

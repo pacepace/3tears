@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
 
+from threetears.core.wire import TolerantWireModel
 from pydantic import (
     BaseModel,
-    ConfigDict,
     SerializerFunctionWrapHandler,
     ValidationError,
     model_serializer,
@@ -76,7 +76,7 @@ _RESULT_DELIVERY_RETRY_SECONDS = 2.0
 if TYPE_CHECKING:
     from threetears.agent.tools.server import CallAccepted
     from threetears.core.coordination.replay_guard import ReplayGuard
-    from threetears.core.security import ProxyAssertionSigner
+    from threetears.core.security import DelegatedTokenSigner, ProxyAssertionSigner
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
@@ -105,7 +105,7 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
 _OMITTED_WHEN_UNSET: tuple[str, ...] = ("deadline_seconds", "input_schema_digest")
 
 
-class ProxyCallRequest(BaseModel):
+class ProxyCallRequest(TolerantWireModel):
     """incoming tool call request from a caller: an agent, a tool pod, or the hub.
 
     all per-call identity dimensions (conversation_id, user_id,
@@ -156,17 +156,10 @@ class ProxyCallRequest(BaseModel):
         clamped to its own wait, so a caller can shorten a call but never
         buy itself more time than the tool allows.
 
-        **Rollout: this release ACCEPTS the field; no agent sends it
-        yet.** :attr:`model_config` is ``extra="forbid"``, so an agent
-        sending it to a registry predating this release gets its whole
-        call rejected. The receiver ships first -- and, as of 0.24.3,
-        that order is *made* true rather than merely asserted: an unset
-        optional is pruned from the forwarded envelope rather than
-        crossing as an explicit ``null``. An agent-side sender must
-        prune likewise, which is the lesson that cost three days of
-        refusals on the hop below this one. **The model now does that
-        pruning itself**: an unset ``deadline_seconds`` is omitted from
-        every serialized form, whichever serializer the sender calls
+        The model is a tolerant reader (:class:`~threetears.core.wire.TolerantWireModel`), so a
+        registry predating a field ignores it rather than refusing the call. An unset
+        ``deadline_seconds`` is still omitted from every serialized form, whichever serializer
+        the sender calls
     :ptype deadline_seconds: float | None
     :param input_schema_digest: the :attr:`DiscoverResultEntry.input_schema_digest`
         the caller was shown. When set, the call is routed ONLY to copies
@@ -177,15 +170,10 @@ class ProxyCallRequest(BaseModel):
         serves. ``None`` routes exactly where discovery would show.
         Checked here and NEVER forwarded to the pod.
 
-        **Rollout: the registry ships before any sender sets it**, because
-        a registry older than this field refuses the whole call on the
-        unknown key. The model omits it from every serialized form when
-        unset, so a sender that never sets it cannot put a null on the
-        wire either
+        A registry older than this field ignores it, so the call routes as discovery would
+        show. The model omits it from every serialized form when unset
     :ptype input_schema_digest: str | None
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     tool_name: str
     tool_version: str
@@ -329,6 +317,7 @@ class CallProxy:
         proxy_signer: "ProxyAssertionSigner | None" = None,
         usage_emitter: EndpointUsageEmitter | None = None,
         inflight_gauge: InflightRequestsGauge | None = None,
+        delegated_signer: DelegatedTokenSigner | None = None,
     ) -> None:
         """initialize call proxy.
 
@@ -390,6 +379,10 @@ class CallProxy:
             verify the call came from the proxy, for this body, once; ``None`` leaves the call
             unsigned (the binding is inert until the proxy key is provisioned)
         :ptype proxy_signer: ProxyAssertionSigner | None
+        :param delegated_signer: mints each forwarded call a delegated token for its pod, bound to
+            the pod's key, the call's deadline and the doors a call may reach; ``None`` mints none,
+            and the pod keeps acting with the caller's own tokens until the doors' windows close
+        :ptype delegated_signer: DelegatedTokenSigner | None
         :param usage_emitter: post-call usage-emit seam; ``None`` (the safe default)
             emits nothing. when present, the proxy calls
             :meth:`EndpointUsageEmitter.emit` fire-and-forget after the tool pod
@@ -419,8 +412,10 @@ class CallProxy:
         self._usage_emitter = usage_emitter
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
         self._jwks_provider = jwks_provider
+        self._jwks_unreadable_logged = False
         self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
+        self._delegated_signer = delegated_signer
         # a guard sized for a smaller future tolerance than this proxy accepts would let a replayed
         # proof stamped at the edge through its wipe check; refuse it here, at startup.
         pop_replay_guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
@@ -470,6 +465,7 @@ class CallProxy:
         self._nc = nc
         await self._pop_replay_guard.bind()
         subject = Subjects.tools_call()
+        # sender-posture: verified-token -- hub identity token plus a proof of possession checked against a nonce ledger
         self._sub = await nc.subscribe(
             subject=subject,
             queue="registry",
@@ -1497,7 +1493,7 @@ class CallProxy:
             return await self._forward_call_durable(request, pod_id, effective_timeout, principal)
         internal_subject = Subjects.tools_internal(pod_id)
         internal_payload = _build_internal_payload(
-            request,
+            self._with_delegation(request, pod_id, principal, effective_timeout),
             self._mint_proxy_assertion(request, pod_id, principal),
             effective_timeout=effective_timeout,
         )
@@ -1657,12 +1653,13 @@ class CallProxy:
         correlation_id_log = _correlation_id_str(request)
         result_subject = Subjects.tools_result(pod_id, uuid7())
         internal_payload = _build_internal_payload(
-            request,
+            self._with_delegation(request, pod_id, principal, effective_timeout),
             self._mint_proxy_assertion(request, pod_id, principal),
             result_subject=result_subject.path,
             effective_timeout=effective_timeout,
         )
         try:
+            # sender-posture: own-consumer -- the waiter takes a result only with its own consumer's ack reply
             waiter = await self._nc.jetstream_result_waiter(
                 subject=result_subject,
                 stream=result_stream_name(),
@@ -1864,6 +1861,88 @@ class CallProxy:
             )
         return result
 
+    def _hub_publishes_delegation_key(self) -> bool:
+        """whether the hub JWKS publishes this registry's delegated-token key, so a pod can verify it.
+
+        A pod sent the delegation in place of the agent's token verifies it against the hub JWKS; a
+        registry whose key the hub does not publish yet (the seed rolled out before the hub's pin)
+        keeps sending the agent's token beside it, so no call fails for the order the two roll in.
+
+        :return: whether the hub publishes it
+        :rtype: bool
+        """
+        published = False
+        if self._delegated_signer is not None and self._jwks_provider is not None:
+            try:
+                published = self._delegated_signer.kid in _published_kids(self._jwks_provider())
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a provider failure keeps the agent's token on the call, the safe side; logged
+                if not self._jwks_unreadable_logged:
+                    self._jwks_unreadable_logged = True
+                    log.warning(
+                        "hub JWKS unreadable; the agent's token stays on calls to declaring pods until it is",
+                        extra={"extra_data": {"detail": str(exc)}},
+                    )
+            else:
+                self._jwks_unreadable_logged = False
+        return published
+
+    def _with_delegation(
+        self, request: ProxyCallRequest, pod_id: str, principal: VerifiedPrincipal, effective_timeout: float
+    ) -> ProxyCallRequest:
+        """``request`` with a delegated token for ``pod_id`` on its context, when one can be minted.
+
+        Minted only for a call with a context, a signer, and a pod whose key the registry learned
+        from its verified registration; otherwise the request goes as it came. A pod that declared it
+        proves the delegation (``proves_delegation`` on its verified registration) is sent the
+        delegation in place of the agent's own token and user assertion, so it never holds either;
+        any other pod gets the delegation beside them, as before. The proxy assertion is minted over
+        the call body, which the context does not enter, so changing the context changes nothing it
+        signs.
+
+        :param request: the verified call request
+        :ptype request: ProxyCallRequest
+        :param pod_id: the pod the call goes to
+        :ptype pod_id: str
+        :param principal: the principal the caller's verified token named
+        :ptype principal: VerifiedPrincipal
+        :param effective_timeout: how long the call may run, the token's life
+        :ptype effective_timeout: float
+        :return: the request to forward
+        :rtype: ProxyCallRequest
+        """
+        context = request.context
+        entry = self._catalog.get(f"{request.tool_name}@{request.tool_version}") if self._delegated_signer else None
+        endpoint = entry.get_endpoint(pod_id) if entry is not None else None
+        holder = endpoint.holder_jkt if endpoint is not None else None
+        result = request
+        if context is not None and self._delegated_signer is not None and holder:
+            token = self._delegated_signer.mint(
+                agent_id=str(principal.principal_id),
+                pod_id=pod_id,
+                customer_id=principal.customer_claim,
+                user_id=str(context.user_id) if context.user_id is not None else None,
+                holder_jkt=holder,
+                correlation_id=str(context.correlation_id) if context.correlation_id is not None else "",
+                lifetime=timedelta(seconds=effective_timeout),
+                conversation_id=str(context.conversation_id) if context.conversation_id is not None else None,
+            )
+            forwarded: dict[str, str | None] = {"delegated_token": token}
+            if endpoint is not None and endpoint.proves_delegation and self._hub_publishes_delegation_key():
+                forwarded |= {"identity_token": None, "user_identity_token": None}
+            result = request.model_copy(update={"context": context.model_copy(update=forwarded)})
+        return result
+
+
+def _published_kids(jwks: Mapping[str, Any]) -> set[str]:
+    """the key ids a JWKS publishes.
+
+    :param jwks: the JWKS
+    :ptype jwks: Mapping[str, Any]
+    :return: its kids
+    :rtype: set[str]
+    """
+    return {str(key.get("kid")) for key in jwks.get("keys", ()) if isinstance(key, Mapping)}
+
 
 def _identity_refused(context: CallContext) -> ProxyCallResponse:
     """the one answer to a forwarded identity that does not verify.
@@ -1987,15 +2066,12 @@ def _build_internal_payload(
         result_subject=result_subject,
         deadline_seconds=_forwarded_deadline(request.deadline_seconds, effective_timeout),
     )
-    # Dropping unset TOP-LEVEL optionals is what makes a newer registry safe against an older
-    # pod, and it is load-bearing rather than tidiness. :class:`CallRequest` is
-    # ``extra="forbid"``, so a pod predating a field refuses the WHOLE call rather than ignoring
-    # the field -- and since every declared field is serialized, an optional nobody set still
-    # reaches the wire as an explicit null. A field can therefore break every lagging pod in the
-    # fleet without a single caller populating it, which is exactly the trap the "ship the
-    # accepting server first" rollout note is written to avoid: that note assumes absence follows
-    # from not setting it, and only this makes it true. An absent key and a null key parse
-    # identically on a pod new enough to declare the field, so nothing is lost.
+    # Dropping unset TOP-LEVEL optionals keeps the envelope to what the caller set.
+    # :class:`CallRequest` is a tolerant reader, so a pod predating a field ignores it; a pod
+    # released before it was (one whose CallRequest still forbade extras) refused the WHOLE call
+    # on an explicit null, and pruning is what keeps a newer registry safe against such a pod
+    # until the fleet has moved past it. An absent key and a null key parse identically on a pod
+    # new enough to declare the field, so nothing is lost.
     #
     # Scoped to the top level ON PURPOSE, rather than a recursive ``exclude_none``. The nesting
     # that matters here is ``context``, and :class:`CallContext` does NOT forbid extras -- an

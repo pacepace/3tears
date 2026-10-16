@@ -30,6 +30,19 @@ public surface:
   (the same for a proof a user's device signs) -- the numbers a proof verifier's replay guard is
   sized for / :data:`DEFAULT_PROOF_MAX_AGE` (how old one may be) /
   :func:`issue_time_is_fresh` (the check, each direction on its own bound).
+- service envelopes (``service_envelope``): :func:`mint_service_envelope` /
+  :func:`verify_service_envelope` / :func:`verify_and_record` / :func:`body_hash` /
+  :class:`ServiceEnvelopeError` / :class:`ServiceEnvelopeDoor` (one door's acceptance inside its dated
+  window) -- a service with no caller token to forward signs "from me, for
+  this door and operation, over this body, now, once" with its own JWKS key.
+- delegated tokens (``delegated_token``): :func:`mint_delegated_token` / :func:`verify_delegated_token`
+  / :func:`verify_door_caller` -- a tool call's own token for its pod, proven with the pod's key, and
+  the door check on whoever presents a token.
+- door requests (``door_request``): :class:`DoorCredential` / :func:`verify_door_request` /
+  :func:`door_request_hash` -- a door request's credential and its proof of possession over the body.
+- turn assertions (``turn_assertion``): :func:`mint_turn_assertion` / :func:`verify_turn_assertion` /
+  :func:`new_turn_id` -- the hub's signed statement of whose turn an agent runs, kept out of
+  ``CallContext``.
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
@@ -56,6 +69,7 @@ from threetears.core.security.identity_token import (
     canonical_call_hash,
     generate_signing_keypair,
     jwk_thumbprint,
+    principal_from,
     principal_from_claims,
     sign_identity_token,
     verify_identity_token,
@@ -77,6 +91,68 @@ from threetears.core.security.sandbox import (
     Sandbox,
     SandboxDecision,
     SandboxDenied,
+)
+from threetears.core.security.service_envelope import (
+    SERVICE_ENVELOPE_FIELD,
+    SERVICE_ENVELOPE_LEEWAY,
+    SERVICE_ENVELOPE_MAX_LIFETIME,
+    SERVICE_ENVELOPE_REPLAY_TTL,
+    EnvelopeJwksSource,
+    EnvelopeLedger,
+    HubJwksEnvelopeSource,
+    InProcessEnvelopeLedger,
+    PinnedEnvelopeJwks,
+    ServiceEnvelopeClaims,
+    ServiceEnvelopeDoor,
+    ServiceEnvelopeError,
+    ServiceEnvelopeSigner,
+    body_hash,
+    mint_service_envelope,
+    verify_and_record,
+    verify_service_envelope,
+)
+from threetears.core.security.delegated_token import (
+    DEFAULT_DELEGATED_DOORS,
+    DELEGATED_TOKEN_ISSUER,
+    DELEGATED_TOKEN_MAX_LIFETIME,
+    DELEGATED_TOKEN_TYPE,
+    DelegatedClaims,
+    DelegatedKeyNotFoundError,
+    DelegatedTokenError,
+    DelegatedTokenSigner,
+    DoorCaller,
+    ProofAbsentError,
+    is_delegated_token,
+    mint_delegated_token,
+    verify_delegated_token,
+    verify_delegation_at_pod,
+    verify_door_caller,
+)
+from threetears.core.security.door_request import (
+    DOOR_PROOF_FIELD,
+    DOOR_PROOF_REPLAY_TTL,
+    DOOR_SENDER_FIELDS,
+    DOOR_TOKEN_FIELD,
+    DoorCredential,
+    DoorProofLedger,
+    DoorRequestDoor,
+    DoorVerdict,
+    PopKey,
+    RegistrationKey,
+    datasource_query_op,
+    claimed_sender_of,
+    door_request_hash,
+    l3_request_op,
+    verify_door_request,
+)
+from threetears.core.security.turn_assertion import (
+    TURN_ASSERTION_AUDIENCE,
+    TURN_ASSERTION_LIFETIME,
+    TurnAssertionClaims,
+    TurnAssertionError,
+    mint_turn_assertion,
+    new_turn_id,
+    verify_turn_assertion,
 )
 from threetears.core.security.secret_refs import (
     Resolver,
@@ -109,6 +185,64 @@ __all__ = [
     "DEFAULT_PROOF_MAX_AGE",
     "ISSUE_TIME_FUTURE_TOLERANCE",
     "issue_time_is_fresh",
+    # delegated tokens
+    "DEFAULT_DELEGATED_DOORS",
+    "DELEGATED_TOKEN_ISSUER",
+    "DELEGATED_TOKEN_MAX_LIFETIME",
+    "DELEGATED_TOKEN_TYPE",
+    "DelegatedClaims",
+    "DelegatedKeyNotFoundError",
+    "DelegatedTokenError",
+    "DelegatedTokenSigner",
+    "DoorCaller",
+    "ProofAbsentError",
+    "is_delegated_token",
+    "mint_delegated_token",
+    "verify_delegated_token",
+    "verify_delegation_at_pod",
+    "verify_door_caller",
+    # door requests
+    "DOOR_PROOF_FIELD",
+    "DOOR_PROOF_REPLAY_TTL",
+    "DOOR_SENDER_FIELDS",
+    "DOOR_TOKEN_FIELD",
+    "DoorCredential",
+    "DoorProofLedger",
+    "DoorRequestDoor",
+    "DoorVerdict",
+    "PopKey",
+    "RegistrationKey",
+    "datasource_query_op",
+    "claimed_sender_of",
+    "door_request_hash",
+    "l3_request_op",
+    "verify_door_request",
+    # turn assertions
+    "TURN_ASSERTION_AUDIENCE",
+    "TURN_ASSERTION_LIFETIME",
+    "TurnAssertionClaims",
+    "TurnAssertionError",
+    "mint_turn_assertion",
+    "new_turn_id",
+    "verify_turn_assertion",
+    # service envelopes
+    "SERVICE_ENVELOPE_FIELD",
+    "SERVICE_ENVELOPE_LEEWAY",
+    "SERVICE_ENVELOPE_MAX_LIFETIME",
+    "SERVICE_ENVELOPE_REPLAY_TTL",
+    "EnvelopeJwksSource",
+    "EnvelopeLedger",
+    "HubJwksEnvelopeSource",
+    "InProcessEnvelopeLedger",
+    "PinnedEnvelopeJwks",
+    "ServiceEnvelopeClaims",
+    "ServiceEnvelopeDoor",
+    "ServiceEnvelopeError",
+    "ServiceEnvelopeSigner",
+    "body_hash",
+    "mint_service_envelope",
+    "verify_and_record",
+    "verify_service_envelope",
     # identity tokens
     "DEFAULT_IDENTITY_TTL_SECONDS",
     "IDENTITY_REFUSED",
@@ -133,6 +267,7 @@ __all__ = [
     "jwk_thumbprint",
     "make_pop_proof",
     "mint_proxy_assertion",
+    "principal_from",
     "principal_from_claims",
     "sign_identity_token",
     "static_token_provider",

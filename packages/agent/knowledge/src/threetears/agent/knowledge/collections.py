@@ -21,12 +21,13 @@ are cross-table JOINs the by-pk Collection abstraction cannot express.
 
 from __future__ import annotations
 
+from threetears.core.collections.generation import WRITE_GENERATION
+
 import json
 from typing import Any
 from uuid import UUID
 
 from threetears.agent.acl import ACCESS_TABLES, three_scope_visibility_clause
-from threetears.core.collections import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
@@ -294,11 +295,12 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
 
     #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
     #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
-    write_generation = WRITE_GENERATION
+    # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
 
     primary_key_column: str = "id"
     schema = TableSchema(
         name="playbook_entries",
+        write_generation=WRITE_GENERATION,
         primary_key="id",
         columns=[
             Column("id", UUID_TYPE),
@@ -527,11 +529,12 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
 
     #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
     #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
-    write_generation = WRITE_GENERATION
+    # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
 
     primary_key_column: str = "id"
     schema = TableSchema(
         name="concepts",
+        write_generation=WRITE_GENERATION,
         primary_key="id",
         columns=[
             Column("id", UUID_TYPE),

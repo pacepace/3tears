@@ -19,13 +19,15 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from threetears.core.security.identity_token import build_jwks, generate_signing_keypair, jwk_thumbprint
 from threetears.core.security.jwks_provider import CachedHubJwksProvider
 from threetears.nats.errors import RequestError
 from threetears.observe import HealthCheck, HealthServer, HealthTier
 
-_JWKS: dict[str, Any] = {
-    "keys": [{"kid": "k1", "kty": "OKP", "crv": "Ed25519", "x": "abc", "use": "sig", "alg": "EdDSA"}]
-}
+# a real key named by its RFC 7638 thumbprint, as every platform issuer names its keys: a reply
+# whose kid is not its key's thumbprint is refused whole.
+_HUB_KEY = generate_signing_keypair()[1]
+_JWKS: dict[str, Any] = build_jwks({jwk_thumbprint(_HUB_KEY): _HUB_KEY})
 
 
 def _registry_jwks_check(provider: CachedHubJwksProvider | None) -> HealthCheck:

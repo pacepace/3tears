@@ -6,14 +6,16 @@ own listings and Object Store reads create an unnamed one and are refused. Both
 :meth:`threetears.nats.kv.NatsKvBucket.list_keys` and :class:`threetears.nats.object_store.NatsObjectStore`
 read through :func:`read_through_named_consumer`.
 
-The inbox is subscribed first, so nothing the consumer delivers arrives before anything listens. The
+The inbox is subscribed first, so nothing the consumer delivers arrives before anything listens. Any
+client in the account can get bytes delivered onto that inbox, so a message counts only when its ack
+reply names this read's own stream and consumer, whose name is drawn from the CSPRNG
+(:mod:`threetears.nats.own_consumer`); anything else is dropped and logged. The
 consumer acknowledges nothing and is never deleted by the reader -- a pod's grant carries no
 ``CONSUMER.DELETE`` -- so the server reaps it after ``inactive_threshold``.
 """
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
@@ -22,6 +24,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from threetears.observe import get_logger
 
 from threetears.nats._publish import run_bounded
+from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
@@ -47,6 +50,7 @@ class NamedRead:
     :ivar count: how many messages to read; ``None`` reads every message pending when it was created
     :ivar headers_only: deliver headers without bodies
     :ivar timeout_seconds: the ceiling on the create and on each message's wait
+    :ivar receiver: what the read is for, named in the log line of a refused delivery
     """
 
     stream: str
@@ -56,6 +60,7 @@ class NamedRead:
     count: int | None = None
     headers_only: bool = False
     timeout_seconds: float = 10.0
+    receiver: str = "named read"
 
 
 async def read_through_named_consumer(
@@ -79,11 +84,13 @@ async def read_through_named_consumer(
     if raw.is_closed:
         raise failure(f"cannot read {read.stream}: the NATS connection is closed", None)
     inbox = raw.new_inbox()
+    name = random_consumer_name(read.name_prefix)
+    # sender-posture: own-consumer -- a message counts only with this read's own consumer's ack reply
     subscription = await raw.subscribe(inbox)
     messages: list[Any] = []
     try:
         config = ConsumerConfig(
-            name=f"{read.name_prefix}{uuid.uuid7().hex}",
+            name=name,
             deliver_subject=inbox,
             filter_subject=read.filter_subject,
             deliver_policy=read.deliver_policy,
@@ -108,12 +115,14 @@ async def read_through_named_consumer(
         wanted = int(info.num_pending or 0) if read.count is None else read.count
         while len(messages) < wanted:
             try:
-                messages.append(await subscription.next_msg(timeout=read.timeout_seconds))
+                msg = await subscription.next_msg(timeout=read.timeout_seconds)
             except TimeoutError as exc:
                 raise failure(
                     f"reading {read.filter_subject} from {read.stream} stalled after {len(messages)} of {wanted} messages",
                     exc,
                 ) from exc
+            if delivered_by_own_consumer(msg, stream=read.stream, consumer=name, receiver=read.receiver):
+                messages.append(msg)
     finally:
         try:
             await subscription.unsubscribe()

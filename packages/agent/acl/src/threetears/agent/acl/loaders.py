@@ -128,7 +128,8 @@ class CollectionGrantLoader:
     implements the three loader methods on the
     :class:`threetears.agent.acl.GrantLoader` Protocol:
     :meth:`load_assignments_for_groups`, :meth:`load_roles`, and
-    :meth:`load_groups`. each delegates to the corresponding method
+    :meth:`load_groups`, and the optional
+    :class:`threetears.agent.acl.HeldAssignmentsLoader` capability. each delegates to the corresponding method
     on :class:`RoleAssignmentCollection`, :class:`RoleCollection`, or
     :class:`GroupCollection`.
 
@@ -194,6 +195,25 @@ class CollectionGrantLoader:
                 group_ids,
             )
             result = tuple(assignment for assignment in assignments if assignment.covers(namespace))
+        return result
+
+    async def load_assignments_held_by_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+    ) -> tuple[RoleAssignment, ...]:
+        """return every assignment ``group_ids`` hold (:class:`HeldAssignmentsLoader`).
+
+        the same bulk read :meth:`load_assignments_for_groups` makes, without its
+        namespace filter, so one read serves a whole batch of namespaces.
+
+        :param group_ids: tuple of group UUIDs to inspect
+        :ptype group_ids: tuple[UUID, ...]
+        :return: every assignment the groups hold
+        :rtype: tuple[RoleAssignment, ...]
+        """
+        result: tuple[RoleAssignment, ...] = ()
+        if group_ids:
+            result = tuple(await self._assignment_collection.load_for_groups(group_ids))
         return result
 
     async def load_roles(

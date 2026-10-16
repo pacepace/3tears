@@ -55,6 +55,13 @@ _CONFIG = JwtAlgPinningConfig(
             allowed_algorithms=frozenset({"EdDSA"}),
             pinned_constants={"_ALG": "EdDSA"},
         ),
+        # A JWKS statement is addressed to every verifier of the publisher's keys, not to a
+        # named consumer, so it carries no `aud` to require.
+        PinnedModule(
+            path=_CORE / "security" / "jwks_trust.py",
+            allowed_algorithms=frozenset({"EdDSA"}),
+            pinned_constants={"_ALG": "EdDSA"},
+        ),
         # -- iam: session, proof-of-possession and OAuth state -----------------------------
         # Two algorithms deliberately: EdDSA for a deployment that publishes a JWKS, HS256 for
         # one that mints and verifies within a single trust boundary. Each has its own header

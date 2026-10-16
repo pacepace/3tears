@@ -73,12 +73,13 @@ class TestOneIdentityPerProcess:
 
     @pytest.mark.asyncio
     async def test_every_factory_gets_the_one_identitys_bound_token(self) -> None:
-        """built once, and the same provider reaches the rbac, pod and limit factories."""
+        """built once, and the same provider reaches the rbac, pod, limit and usage-emitter factories."""
         identity = _FakeRegistryIdentity([])
         identity_factory = AsyncMock(return_value=identity)
         rbac_factory = AsyncMock(return_value=AllowAllAuthorizer())
         pod_factory = AsyncMock(return_value=None)
         limit_factory = AsyncMock(return_value=None)
+        usage_factory = AsyncMock(return_value=None)
         server = RegistryServer(
             namespace="testns",
             authorizer=AllowAllAuthorizer(),
@@ -86,6 +87,7 @@ class TestOneIdentityPerProcess:
             rbac_authorizer_factory=rbac_factory,
             pod_authenticator_factory=pod_factory,
             limit_guard_factory=limit_factory,
+            usage_emitter_factory=usage_factory,
         )
         nc = _nats_client()
 
@@ -93,9 +95,10 @@ class TestOneIdentityPerProcess:
         await server.apply_rbac_factory(nc)
         await server.apply_pod_authenticator_factory(nc)
         await server.apply_limit_guard_factory(nc)
+        await server.apply_usage_emitter_factory(nc)
 
         identity_factory.assert_awaited_once_with(nc)
-        for factory in (rbac_factory, pod_factory, limit_factory):
+        for factory in (rbac_factory, pod_factory, limit_factory, usage_factory):
             factory.assert_awaited_once_with(nc, identity.token)
             provider = factory.await_args.args[1]
             # the BOUND method, not the token it returns today: a re-mint must reach the backend.

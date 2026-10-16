@@ -567,3 +567,23 @@ def test_mcp_schema_declares_required_name_and_optional_sources() -> None:
     assert "from_workspace" in props
     assert schema["required"] == ["name"]
     assert schema["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_create_event_carries_the_calls_identity_token(patch_set_pin: _RecordingPin) -> None:
+    """the hub takes the workspace's owner and customer from this token, never the event's fields."""
+    from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
+    from threetears.agent.tools.context_envelope import CallContext
+
+    nats = _RecordingNatsClient()
+    tool = _build_tool(nats_client=nats)
+    scope = ToolCallScope(
+        context=CallContext(agent_id=uuid4(), customer_id=uuid4(), correlation_id=uuid4(), identity_token="the-token")
+    )
+
+    async with enter_call_scope(scope):
+        result = await tool.execute(name="tokened")
+
+    assert result.success is True
+    ((_, event),) = nats.published
+    assert event.identity_token == "the-token"

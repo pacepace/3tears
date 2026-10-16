@@ -301,6 +301,7 @@ async def serve_session(
             )
         )
 
+    # sender-posture: unauthenticated open R7 -- control messages need only the session id
     async with serve_owner(nats, claim.session_id, _handle, family=_family_for(owned_node)):
         try:
             yield

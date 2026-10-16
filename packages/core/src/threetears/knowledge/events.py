@@ -205,33 +205,60 @@ class KnowledgeDraftMessage(BaseModel):
     :ptype event: KnowledgeDraftEvent | None
     :param command: the lifecycle command when ``kind == 'command'``
     :ptype command: KnowledgeDraftCommand | None
+    :param identity_token: the publishing agent's hub identity token; the hub takes the customer
+        from it, never the payload's. Optional, so a hub that predates it ignores it
+    :ptype identity_token: str | None
+    :param user_identity_token: the turn's hub user assertion, bound to that agent; the hub takes
+        the acting user from it, never the payload's ``user_id``
+    :ptype user_identity_token: str | None
     """
 
     kind: Literal["event", "command"]
     event: KnowledgeDraftEvent | None = None
     command: KnowledgeDraftCommand | None = None
+    identity_token: str | None = None
+    user_identity_token: str | None = None
 
     @classmethod
-    def for_event(cls, event: KnowledgeDraftEvent) -> KnowledgeDraftMessage:
+    def for_event(
+        cls,
+        event: KnowledgeDraftEvent,
+        *,
+        identity_token: str | None = None,
+        user_identity_token: str | None = None,
+    ) -> KnowledgeDraftMessage:
         """wrap a new-draft event in an envelope.
 
         :param event: the new-draft event to carry
         :ptype event: KnowledgeDraftEvent
+        :param identity_token: the publishing agent's hub identity token
+        :ptype identity_token: str | None
+        :param user_identity_token: the turn's hub user assertion
+        :ptype user_identity_token: str | None
         :return: an envelope with ``kind='event'``
         :rtype: KnowledgeDraftMessage
         """
-        return cls(kind="event", event=event)
+        return cls(kind="event", event=event, identity_token=identity_token, user_identity_token=user_identity_token)
 
     @classmethod
     def for_command(
         cls,
         command: KnowledgeDraftCommand,
+        *,
+        identity_token: str | None = None,
+        user_identity_token: str | None = None,
     ) -> KnowledgeDraftMessage:
         """wrap a lifecycle command in an envelope.
 
         :param command: the lifecycle command to carry
         :ptype command: KnowledgeDraftCommand
+        :param identity_token: the publishing agent's hub identity token
+        :ptype identity_token: str | None
+        :param user_identity_token: the turn's hub user assertion
+        :ptype user_identity_token: str | None
         :return: an envelope with ``kind='command'``
         :rtype: KnowledgeDraftMessage
         """
-        return cls(kind="command", command=command)
+        return cls(
+            kind="command", command=command, identity_token=identity_token, user_identity_token=user_identity_token
+        )

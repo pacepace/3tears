@@ -45,6 +45,8 @@ from typing import Protocol
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel
+from threetears.core.security.delegated_token import ENGAGEMENT_DOOR
+from threetears.core.security.door_request import ENGAGEMENT_SCOPE_OP, DoorCredential, ProvenDoorRequest
 from threetears.nats import NatsClient, RequestError, Subjects
 from threetears.observe import get_logger
 
@@ -118,7 +120,7 @@ class EngagementScope(BaseModel):
     targets: tuple[ScopeTarget, ...]
 
 
-class EngagementScopeRequestModel(BaseModel):
+class EngagementScopeRequestModel(ProvenDoorRequest):
     """outbound engagement-scope request to the hub.
 
     carries the invoking agent's ``identity_token`` as the caller proof. the
@@ -131,6 +133,9 @@ class EngagementScopeRequestModel(BaseModel):
     :param identity_token: the hub-minted identity assertion the invoking agent
         carries on the call context; the hub verifies it + derives the customer
     :ptype identity_token: str
+    :param identity_proof: the presenter's proof of possession of the token's key over this request
+        (:mod:`threetears.core.security.door_request`); ``None`` from a caller that holds no key
+    :ptype identity_proof: str | None
     :param correlation_id: transport correlation id echoed in the reply (NOT a
         replay control -- replay is bounded by token expiry + session liveness
         hub-side)
@@ -184,7 +189,14 @@ class EngagementScopeResolver(Protocol):
     tests inject a fake; production wires :class:`HubEngagementScopeResolver`.
     """
 
-    async def resolve(self, engagement_id: UUID | None, *, customer_id: UUID, identity_token: str) -> EngagementScope:
+    async def resolve(
+        self,
+        engagement_id: UUID | None,
+        *,
+        customer_id: UUID,
+        identity_token: str,
+        credential: DoorCredential | None = None,
+    ) -> EngagementScope:
         """resolve ``engagement_id`` to its authorized scope, or raise.
 
         :param engagement_id: the engagement id to resolve
@@ -193,8 +205,14 @@ class EngagementScopeResolver(Protocol):
             echoed customer against it; NOT sent to the hub -- the hub derives the
             customer from the token)
         :ptype customer_id: UUID
-        :param identity_token: the caller proof forwarded to the hub
+        :param identity_token: the credential presented to the hub: the call's delegated token, or
+            the caller's own identity token
         :ptype identity_token: str
+        :param credential: the same token with the key it binds, to prove possession of it over the
+            request; the token alone when omitted. Pass it only when it proves
+            (:attr:`~threetears.core.security.DoorCredential.proves`), so an implementer written before
+            it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: the resolved engagement scope (verified customer + active targets)
         :rtype: EngagementScope
         :raises ResolveEngagementScopeError: transport failure, hub rejection, or a
@@ -227,7 +245,14 @@ class HubEngagementScopeResolver:
         self._nc = nats_client
         self._timeout = request_timeout_seconds
 
-    async def resolve(self, engagement_id: UUID | None, *, customer_id: UUID, identity_token: str) -> EngagementScope:
+    async def resolve(
+        self,
+        engagement_id: UUID | None,
+        *,
+        customer_id: UUID,
+        identity_token: str,
+        credential: DoorCredential | None = None,
+    ) -> EngagementScope:
         """resolve ``engagement_id`` to its authorized scope, or raise.
 
         Sends a scope request carrying the ``identity_token`` (never a
@@ -241,17 +266,27 @@ class HubEngagementScopeResolver:
         :param customer_id: the VERIFIED owning customer, for the echoed-customer
             re-assertion done by the caller; NOT sent to the hub
         :ptype customer_id: UUID
-        :param identity_token: the caller proof forwarded to the hub
+        :param identity_token: the credential presented to the hub: the call's delegated token, or
+            the caller's own identity token
         :ptype identity_token: str
+        :param credential: the same token with the key it binds, to prove possession of it over the
+            request; the token alone when omitted. Pass it only when it proves
+            (:attr:`~threetears.core.security.DoorCredential.proves`), so an implementer written before
+            it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: the resolved engagement scope
         :rtype: EngagementScope
         :raises ResolveEngagementScopeError: transport failure, hub rejection, or a
             malformed success reply
         """
-        request = EngagementScopeRequestModel(
-            identity_token=identity_token,
-            correlation_id=uuid7(),
-            engagement_id=engagement_id,
+        request = DoorCredential.for_request(identity_token, credential).presented(
+            EngagementScopeRequestModel(
+                identity_token=identity_token,
+                correlation_id=uuid7(),
+                engagement_id=engagement_id,
+            ),
+            door=ENGAGEMENT_DOOR,
+            op=ENGAGEMENT_SCOPE_OP,
         )
         try:
             response = await self._nc.request(

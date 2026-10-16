@@ -128,6 +128,7 @@ class CrossWorkerCanceller:
             await self._cancel_local(key, envelope.payload)
 
         try:
+            # sender-posture: unauthenticated open S7 -- cancels a task on the subject's say-so
             await nats_client.subscribe_typed(
                 subject=self._subject,
                 cb=_on_msg,

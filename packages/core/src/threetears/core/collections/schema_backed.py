@@ -54,6 +54,7 @@ from threetears.core.backends.schema_sql import (
     json_default as _json_default,
 )
 from threetears.core.collections.base import BaseCollection, EntityT
+from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
@@ -727,6 +728,9 @@ class TableSchema:
         primary keys are silently dropped (dedup-on-redelivery tables
         like ``audit_events``, where a redelivered envelope repeats its
         ``id``)
+    :cvar write_generation: ``WRITE_GENERATION`` switches the table on: every committed write
+        advances its write generation, the creating migration gives it the write-mark trigger, and
+        the collection class reads its ``write_generation`` from here
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
         which leaves every existing schema's emitted SQL untouched.
@@ -799,6 +803,11 @@ class TableSchema:
     # positions, and defaulted False so no existing schema changes the
     # SQL it emits. see the :cvar: entry above for the full contract.
     cas_null_safe: bool = False
+    # every committed write to the table advances its write generation, and the table carries the
+    # write-mark trigger from the migration that creates it (threetears.core.collections.write_marks).
+    # the one declaration: the migration package that creates the table renders the trigger from it,
+    # and the collection class reads its switch from it.
+    write_generation: WriteGenerationDeclaration = WRITE_GENERATION_UNDECLARED
 
     _pk_columns: tuple[str, ...] = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)

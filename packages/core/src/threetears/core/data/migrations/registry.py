@@ -16,7 +16,7 @@ schemas that include every package's tables in one coherent step.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from threetears.core.data.migrations.errors import DuplicateVersionError
 from threetears.core.data.migrations.scope import MigrationScope
@@ -88,6 +88,7 @@ class PackageMigrations:
         self._descriptions: dict[int, str] = {}
         self._step_names: set[str] = set()
         self._downgrades: dict[int, MigrationFunc] = {}
+        self._write_generation_tables: list[str] = []
 
     @property
     def name(self) -> str:
@@ -98,6 +99,43 @@ class PackageMigrations:
         :rtype: str
         """
         return self._name
+
+    def mark_write_generation(self, *tables: Any) -> None:
+        """declare tables this package creates whose writes advance a write generation.
+
+        The runner gives each its write-mark trigger at the end of every run, under the run's DDL
+        lock, so a switched-on table carries its trigger from the run that creates it
+        (``threetears.core.collections.write_marks``). Each is the table's ``TableSchema`` with
+        ``write_generation=WRITE_GENERATION`` -- the declaration the collection class reads too -- or, for a
+        collection with no ``TableSchema``, its table name.
+
+        :param tables: ``TableSchema`` instances, or table names
+        :ptype tables: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: for a ``TableSchema`` that does not declare ``write_generation=WRITE_GENERATION``
+        """
+        from threetears.core.collections.generation import WriteGeneration  # noqa: PLC0415 - collections import this package
+
+        for table in tables:
+            if isinstance(table, str):
+                self._write_generation_tables.append(table)
+                continue
+            if not isinstance(getattr(table, "write_generation", None), WriteGeneration):
+                raise ValueError(
+                    f"{getattr(table, 'name', table)!r} is marked by package {self._name!r} but its schema does "
+                    "not declare write_generation=True; the class and the migration would disagree"
+                )
+            self._write_generation_tables.append(str(table.name))
+
+    @property
+    def write_generation_tables(self) -> tuple[str, ...]:
+        """the switched-on tables this package creates, by name.
+
+        :return: the table names, as declared
+        :rtype: tuple[str, ...]
+        """
+        return tuple(self._write_generation_tables)
 
     @property
     def scope(self) -> MigrationScope:

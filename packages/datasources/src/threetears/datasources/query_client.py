@@ -52,7 +52,7 @@ import random
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 from uuid import UUID, uuid7
 
 from pydantic import (
@@ -66,13 +66,22 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from threetears.core.security.delegated_token import DATASOURCE_DOOR
+from threetears.core.security.door_request import (
+    DoorCredential,
+    ProvenDoorRequest,
+    datasource_query_op,
+    omit_absent_proof,
+)
 from threetears.core.sql_fragments import as_written, equality_conditions
+from threetears.core.wire import TolerantWireModel
 from threetears.datasources.export import ExportResult, check_destination
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger, traced
 
 if TYPE_CHECKING:
+    from threetears.core.security.door_request import PopKey
     from threetears.nats import NatsClient
 
 __all__ = [
@@ -152,7 +161,7 @@ _IDENTIFIER_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_
 _RELATION_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?$")
 
 
-class RelationFingerprintRequest(BaseModel):
+class RelationFingerprintRequest(TolerantWireModel):
     """ask the hub to count and fingerprint a relation, instead of running SQL.
 
     Declarative rather than a statement, because the statement is dialect-specific
@@ -171,8 +180,6 @@ class RelationFingerprintRequest(BaseModel):
     :raises ValueError: if ``relation`` or any ``key_columns`` entry is not a plain SQL
         identifier, or if ``key_columns`` is empty
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     relation: str
     key_columns: list[str]
@@ -325,7 +332,7 @@ class RelationFingerprintRequest(BaseModel):
         return value
 
 
-class RelationFingerprintResult(BaseModel):
+class RelationFingerprintResult(TolerantWireModel):
     """a relation's row count and key digest at one instant.
 
     Compared for equality against a later reading of the same relation. The digest
@@ -338,7 +345,7 @@ class RelationFingerprintResult(BaseModel):
     :ptype digest: str
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(frozen=True)
 
     row_count: int
     digest: str
@@ -362,7 +369,11 @@ class RelationFingerprintGroup(BaseModel):
     digest: str
 
 
-class DatasourceExportRequest(BaseModel):
+#: fields that would name the pod an export ask is about; the hub answers only for the verified caller
+_POD_NAMING_FIELDS: Final[frozenset[str]] = frozenset({"tool_pod_id", "pod_id", "principal_id", "agent_id"})
+
+
+class DatasourceExportRequest(TolerantWireModel):
     """ask the hub to have the warehouse write a ``SELECT``'s rows to the datasource's export bucket.
 
     A separate ask from a query, granted on its own: the hub runs it only for a caller it would let
@@ -381,12 +392,11 @@ class DatasourceExportRequest(BaseModel):
     :raises ValueError: when the destination is not a plain relative path
     """
 
-    model_config = ConfigDict(extra="forbid")
-
     select: str
     destination: str
     #: divide the files by this column, one directory per value (``column=value/``). A hub that
-    #: predates it refuses the field as unknown, so it is left off the wire when not asked for
+    #: predates it refuses the field as unknown (the request was strict there), so it is left off the
+    #: wire when not asked for
     partition_by: str | None = None
 
     @field_validator("partition_by")
@@ -439,7 +449,7 @@ class DatasourceExportRequest(BaseModel):
 DatasourceExportResult = ExportResult
 
 
-class DatasourceExportDeleteRequest(BaseModel):
+class DatasourceExportDeleteRequest(TolerantWireModel):
     """ask the hub to delete an export the caller has read and proven: every version under its destination.
 
     Admitted on the export's record, not on a grant: the hub deletes only an export it recorded
@@ -453,7 +463,9 @@ class DatasourceExportDeleteRequest(BaseModel):
     :raises ValueError: when the destination is not a plain relative path
     """
 
-    model_config = ConfigDict(extra="forbid")
+    #: the pod is the verified caller: a field naming one is refused, never ignored and answered for
+    #: whoever the token names
+    refused_fields: ClassVar[frozenset[str]] = _POD_NAMING_FIELDS
 
     destination: str
 
@@ -472,7 +484,7 @@ class DatasourceExportDeleteRequest(BaseModel):
         return value
 
 
-class DatasourceExportListRequest(BaseModel):
+class DatasourceExportListRequest(TolerantWireModel):
     """ask the hub which exports it holds a record of for the caller, on this datasource: one page.
 
     It names no pod. The hub answers for the pod its verified identity token names and for no
@@ -484,7 +496,9 @@ class DatasourceExportListRequest(BaseModel):
     :ptype cursor: str | None
     """
 
-    model_config = ConfigDict(extra="forbid")
+    #: the pod is the verified caller: a field naming one is refused, never ignored and answered for
+    #: whoever the token names
+    refused_fields: ClassVar[frozenset[str]] = _POD_NAMING_FIELDS
 
     cursor: str | None = None
 
@@ -523,16 +537,16 @@ class DatasourceExportListResult(BaseModel):
     next_cursor: str | None = None
 
 
-class DatasourceQueryRequest(BaseModel):
+class DatasourceQueryRequest(ProvenDoorRequest, TolerantWireModel):
     """one datasource query, carrying the caller's identity as a forwarded token.
 
-    extras are FORBIDDEN, and that is a security property rather than a style
-    choice. ``agent_id`` and ``user_id`` are deliberately absent: a request that
-    carried them would be one whose ACL check a caller could steer. Pydantic's
-    default of ignoring an unknown field would let a stale client send one,
-    have it dropped, and be authorized as the token's principal with no error
-    anywhere -- broader authority than it asked for, silently. Refusing turns
-    that into a border failure the caller sees.
+    ``agent_id`` and ``user_id`` are RETIRED, and refusing them is a security
+    property rather than a style choice: a request that carried them would be one
+    whose ACL check a caller could steer. Ignoring them would let a stale client
+    send one, have it dropped, and be authorized as the token's principal with no
+    error anywhere -- broader authority than it asked for, silently. Any other
+    unknown field is ignored (a tolerant reader), so a newer caller's addition does
+    not refuse the query at an older hub.
 
     :param correlation_id: trace id echoed back on the reply and bound into the
         hub's logs, so one query can be followed from the caller to the driver
@@ -554,6 +568,9 @@ class DatasourceQueryRequest(BaseModel):
         verbatim; the hub verifies it and takes the principal off the signed
         claims
     :ptype identity_token: SecretStr
+    :param identity_proof: the presenter's proof of possession of the token's key over this request
+        (:mod:`threetears.core.security.door_request`); ``None`` from a caller that holds no key
+    :ptype identity_proof: str | None
     :param user_identity_token: the per-turn hub-minted user assertion when a
         human is in the loop; ``None`` for a call with nobody's behalf to act
         on, in which case the hub evaluates the principal's own grants alone
@@ -564,7 +581,7 @@ class DatasourceQueryRequest(BaseModel):
     :ptype params: list[Any]
     """
 
-    model_config = ConfigDict(extra="forbid")
+    refused_fields: ClassVar[frozenset[str]] = frozenset({"agent_id", "user_id"})
 
     correlation_id: UUID
     identity_token: SecretStr
@@ -627,12 +644,13 @@ class DatasourceQueryRequest(BaseModel):
 
     @model_serializer(mode="wrap")
     def _omit_absent_export(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """leave ``export``, ``export_delete`` and ``export_list`` off the wire when they are not asked for.
+        """leave ``export``, ``export_delete``, ``export_list`` and an absent proof off the wire.
 
         A hub that predates exports forbids unknown fields, so a query or fingerprint carrying
         ``"export": null`` would be refused there as malformed: every read of a newer caller would
         fail against an older hub. Omitted, the request is byte-for-byte what that hub knows, and
-        the two upgrade in either order.
+        the two upgrade in either order. An absent ``identity_proof`` likewise
+        (:func:`~threetears.core.security.door_request.omit_absent_proof`).
 
         :param handler: pydantic's serializer for the fields
         :ptype handler: SerializerFunctionWrapHandler
@@ -643,7 +661,7 @@ class DatasourceQueryRequest(BaseModel):
         for name in ("export", "export_delete", "export_list"):
             if getattr(self, name) is None:
                 data.pop(name, None)
-        return data
+        return omit_absent_proof(data)
 
     @field_serializer("identity_token", "user_identity_token", when_used="json")
     def _emit_token_on_the_wire(self, value: SecretStr | None) -> str | None:
@@ -812,6 +830,9 @@ class DatasourceQueryClient:
     :ptype identity_token: Callable[[], str | None]
     :param timeout: how long one query may take before the client gives up
     :ptype timeout: timedelta | float
+    :param pop_key: zero-arg provider of the key the identity token binds; with it each request
+        carries a proof of possession over its body. ``None`` sends the token alone
+    :ptype pop_key: Callable[[], PopKey | None] | None
     :param max_concurrent_asks: how many asks this client has out at once, each of the rest waiting
         its turn; ``None`` sends every ask as it is made. The hub runs at most a datasource's cap at
         once and refuses the rest ``DATASOURCE_BUSY``, so a caller that reads side by side (a bulk
@@ -827,6 +848,7 @@ class DatasourceQueryClient:
         *,
         identity_token: Callable[[], str | None],
         timeout: timedelta | float = DEFAULT_QUERY_TIMEOUT_SECONDS,
+        pop_key: Callable[[], PopKey | None] | None = None,
         max_concurrent_asks: int | None = None,
     ) -> None:
         """bind the transport, the identity provider, the deadline and the limit on asks at once.
@@ -837,6 +859,10 @@ class DatasourceQueryClient:
         :ptype identity_token: Callable[[], str | None]
         :param timeout: per-query deadline; a number is seconds
         :ptype timeout: timedelta | float
+        :param pop_key: zero-arg provider of the key the identity token binds, read on every
+            send; with it each request carries a proof of possession over its body
+            (:mod:`threetears.core.security.door_request`). ``None`` sends the token alone
+        :ptype pop_key: Callable[[], PopKey | None] | None
         :param max_concurrent_asks: how many asks are out at once; ``None`` for no limit
         :ptype max_concurrent_asks: int | None
         :raises ValueError: when ``max_concurrent_asks`` is less than one
@@ -845,6 +871,8 @@ class DatasourceQueryClient:
             raise ValueError(f"max_concurrent_asks must be at least 1, got {max_concurrent_asks}")
         self._nats_client = nats_client
         self._identity_token = identity_token
+        self._pop_key = pop_key
+        self._unproven_logged = False
         self._timeout = timeout if isinstance(timeout, timedelta) else timedelta(seconds=float(timeout))
         # the one way to the bus (_ask) takes its turn here, so no operation can go round the limit
         self._turns = None if max_concurrent_asks is None else asyncio.Semaphore(max_concurrent_asks)
@@ -912,7 +940,10 @@ class DatasourceQueryClient:
         wait = BUSY_BACKOFF_SECONDS
         attempts = 0
         response: DatasourceQueryResponse = await self._nats_client.request(
-            subject=subject, message=request, response_type=DatasourceQueryResponse, timeout=self._timeout
+            subject=subject,
+            message=self._proven(request, subject),
+            response_type=DatasourceQueryResponse,
+            timeout=self._timeout,
         )
         while response.error_code == DATASOURCE_BUSY and attempts < BUSY_RETRIES:
             attempts += 1
@@ -923,9 +954,34 @@ class DatasourceQueryClient:
                 extra={"extra_data": {"subject": subject.path, "attempt": attempts, "retries": BUSY_RETRIES}},
             )
             response = await self._nats_client.request(
-                subject=subject, message=request, response_type=DatasourceQueryResponse, timeout=self._timeout
+                subject=subject,
+                message=self._proven(request, subject),
+                response_type=DatasourceQueryResponse,
+                timeout=self._timeout,
             )
         return response
+
+    def _proven(self, request: DatasourceQueryRequest, subject: Subject) -> DatasourceQueryRequest:
+        """``request`` with a fresh proof of possession, when this client holds the token's key.
+
+        Fresh per send: a proof is single-use at the door, so a request asked again carries a new one.
+
+        :param request: the request, carrying the identity token
+        :ptype request: DatasourceQueryRequest
+        :param subject: the datasource query subject it is sent on, whose datasource the proof binds
+        :ptype subject: Subject
+        :return: the request to send
+        :rtype: DatasourceQueryRequest
+        """
+        key = self._pop_key() if self._pop_key is not None else None
+        credential = DoorCredential.own(request.identity_token.get_secret_value(), key)
+        if not credential.proves and not self._unproven_logged:
+            self._unproven_logged = True
+            log.warning(
+                "datasource queries go without the token's proof of possession: this client holds no key the "
+                "token binds; the hub accepts that only until the datasource door's dated window closes"
+            )
+        return credential.presented(request, door=DATASOURCE_DOOR, op=datasource_query_op(subject))
 
     @traced
     async def relation_fingerprint(

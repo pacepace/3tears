@@ -46,6 +46,7 @@ __all__ = [
     "canonical_call_hash",
     "generate_signing_keypair",
     "jwk_thumbprint",
+    "principal_from",
     "principal_from_claims",
     "sign_identity_token",
     "verify_identity_token",
@@ -159,12 +160,30 @@ def principal_from_claims(claims: IdentityClaims) -> VerifiedPrincipal:
     :raises ValueError: when ``sub`` is not a UUID, or ``customer_id`` is neither
         a UUID nor the platform sentinel
     """
-    is_tool_pod = claims.customer_id == PLATFORM_CUSTOMER_SENTINEL
+    return principal_from(claims.sub, claims.customer_id)
+
+
+def principal_from(subject: str, customer_claim: str) -> VerifiedPrincipal:
+    """the principal a verified credential names by its subject and customer claim.
+
+    The one reading, shared by an identity token (:func:`principal_from_claims`) and a delegated
+    token, so a tool pod is told from an agent the same way whichever credential carried it.
+
+    :param subject: the credential's subject -- an agent's id, or a tool pod's id
+    :ptype subject: str
+    :param customer_claim: its customer claim, a UUID or :data:`PLATFORM_CUSTOMER_SENTINEL`
+    :ptype customer_claim: str
+    :return: the principal
+    :rtype: VerifiedPrincipal
+    :raises ValueError: when ``subject`` is not a UUID, or ``customer_claim`` is neither a UUID nor the
+        platform sentinel
+    """
+    is_tool_pod = customer_claim == PLATFORM_CUSTOMER_SENTINEL
     return VerifiedPrincipal(
-        principal_id=UUID(claims.sub),
-        customer_id=None if is_tool_pod else UUID(claims.customer_id),
+        principal_id=UUID(subject),
+        customer_id=None if is_tool_pod else UUID(customer_claim),
         is_tool_pod=is_tool_pod,
-        customer_claim=claims.customer_id,
+        customer_claim=customer_claim,
     )
 
 

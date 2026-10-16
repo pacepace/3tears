@@ -271,7 +271,7 @@ _POSTGRES_TABLES_SQL = f"""
 SELECT src.table_schema, src.table_name, {_SELECTABLE} AS selectable
 FROM information_schema.tables AS src
 {_RELATION_JOIN}
-WHERE src.table_schema = ANY($1)
+WHERE src.table_schema::text = ANY($1::text[])
 AND src.table_type = 'BASE TABLE'
 ORDER BY src.table_schema, src.table_name
 """.strip()
@@ -288,7 +288,7 @@ SELECT src.table_schema, src.table_name, src.column_name, src.data_type, src.is_
        {_SELECTABLE} AS selectable
 FROM information_schema.columns AS src
 {_RELATION_JOIN}
-WHERE src.table_schema = ANY($1)
+WHERE src.table_schema::text = ANY($1::text[])
 ORDER BY src.table_schema, src.table_name, src.ordinal_position
 """.strip()
 
@@ -312,7 +312,7 @@ _POSTGRES_TABLE_HASHES_SQL = """
 SELECT table_schema, table_name,
        MD5(STRING_AGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',' ORDER BY ordinal_position)) AS column_hash
 FROM information_schema.columns
-WHERE table_schema = ANY($1)
+WHERE table_schema::text = ANY($1::text[])
 GROUP BY table_schema, table_name
 ORDER BY table_schema, table_name
 """.strip()

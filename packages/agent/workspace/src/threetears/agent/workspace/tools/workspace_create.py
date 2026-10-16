@@ -108,6 +108,10 @@ class WorkspaceCreateEvent(BaseModel):
         treats ``NULL`` customer_id as unroutable, so downstream tool
         calls deny until a backfill lands
     :ptype customer_id: UUID | None
+    :param identity_token: the creating agent's hub identity token, from the call's scope; the hub
+        takes the owner and customer from it, never the fields above, and from its door's date
+        refuses an event without one. Optional, so a hub that predates it ignores it
+    :ptype identity_token: str | None
     """
 
     workspace_id: UUID
@@ -115,6 +119,7 @@ class WorkspaceCreateEvent(BaseModel):
     schema_name: str
     owner_agent_id: UUID
     customer_id: UUID | None = None
+    identity_token: str | None = None
 
 
 log = get_logger(__name__)
@@ -621,6 +626,8 @@ class WorkspaceCreateTool(TearsTool):
             schema_name=schema_name,
             owner_agent_id=self._agent_id,
             customer_id=customer_id,
+            # the agent's own token: the hub takes the owner and customer from it
+            identity_token=None if scope is None else scope.context.identity_token,
         )
         await self._nats_client.publish(
             subject=Subjects.workspaces_create(),

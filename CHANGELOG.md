@@ -6,6 +6,448 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.69.0 -- 2026-10-15
+
+### The collection keys purge door takes proofs; develop's purge and export requests read tolerantly
+
+- `threetears.core.collections.key_purge`: develop's tool-pod purge, in the door scheme. The pod
+  presents its own token and, given its key (`pop_key`), proves possession of it at
+  `COLLECTION_KEYS_PURGE_DOOR` (`hub.collection_keys.purge`) for `COLLECTION_KEYS_PURGE_OP`. Its
+  `CollectionKeysPurgeRequest` is a `ProvenDoorRequest` and a `TolerantWireModel`. It lives in core
+  because the nats package cannot depend on the door scheme. `threetears.nats.collection_key_requests`
+  keeps the strict request and client for pods released before it.
+- `DatasourceExportRequest`, `DatasourceExportDeleteRequest` and `DatasourceExportListRequest` are
+  tolerant readers: a newer pod's added field is ignored. The delete and list requests refuse a
+  field naming a pod (`tool_pod_id`, `pod_id`, `principal_id`, `agent_id`) rather than ignore it,
+  since the hub answers both only for the verified caller.
+- The four are in the wire inventory (`tests/enforcement/test_wire_models_are_tolerant_readers.py`).
+
+### A catalogue name is compared with an array as text
+
+- YugabyteDB 2026.1.1.1 mis-evaluates a `name` column compared with a `text[]`:
+  `relname = ANY(ARRAY['a', 'b'])` fails `compressed lz4 data is corrupt`, intermittently, once the
+  server has taken some load. `relname::text = ANY(...)`, `relname = ANY(...::name[])` and `IN (...)`
+  do not fail. Two kinds of query issued that shape:
+  - The write-mark backstop and the migration runner's trigger hook compared
+    `information_schema.tables.table_name` with `ANY($1::text[])`. That stopped every fresh platform
+    bring-up on 2026.1.1.1 at the end of the chain.
+  - The asyncpg datasource driver's three introspection queries filtered `table_schema` that way.
+
+  All now compare as text. The walker is shared, `threetears.enforcement.catalog_name_comparison`, so
+  the hub's gate runs it too. `tests/enforcement/test_catalog_names_are_compared_as_text.py` runs it
+  here. It flags `=`, `<>` or `!=` against `ANY`, `ALL` or `SOME`. A column only the catalogue has
+  (`relname`, `nspname`, `attname`, `tablename` and the rest) is flagged wherever it is compared, so a
+  placeholder naming the table does not hide it. `table_name`, `table_schema` and `column_name` are
+  flagged in any text reading `information_schema` or a `pg_` relation. A query built with `+` or
+  `str.join` is read whole, and docstrings are not read.
+  2026.1.0.0-b118, the version cobalt runs, does not show the defect.
+
+### acl: many evaluations share their reads
+
+- `evaluate_many_with_trail(contexts, cache=)` answers many questions at once, each exactly as
+  `evaluate_with_trail` answers it alone. Each side's group set is planned once per actor and
+  customer. The (group, namespace) contributions the cache does not hold are computed together: one
+  read of the assignments the missing groups hold, one of their roles and one of the groups. Each
+  pair is still walked by the same code, and still stored under the read fence. `evaluate_with_trail`
+  (and with it `evaluate_decision`) is its one-question case, so a single decision for a person in
+  dozens of groups also reads once rather than twice per group. A person in a bundle nested in 51
+  state groups: an audit snapshot over 357 namespaces fell from 37,848 round trips to 14, and a
+  two-sided `tool.call` decision from 108 to 6.
+- `HeldAssignmentsLoader` (optional, `load_assignments_held_by_groups`): a grant loader that can
+  return every assignment a set of groups holds. `CollectionGrantLoader` is one. A loader without it
+  is asked once per namespace for every missing group, with the same answers.
+- `NamespaceCollection.get_many(namespace_ids)`: many namespaces in one read, the batch form of
+  `find_by_id`.
+
+### Core: a committed write cannot lose its generation advance
+
+- **Recorded absences are bounded by count, never by time, and live in L1 only.** A negative-caching
+  collection records a miss in its pod's L1 and nowhere else. It no longer writes an absent-marker to
+  L2, never trusts one an older release left there, and deletes that marker (or an expired row, or an
+  undecodable entry) at the revision read once L3 confirms the miss. `negative_cache_max_entries`
+  (default 10,000) caps one table's markers per pod, dropping the oldest. A read that sees the table's
+  generation move drops every marker recorded under another. `negative_cache_sweep_batch` and the
+  timed sweep are gone. The max age stays only as cover for writers that predate the write marks,
+  until its contract date. One L3 read per key per pod per generation, where L2 used to share it.
+- **The switch is the table's declaration:** `TableSchema.write_generation` (`WRITE_GENERATION`).
+  A collection class over a switched-on schema reads its `write_generation` from it, so code reading
+  the class attribute keeps working. A migration package declares the switched-on tables it creates
+  (`PackageMigrations.mark_write_generation`, from the `TableSchema`, or by name for a collection with
+  none), and the runner gives each its write-mark trigger at the end of every run, under the run's
+  DDL lock: a switched-on table carries its trigger from the run that creates it, and an existing one
+  from the first run after this. The coordination package declares the revocation list, the acl
+  package its five tables. `tests/enforcement/test_write_generation_is_declared_on_the_schema.py`
+  fails a class and schema that disagree.
+- `threetears.core.collections.write_marks`: each switched-on table carries a statement-level
+  trigger (`threetears_collection_write_mark`) that inserts a mark into `collection_write_marks` in the
+  same transaction as the write, whoever wrote it: a broker, a direct pool, a write buffer, a
+  migration, or a release that predates this. `WriteMarkReconciler.run_pass` advances each marked
+  table's generation once and deletes exactly the marks it read, and issues no DDL; several at once
+  are safe, and an optional `KVLease` keeps it to one. A table whose advance fails keeps its marks, is
+  counted, and the pass drains the other tables around it.
+- `install_write_mark_triggers` reads the catalogue first and takes the database-wide DDL lock
+  (`database_ddl_lock`, a bounded wait, `INSTALL_LOCK_POLICY`) only when a trigger is missing; a busy
+  lock defers the install (`collection_write_marks_installs_deferred_total`), never the drain.
+  `drop_write_mark_triggers` is the rollback step.
+- Metrics: `collection_write_marks_passes_total{outcome=drained|behind|skipped|failed}`,
+  `collection_write_marks_applied_total`, `collection_write_marks_advance_failed_total{table}`, and the
+  gauges `collection_write_marks_pending` and `collection_write_marks_oldest_age_seconds`, read by every
+  replica on every pass (`observe_write_marks`), whether or not it holds the lease.
+- Cost, measured on YugabyteDB 2026.1.1.1 (one node, 1000 single-row writes): a marked insert or
+  update takes about 1.1 ms at the median against 0.4 ms unmarked (p99 about 2.0-2.8 ms against
+  0.6-0.8 ms). A colocated database measures the same, so the cost is the trigger's insert, not a
+  distributed transaction.
+- Coordination migration v003 creates the queue and the trigger function in the platform schema.
+- Insert-only marks, not a per-table counter row: a row every write to a table updates is one row
+  every concurrent writer locks (they queue behind each other under read committed, and abort with
+  40001 under snapshot isolation). Checked on YugabyteDB 2026.1.1.1: two concurrent writers to one
+  marked table both commit.
+- The recorded-absence age (`negative_cache_max_age`) stays only as cover for writers that predate
+  the marks; `tests/enforcement/test_recorded_absence_age_is_contracted_by_its_date.py` fails the
+  build from 2027-01-05 while it remains.
+
+### Core: the gateway's completion and embedding doors take a proof of possession
+
+- `door_request.GATEWAY_COMPLETION_DOOR` / `GATEWAY_COMPLETION_OP` (`gateway.completion`, `complete`)
+  and `GATEWAY_EMBEDDING_DOOR` / `GATEWAY_EMBEDDING_OP` (`gateway.embedding`, `embed`): a caller proves
+  its own token there, so a tool pod holding an agent's token cannot spend as that agent. No delegated
+  token names either door.
+- NATS: the gateway principal may write `{ns}-gateway-door-proof-nonces`
+  (`subject_permissions.GATEWAY_DOOR_PROOF_NONCE_BUCKET`), the doors' single-use ledger of proof ids,
+  shared by every replica.
+
+### Door requests and grants, made consistent with 0.66.0 to 0.68.0 when develop was merged in
+
+- **A request without a proof carries no `identity_proof` key.** `door_request.ProvenDoorRequest`
+  holds the field and a serializer that leaves it off when absent (`omit_absent_proof`); every
+  request model with a proof field subclasses it (`DatasourceQueryRequest`, `AuditAnonymizeRequest`,
+  `EngagementScopeRequestModel`, `NamespaceDiscoveryRequest`, `ObjectResolveRequestModel`), and
+  `tests/enforcement/test_proof_carrying_requests_omit_an_absent_proof.py` fails a model that declares
+  the field by hand or puts a null proof on the wire. A 0.66.0 to 0.68.0 hub reads the datasource and anonymization requests
+  with `extra="forbid"`, so a body carrying `"identity_proof": null` was refused there; a caller with
+  no key now sends exactly what that hub reads, and the two upgrade in either order. The proof is left
+  out of what it signs, so no hash changes.
+- **A retired subscription has no dead-letter.** `subject_permissions.retired_subscriptions()` names
+  the subjects still granted on subscribe only for an older release, which nothing publishes (the acl
+  invalidation subjects, kept for an SDK pod a release back); the per-subscription dead-letter
+  derivation skips them, so no principal is granted a publish on an acl subject. They go at the
+  contract step, with this list.
+- `NatsProxyL3Backend.encode_request(subject, payload)`: the one place an L3 request's wire bytes are
+  made, the proof of possession included; `statement_request_bytes` measures through it, so a
+  statement is sized with its proof.
+
+### NATS: each principal's subject grants are the subjects its code uses, held by a gate
+
+- `tests/enforcement/test_subject_grants_match_the_code.py` holds `subject_permissions` equal to the
+  receive and publish sites, both ways: every site's subject (built through its own `Subjects`
+  builder) is granted, every grant has a site or a dated keep-for-older-releases row, every receiver
+  the sender-posture walker finds is placed, and the subjects deliberately withheld are listed with
+  why. The hub is not gated (it is the unrestricted static user); the gate says so.
+- Dead-letters: each principal now publishes `{ns}.deadletter.<subscription>` for each subscription
+  it holds, derived from its subscribe list, in place of the whole `{ns}.deadletter.>` subtree.
+  `NatsClient` dead-letters to the subscription subject, so nothing a principal can receive loses
+  its dead-letter.
+- Agent pod: no longer subscribes `mcp.rbac.epoch`; no agent release ever constructed its one
+  subscriber (`threetears.mcp.LocalGrantAuthorizer`, which the hub runs).
+- Channel adapter: subscribes `agents.reply.*` (`dispatch_to_agent`'s reply subject) and no longer
+  `channels.deliver.*` (a pull consumer, on the inbox) or `channels.room.*` (never wired); publishes
+  `hub.jwks` and `channels.deliver.deadletter` and no longer `agents.route.*` (retired with the
+  durable turn path) or `channels.room.*`. Its `agents.turn.*` publish is withheld: a turn carries
+  the hub's turn assertion.
+- Agent router: publishes `agents.reply.*` and `hub.jwks`; no longer subscribes `agents.turn.>`
+  (its push consumer delivers on the inbox).
+- Registry: publishes `hub.handshake` and `l3.query` / `l3.batch` / `l3.tx.*` (the hub factories it
+  loads read L3 through the broker). Gateway: publishes `hub.jwks`. Dataset executor: no longer
+  publishes `hub.usage.track`, which it never sent.
+- Only the agent pod and tool pod are minted by the callout; the rest are the model the hub's static
+  conf follows. No minted pod grant loses a subject any release uses.
+
+### Registry: a pod that declares it proves never receives the agent's own token
+
+- `RegistrationManifest.proves_delegation` (default `False`): a `ToolServer` whose `door_key` is a
+  `RegistrationKey` declares it. For a verified pod whose key the registry knows
+  (`ToolEndpoint.proves_delegation`), the registry sends a call the delegated token in place of the
+  agent's own `identity_token` and `user_identity_token`, and the pod takes the caller from the
+  delegation (`verify_delegation_at_pod`: the registry's key, this pod as audience and actor, this
+  call's correlation id, and the call's conversation, which the delegation now signs as
+  `conversation_id`; a claim naming another conversation is refused). The call runs in the
+  conversation the delegation signs, never the context's: a delegation that signs none, from a
+  registry that predates the claim, is still taken, so pods and registries roll in either order,
+  but its call runs with no `conversation_id`, since anyone on the bus could have added one to the
+  unsigned context. **Contract step, later:** once every registry signs the claim, a pod refuses a
+  delegation without it. The caller is read with `principal_from`, the reading `principal_from_claims`
+  uses, so a tool pod calling through keeps its tool-pod mark. Only a key the pod has not seen
+  (`DelegatedKeyNotFoundError`) refreshes its JWKS. A pod that does not declare, a registry that
+  predates the field, an unprovisioned delegated-token key and an unreadable hub JWKS
+  (logged once until it reads again) all keep sending
+  both, as before.
+- A door counts a request without a proof under the sender its own token claims
+  (`claimed_sender_of(body)`: the `sub` of `identity_token`, else of `user_identity_token`, read
+  unverified for the count only), so `DoorRequestDoor.admit` / `admit_message` take no
+  `claimed_sender` and no door attributes it by hand.
+- A key source's "no keys" is one error: `KeysUnavailableError`, now a `ServiceEnvelopeError`, is
+  what `PinnedEnvelopeJwks(None)` raises and what any other key-source failure becomes, so both the
+  door-request door and `ServiceEnvelopeDoor` refuse it and count it as `keys_unavailable` rather
+  than raising out of `admit()`.
+
+### Core: a door request proves its token with the key the token binds, for its door and operation
+
+- `threetears.core.security.door_request`. A caller sends `identity_proof` beside `identity_token`:
+  a proof of possession over the token, the request body (its canonical JSON, the proof left out),
+  and the door and operation it is sent to (`door_request_hash(body, door=, op=)`), so a proof for
+  `l3.tx.rollback` is refused at `l3.tx.commit` though the bodies are identical, and a proof for one
+  door is refused at another.
+  - `DoorCredential(token, holder_key)`: a key the token does not bind (its `cnf`) is dropped, so the
+    credential is bearer rather than a proof the door would refuse. `present(body, door=, op=)`,
+    `presented(model, door=, op=)`, `proves`, `own(token, PopKey)`, and
+    `for_tool_call(delegated_token=, identity_token=, key=)`.
+  - `PopKey` (the key a principal's own hub token binds) and `RegistrationKey` (a tool pod's
+    registration key, which the registry binds each call's delegated token to) are distinct types, so
+    neither can prove the other's token.
+  - The door: `DoorRequestDoor(switch=, jwks=EnvelopeJwksSource, hub_issuer=, replay_guard=,
+    accepts_delegated=)`, `admit(body, op=)` / `admit_message(data, op=)` -> `DoorVerdict`. A proof
+    is verified and its id spent (`door-proof|<agent>|<jti>`); the key set is refreshed once for an
+    unknown kid, and an empty one is refused as unavailable; without a proof the door's window judges;
+    a delegated token has no bearer form; refusals count on `door_request_refused{door,cause}`
+    (`absent`, `unverified`, `replayed`, `delegated`, `keys_unavailable`, `ledger_unavailable`,
+    `malformed`). Its ledger must remember an id for `DOOR_PROOF_REPLAY_TTL`: `ReplayGuard` and
+    `InProcessEnvelopeLedger` gain `retention` (the latter a `retention=` argument), checked at
+    construction (`DoorProofLedger`).
+  - Door and operation names: `APPROVAL_RECORD_DOOR`, `OBJECT_RESOLVE_OP`, `ENGAGEMENT_SCOPE_OP`,
+    `NAMESPACE_DISCOVER_OP`, `AUDIT_ANONYMIZE_OP`, `APPROVAL_RECORD_OP`; `l3_request_op(subject)` and
+    `datasource_query_op(subject)` derive an `l3.*` or datasource request's operation from its subject,
+    the one derivation the client signs with and the door verifies with. The frame is length-prefixed.
+  - `threetears.core.security.door_skeleton`: the window judgement, the key lookup (refreshed once,
+    an empty set refused as unavailable), the byte-exact parse and the refusal accounting that
+    `DoorRequestDoor` and `ServiceEnvelopeDoor` share. `ServiceEnvelopeDoor` now counts a message that
+    is not a JSON object (`malformed`) and an empty key set (`keys_unavailable`) by their own cause.
+  - `DEFAULT_DELEGATED_DOORS` is the doors a tool pod reaches AS ITS CALLER (object resolve, namespace
+    discovery, engagement scope), the set the hub takes a delegation at; a delegated token's audience
+    also names its pod (`pod_audience`).
+- Callers. `NatsProxyL3Backend(pop_key=)` and `DatasourceQueryClient(pop_key=)` prove every request
+  (`current_pop_key()` lets a second pool borrow the provider); `request_audit_anonymization(pop_key=)`.
+  `ToolServer(registration_key=)` (a tool pod) or `ToolServer(pop_key=)` (an agent's in-process
+  server), never both, and `ToolCallScope.credential` / `door_credential()` carry the call's
+  credential to its tools; `BuiltinToolPod` gives its `IdentityMinter.registration_key`.
+  `DynamicToolPod` holds no key of its own yet and forwards the caller's token.
+- Wire: `identity_proof` (optional) on `ObjectResolveRequestModel`, `EngagementScopeRequestModel`,
+  `NamespaceDiscoveryRequest`, `AuditAnonymizeRequest` and `DatasourceQueryRequest`.
+- **Consumers.** `ObjectResolver.resolve`, `EngagementScopeResolver.resolve` and
+  `NamespaceDiscoveryClient.discover` take an optional `credential: DoorCredential`; the tools pass
+  it only when it proves, so an implementer or fake written to the old signature keeps working for a
+  caller that holds no key, and must accept `credential=` before a key is given to its server.
+- `Subjects.l3_query`, `l3_batch` and `l3_tx` take an optional `namespace=`; the L3 backend builds
+  its subjects through them.
+- Rolling: every key is optional, and a caller without one sends the token alone, which each hub
+  door accepts until its dated window closes.
+
+### Core: a call-scoped delegated token, and the door check on whoever presents a token
+
+- `threetears.core.security.delegated_token`: `mint_delegated_token` (the registry, per forwarded
+  call: `sub` the agent, `act` the tool pod, `user_id`, `customer_id`, `aud` the doors the call may
+  reach, `cnf` the pod's own key, `exp` the call's deadline, `corr` the call; `typ`
+  `delegated+jwt`; at most an hour) / `verify_delegated_token` / `verify_door_caller` (a delegated
+  token proven with the pod's key, or an agent's identity token proven with its own `cnf` key; the
+  proof binds the token and the request body; `ProofAbsentError` leaves a bearer request to the
+  door's dated window).
+- The registry mints one per forwarded call (`CallProxy(delegated_signer=)`; the server reads the
+  seed through `THREETEARS_REGISTRY_DELEGATED_TOKEN_SIGNING_KEY_REF`, default
+  `env://THREETEARS_DELEGATED_TOKEN_SIGNING_KEY`: a key of its own, not the proxy-assertion key) into
+  `CallContext.delegated_token`, bound to the key the pod's verified registration was signed with
+  (`ToolPodAuth.holder_jkt` -> `PublisherStanding.holder_jkt` -> `ToolEndpoint.holder_jkt`) and
+  living the call's effective timeout. Unprovisioned, or for a pod whose key the host did not name,
+  none is minted and the pod keeps the caller's own tokens. `DelegatedTokenSigner`,
+  `DEFAULT_DELEGATED_DOORS` and the door names (`L3_DOOR`, ...) are new.
+
+### Channels: a channel answer carries its turn's id and the hub's turn assertion
+
+- `ChannelDeliveryMessage` gains optional `turn_id` (32 hex characters) and `turn_assertion`. The
+  dedup key is `{conversation}-{turn_id}` when the turn id is present: a correlation id is known to
+  every tool pod in the turn, so a forged answer sent first under it could claim the key and
+  suppress the real one. An answer without a turn id keeps its old key. A delivery worker can post
+  only an answer to a turn the hub signed. A reader that predates the fields ignores them.
+
+### Core: a turn assertion, the hub's signed statement of whose turn an agent runs
+
+- `threetears.core.security.turn_assertion`: `mint_turn_assertion` / `verify_turn_assertion` /
+  `new_turn_id`. A hub-signed EdDSA JWS (`aud` `agents.turn`, `sub` the agent, `user_id`,
+  `customer_id`, `conversation_id`, a CSPRNG `turn_id`, life one hour so a durable turn can wait
+  out a router restart). The router and the agent take whose turn it is from it, never the body;
+  it never enters `CallContext`, so no tool pod holds it. Additive.
+
+### NATS: a runner's refusal and renewal doors can require the hub's envelope (S1, S2)
+
+- `CredentialRefusal` and `CredentialRenewalRequest` gain an optional `service_envelope` (audiences
+  `nats.credential_refusal` / `nats.credential_renewal`, ops `refuse` / `renew`).
+  `NatsClient.abandon_on_refusal` and `renew_on_request` take `admits`, asked with the message bytes
+  before `is_mine`: any client that can name a runner's inbox could deliver a refusal that closed
+  every connection it held. A malformed message is now logged and ignored there.
+- Core: `InProcessEnvelopeLedger` (an `EnvelopeLedger` for a door one process consumes) and
+  `HubJwksEnvelopeSource` (the hub's key set from a pod's `CachedHubJwksProvider`), for the runner's
+  door. `ServiceEnvelopeDoor` takes any `EnvelopeLedger`. Additive: without `admits` nothing changes.
+
+### NATS: `round_trip`, the barrier nats-py's `flush` is not, for a raw connection
+
+- `threetears.nats.round_trip(connection, *, timeout)` proves the server processed everything a raw
+  nats-py connection sent before it. nats-py's `flush` writes its `PING` ahead of a `SUB` still in
+  the pending buffer, so subscribe-then-flush could return before the server knew the subscription
+  and a message published at once from another connection was answered "no responders" or dropped.
+  `NatsClient.subscribe` and `NatsClient.flush` already use it.
+
+### Core: a signed service envelope for a service that has no caller token to forward
+
+- `threetears.core.security.service_envelope`: `mint_service_envelope` signs, with the sending
+  service's own JWKS key, "from me, for this door and operation, over this body, now, once":
+  claims `iss`, `aud`, `op`, `bh` (`body_hash`, canonical JSON with the envelope field left out),
+  `iat`, `exp` (at most `SERVICE_ENVELOPE_MAX_LIFETIME`, 60s) and `jti`. `verify_service_envelope`
+  checks each, EdDSA-pinned, and `verify_and_record` also spends the `jti` in the door's
+  `ReplayGuard`, which must remember ids for `SERVICE_ENVELOPE_REPLAY_TTL` and be sized for
+  `SERVICE_ENVELOPE_LEEWAY`. Additive: nothing calls it until a door adopts it.
+- `ServiceEnvelopeDoor` is one door's acceptance of one sender's messages: an envelope is acted on
+  only when it verifies and its id is unspent (the sender's JWKS fetched afresh once for an unknown
+  kid; an unreachable ledger refuses); a message without one is the door's `DoorProofSwitch`'s to
+  judge, accepted until the window's date. Refusals are counted in `service_envelope_refused{door,cause}`.
+- `ServiceEnvelopeDoor.admit_message(data, op=)` hashes the message exactly as sent, for a receiver
+  whose model is a tolerant reader: a field a newer sender adds still counts toward the hash.
+- `ServiceEnvelopeSigner` holds one sending service's key, kid and issuer; `seal` returns a body with
+  its envelope added, ready to send.
+- For a sender with no JWKS of its own (the gateway, a channel adapter): `ServiceEnvelopeSigner.from_seed_text`
+  builds the signer from its configured base64 seed, its kid the key's thumbprint, and
+  `PinnedEnvelopeJwks` is the door's key set from the pinned public half (none pinned: nothing verifies).
+- `ServiceEnvelopeDoor.required(door=, ...)` is a door born requiring the envelope (no sender predates it,
+  so no window): a message without one is refused and counted (`cause="absent"`).
+- `ServiceEnvelopeSigner.sealed(message, audience=, op=)` returns a wire model carrying its envelope in
+  its `service_envelope` field, signed over what `model_dump_json` puts on the wire.
+- `ServiceEnvelopeSigner.from_secret_ref` reads the seed through a secret reference and answers `None`
+  while it is not provisioned, warning with the receiving door's date.
+
+### Knowledge: a draft carries the agent's token and the turn's user assertion
+
+- `KnowledgeDraftMessage` gains optional `identity_token` and `user_identity_token`, and
+  `for_event` / `for_command` take them. `threetears.agent.knowledge.KnowledgeIntegration` takes
+  `identity_token_provider`, and `publish_draft` / `publish_command` take `user_identity_token`.
+  The hub takes the draft's customer from the agent's token and its author from the assertion,
+  never the payload, and refuses a draft without them from 2027-01-05.
+
+### Workspace: a workspace-create event carries the creating agent's token
+
+- `WorkspaceCreateEvent` gains an optional `identity_token`, and `workspace_create` attaches the
+  call scope's identity token. The hub takes the workspace's owner and customer from it, never
+  the event's fields, and refuses an event without one from 2027-01-05. A hub that predates the
+  field ignores it.
+
+### Registry: the usage emitter factory receives the registry's own identity
+
+- `THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY`'s factory is called with the connected client and
+  the registry's identity-token provider (`None` when the registry holds no identity), as the
+  limit-guard and authenticator factories already are, so each endpoint-usage event can prove the
+  registry published it. A factory taking the client alone is still called with it alone, with a
+  warning naming it, so a host need not release in step with this 3tears; its events carry no
+  registry identity, which the hub refuses from 2027-01-05. The client-alone form is dropped in the
+  first 3tears release after that date. A factory whose signature cannot be read is called with the
+  client alone.
+
+### Core: a fetched JWKS is never trusted blind
+
+Any client in the account can get bytes delivered onto a verifier's JWKS reply inbox, and a
+forged reply that adds the forger's key would let it mint any identity the registry or a tool pod
+then accepts.
+
+- **Added, `threetears.core.security.jwks_trust`**, with `JwksTrust`, the one place a verifier
+  decides what a reply is worth (`ReplyTrust`: refused, verified, unverified):
+  - the publisher signs a statement over exactly its key set under a root key the verifier pins
+    (`sign_jwks_statement` / `verify_jwks_statement`). A statement older than one already verified
+    by more than `STATEMENT_ORDER_LEEWAY` (30 seconds: replicas behind one queue group stamp `iat`
+    from their own clocks), or claiming a life longer than `MAX_STATEMENT_LIFETIME`, is refused, so
+    a stored reply cannot bring back a rotated-out key;
+  - an unsigned reply is taken only while `HUB_JWKS_STATEMENT_WINDOW` is open (required from
+    2027-01-05) and the publisher has not yet signed one. This ratchet only tightens: a publisher
+    rolling out the signing release should finish promptly, and rolling the publisher back to a
+    release that does not sign needs every long-lived verifier restarted;
+  - `JwksKeyring` records where each key came from: a key a verified reply brought in is held
+    through `ROTATION_OVERLAP` once missing; a key only an unsigned reply vouched for is dropped by
+    the next reply that omits it, signed or not;
+  - an unsigned reply with an entry not named by its RFC 7638 thumbprint is refused from
+    `THUMBPRINT_WINDOW`'s date (2027-01-05), accepted and counted before it;
+  - `RefreshGate`, the single-flight reactive refresh, one per `REACTIVE_REFRESH_WINDOW_SECONDS`.
+- **Changed, `CachedHubJwksProvider`**: every reply goes through `JwksTrust`; a reply whose `keys`
+  is not a list is refused; `refresh_now` runs through the `RefreshGate`. **Every verifier must set
+  `THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY` before 2027-01-05**, or it refuses every hub JWKS reply
+  from that date; a provider built without one, and a reply carrying a statement it cannot check,
+  each log a warning saying so. Inventory, by a search of every `CachedHubJwksProvider(` in 3tears,
+  the hub and the SDK on 2026-10-08: the registry (`threetears.registry`, and the hub's registry
+  factories in the same process), the hub's gateway, and every `ToolServer` that builds its own
+  provider -- each self-provisioning tool pod, and each agent whose tools run in-process
+  (the SDK's `tool_strategies`, `tool_server_bootstrap`, `provider_tool_pod`). Those last run in
+  consumer repos' deployments, outside the hub image, so each of them must carry the key before
+  the date; the window opened when the change was decided (2026-10-07), so a release that ships
+  late shortens what they get, and the date moves if that inventory cannot be met. The one
+  publisher is the hub's JWKS responder, which signs once its root key is set.
+- **Added, `door_proof.process_door_proofs`** and `DOOR_PROOF_REQUIRED_EARLY_ENV`: one door registry
+  per process, from `THREETEARS_DOOR_PROOF_REQUIRED_EARLY`, so every door's absent senders are read
+  in one place.
+- **Added**: a gate (`tests/enforcement/test_door_windows_are_open.py`) that fails once any
+  `DoorWindow` declared in source is past its date.
+- **Added, the `jwks_reply_refused` counter** (labels `door`, `cause`: `malformed`, `downgrade`,
+  `unverified`, `older`, `unsigned`, `thumbprint`). A verifier that keeps refusing keeps trusting
+  its last taken key set, so this is the signal to alert on; readiness is deliberately not tied to
+  it, because any client in the account can get a refused reply delivered and would then take the
+  verifier out.
+
+### NATS: inbox names cannot be predicted, and a JetStream delivery counts only from the receiver's own consumer
+
+Any client in the account can get bytes delivered onto a subject it can name. nats-py named every
+inbox and request token from a sequential NUID, so one reply subject predicted the next.
+
+- **Changed: every connection `NatsClient` opens draws its inboxes, request tokens and ephemeral
+  consumer names from a CSPRNG** (`CsprngNuid`, installed before `connect()` in
+  `threetears.nats._nats_py_internals`). Nothing on the wire changes shape.
+- **Added, `threetears.nats.own_consumer`**: `random_consumer_name` and `delivered_by_own_consumer`,
+  which accepts a delivery only when its ack reply names the receiver's own stream and consumer, and
+  logs one refusal event otherwise.
+- **Changed: the durable result waiter, the KV key watch (prefix watches included), the shared
+  named read behind the KV key listing and the Object Store, and the op-log replay accept only their
+  own consumer's deliveries**, and name their consumers at random. A forged
+  message is dropped unacked and logged, and the receiver keeps waiting. The key watch no longer
+  delivers a message with no JetStream metadata as revision 0. The op-log replay now creates its
+  named consumer and binds to it, the same consumer-create subject as before.
+
+### Core: wire models are tolerant readers, and a door adopts a proof through a dated window
+
+Owner ruling 2026-10-07: framework components and their consumers upgrade on their own schedules.
+
+- **Added, `threetears.core.wire.TolerantWireModel`**: a wire model a separately deployed receiver
+  reads ignores fields it does not know, and refuses by name the fields that would let a sender
+  steer its own authority (`refused_fields`).
+- **Changed: these wire models are now tolerant readers**: `ProxyCallRequest`, `CallRequest`,
+  `DatasourceQueryRequest` (still refuses `agent_id` and `user_id`), `RelationFingerprintRequest`,
+  `RelationFingerprintResult`, `GeoLayersReloadedRequest`, `AuditEvent` and
+  `AuditAnonymizeRequest` (now refuses `customer_id` by name). A newer sender's added field no
+  longer refuses the whole message at an older receiver. `tests/enforcement/test_wire_models_are_tolerant_readers.py`
+  pins the inventory both ways.
+- **Added, `threetears.core.security.door_proof`**: `DoorWindow` (a door's dated window for
+  adopting a proof, at most `MAX_PROOF_WINDOW`, 90 days), `DoorProofSwitch` (optional before the
+  date, required from it or when config requires it early; every absent proof logged and counted on
+  `door_proof_absent`), `DoorProofModes` (config lists only doors to require early, so it cannot
+  reopen one) and `expired_windows` (a window past its date, for a repo's gate).
+
+### Enforcement: every NATS receiver says how it authenticates its sender
+
+A subject proves nothing about who published on it: any connection can have its own bytes
+delivered on any subject, through a push consumer's `deliver_subject` or a request's reply subject.
+
+- **Added, `threetears.enforcement.sender_posture`** (`SenderPostureConfig`,
+  `sender_posture_findings`, `find_subscribe_sites`, `SubscribeSite`, `POSTURES`,
+  `DEFAULT_SITE_CALLEES`): a gate under which every receiving site declares
+  `# sender-posture: <posture> [open <ROW>]`, and a repo's allowlist carries exactly the audit rows
+  still open, in both directions, each line pinning how many sites in its file declare the row so
+  a new receiver cannot ride an existing line. `primitive` is allowed only in named functions
+  (`primitive_functions`, `path::Qual.name`), never a whole module. `excluded_prefixes` leaves test
+  doubles shipped under `src` unwalked; each must end in `/` and match a module.
+- **3tears runs it** (`tests/enforcement/test_subscribers_declare_sender_posture.py`). Every
+  receiving site in `packages/` now carries its marker; `tests/enforcement/_sender_posture_allowlist.txt`
+  lists the receivers still open under the NATS receiver-trust audit.
+
 ## v0.68.0 -- 2026-10-14
 
 ### Media and the small tools: a question gets a new look, an image can be changed by its id, and the converters read what people write

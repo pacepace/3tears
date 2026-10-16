@@ -43,6 +43,8 @@ from uuid import UUID, uuid7
 
 from pydantic import BaseModel
 from threetears.media.contracts import ObjectHandle
+from threetears.core.security.delegated_token import OBJECT_RESOLVE_DOOR
+from threetears.core.security.door_request import OBJECT_RESOLVE_OP, DoorCredential, ProvenDoorRequest
 from threetears.nats import NatsClient, RequestError, Subjects
 from threetears.observe import get_logger
 
@@ -68,7 +70,7 @@ class ResolveObjectError(RuntimeError):
     """
 
 
-class ObjectResolveRequestModel(BaseModel):
+class ObjectResolveRequestModel(ProvenDoorRequest):
     """outbound object-resolve request to the hub.
 
     carries the invoking agent's ``identity_token`` as the caller proof. the
@@ -81,6 +83,9 @@ class ObjectResolveRequestModel(BaseModel):
     :param identity_token: the hub-minted identity assertion the invoking agent
         carries on the call context; the hub verifies it + derives the customer
     :ptype identity_token: str
+    :param identity_proof: the presenter's proof of possession of the token's key over this request
+        (:mod:`threetears.core.security.door_request`); ``None`` from a caller that holds no key
+    :ptype identity_proof: str | None
     :param correlation_id: transport correlation id echoed in the reply (NOT a
         replay control -- resolve replay is bounded by token expiry + session
         liveness hub-side)
@@ -169,7 +174,14 @@ class ObjectResolver(Protocol):
     fake; production wires :class:`HubObjectResolver`.
     """
 
-    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+    async def resolve(
+        self,
+        object_id: UUID,
+        *,
+        customer_id: UUID,
+        identity_token: str,
+        credential: DoorCredential | None = None,
+    ) -> ObjectHandle:
         """resolve ``object_id`` to a handle carrying its stored key, or raise.
 
         :param object_id: the object id to resolve
@@ -177,8 +189,14 @@ class ObjectResolver(Protocol):
         :param customer_id: the VERIFIED owning customer (cache scoping only;
             NOT sent to the hub -- the hub derives the customer from the token)
         :ptype customer_id: UUID
-        :param identity_token: the caller proof forwarded to the hub
+        :param identity_token: the credential presented to the hub: the call's delegated token, or
+            the caller's own identity token
         :ptype identity_token: str
+        :param credential: the same token with the key it binds, to prove possession of it over the
+            request; the token alone when omitted. Pass it only when it proves
+            (:attr:`~threetears.core.security.DoorCredential.proves`), so an implementer written before
+            it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: a handle with the resolved ``s3_key`` / ``mime_type`` /
             ``size_bytes`` (``summary`` / ``category`` are ``None`` -- resolve
             returns only the storage-locating fields)
@@ -232,7 +250,14 @@ class HubObjectResolver:
         # supplied -- its L1 tier is this, per process, plus a shared L2.
         self._cache: dict[tuple[UUID, UUID], ObjectHandle] = {}
 
-    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+    async def resolve(
+        self,
+        object_id: UUID,
+        *,
+        customer_id: UUID,
+        identity_token: str,
+        credential: DoorCredential | None = None,
+    ) -> ObjectHandle:
         """resolve ``object_id`` to a handle carrying its stored key, or raise.
 
         Serves from cache when the ``(customer_id, object_id)`` mapping is known
@@ -244,8 +269,14 @@ class HubObjectResolver:
         :ptype object_id: UUID
         :param customer_id: the VERIFIED owning customer, for cache scoping only
         :ptype customer_id: UUID
-        :param identity_token: the caller proof forwarded to the hub
+        :param identity_token: the credential presented to the hub: the call's delegated token, or
+            the caller's own identity token
         :ptype identity_token: str
+        :param credential: the same token with the key it binds, to prove possession of it over the
+            request; the token alone when omitted. Pass it only when it proves
+            (:attr:`~threetears.core.security.DoorCredential.proves`), so an implementer written before
+            it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: a handle with the resolved ``s3_key`` / ``mime_type`` /
             ``size_bytes``
         :rtype: ObjectHandle
@@ -255,10 +286,14 @@ class HubObjectResolver:
         cached = await self._remembered(customer_id, object_id)
         if cached is not None:
             return cached
-        request = ObjectResolveRequestModel(
-            identity_token=identity_token,
-            correlation_id=uuid7(),
-            object_id=object_id,
+        request = DoorCredential.for_request(identity_token, credential).presented(
+            ObjectResolveRequestModel(
+                identity_token=identity_token,
+                correlation_id=uuid7(),
+                object_id=object_id,
+            ),
+            door=OBJECT_RESOLVE_DOOR,
+            op=OBJECT_RESOLVE_OP,
         )
         try:
             response = await self._nc.request(

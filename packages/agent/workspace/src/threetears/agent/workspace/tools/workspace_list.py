@@ -97,7 +97,8 @@ class WorkspaceListTool(TearsTool):
         """
         result: ToolResult
         scope = current_scope()
-        identity_token: str | None = None if scope is None else scope.context.identity_token
+        credential = None if scope is None else scope.door_credential()
+        identity_token: str | None = None if credential is None else credential.token
         user_identity_token: str | None = None if scope is None else scope.context.user_identity_token
         correlation_id: UUID = (
             scope.context.correlation_id if scope is not None and scope.context.correlation_id is not None else uuid7()
@@ -115,6 +116,8 @@ class WorkspaceListTool(TearsTool):
                     identity_token=identity_token,
                     user_identity_token=user_identity_token,
                     namespace_type="workspace",
+                    # the credential rides only when it proves, so a stand-in written before it keeps working
+                    **({"credential": credential} if credential is not None and credential.proves else {}),
                 )
                 # the ids stay UUIDs (or None) until the one border, json.dumps: an absent owner or
                 # customer becomes JSON null there, where a per-field str() rendered it "None".

@@ -486,6 +486,7 @@ class LocalGrantAuthorizer:
         epoch_mode = self._epoch_listener is not None
         if epoch_mode:
             assert self._epoch_listener is not None  # narrowed by epoch_mode
+            # sender-posture: trigger-only -- a bump reloads the grant cache from L3
             await self._epoch_listener.subscribe(
                 Subjects.mcp_rbac_epoch(),
                 self._on_rbac_bump,
