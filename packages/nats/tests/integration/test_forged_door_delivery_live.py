@@ -129,7 +129,7 @@ def _receiver_accepts(body_bytes: bytes) -> bool:
     """
     try:
         verify_door_request(json.loads(body_bytes), jwks=_JWKS, hub_issuer="hub", door="l3", op="query")
-    except (DelegatedTokenError, ValueError):
+    except DelegatedTokenError, ValueError:
         # a missing or unbound proof (ProofAbsentError subclasses DelegatedTokenError), or a
         # malformed body: every one is the door refusing to act.
         return False
