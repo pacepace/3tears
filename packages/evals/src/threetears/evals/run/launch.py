@@ -553,7 +553,17 @@ class LaunchHost:
         :raises ValueError: The profile declares a world and no placement was supplied, or declares
             none and one was; a kind honours an apparatus setting the profile does not declare as
             one of the host's own apparatus dimensions; or ``job_lease_s`` is not positive.
+        :raises TypeError: An entry of the host's registry (``eval_host.template_checks.kinds``) is not a
+            :class:`LaunchableKind`, so it could be admitted against but never launched.
         """
+        checks = self.eval_host.template_checks
+        for kind, entry in ({} if checks is None else checks.kinds).items():
+            if not isinstance(entry, LaunchableKind):
+                raise TypeError(
+                    f"the host's TemplateChecks.kinds entry for kind {kind!r} is a {type(entry).__name__}, not a "
+                    "LaunchableKind: the registry a template is admitted against is the one its launch dispatches "
+                    "through, so every entry is a LaunchableKind"
+                )
         profile = self.eval_host.profile
         settable = settable_apparatus(profile.sweepables)
         for kind, launchable in self.kinds.items():
@@ -602,7 +612,9 @@ class LaunchHost:
         :rtype: Mapping[str, LaunchableKind]
         """
         checks = self.eval_host.template_checks
-        return {} if checks is None else checks.kinds
+        # Every entry was refused unless a LaunchableKind when this host was built (``__post_init__``); the kernel
+        # types the mapping by what admission reads of it, since it imports nothing of this package.
+        return {} if checks is None else cast(Mapping[str, LaunchableKind], checks.kinds)
 
     def place(self, run: EvalRun) -> dict[str, WorldPlacement]:
         """Where ``run`` sits in this host's world: one placement per declared dimension.

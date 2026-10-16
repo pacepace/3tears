@@ -94,7 +94,8 @@ Breaking for a host in one place: `LaunchHost` takes no `kinds`.
 - **`LaunchHost(kinds=...)` is removed; the registry is `TemplateChecks.kinds`.** Breaking: `LaunchHost.kinds` is now
   a read-only property over `eval_host.template_checks.kinds`, so a template is admitted against the registry its
   launch dispatches through, and a kind registered in one place cannot be missing from the other. `TemplateChecks.kinds`
-  is typed `Mapping[str, LaunchableKind]`. A host with no template checks launches no kind (its launch is refused by
+  stays typed by what admission reads (`IgnoresTemplateFields`), and `LaunchHost` raises `TypeError`, naming the kind,
+  when an entry is not a `LaunchableKind`. A host with no template checks launches no kind (its launch is refused by
   name). To port, drop `kinds=` from your `LaunchHost(...)` and keep it in your `TemplateChecks(kinds=...)`; code that
   rebuilt a launch host with `replace(host, kinds=...)` replaces the `eval_host`'s template checks instead.
   `threetears.evals.ops.OpsHost.reading` still launches nothing, whatever the checks carry.

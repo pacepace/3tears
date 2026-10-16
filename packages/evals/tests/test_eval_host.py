@@ -158,6 +158,20 @@ def test_a_host_declaring_no_world_has_nothing_to_place_a_run_in():
     assert placed.place(toyhost_observation(chunk_tokens=256)) == {}, "a host with no world records it placed nothing"
 
 
+def test_a_registry_entry_that_cannot_launch_is_refused_naming_its_kind():
+    host, _ = _launching()
+    checks = host.eval_host.template_checks
+    assert checks is not None
+
+    class _AdmitsOnly:
+        ignored_template_fields: frozenset[str] = frozenset()
+
+    unlaunchable = replace(checks, kinds={**checks.kinds, "admits_only": _AdmitsOnly()})
+
+    with pytest.raises(TypeError, match="'admits_only' is a _AdmitsOnly, not a LaunchableKind"):
+        replace(host, eval_host=replace(host.eval_host, template_checks=unlaunchable))
+
+
 def test_settings_name_only_the_settings_a_launch_has():
     with pytest.raises(ValidationError, match="max_lanuch_arms"):
         LaunchSettings.model_validate(

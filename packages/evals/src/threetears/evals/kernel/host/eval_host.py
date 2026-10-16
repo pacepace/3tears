@@ -57,7 +57,6 @@ if TYPE_CHECKING:
 
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.kernel.host.timeouts import CellTimeoutFactory
-    from threetears.evals.run.launch import LaunchableKind
     from threetears.evals.schema.traces import TraceSink
     from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
     from threetears.evals.schema.models import EvalTemplate
@@ -172,7 +171,9 @@ class TemplateChecks:
         refuses those itself, from ``kinds``.
     :ivar kinds: The host's launch registry, by kind name, stated here and nowhere else: ``LaunchHost.kinds`` reads
         this mapping off the host's checks, so the registry a template is admitted against and the one a launch
-        dispatches through cannot differ. Every path that admits a template refuses one stating a field its kind's
+        dispatches through cannot differ. Each entry is a ``threetears.evals.run.LaunchableKind``; typed here by the
+        one thing admission reads of it (:class:`IgnoresTemplateFields`), because this package imports nothing of the
+        run package, and a ``LaunchHost`` refuses, when it is built, a registry with an entry that is not one. Every path that admits a template refuses one stating a field its kind's
         entry ignores (``threetears.evals.run.authoring.refuse_ignored_template_fields``), as the launch dispatch
         does; a kind the registry does not carry is refused nothing here, and its launch is refused by name.
     :ivar refuse_inadmissible_template_case: Whether a template's own case (``SeedTemplateCase``, ``host_payload``
@@ -185,7 +186,7 @@ class TemplateChecks:
     require_known_tools_allowed: Callable[[Sequence[str] | None], None]
     refuse_undeclared_world_seed: Callable[[EvalTemplate], None]
     refuse_undeliverable_template: Callable[[EvalTemplate], None]
-    kinds: Mapping[str, LaunchableKind]
+    kinds: Mapping[str, IgnoresTemplateFields]
     refuse_inadmissible_template_case: Callable[[TemplateCaseFields], None]
 
 
