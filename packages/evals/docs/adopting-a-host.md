@@ -1478,6 +1478,9 @@ for a judge case, it writes them only into a revision holding no cases yet, so a
 changed, for a template already holding cases is withheld under `needs_reset` until you reset the template (below).
 A case whose content the revision already holds is `already present`, so cases your own seed wrote before `.32` with
 the same content are kept as they are.
+A template whose every revision is archived is one an operator retired, and is absent to the seed as an archived
+rubric dim or judge config is: no case is written into any of its revisions, on any boot, and each case is reported
+under `SeedOutcome.archived` (`template_case`, keyed `<template>/<name>`), neither created, present nor failed.
 
 **A stored case is renamed through the package, never by writing its document.** The seed and a reset fill a name
 only into a case they write, so `case_rename(host, scope_id, case_id, name)` (from `threetears.evals.ops`, over your

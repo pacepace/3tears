@@ -1067,3 +1067,34 @@ async def test_the_actions_read_drift_refuse_a_customized_reset_and_reset_with_d
     revisions = {line["name"]: line["revision"] for line in listed.structured["templates"]}
     assert revisions == {toyhost_judged_template().name: 2, JUDGE_NAME: 1}, revisions
     assert reset.text.splitlines()[-1] == "drift: 0 stale, 0 customized, 0 unknown, 0 absent, 7 current"
+
+
+def test_a_template_whose_every_revision_is_archived_is_absent_to_the_seed_on_every_boot() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus())
+    retired = _subject(storage)
+    storage.save_template(retired.model_copy(update={"archived": True}))
+    corpus = _own_corpus(_own("a"), _own("b"))
+
+    first = _boot(storage, corpus)
+    again = _boot(storage, corpus)
+
+    for outcome in (first, again):
+        assert outcome.archived == {"template_case": [f"{SUBJECT}/a", f"{SUBJECT}/b"]}
+        assert (outcome.created["template_case"], outcome.skipped["template_case"]) == (0, 0)
+        assert outcome.failed["template_case"] == 0 and not outcome.needs_reset and not outcome.conflicted
+        assert not outcome.nothing_to_do
+        assert "its template is archived (" + f"{SUBJECT}/a" in outcome.summary()
+    assert _cases_on(storage, retired) == [], "no revision of a retired template is written into"
+
+
+def test_a_template_with_one_live_revision_seeds_its_cases_though_an_older_revision_is_archived() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a")))
+    first = _subject(storage)
+    storage.save_template(first.model_copy(update={"archived": True}))
+    storage.save_template(first.model_copy(update={"id": "live-rev-2", "revision": 2, "archived": False}))
+
+    boot = _boot(storage, _own_corpus(_own("a")))
+
+    assert not boot.archived and boot.created_keys["template_case"] == [f"{SUBJECT}/a"]

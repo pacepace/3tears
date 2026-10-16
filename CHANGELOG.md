@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a template whose every revision is archived is absent to the seed
+
+Behaviour change for a host that seeds `template_cases`.
+
+- **A retired template is not seeded into.** `load_template_by_name` falls back to the newest archived revision when
+  every revision is archived, so the seed wrote corpus cases into a template an operator had retired. It now writes
+  nothing into any revision of one, on every boot, and `SeedOutcome.archived` (new, `dict[str, list[str]]`) names each
+  such case under `template_case`, keyed `<template>/<name>`. It is counted as neither created, skipped nor failed,
+  `total_archived` counts it, and `summary()` says its template is archived. A template with one live revision seeds as
+  before. A host reading `SeedOutcome` field by field adds the field; one that checks `nothing_to_do` now sees it false
+  while such a case is withheld.
+
 ### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
 
 Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).
