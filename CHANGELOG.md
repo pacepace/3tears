@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the analysis writer is told the one-claim-per-title rule its judge grades
+
+- **Rule 9 of the analysis writer's prompt carries a clause for the title the judge grades as `reporter.one_idea_per_title`.**
+  A finding's title makes one claim, one a single reading could confirm or refute; a result and its guardrail, or two
+  readings joined, are two findings, the decision that weighs them is where they meet, and a qualifier that sets the
+  claim's scope, condition or reason stays inside the one claim. No new rule: the rule and character budgets are
+  unchanged. `GEN_PROMPT_RULES.md` names the failure that bought the clause.
 ### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
 
 Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).
