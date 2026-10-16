@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the seed names a stored case whose name is empty
+
+- **The seed fills an empty name, and only an empty one.** A stored template case with no `name` whose content (its
+  `variation_params` and `host_payload`) matches a corpus case reads with the corpus case's name after one seed, and
+  `SeedOutcome.named` (new, `dict[str, list[str]]`, `total_named`) lists it under `template_case`. A stored non-empty
+  name is never overwritten, a name another live case of the revision carries is not given twice, and only `name` is
+  written (conditionally), so the case keeps its id, `content_hash` and `seed_digest`. A host's own fill-only naming
+  pass after the seed can be dropped.
+
 ### 3tears-evals: a template whose every revision is archived is absent to the seed
 
 Behaviour change for a host that seeds `template_cases`.

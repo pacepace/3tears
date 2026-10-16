@@ -1098,3 +1098,39 @@ def test_a_template_with_one_live_revision_seeds_its_cases_though_an_older_revis
     boot = _boot(storage, _own_corpus(_own("a")))
 
     assert not boot.archived and boot.created_keys["template_case"] == [f"{SUBJECT}/a"]
+
+
+def _store_nameless(storage: EvalStorage, name: str, **changes: Any) -> EvalTestCase:
+    """Seed ``name``'s case, then blank its stored name as a case stored before names existed reads."""
+    _boot(storage, _own_corpus(_own(name, **changes)))
+    (case,) = _cases_on(storage, _subject(storage))
+    blank = case.model_copy(update={"name": None})
+    storage.save_test_case(blank)
+    return blank
+
+
+def test_the_seed_names_a_stored_nameless_case_from_the_corpus_case_of_its_content_and_changes_nothing_else() -> None:
+    storage, _ = memory_storage()
+    blank = _store_nameless(storage, "a")
+    corpus = _own_corpus(_own("a"))
+
+    first = _boot(storage, corpus)
+    again = _boot(storage, corpus)
+
+    (case,) = _cases_on(storage, _subject(storage))
+    assert first.named == {"template_case": [f"{SUBJECT}/a"]} and first.total_named == 1 and not first.nothing_to_do
+    assert not again.named, "a second boot finds it named"
+    assert case.name == "a"
+    assert (case.id, case.content_hash, case.seed_digest) == (blank.id, blank.content_hash, blank.seed_digest)
+
+
+def test_the_seed_never_overwrites_a_stored_name_with_the_corpus_s() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a")))
+    (case,) = _cases_on(storage, _subject(storage))
+    storage.save_test_case(case.model_copy(update={"name": "double-charge"}))
+
+    boot = _boot(storage, _own_corpus(_own("a")))
+
+    assert not boot.named
+    assert _cases_on(storage, _subject(storage))[0].name == "double-charge"

@@ -1481,6 +1481,10 @@ the same content are kept as they are.
 A template whose every revision is archived is one an operator retired, and is absent to the seed as an archived
 rubric dim or judge config is: no case is written into any of its revisions, on any boot, and each case is reported
 under `SeedOutcome.archived` (`template_case`, keyed `<template>/<name>`), neither created, present nor failed.
+A stored case whose `name` is empty and whose content matches a corpus case (its `variation_params` and `host_payload`,
+as its id is derived) is given the corpus case's name on a boot, and reported under `SeedOutcome.named`. It is
+fill-only: a name a stored case already holds is never overwritten, and only `name` is written, so the case keeps its
+id, `content_hash` and `seed_digest` and its history.
 
 **A stored case is renamed through the package, never by writing its document.** The seed and a reset fill a name
 only into a case they write, so `case_rename(host, scope_id, case_id, name)` (from `threetears.evals.ops`, over your
