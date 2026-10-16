@@ -202,8 +202,11 @@ def released_baseline() -> dict[str, str]:
 
 
 def _unreleased() -> Any:
+    """The section the notes are written against: the one being prepared, named ``unreleased`` or, once renamed for
+    the release about to be tagged, for the version ``pyproject.toml`` states."""
     newest = surface.load_migrations().releases[0]
-    assert newest.version == "unreleased", "MIGRATIONS.toml's first section is the release being prepared"
+    prepared = (surface.UNRELEASED, surface.package_version())
+    assert newest.version in prepared, "MIGRATIONS.toml's first section is the release being prepared"
     return newest
 
 

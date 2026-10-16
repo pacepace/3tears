@@ -57,7 +57,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.69.0"
 since = "v0.68.0"
 summary = """
 The first release of 3tears-evals. No earlier release shipped the package, so no public name has moved or been
