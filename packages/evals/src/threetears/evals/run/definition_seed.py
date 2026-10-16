@@ -68,7 +68,8 @@ verdict changed, or a new one, for a revision already holding cases would change
 same id, so it is withheld under ``needs_reset`` until ``reset_definitions`` writes the next revision. A template is resolved in the store first (the
 store is master, and the template a stored case is judged against) and else in the corpus, which the same seed
 writes. Every case is built before anything is written, and a case authoring would refuse refuses the whole seed,
-naming each. No operation deletes a judge case, so, as for a template, a case deleted straight from the store
+naming each; except that a case whose criterion the stored template lacks (re-worded under the same name) is withheld
+under ``needs_reset`` like one for a battery already holding cases, since a reset repairs it, and the rest seed. No operation deletes a judge case, so, as for a template, a case deleted straight from the store
 empties its slot.
 
 **A template's own cases seed with it.** A host authors stimuli for its own templates (a scenario to play out, a
@@ -709,8 +710,7 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
     :rtype: SeedOutcome
     :raises ValidationFailedError: A corpus template fails a gate ``create_template`` applies, or a
         corpus judge case one ``judge_case_author`` applies (a template it names that neither the
-        store nor the corpus holds, a judge template of another kind, a criterion the template's
-        rubric lacks, a verdict its scale cannot hold). Raised before anything is written, naming
+        store nor the corpus holds, a judge template of another kind, a criterion the corpus's template lacks, a verdict its scale cannot hold). Raised before anything is written, naming
         every refused definition and why.
     :raises ValidationFailedError: (also) A corpus template case the host's check
         (``TemplateChecks.refuse_inadmissible_template_case``) refuses, or one with no name; raised before anything is
@@ -757,7 +757,11 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
     storage = host.storage
     stored_templates = storage.query_templates(corpus.scope_id)
     # A template is resolved in the store first (the store is master), as its current revision.
-    cases = authored_seed_cases(corpus, {**{t.name: t for t in templates}, **current_revisions(stored_templates)})
+    stored_first = {**{t.name: t for t in templates}, **current_revisions(stored_templates)}
+    # A case whose criterion the stored template lacks is read as the corpus words it, to name it, and withheld.
+    drifted = [c for c in corpus.judge_cases if criterion_missing_from_stored(c, stored_first)]
+    to_reset = authored_seed_cases(corpus, {**stored_first, **{t.name: t for t in templates}}, cases=drifted)
+    cases = authored_seed_cases(corpus, stored_first, cases=[c for c in corpus.judge_cases if c not in drifted])
     outcome = SeedOutcome()
 
     # One archived-inclusive query per type, not one probe per document: the catalogue is
@@ -797,15 +801,36 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
     )
     if corpus.template_cases:
         _seed_template_cases(outcome, host, corpus.scope_id, corpus.template_cases)
-    frozen = _seed_judge_cases(outcome, host, corpus.scope_id, cases) if cases else {}
+    frozen = _seed_judge_cases(outcome, host, corpus.scope_id, cases, drifted=to_reset) if cases or to_reset else {}
     if corpus.case_sets:
-        _seed_case_sets(outcome, host, corpus, frozen, {case.name: authored for case, authored in cases if case.name})
+        _seed_case_sets(
+            outcome, host, corpus, frozen, {case.name: authored for case, authored in (*cases, *to_reset) if case.name}
+        )
 
     return outcome
 
 
+def criterion_missing_from_stored(case: SeedJudgeCase, stored_first: Mapping[str, EvalTemplate]) -> bool:
+    """Whether the template the seed resolves for ``case``'s criterion lacks that criterion's rubric dimension.
+
+    The seed resolves a template in the store first, so a stored template re-worded under the same name no longer words
+    a corpus judge case's criterion. That is drift one ``reset_definitions`` repairs, not a corpus error, so the seed
+    withholds such a case under ``needs_reset`` rather than refusing the corpus, and the drift read reports it the
+    same way.
+
+    :param case: The corpus judge case.
+    :ptype case: SeedJudgeCase
+    :param stored_first: The template each name resolves to, the store's current revision before the corpus's.
+    :ptype stored_first: Mapping[str, EvalTemplate]
+    :return: True when the criterion's template resolves and has no dimension named for the criterion.
+    :rtype: bool
+    """
+    subject = stored_first.get(case.criterion_template)
+    return subject is not None and all(dim.name != case.criterion for dim in subject.rubric)
+
+
 def authored_seed_cases(
-    corpus: SeedCorpus, by_name: Mapping[str, EvalTemplate]
+    corpus: SeedCorpus, by_name: Mapping[str, EvalTemplate], *, cases: Sequence[SeedJudgeCase] | None = None
 ) -> list[tuple[SeedJudgeCase, AuthoredJudgeCase]]:
     """Every corpus judge case built through ``author_judge_case``, before anything is written; refused as a whole.
 
@@ -816,12 +841,14 @@ def authored_seed_cases(
         the corpus's admitted templates, which the same seed writes; a drift read and a reset resolve one in the
         corpus first, since they read and write what the corpus carries.
     :ptype by_name: Mapping[str, EvalTemplate]
+    :param cases: The corpus judge cases to build; ``None`` builds every one.
+    :ptype cases: Sequence[SeedJudgeCase] | None
     :raises ValidationFailedError: A case names a template neither holds, a judge template not of the judge kind, or a
         criterion or verdict ``judge_case_author`` would refuse; naming every such case.
     """
     built: list[tuple[SeedJudgeCase, AuthoredJudgeCase]] = []
     refusals: list[str] = []
-    for case in corpus.judge_cases:
+    for case in corpus.judge_cases if cases is None else cases:
         where = f"the judge case on {case.criterion!r} of {case.criterion_template!r} in {case.judge_template!r}"
         judge = by_name.get(case.judge_template)
         subject = by_name.get(case.criterion_template)
@@ -954,7 +981,12 @@ def _fill_empty_name(storage: EvalStorage, scope_id: str, template: EvalTemplate
 
 
 def _seed_judge_cases(
-    outcome: SeedOutcome, host: EvalHost, scope_id: str, cases: Sequence[tuple[SeedJudgeCase, AuthoredJudgeCase]]
+    outcome: SeedOutcome,
+    host: EvalHost,
+    scope_id: str,
+    cases: Sequence[tuple[SeedJudgeCase, AuthoredJudgeCase]],
+    *,
+    drifted: Sequence[tuple[SeedJudgeCase, AuthoredJudgeCase]] = (),
 ) -> dict[str, str]:
     """Freeze each authored case into its judge template as ``judge_case_author`` does, recording it under
     ``judge_case``: created, already present (the same case is stored), withheld (``needs_reset``), or failed (the
@@ -967,6 +999,10 @@ def _seed_judge_cases(
     ``needs_reset``, keyed ``<judge template>/<corpus name>``: ``reset_definitions`` writes the template's next
     revision with the whole battery.
 
+    :param drifted: Cases built as the corpus words them whose criterion the stored template lacks
+        (:func:`criterion_missing_from_stored`). None is written: one the judge template's battery already holds is
+        ``already present``, and any other is withheld under ``needs_reset``, since only a reset can word it.
+    :ptype drifted: Sequence[tuple[SeedJudgeCase, AuthoredJudgeCase]]
     :return: Each named case that is stored now, created or already present, by its corpus name: its test case id.
     :rtype: dict[str, str]
     """
@@ -975,8 +1011,8 @@ def _seed_judge_cases(
     withheld: list[str] = []
     stored: dict[str, str] = {}
     skipped = failed = 0
-    held: dict[str, set[str]] = {}
-    for case, authored in cases:
+    held: dict[str, dict[str, str]] = {}
+    for case, authored in (*cases, *drifted):
         judge = storage.load_template_by_name(case.judge_template, scope_id)
         if judge is None:
             # Its corpus template's write was refused (counted under eval_template): the next boot retries both.
@@ -984,8 +1020,18 @@ def _seed_judge_cases(
             continue
         if judge.id not in held:
             # Read once per revision, before this pass writes into it: what it held when the boot began.
-            held[judge.id] = {c.content_hash or "" for c in storage.query_test_cases(scope_id, template_id=judge.id)}
+            held[judge.id] = {
+                c.content_hash or "": c.id for c in storage.query_test_cases(scope_id, template_id=judge.id)
+            }
         digest = JudgeCase.from_authored(authored).content_digest()
+        if (case, authored) in drifted:
+            if digest in held[judge.id]:
+                skipped += 1
+                if case.name is not None:
+                    stored[case.name] = held[judge.id][digest]
+            else:
+                withheld.append(f"{case.judge_template}/{case.name or digest}")
+            continue
         if held[judge.id] and digest not in held[judge.id]:
             withheld.append(f"{case.judge_template}/{case.name or digest}")
             continue

@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a judge case whose criterion the stored template lacks is withheld for a reset, not a refusal of the seed
+
+- The definition seed resolves a judge case's criterion template in the store first, so a template re-worded under the
+  same name, no longer wording a corpus case's criterion, used to refuse the whole seed. That case is now withheld
+  under `needs_reset` (`SeedOutcome.needs_reset["judge_case"]`, keyed `<judge template>/<case name>`) like one for a
+  battery already holding cases, and the seed admits everything else. `definition_drift` reads it `stale` and says the
+  stored template has no such dimension; a `definitions_reset` of it writes it, and a later seed finds it held rather
+  than withholding it again. A criterion no template holds, or a verdict the scale cannot hold, still refuses the
+  seed. Host-facing: a host that treated this refusal as its signal to re-issue the template under a new name need not.
+
 ### 3tears-evals: the judge kind seats the spend ceiling it runs under, and the reader kit checks an unseated blank
 
 - `JUDGE_KIND_CONTRACT` now seats `max_cost_usd` (`host-contract`): every judge-kind run runs under the per-run cost

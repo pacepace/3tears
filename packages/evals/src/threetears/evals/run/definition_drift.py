@@ -75,6 +75,7 @@ from threetears.evals.run.definition_seed import (
     SeedJudgeCase,
     SeedTemplateCase,
     authored_seed_cases,
+    criterion_missing_from_stored,
     seed_case_set_digest,
     stored_template_case_digest,
 )
@@ -544,8 +545,19 @@ class _Survey:
 
     def _read_case(self, key: str, case: SeedJudgeCase, digest: str) -> DefinitionReading:
         judge = self.current.get(case.judge_template)
+        # The seed resolves the criterion's template in the store first, and withholds a case that template no longer
+        # words (it was re-worded under the same name) unless the battery already holds it: only a reset writes it.
+        reworded = criterion_missing_from_stored(case, {**self.resolved, **self.current})
+        withheld = DefinitionReading(
+            key=key,
+            definition_type="judge_case",
+            state="stale",
+            seed_digest=digest,
+            reason=f"the stored template {case.criterion_template!r} has no dimension {case.criterion!r} the corpus "
+            "words, so only a reset writes it",
+        )
         if judge is None:
-            return self._reading(key, "judge_case", digest, None, "", None)
+            return withheld if reworded else self._reading(key, "judge_case", digest, None, "", None)
         stored = self.stored_cases(judge)
         live = [c for c in stored if not c.archived]
         if match := next((c for c in live if c.content_hash == digest), None):
@@ -569,6 +581,8 @@ class _Survey:
                 recorded,
                 f"seeded into {case.judge_template!r} revision {judge.revision}",
             )
+        if reworded:
+            return withheld
         if not stored:
             # An empty battery: the boot seed fills it.
             return self._reading(key, "judge_case", digest, None, "", None)

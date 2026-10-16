@@ -490,6 +490,79 @@ def test_a_first_boot_seeds_a_judge_template_and_its_cases_together() -> None:
     assert set(_states(_drift(storage, _full_corpus())).values()) == {"current"}
 
 
+def _reworded_subject() -> EvalTemplate:
+    """The corpus's subject template, as the store holds it after an operator re-worded its rubric under the same name:
+    the faithfulness dimension is gone and a layout one is there."""
+    corpus_side = toyhost_judged_template()
+    layout = RubricDim(
+        name=DIM_KEY, description="Fields sit where the invoice put them.", scale="ordinal", judge="builtin"
+    )
+    return corpus_side.model_copy(update={"rubric": [layout]})
+
+
+def _corpus_wording_both_dimensions() -> SeedCorpus:
+    corpus_side = toyhost_judged_template()
+    layout = RubricDim(
+        name=DIM_KEY, description="Fields sit where the invoice put them.", scale="ordinal", judge="builtin"
+    )
+    subject = corpus_side.model_copy(update={"rubric": [*corpus_side.rubric, layout]})
+    return _full_corpus(
+        templates=(subject, _judge_template()),
+        judge_cases=(_judge_case("a"), _judge_case("b", criterion=DIM_KEY)),
+        case_sets=(),
+    )
+
+
+def test_a_judge_case_whose_criterion_the_stored_template_lacks_is_withheld_and_a_reset_writes_it() -> None:
+    """The store is master, so a template re-worded under the same name no longer words a corpus case's criterion. That
+    drift is repaired by one reset, so it withholds that case (``needs_reset``) and every other case is seeded; it
+    used to refuse the whole seed."""
+    storage, _ = memory_storage()
+    storage.save_template(_reworded_subject())
+    storage.save_template(_judge_template())
+    corpus = _corpus_wording_both_dimensions()
+    key = f"judge_case/{JUDGE_NAME}/a"
+
+    boot = seed_eval_definitions(toyhost_host(storage=storage), corpus)
+
+    assert boot.needs_reset == {"judge_case": [f"{JUDGE_NAME}/a"]} and "RESET IT" in boot.summary()
+    assert boot.created["judge_case"] == 1, "the case on the dimension the store still words is seeded"
+    assert boot.created["rubric_dim"] == 1 and boot.created["judge_config"] == 1, "everything else is admitted"
+    judge = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert judge is not None
+    assert [c.seed_name for c in storage.query_test_cases(TOYHOST_SCOPE, template_id=judge.id)] == ["b"]
+    drift = _drift(storage, corpus)
+    assert _states(drift)[key] == "stale", drift.render()
+    assert "no dimension" in next(r.reason for r in drift.readings if r.key == key)
+
+    reset = _reset(storage, corpus, [key])
+
+    assert _states(reset.after)[key] == "current", reset.after.render()
+    second = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert second is not None and second.revision == 2
+    battery = storage.query_test_cases(TOYHOST_SCOPE, template_id=second.id)
+    assert sorted(c.seed_name or "" for c in battery) == ["a", "b"]
+    again = seed_eval_definitions(toyhost_host(storage=storage), corpus)
+    assert not again.needs_reset and again.created["judge_case"] == 0, "a case the battery holds is not withheld again"
+
+
+def test_a_judge_case_naming_a_criterion_no_template_holds_still_refuses_the_whole_seed() -> None:
+    """Only drift a reset repairs is withheld: a criterion the corpus's own template lacks is still a corpus error."""
+    storage, _ = memory_storage()
+    storage.save_template(_reworded_subject())
+    storage.save_template(_judge_template())
+    corpus = _full_corpus(
+        templates=(toyhost_judged_template(), _judge_template()),
+        judge_cases=(_judge_case("a", criterion="extraction.tone"),),
+        case_sets=(),
+    )
+
+    with pytest.raises(ValidationFailedError, match="has no rubric dimension 'extraction.tone'"):
+        seed_eval_definitions(toyhost_host(storage=storage), corpus)
+
+    assert storage.query_test_cases(TOYHOST_SCOPE) == []
+
+
 def test_a_stale_case_set_whose_cases_are_current_is_a_new_mint_on_the_same_revision() -> None:
     storage, _ = _seeded()
     moved = _full_corpus(case_sets=(SeedCaseSet(name="hard_negatives", template=JUDGE_NAME, judge_cases=("a", "b")),))
