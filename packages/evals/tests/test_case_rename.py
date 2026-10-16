@@ -199,3 +199,18 @@ async def test_the_page_names_a_renamed_case_by_its_new_name_and_keeps_its_resul
     bundle = off_loop(assemble_context_bundle, campaign, storage=storage, profile=result.host.profile)
     page = report_markdown(build_code_only_report(bundle, assembled_at="2026-10-15T00:00:00+00:00"))
     assert "charged-twice" in page and "double-charge" not in page
+
+
+async def test_running_the_same_quick_eval_again_keeps_the_new_name() -> None:
+    cases = [{"id": "double-charge", "text": "refund me twice", "label": "billing"}]
+    first = await Eval(cases, _answer, ["label"], k=1, name="Renamed cases").run(store=":memory:")
+    storage, scope = first.host.storage, first.scope_id
+    (case,) = off_loop(storage.query_test_cases, scope)
+    off_loop(case_rename, first.host, scope, case.id, "charged-twice")
+
+    again = await Eval(cases, _answer, ["label"], k=1, name="Renamed cases").run(host=first.host, scope=scope)
+
+    stored = off_loop(storage.load_test_case, case.id, scope)
+    assert stored is not None and stored.name == "charged-twice"
+    page = report_markdown(again.report)
+    assert "charged-twice" in page and "double-charge" not in page

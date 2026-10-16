@@ -1270,6 +1270,9 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
     summary withholds its intent and a rejudge of it is refused. So a stored definition that matches this one in
     everything but its stamps is left alone, and one that differs (an unjudged template's intent, say) is a real
     edit, saved with its original ``created_at``.
+
+    A stored case's ``name`` is fill-only: a call fills it when the store holds none and never overwrites one, so a
+    case renamed since (:func:`~threetears.evals.ops.case_rename`) keeps its name through the next call.
     """
     stored = host.storage.load_template(template.id, template.scope_id)
     if stored is None or stored.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS) != template.model_dump(
@@ -1280,6 +1283,8 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
         )
     for test_case in test_cases:
         kept = host.storage.load_test_case(test_case.id, test_case.scope_id)
+        if kept is not None and kept.name is not None:
+            test_case = test_case.model_copy(update={"name": kept.name})
         if kept is None or kept.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS) != test_case.model_dump(
             mode="json", exclude=_LIFECYCLE_STAMPS
         ):
