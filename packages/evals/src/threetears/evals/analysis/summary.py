@@ -364,6 +364,7 @@ class CaseResult(BaseModel):
     Attributes:
         case: The case's name: its own ``id`` when the case carries one, else its position in the list given
             (``"0"`` is the first). The summary's :attr:`EvalSummary.errors` name cases the same way.
+        case_id: The stored test case's id, which the page's Trials table orders its trials by.
         input: The case, as given.
         expected: A classifier's expected label for the case; ``None`` when the run classified nothing.
         stratum: The kind of case it is, as its stored test case declares it (``EvalTestCase.stratum``); ``None``
@@ -395,6 +396,7 @@ class CaseResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     case: str
+    case_id: str
     input: JsonValue
     expected: str | None = None
     stratum: str | None = None
@@ -489,6 +491,7 @@ class CaseResult(BaseModel):
             )
         return cls(
             case=case,
+            case_id=result.test_case_id,
             input=given,
             expected=expected,
             stratum=stratum,
