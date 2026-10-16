@@ -182,7 +182,7 @@ Finding out whether a change to an LLM-backed feature made it better.
 
 | Package | Import | Description |
 |---|---|---|
-| [`3tears-evals`](packages/evals/) | `threetears.evals` | Experiment-style evals for LLM-backed features, from a classifier to a tool-using agent. Each version runs over the same cases, graded by code checks, model judges checked against people, or goal checks on the world an agent leaves, with cost caps; the report says what moved, by how much, and when the evidence cannot tell, and names no winner. `Eval(cases, runner, grader)` grades your own function; one TOML file grades a prompt with no Python |
+| [`3tears-evals`](packages/evals/) | `threetears.evals` | Evals for LLM features, from a classifier to a tool-using agent. Each version runs over the same cases, and the report says what moved, with the uncertainty that says whether the move is real. The first eval is one TOML file and no Python |
 
 ### Development
 
@@ -308,6 +308,7 @@ uv sync                      # install all packages in dev mode
 ./scripts/test.sh core       # a single package
 ./scripts/lint.sh            # ruff check + format
 ./scripts/typecheck.sh       # mypy (strict)
+./scripts/typecheck.sh evals # mypy on a single package
 ./scripts/test-integration.sh  # real NATS/Postgres containers; NOT run by check-all.sh
 ```
 

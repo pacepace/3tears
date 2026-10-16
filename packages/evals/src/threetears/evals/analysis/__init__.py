@@ -121,7 +121,6 @@ from threetears.evals.analysis.generator import (
     generate_analysis,
     prompt_content_version,
 )
-from threetears.evals.kernel.inner_ceilings import generation_ceiling_s
 from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
     READ_TIER_ROW_BUDGET,
@@ -150,7 +149,6 @@ from threetears.evals.analysis.reporter_kind import (
     AsRecordedReporterKind,
     ReporterKind,
     ReporterLabel,
-    judge_phase_ceiling_s,
     render_memo_as_written,
     reporter_cell_timeout_s,
 )
@@ -660,7 +658,6 @@ __all__ = [
     "frontier",
     "frozen_case_receipt",
     "generate_analysis",
-    "generation_ceiling_s",
     "get_analysis",
     "get_campaign",
     "get_campaign_view",
@@ -687,7 +684,6 @@ __all__ = [
     "tiers_with_judge_profiles",
     "JudgeProfileDrafts",
     "SkippedJudgeProfile",
-    "judge_phase_ceiling_s",
     "list_analyses",
     "list_analysis_attempts",
     "list_campaigns",

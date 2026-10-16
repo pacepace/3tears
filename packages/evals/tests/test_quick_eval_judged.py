@@ -347,6 +347,7 @@ async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_rea
                 require_known_tools_allowed=lambda _tools: None,
                 refuse_undeclared_world_seed=lambda _template: None,
                 refuse_undeliverable_template=lambda _template: None,
+                kinds={},
             ),
         ),
         run.template_id or "",

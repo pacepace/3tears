@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -29,6 +29,7 @@ from threetears.evals.analysis import (
     TableBlock,
     report_html,
 )
+from threetears.evals.analysis.bundle.schema import FailCause
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals import Eval
@@ -95,6 +96,67 @@ def test_two_lost_causes_side_by_side_are_two_marks() -> None:
     svg = chart_svg(_bar_chart(), chart_id="c1")
     assert svg.count('class="viz-lost"') + svg.count('class="viz-lost viz-alt"') == 3  # two segments and the key
     assert 'class="viz-lost viz-alt"' in svg
+
+
+def test_two_failure_causes_are_two_inks_of_one_hue_and_the_key_names_each() -> None:
+    """A failed check and the judge's fail are two segments in the one failed hue, told apart in ink alone, each the
+    same on every bar, and the key names each cause, so no third category reads as a state of its own."""
+    bars = [
+        OutcomeBar(
+            arm="v1",
+            segments=[
+                OutcomeSegment(state="passed", label="passed", count=29),
+                OutcomeSegment(state="failed", label="failed: check", count=26),
+                OutcomeSegment(state="failed", label="failed: judge", count=5),
+            ],
+        ),
+        OutcomeBar(
+            arm="v2",
+            segments=[
+                OutcomeSegment(state="passed", label="passed", count=14),
+                OutcomeSegment(state="failed", label="failed: judge", count=35),
+                OutcomeSegment(state="failed", label="failed: check", count=11),
+            ],
+        ),
+    ]
+    svg = chart_svg(ChartBlock(section="scoreboard", chart="outcome_bar", title="Outcomes", bars=bars), chart_id="c1")
+    inks = re.findall(r'<rect class="(viz-failed[^"]*)"[^>]*><title>(v\d): (failed: \w+),', svg)
+    assert sorted(set(inks)) == [
+        ("viz-failed", "v1", "failed: check"),
+        ("viz-failed", "v2", "failed: check"),
+        ("viz-failed viz-alt", "v1", "failed: judge"),
+        ("viz-failed viz-alt", "v2", "failed: judge"),
+    ]
+    key = svg[: svg.index("v1</text>")]
+    assert re.findall(r">(passed|failed: \w+|failed|lost)</text>", key) == ["passed", "failed: check", "failed: judge"]
+    assert "--viz-failed-" not in SVG_STYLE, "one hue, ink only"
+
+
+def test_each_failure_cause_has_a_style_of_its_own_in_ink_alone() -> None:
+    """Five failure causes exist (``FailCause``), so the bar has five styles: tone, edge weight and hatching, in the
+    one failed hue, and no cause's swatch in the key is another's."""
+    causes = ("check", "judge", "model failed", "turn budget", "output cap")
+    assert len(causes) == len(get_args(FailCause))
+    segments = [OutcomeSegment(state="failed", label=f"failed: {cause}", count=3) for cause in causes]
+    block = ChartBlock(
+        section="scoreboard", chart="outcome_bar", title="Outcomes", bars=[OutcomeBar(arm="v1", segments=segments)]
+    )
+    svg = chart_svg(block, chart_id="c1")
+    swatch = re.compile(
+        r'<rect class="(viz-failed[^"]*)" x="(\d+)" y="(\d+)" width="12" height="12" rx="2"></rect>'
+        r'(?:<path class="viz-hatch" d="([^"]*)"></path>)?<text[^>]*>(failed: [^<]*)</text>'
+    )
+    styles = {}
+    for classes, x, y, hatch, label in swatch.findall(svg):
+        # The hatching as drawn inside the swatch's own box, so two swatches compare by their ink alone.
+        numbers = [float(n) for n in re.findall(r"[\d.]+", hatch)]
+        styles[label] = (classes, tuple(n - (int(x) if i % 2 == 0 else int(y)) for i, n in enumerate(numbers)))
+    assert list(styles) == [f"failed: {cause}" for cause in causes]
+    assert len(set(styles.values())) == len(causes), styles
+    for classes, _ in styles.values():
+        selector = "svg.viz ." + ".".join(classes.split())
+        assert classes == "viz-failed" or selector + " {" in SVG_STYLE, classes
+    assert "--viz-failed-" not in SVG_STYLE and "url(" not in svg, "one hue, ink only, nothing fetched"
 
 
 def test_the_marks_are_coloured_by_css_variables_set_for_light_and_dark() -> None:

@@ -226,7 +226,8 @@ class JudgeCaseListing(EvalBaseModel):
 def judge_cases_list(host: EvalHost, template_id: str, scope_id: str) -> JudgeCaseListing:
     """List a judge template's stored cases, in storage order, retired ones included.
 
-    Reads only; spends and writes nothing. A case's seed-corpus name is not stored with it, so it is not listed.
+    Reads only; spends and writes nothing. A case's name is stored with it (``EvalTestCase.name``, and a seeded
+    case's corpus name as ``seed_name``) but is not part of this listing; ``cases_rename`` changes it.
 
     Args:
         host: The host whose store is read.

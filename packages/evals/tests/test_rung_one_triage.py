@@ -149,6 +149,23 @@ def test_the_console_and_the_page_count_one_number_of_cases_passed(
     assert console.groups() == markdown.groups() == page.groups() == ("16/30", "14")
 
 
+def test_the_console_lists_the_misses_in_the_page_s_order(triage_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """One order on both surfaces, the page's: the verdict's cases missed, and the top misses as the Trials table
+    lists its failed trials."""
+    assert main(["triage.toml"]) == 0
+
+    printed = capsys.readouterr().out
+    page = (triage_dir / ".evals" / "reports" / "triage" / "report.md").read_text(encoding="utf-8")
+    named = r"triage: \d+/\d+ cases passed; \d+ misses: (.+)"
+    console_cases = re.match(named, printed)
+    page_cases = re.search(rf"\*\*{named}\*\*", page)
+    assert console_cases is not None and page_cases is not None
+    assert console_cases.group(1).split("\n")[0] == page_cases.group(1)
+    top = re.findall(r"^  case (\S+) \(repeat \d+\): ", printed, flags=re.M)
+    failed = re.findall(r"^\| T\d+ \| (\S+) \| triage \| failed \|", page, flags=re.M)
+    assert len(top) == 5 and top == failed[:5]
+
+
 def test_the_program_runs_from_another_directory_through_the_module_entry(
     triage_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

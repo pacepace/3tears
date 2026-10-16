@@ -8,6 +8,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from threetears.langgraph.fence import (
+    closed_fences,
     explained_fence,
     is_fenced,
     nonce_for,
@@ -129,3 +130,25 @@ class TestEveryFenceIsExplained:
         assert rules_missing([untrusted_fence("n0nce", "x"), "plain"], explained="prompt") == untrusted_rule("n0nce")
         assert rules_missing([untrusted_fence("n0nce", "x")], explained=untrusted_rule("n0nce")) == ""
         assert rules_missing(["plain"], explained="prompt") == ""
+
+
+class TestAFenceACutLeftOpen:
+    def test_a_cut_inside_a_fence_is_closed_and_what_follows_is_outside_it(self) -> None:
+        whole = f"mine\n{untrusted_fence('n0nce', 'a report ' * 40)}\nmine again"
+        cut = closed_fences(whole[:120])
+        assert cut.endswith("</untrusted nonce=n0nce>")
+        after = cut + "\nthe platform's next line"
+        assert "the platform's next line" in _outside(after, "n0nce")
+        assert "a report" not in _outside(after, "n0nce")
+
+    def test_text_whose_fences_are_closed_comes_back_as_it_was(self) -> None:
+        whole = f"mine\n{untrusted_fence('aa11', 'one')}\n{untrusted_fence('bb22', 'two')}"
+        assert closed_fences(whole) == whole
+
+    def test_text_with_no_fence_comes_back_as_it_was(self) -> None:
+        assert closed_fences("a person's own words, cut sho") == "a person's own words, cut sho"
+
+    def test_each_fence_left_open_is_closed_by_its_own_nonce(self) -> None:
+        cut = f"{untrusted_fence('aa11', 'one')}\n<untrusted nonce=bb22>\ntwo, cut he"
+        closed = closed_fences(cut)
+        assert closed.count("</untrusted nonce=aa11>") == 1 and closed.endswith("</untrusted nonce=bb22>")

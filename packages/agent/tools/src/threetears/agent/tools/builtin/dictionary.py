@@ -61,7 +61,7 @@ def _format_wiktionary(word: str, language: str, data: dict[str, Any]) -> str | 
     if len(parts) == 2:
         return None
     parts.append("(from Wiktionary)")
-    return window_text("\n".join(parts).strip(), max_chars=_MAX_CHARS).rendered(tool="dictionary")
+    return window_text("\n".join(parts).strip(), max_chars=_MAX_CHARS).rendered(tool="dictionary", note_first=True)
 
 
 def _format_entry(data: list[dict[str, Any]]) -> str:
@@ -102,7 +102,7 @@ def _format_entry(data: list[dict[str, Any]]) -> str:
 
     # One entry rarely reaches the bound, but when it does it is windowed like
     # every other long result rather than cut with a phrase of its own.
-    return window_text("\n".join(parts).strip(), max_chars=_MAX_CHARS).rendered(tool="dictionary")
+    return window_text("\n".join(parts).strip(), max_chars=_MAX_CHARS).rendered(tool="dictionary", note_first=True)
 
 
 async def _from_wiktionary(client: httpx.AsyncClient, word: str, language: str, why: str) -> str:

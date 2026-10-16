@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-acl"
-version = "0.67.0"
+version = "0.69.0"
 description = "shared rbac evaluator + cache for the 3tears platform: groups, roles, role assignments, evaluation trails"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,15 +22,15 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.67.0,<0.68.0",
-    "3tears-observe>=0.67.0,<0.68.0",
+    "3tears>=0.69.0,<0.70.0",
+    "3tears-observe>=0.69.0,<0.70.0",
     "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
 # Following the access tables' write generations (threetears.agent.acl.generation_follow), over
 # 3tears-epoch's table follower and the NATS client it watches through.
-follow = ["3tears-nats[client]>=0.67.0,<0.68.0", "3tears-epoch>=0.67.0,<0.68.0"]
+follow = ["3tears-nats[client]>=0.69.0,<0.70.0", "3tears-epoch>=0.69.0,<0.70.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

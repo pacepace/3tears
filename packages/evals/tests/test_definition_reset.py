@@ -46,7 +46,7 @@ from threetears.evals.analysis.campaigns import add_runs_to_campaign, create_cam
 from threetears.evals.kernel import JUDGE_KIND, ConflictError, EvalStorage, RefusedInput, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.host import TemplateChecks
-from threetears.evals.ops import OpsHost, templates_list
+from threetears.evals.ops import OpsHost, case_rename, templates_list
 from threetears.evals.run import (
     DefinitionDrift,
     DefinitionReset,
@@ -883,6 +883,68 @@ def test_cases_a_host_seeded_itself_read_by_content_then_name_and_the_supplied_m
     assert [c.seed_name for c in _cases_on(storage, _subject(storage))] == ["a", "b", "c"]
 
 
+def _seeded_beside_two_the_host_wrote() -> tuple[EvalStorage, EvalTemplate, SeedCorpus]:
+    """A revision the engine seeded with ``b``, beside ``a`` and ``z`` the host's own seed wrote recording no seed name;
+    the corpus now carries ``a`` and ``b``."""
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("b")))
+    revision = _subject(storage)
+    for name in ("a", "z"):
+        storage.save_test_case(
+            EvalTestCase(
+                scope_id=TOYHOST_SCOPE,
+                template_id=revision.id,
+                name=name,
+                variation_params=_own(name).variation_params,
+                host_payload=_own(name).host_payload,
+            )
+        )
+    return storage, revision, _own_corpus(_own("a"), _own("b"))
+
+
+def _named(storage: EvalStorage, revision: EvalTemplate, name: str) -> EvalTestCase:
+    return next(c for c in _cases_on(storage, revision) if c.name == name)
+
+
+def test_a_case_a_host_seeded_itself_renamed_then_customised_still_reads_customized_and_no_reset_writes_it_twice() -> (
+    None
+):
+    """Drift finds a case stored before seeds recorded ``seed_name`` by its name, so the rename records that name as it;
+    a case drift would not find by name takes none."""
+    storage, revision, now = _seeded_beside_two_the_host_wrote()
+    then = corpus_digests(toyhost_host(storage=storage), now)
+    a, z = _named(storage, revision, "a"), _named(storage, revision, "z")
+
+    case_rename(toyhost_host(storage=storage), TOYHOST_SCOPE, a.id, "first-buyer", corpus=now)
+    case_rename(toyhost_host(storage=storage), TOYHOST_SCOPE, z.id, "last-buyer", corpus=now)
+    renamed = storage.load_test_case(a.id, TOYHOST_SCOPE)
+    assert renamed is not None and (renamed.name, renamed.seed_name) == ("first-buyer", "a")
+    assert storage.load_test_case(z.id, TOYHOST_SCOPE).seed_name is None  # type: ignore[union-attr]
+    storage.save_test_case(renamed.model_copy(update={"host_payload": {"persona": "a buyer in a hurry"}}))
+
+    reading = next(r for r in _drift(storage, now, seeded_digests=then).readings if r.key == _own_key("a"))
+    assert (reading.state, reading.stored_id) == ("customized", a.id), reading.line()
+    with pytest.raises(ConflictError, match="template_case/.*/a: it reads customized"):
+        _reset(storage, now, [_own_key("a")], seeded_digests=then)
+    assert len(_cases_on(storage, revision)) == 3 and _subject(storage).id == revision.id
+
+
+async def test_the_rename_action_reads_the_host_s_seed_corpus() -> None:
+    storage, revision, now = off_loop(_seeded_beside_two_the_host_wrote)
+    a = off_loop(_named, storage, revision, "a")
+    host = replace(OpsHost.reading(toyhost_host(storage=storage)), seed_corpus=lambda scope_id: now)
+    (tool,) = [tool for tool in eval_catalogue().mount_all(standard_tools()) if tool.action("cases_rename")]
+
+    outcome = await tool.call(
+        {"action": "cases_rename", "test_case_id": a.id, "case_name": "first-buyer"},
+        host=host,
+        caller=Caller(scope_id=TOYHOST_SCOPE, identity="operator"),
+    )
+
+    assert not outcome.is_error, outcome.text
+    assert off_loop(storage.load_test_case, a.id, TOYHOST_SCOPE).seed_name == "a"
+
+
 def test_a_corpus_refuses_a_template_case_it_cannot_write_naming_each() -> None:
     same = {"variation_params": {}, "host_payload": {"persona": "the same buyer"}}
 
@@ -941,6 +1003,7 @@ def test_a_reset_and_create_template_read_one_host_s_checks_and_a_host_with_none
             require_known_tools_allowed=lambda _tools: None,
             refuse_undeclared_world_seed=lambda _template: None,
             refuse_undeliverable_template=_refuse,
+            kinds={},
         ),
     )
     unchecked = toyhost_host(storage=storage, template_checks=None)

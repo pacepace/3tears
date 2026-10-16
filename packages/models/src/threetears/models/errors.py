@@ -13,6 +13,7 @@ __all__ = [
     "ModelCallTimeout",
     "ModelProviderError",
     "ModelRateLimitError",
+    "ModelRefusalError",
     "friendly_api_error",
     "identify_provider",
     "is_provider_error",
@@ -68,6 +69,11 @@ class ModelProviderError(RuntimeError):
         self.status = status
         self.rejected_output = rejected_output
         self.rejection = rejection
+        #: What ran the call, when the provider drives a local process: for the Claude CLI its
+        #: ``pid``, ``session_id``, ``calls_served`` before this one, ``uptime_s``, whether it was
+        #: ``pooled``, and ``agents``, the names of the system prompts it was launched with.
+        #: ``None`` for a provider with nothing of the kind to say.
+        self.ran_on: dict[str, Any] | None = None
         said = f"{detail} (last rejected answer: {rejection})" if rejection else detail
         super().__init__(f"{provider} call failed ({reason or status or 'error'}): {said}")
 
@@ -115,6 +121,48 @@ class ModelRateLimitError(ModelProviderError):
             rejected_output=rejected_output,
             rejection=rejection,
         )
+
+
+class ModelRefusalError(ModelProviderError):
+    """The provider's safeguards refused the call.
+
+    Its own class so a caller can tell a refusal from a provider that is down: the provider is up,
+    and the same request on a new session of the same model is often answered. The Claude CLI
+    reports one as an assistant message whose stop reason is ``refusal`` and whose text says the
+    model's safeguards flagged the message.
+
+    :param detail: what the provider said, in its own words
+    :ptype detail: str
+    :param provider: human-readable name of the provider
+    :ptype provider: str
+    :param reason: the provider's own code for the failure, when it gave one
+    :ptype reason: str | None
+    :param status: HTTP status of the provider's failing API call, when known
+    :ptype status: int | None
+    :param category: the safeguard that refused, as the provider names it
+        (``"reasoning_extraction"``), when it said
+    :ptype category: str | None
+    :param request_id: the provider's id for the refused request, when it gave one
+    :ptype request_id: str | None
+    :param message_id: the provider's id for the refused message, when it gave one
+    :ptype message_id: str | None
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        provider: str,
+        reason: str | None = None,
+        status: int | None = None,
+        category: str | None = None,
+        request_id: str | None = None,
+        message_id: str | None = None,
+    ) -> None:
+        self.category = category
+        self.request_id = request_id
+        self.message_id = message_id
+        super().__init__(detail, provider=provider, reason=reason, status=status)
 
 
 #: The packages a model call's own errors come from.

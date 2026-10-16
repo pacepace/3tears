@@ -103,7 +103,7 @@ class TestTheReportCarriesTypedVerdicts:
     async def test_contrasts_rows_carry_the_typed_outcome_beside_the_words(self) -> None:
         comparison = await _compare({"current": 0, "worse": 30})
         (row,) = comparison.contrasts("correct")
-        assert row["outcome"] == "regressed" and row["verdict"] == "regressed from the control"
+        assert row["outcome"] == "regressed" and row["verdict"] == "worse worse than current"
         assert comparison.verdicts("Correct score") == comparison.verdicts("correct")
         assert comparison.verdicts("correct", kind="guardrail") == []
 
@@ -173,7 +173,7 @@ class TestTheGate:
         comparison = await _compare({"current": 0, "worse": 30})
         result = comparison.gate()
         assert result.outcome == "failed" and [verdict.arm for verdict in result.failures] == ["worse"]
-        assert "gate FAILED" in result.render() and "regressed from the control" in result.render()
+        assert "gate FAILED" in result.render() and "worse worse than current" in result.render()
         better = await _compare({"current": 30, "better": 0}, scope="typed-better")
         assert better.gate().outcome == "passed"
 
@@ -236,7 +236,7 @@ class TestTheCommandLineGate:
         assert off_loop(self._gate, comparison) == EXIT_GATE_FAILED == 4
         out = capsys.readouterr().out
         assert out.startswith("gate FAILED: 1 of 1 verdict(s)")
-        assert "failed: Correct score, worse vs current: regressed from the control" in out
+        assert "failed: Correct score: worse worse than current" in out
 
     async def test_a_breached_guardrail_exits_4(self, capsys: pytest.CaptureFixture[str]) -> None:
         comparison = await _guarded(CASES[:40], {"current": _leaks(0), "leaky": _leaks(12)}, "cli-breached")

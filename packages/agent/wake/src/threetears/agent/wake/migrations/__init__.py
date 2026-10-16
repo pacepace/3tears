@@ -4,7 +4,7 @@ Single entry point :func:`register` wires the package's versioned
 migration callables into a shared
 :class:`~threetears.core.data.migrations.runner.MigrationRunner`.
 
-This package owns three tables in every agent schema (per the
+This package owns four tables in every agent schema. Three came first (per the
 2026-05-19 PLACEMENT revision; the original six-table plan was
 collapsed -- the junction tables and ``wake_pre_check_types`` were
 dropped in favor of nullable FK columns and ordinary TearsTool
@@ -21,6 +21,8 @@ subclasses in ``3tears-agent-tools``):
 - ``webhook_subscriptions`` -- one row per inbound webhook
   subscription. Carries nullable ``default_skill_id`` FK to
   ``agent_skills.skill_id``.
+- ``webhook_refusals`` (v010) -- refused deliveries of a subscription,
+  counted per reason and minute.
 
 The package declares
 ``depends_on=("conversations", "agent_skills")`` because:
@@ -66,6 +68,13 @@ Version history:
   agent-scoped indexes, ``wake_fires.started_conversation_id``, the
   ``'skipped_life_off'`` fire status, and the ``'spawn'`` default for
   ``execution_mode``.
+- v008 adds the ``'checked_quiet'`` fire status: a check that found nothing,
+  which ran no turn and is not counted by the fire limits.
+- v009 adds ``wake_fires.fire_source`` and ``requested_by`` and
+  ``agent_wake_schedules.last_manual_fire_at``: a fire says what started it,
+  and a wake can be run by hand under a limit of its own.
+- v010 creates ``webhook_refusals``: refused webhook deliveries, counted per
+  subscription, reason and minute.
 """
 
 from __future__ import annotations
@@ -91,6 +100,15 @@ from threetears.agent.wake.migrations.v006_add_include_conversation_history impo
 from threetears.agent.wake.migrations.v007_agent_scope_protection_and_fire_links import (
     PROTECTED_GATE_SETTING,
     agent_scope_protection_and_fire_links,
+)
+from threetears.agent.wake.migrations.v008_checked_quiet_status import (
+    add_checked_quiet_status,
+)
+from threetears.agent.wake.migrations.v009_fire_source_and_manual_fires import (
+    add_fire_source_and_manual_fires,
+)
+from threetears.agent.wake.migrations.v010_create_webhook_refusals import (
+    create_webhook_refusals,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -126,6 +144,9 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(5)(open_verification_scheme_check)
     pkg.version(6)(add_include_conversation_history)
     pkg.version(7)(agent_scope_protection_and_fire_links)
+    pkg.version(8)(add_checked_quiet_status)
+    pkg.version(9)(add_fire_source_and_manual_fires)
+    pkg.version(10)(create_webhook_refusals)
     runner.register(pkg)
     return pkg
 
@@ -133,11 +154,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "PACKAGE_NAME",
     "PROTECTED_GATE_SETTING",
+    "add_checked_quiet_status",
     "add_dispatching_status",
+    "add_fire_source_and_manual_fires",
     "add_include_conversation_history",
     "agent_scope_protection_and_fire_links",
     "create_agent_wake_schedules",
     "create_wake_fires",
+    "create_webhook_refusals",
     "create_webhook_subscriptions",
     "open_verification_scheme_check",
     "register",

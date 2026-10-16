@@ -247,10 +247,11 @@ class TestContextSaveNode:
         await node(state)
         call_kwargs = mock_cm.save_tool_result.call_args
         saved_result = call_kwargs.kwargs.get("result") or call_kwargs[1].get("result")
-        body, _, note = saved_result.partition("\n\n[characters ")
-        assert len(body) == 100
-        assert "of 200" in note and "search them for the rest" in note
+        note, _, body = saved_result.partition("\n\n")
+        assert body == "x" * 100
+        assert note.startswith("[characters 0-100 of 200") and "search them for the rest" in note
         assert "offset=" not in note, "nobody can ask this node for the next part"
+        assert call_kwargs.kwargs["short_desc"] == "x" * 100, "the description is of the result, not of the note"
 
     @pytest.mark.asyncio
     async def test_empty_messages_returns_empty(self) -> None:

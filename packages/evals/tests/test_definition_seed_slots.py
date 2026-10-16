@@ -66,6 +66,7 @@ def _seed(
         require_known_tools_allowed=_admit,
         refuse_undeclared_world_seed=_admit,
         refuse_undeliverable_template=refuse_undeliverable,
+        kinds={},
     )
     return seed_eval_definitions(
         toyhost_host(storage=storage, template_checks=checks),

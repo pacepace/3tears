@@ -22,9 +22,11 @@ template reads from the host it is handed:
 * ``refuse_undeclared_world_seed`` — whether a ``world_seed`` names only paths the host's world
   can seed, which is the host's walk over its own namespaces;
 * ``refuse_undeliverable_template`` — whether the template declares apparatus its candidate kind
-  can honour, which is the host's kind capability table. For the fields a kind's registry entry declares it
-  ignores, it calls :func:`~threetears.evals.run.launch.refuse_ignored_template_fields`, the dispatch's own refusal,
-  rather than restate the list.
+  can honour, which is the host's kind capability table.
+
+The fields a kind never acts on are the package's to refuse, not a check's: every path that admits a template reads
+the kind's entry in the host's launch registry (``TemplateChecks.kinds``) and refuses through
+:func:`refuse_ignored_template_fields`, the launch dispatch's own refusal.
 
 Each check raises :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse and
 returns ``None`` to admit. None is defaulted: a host with nothing to check passes a function that
@@ -52,7 +54,7 @@ from threetears.evals.kernel.dsl import (
     world_prose_matches,
 )
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.kernel.host.eval_host import EvalHost, TemplateChecks
+from threetears.evals.kernel.host.eval_host import EvalHost, IgnoresTemplateFields, TemplateChecks
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.host.world import resolve_preconditions
@@ -123,6 +125,40 @@ def validated_kind_spec(template: EvalTemplate, *, profile: HostProfile) -> Base
         ) from refused
 
 
+def refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTemplateFields) -> None:
+    """Refuse a template stating a field its kind never acts on (``LaunchableKind.ignored_template_fields``).
+
+    One refusal, asked wherever a template is admitted (``create_template``, ``update_template``, the boot seed and a
+    definition reset, each over the kind's entry in the host's ``TemplateChecks.kinds``) and again at the launch
+    dispatch: a field is stated when it holds anything but its default. It reads the registry entry it is handed, never
+    the template's kind, which each caller reads once. A host no longer calls it from its own checks.
+
+    Args:
+        template: The template, as authored or as stored.
+        launchable: The registry entry of the kind it declares.
+
+    Raises:
+        ValidationFailedError: The template states a field the kind ignores; every one is named.
+    """
+    if stated := [
+        name
+        for name in sorted(launchable.ignored_template_fields)
+        if getattr(template, name) != EvalTemplate.model_fields[name].get_default(call_default_factory=True)
+    ]:
+        raise ValidationFailedError(
+            f"template {template.id!r} declares a kind that never acts on its "
+            + ", ".join(stated)
+            + " — it would run as if the template had not stated them",
+            remedy="remove them from the template, or run it as a kind that reads them",
+        )
+
+
+def _refuse_fields_its_kind_ignores(template: EvalTemplate, checks: TemplateChecks) -> None:
+    """:func:`refuse_ignored_template_fields` over the template's kind in the host's registry, when it carries it."""
+    if (launchable := checks.kinds.get(template.candidate_kind)) is not None:
+        refuse_ignored_template_fields(template, launchable)
+
+
 def create_template(
     host: EvalHost,
     definition: dict[str, Any],
@@ -141,14 +177,15 @@ def create_template(
     The checks run in a fixed order, so a template failing several meets the same refusal on
     every surface: the kind's spec model, the rubric's names, the host's tool catalog, the world its
     expressions name, whether each goal check is proven to discriminate, the host's seed walk, the
-    host's kind capabilities, whether each judged dimension declares its judge as the scope can honour
+    fields its kind never acts on (:func:`refuse_ignored_template_fields`, over the kind's entry in the host's
+    registry), the host's kind capabilities, whether each judged dimension declares its judge as the scope can honour
     (:func:`refuse_undeclared_judges`), then the name's uniqueness. The template is stored with its
     ``kind_spec`` as the spec model resolved it — every field, defaults included.
 
     Args:
         host: The host: where templates are read and written, the world the template's
             expressions are held to, and its template checks (``template_checks``): its tool
-            catalog, its seed walk and its kind capabilities.
+            catalog, its seed walk, its launch registry and its kind capabilities.
         definition: Template fields (``name`` + ``intent`` required; the
             rest optional per :class:`~threetears.evals.schema.models.EvalTemplate`).
         scope_id: The scope the template lives in.
@@ -164,7 +201,8 @@ def create_template(
             expressions names world state this host cannot supply, a goal check
             carries no control or does not discriminate between its controls
             (:func:`~threetears.evals.run.check_controls.refuse_non_discriminating_checks`), its
-            ``world_seed`` names a dimension no run of this host can seed, or
+            ``world_seed`` names a dimension no run of this host can seed, it states a field its kind
+            never acts on (:func:`refuse_ignored_template_fields`, naming each), or
             it declares apparatus its candidate kind cannot honour, or a judged dimension declares no
             judge, or one the scope contradicts (:func:`refuse_undeclared_judges`).
         ConflictError: a template with the same name already exists.
@@ -230,6 +268,7 @@ def admit_template(
     refuse_unsupplied_world(template, profile=profile)
     refuse_non_discriminating_checks(template, profile=profile)
     checks.refuse_undeclared_world_seed(template)
+    _refuse_fields_its_kind_ignores(template, checks)
     checks.refuse_undeliverable_template(template)
     refuse_undeclared_judges(template, active_judge_config)
     return template
@@ -598,8 +637,8 @@ def update_template(
         host: The host: where templates are read and written, the world an authored
             expression is held to, and its template checks (``template_checks``): the tool
             catalog asked only when this update writes ``tools_allowed``, the seed walk only when
-            it writes ``world_seed``, and the kind capabilities of the merged template unless the
-            update only sets ``archived``.
+            it writes ``world_seed``, and its launch registry and kind capabilities over the merged template
+            unless the update only sets ``archived``.
         template_id: Template to update.
         scope_id: The scope it lives in.
         fields: Partial field map to overlay onto the existing template.
@@ -615,7 +654,8 @@ def update_template(
             ``preconditions`` / ``goal_state_checks`` / ``goal_check_controls`` /
             ``world_seed`` fails the authoring guard that field carries — an authored ``rubric``'s
             being that every judged dimension declares its judge as the scope can honour
-            (:func:`refuse_undeclared_judges`).
+            (:func:`refuse_undeclared_judges`), or, unless the update only sets ``archived``, the merged template
+            states a field its kind never acts on (:func:`refuse_ignored_template_fields`, naming each).
         RefusedInput: The host supplies no template checks.
     """
     checks = host.checks_for("update_template")
@@ -690,7 +730,10 @@ def update_template(
     # comes back is a template that refuses to RUN rather than one that runs wrong. Refusing
     # the un-archive instead would only move the trap one step, to a template that can be
     # retired and never brought back.
+    # The fields a kind never acts on are held to the same rule and the same exemption: against the merged template,
+    # since an update writing `candidate_kind` alone makes every field the new kind ignores a stated one.
     if set(fields) != {"archived"}:
+        _refuse_fields_its_kind_ignores(template, checks)
         checks.refuse_undeliverable_template(template)
 
     host.storage.save_template(template)

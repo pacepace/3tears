@@ -126,14 +126,17 @@ pass it to every entrypoint. It holds:
   `withhold_failure_detail` is the honest one for an app with no error types of its own;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
-- your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the three
-  questions about a template only you can answer. `require_known_tools_allowed` asks whether each tool it allows is in
-  your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your world can seed, and
-  `refuse_undeliverable_template` whether its kind can honour what it declares. Each raises `ValidationFailedError` to
-  refuse and returns `None` to admit. `create_template`, `update_template`, the boot seed, a definition reset and the
-  `definitions_reset` action read them off the host they are handed, so every path admits a template under the same
-  checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it admitted
-  would go unchecked; a check with nothing to refuse is a function that returns `None`.
+- your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
+  about a template only you can answer, and the kinds you launch. `require_known_tools_allowed` asks whether each tool
+  it allows is in your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your world can
+  seed, and `refuse_undeliverable_template` whether its kind can honour what it declares; each raises
+  `ValidationFailedError` to refuse and returns `None` to admit. `kinds` (required) is the registry your `LaunchHost`
+  is built with, the same mapping: a template stating a field its kind's entry never acts on
+  (`LaunchableKind.ignored_template_fields`) is refused with the launch dispatch's own message, so your
+  `refuse_undeliverable_template` no longer calls `refuse_ignored_template_fields`. `create_template`,
+  `update_template`, the boot seed, a definition reset and the `definitions_reset` action read the checks off the host
+  they are handed, so every path admits a template under the same checks. A host with no template checks (`None`, the default) is refused by each of them, since a template it
+  admitted would go unchecked; a check with nothing to refuse is a function that returns `None`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -1202,8 +1205,8 @@ in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `schedu
 `simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the two functions
 `generation_ceiling_s` and `judge_phase_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
 generation or a judge phase. Derive each outer budget from a field, never from a number you copied: a release that
-raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The six names the
-fields stand for are still exported where they were in `.32` and leave in `.33`.
+raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The package exports
+no other name for them: the six separate constants and functions `.32` kept beside `Ceilings` were removed in `.33`.
 
 ### Hearing about a regression when a run completes
 
@@ -1475,6 +1478,18 @@ for a judge case, it writes them only into a revision holding no cases yet, so a
 changed, for a template already holding cases is withheld under `needs_reset` until you reset the template (below).
 A case whose content the revision already holds is `already present`, so cases your own seed wrote before `.32` with
 the same content are kept as they are.
+
+**A stored case is renamed through the package, never by writing its document.** The seed and a reset fill a name
+only into a case they write, so `case_rename(host, scope_id, case_id, name)` (from `threetears.evals.ops`, over your
+`EvalHost`; the `cases_rename` action takes `test_case_id` and `case_name`) is how an operator's rename lands. It
+writes the case's `name` and nothing else, through the store's own write path for a case, so the case keeps its id,
+its `content_hash`, every result measured against it and its seed record (`seed_name`, `seed_digest`: a renamed seeded
+case still reads stale or customized by its content alone), and the next report calls it by the new name. It answers
+with a `CaseRenamed` (the case's id, its old and its new name). It refuses, as the action does, a name the report
+would not print (`humanize("case", name)` empty: spaces, a bare number, a generated id, over 40 characters), a name
+another case of the same template or of a case set listing it already carries (`ConflictError`), and an unknown case
+(`NotFoundError`). A reset writes the corpus's names into the template's next revision, so a rename the corpus should
+keep belongs in the corpus too.
 
 **A case set a launch targets seeds from the same corpus.** A template carries no list of its cases, and an authored
 case's stored id is derived from its judge template's generated id, so a set such as `hard_negatives v1` is neither

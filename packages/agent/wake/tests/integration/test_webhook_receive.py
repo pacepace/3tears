@@ -10,6 +10,7 @@ verified end-to-end without an LLM.
 from __future__ import annotations
 
 import hmac
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from uuid import UUID
@@ -494,5 +495,145 @@ async def test_webhook_receive_pre_verified_skips_hmac_compute(
         assert len(handler.invocations) == 1
         trigger, _ = handler.invocations[0]
         assert "pre-verified" in (trigger.task_prompt or "")
+    finally:
+        await pool.close()
+
+
+# ---------------------------------------------------------------------------
+# Refused deliveries are kept (v010)
+# ---------------------------------------------------------------------------
+
+
+async def _refusals(pool: asyncpg.Pool, sub_id: UUID) -> list[tuple[str, int, int]]:
+    rows = await pool.fetch(
+        "SELECT reason, status_code, refusals FROM webhook_refusals WHERE subscription_id = $1 ORDER BY reason",
+        sub_id,
+    )
+    return [(r["reason"], r["status_code"], r["refusals"]) for r in rows]
+
+
+async def _post(
+    pool: asyncpg.Pool,
+    sub_id: UUID,
+    *,
+    signature: str | None,
+    payload: bytes = b"{}",
+    source_ip: str | None = None,
+    now: datetime | None = None,
+    handler: _RecordingHandler | None = None,
+) -> int:
+    subscriptions, fires = _receive_collections(pool)
+    result = await webhook_receive(
+        subscription_id=sub_id,
+        payload_bytes=payload,
+        signature_header=signature,
+        source_ip=source_ip,
+        pool=pool,
+        subscriptions=subscriptions,
+        fires=fires,
+        encryption_service=_IdentityEncryption(),
+        handler=handler or _RecordingHandler(),
+        now=now,
+    )
+    return result.status_code
+
+
+@pytest.mark.asyncio
+async def test_each_refused_delivery_is_kept_with_why_and_an_accepted_one_leaves_none(
+    pg_schema: tuple[str, str],
+) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        sub_id, secret = await _seed_subscription(
+            pool, conversation_id=_new_uuid(), allowed_source_pattern=r"^10\.", rate_limit_per_minute=1
+        )
+        at = datetime(2026, 10, 10, 12, 0, 5, tzinfo=UTC)
+        good = _hmac_header(secret, b"{}")
+
+        # good traffic: a delivery that is accepted is a fire, and no refusal is written for it
+        assert await _post(pool, sub_id, signature=good, source_ip="10.0.0.1", now=at) == 202
+        assert await _refusals(pool, sub_id) == []
+
+        assert await _post(pool, sub_id, signature=None, source_ip="10.0.0.1", now=at) == 401
+        assert await _post(pool, sub_id, signature="sha256=bogus", source_ip="10.0.0.1", now=at) == 401
+        assert await _post(pool, sub_id, signature="sha256=bogus", source_ip="10.0.0.1", now=at) == 401
+        assert await _post(pool, sub_id, signature=good, source_ip="192.168.1.1", now=at) == 403
+        assert await _post(pool, sub_id, signature=good, source_ip="10.0.0.1", now=at) == 429
+
+        assert await _refusals(pool, sub_id) == [
+            ("bad_signature", 401, 2),
+            ("missing_signature", 401, 1),
+            ("rate_limited", 429, 1),
+            ("source_not_allowed", 403, 1),
+        ]
+        detail = await pool.fetchval(
+            "SELECT detail FROM webhook_refusals WHERE subscription_id = $1 AND reason = 'source_not_allowed'", sub_id
+        )
+        assert detail == "from 192.168.1.1"
+        # one accepted fire, however many were refused
+        assert await pool.fetchval("SELECT count(*) FROM wake_fires WHERE webhook_subscription_id = $1", sub_id) == 1
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_to_a_paused_subscription_is_kept_and_one_to_no_subscription_is_not(
+    pg_schema: tuple[str, str],
+) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        conv = _new_uuid()
+        sub_id, secret = await _seed_subscription(pool, conversation_id=conv)
+        subscriptions, _fires = _receive_collections(pool)
+        await subscriptions.pause(conv, sub_id)
+
+        assert await _post(pool, sub_id, signature=_hmac_header(secret, b"{}")) == 404
+        assert await _refusals(pool, sub_id) == [("paused", 404, 1)]
+
+        assert await _post(pool, _new_uuid(), signature="sha256=x") == 404
+        assert await pool.fetchval("SELECT count(*) FROM webhook_refusals") == 1, "an unknown id has no row to keep"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_refusals_are_counted_per_minute_pruned_when_old_and_go_with_their_subscription(
+    pg_schema: tuple[str, str],
+) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        conv = _new_uuid()
+        sub_id, _secret = await _seed_subscription(pool, conversation_id=conv)
+        subscriptions, _fires = _receive_collections(pool)
+        first = datetime(2026, 10, 10, 12, 0, 10, tzinfo=UTC)
+
+        for seconds in (0, 20, 40):
+            await subscriptions.record_refusal(
+                conv, sub_id, reason="bad_signature", status_code=401, at=first + timedelta(seconds=seconds)
+            )
+        await subscriptions.record_refusal(
+            conv, sub_id, reason="bad_signature", status_code=401, at=first + timedelta(minutes=2)
+        )
+        listed = await subscriptions.list_refusals(sub_id)
+        assert [(row["refusals"], row["window_start"]) for row in listed] == [
+            (1, datetime(2026, 10, 10, 12, 2, tzinfo=UTC)),
+            (3, datetime(2026, 10, 10, 12, 0, tzinfo=UTC)),
+        ]
+        assert listed[1]["last_refused_at"] == first + timedelta(seconds=40)
+
+        with pytest.raises(ValueError, match="not a webhook refusal reason"):
+            await subscriptions.record_refusal(conv, sub_id, reason="because", status_code=400, at=first)
+
+        # a refusal far later prunes the ones past the keep window, and keeps itself
+        await subscriptions.record_refusal(
+            conv, sub_id, reason="rate_limited", status_code=429, at=first + timedelta(days=31)
+        )
+        assert [row["reason"] for row in await subscriptions.list_refusals(sub_id)] == ["rate_limited"]
+
+        await subscriptions.delete((conv, sub_id))
+        assert await pool.fetchval("SELECT count(*) FROM webhook_refusals WHERE subscription_id = $1", sub_id) == 0
     finally:
         await pool.close()

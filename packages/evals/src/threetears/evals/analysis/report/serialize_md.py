@@ -1,7 +1,8 @@
 """The report as Markdown — the form an agent reads and a pull request quotes, with the page's values and order.
 
-Every block the page draws is printed here, in the page's order: the title on line 1, the arms on line 2, the declared
-question quoted whole where there is one, the verdict, the scoreboard; a chart is its title and the table of the values
+Every block the page draws is printed here, in the page's order: the title on line 1, then the declared question quoted
+whole where there is one and under it the subhead (the arms, the rule's sentence), else the arms on line 2; the
+verdict, the scoreboard; a chart is its title and the table of the values
 it draws, so a reader of Markdown can check every
 number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. An
 outcome bar whose every column is one of the scoreboard's prints nothing here: its table would repeat the scoreboard. What
@@ -55,7 +56,8 @@ def report_markdown(report: Report) -> str:
     lines = [f"# {_one_line(report.title)}"]
     head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _repeats_scoreboard(block)]
     for index, block in enumerate(head):
-        # Line 2 is the arms, directly under the title: every other block is set off by a blank line.
+        # Line 2 (the arms, or a declared question) is directly under the title: every other block is set off by a
+        # blank line.
         lines += [*([] if index == 0 else [""]), *_block(block)]
     titles = report.section_titles
     for section in SECTION_TITLES:

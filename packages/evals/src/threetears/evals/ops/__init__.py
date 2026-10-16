@@ -24,6 +24,9 @@ regression on the step into it to the host's :class:`RegressionSink` (a :class:`
 :func:`scope_out_of_run_spend` reads the out-of-run ledger — the spend no run's results carry — into an
 :class:`OutOfRunSpendReport` of its own, with :func:`out_of_run_spend_text` beside it.
 
+A stored case is renamed by :func:`case_rename` (a :class:`CaseRenamed`): its name and nothing else, so it keeps
+its id and its history and the report calls it by the new name.
+
 A run's results are read by :func:`results_list` — one light row per result, paged, so an operator can find
 the cell that came out wrong — and :func:`result_get`, which reads one result back as stored with one part of its
 trace: by default the output its kind stored and the roles' spend, and the judge's evidence or the spans by name.
@@ -79,6 +82,7 @@ from threetears.evals.ops.analysis import (
     insights_list,
     report_read,
 )
+from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
@@ -255,9 +259,11 @@ __all__ = [
     "SweepSettings",
     "sweep_job_id",
     "sweep_launch",
+    "CaseRenamed",
     "CaseSetLine",
     "CaseSetListing",
     "CaseSetMint",
+    "case_rename",
     "case_set_mint",
     "case_sets_list",
     "ANALYSIS_JOB_PREFIX",

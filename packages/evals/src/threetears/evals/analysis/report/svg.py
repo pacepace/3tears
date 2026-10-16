@@ -24,7 +24,7 @@ unchanged.
 from __future__ import annotations
 
 import html
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.report.model import ChartBlock, IntervalRow, OutcomeBar, interval_text
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
@@ -73,7 +73,9 @@ _SEGMENT_GAP = 2
 
 #: The page's chart stylesheet: each mark's class, from CSS variables stepped for light and for dark. The categorical
 #: steps are the validated default palette's first two slots (blue, orange); a lost segment is a neutral grey with a
-#: dashed outline, the convention for "not measured", so it never reads as a third series. The chart scales to the
+#: dashed outline, the convention for "not measured", so it never reads as a third series. A failure's causes share
+#: the one failed hue and differ in ink alone (:data:`_FAILURE_INK`): tone, edge weight and hatching. The chart scales
+#: to the
 #: page's width down to a floor that keeps its 13px text at 11px or more on a phone; past the floor its figure
 #: scrolls, as a table does, rather than shrinking the words.
 SVG_STYLE = """
@@ -93,6 +95,11 @@ svg.viz text { fill: var(--viz-ink); }
 svg.viz text.viz-muted { fill: var(--viz-muted); }
 svg.viz .viz-passed { fill: var(--viz-passed); }
 svg.viz .viz-failed { fill: var(--viz-failed); }
+svg.viz .viz-failed.viz-alt { fill-opacity: 0.45; stroke: var(--viz-failed); stroke-width: 1.5; }
+svg.viz .viz-failed.viz-alt2 { fill-opacity: 0.15; stroke: var(--viz-failed); stroke-width: 2.5; }
+svg.viz .viz-failed.viz-alt3 { fill-opacity: 0.15; stroke: var(--viz-failed); stroke-width: 1; }
+svg.viz .viz-failed.viz-alt4 { fill-opacity: 0.15; stroke: var(--viz-failed); stroke-width: 2; }
+svg.viz .viz-hatch { stroke: var(--viz-failed); stroke-width: 1; fill: none; pointer-events: none; }
 svg.viz .viz-lost { fill: var(--viz-lost); stroke: var(--viz-lost-edge); stroke-width: 1; stroke-dasharray: 3 2; }
 svg.viz .viz-lost.viz-alt { stroke-dasharray: 1 2; }
 svg.viz text.viz-on-fill { fill: var(--viz-on-fill); font-variant-numeric: tabular-nums; }
@@ -141,8 +148,10 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
     An arm's label is the line above its bar, wrapped where it is long and never cut, so the bar has the chart's
     width. Each segment's count is written inside it where it fits, and every arm's whole census is written under
     its bar, so no count is read off a length or a colour. A lost segment is grey with a dashed edge, the next lost
-    cause dotted, so two causes side by side read as two. A census too long for one line wraps, and its row is
-    taller. The key names only the states that occur.
+    cause dotted, so two causes side by side read as two. A failure's causes are told apart the same way, in ink
+    alone (:func:`_failure_styles`), one style per cause on every bar, so the key names each cause that occurs
+    (``failed: check``, ``failed: judge``). A census too long for one line wraps, and its row is taller. The key
+    names only the states that occur.
 
     Args:
         title: What the chart shows.
@@ -152,7 +161,6 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
     Returns:
         The ``<svg>`` element.
     """
-    legend_height = 26
     longest = max((bar.total for bar in bars), default=0) or 1
     span = _BAR_END - _BAR_START
     labels = [_wrapped(bar.arm, _BAR_START) for bar in bars]
@@ -161,9 +169,11 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
         _BAR_ROW + _LINE * (len(label) - 1) + _LINE * (len(lines) - 1)
         for label, lines in zip(labels, censuses, strict=True)
     ]
-    height = legend_height + sum(rows) + 6
     states = list(dict.fromkeys(segment.state for bar in bars for segment in bar.segments))
-    marks = [_legend(_BAR_START, legend_height, states)]
+    failures = _failure_styles(bars)
+    legend, legend_height = _legend(_BAR_START, states, failures)
+    height = legend_height + sum(rows) + 6
+    marks = [legend]
     top = legend_height
     for bar, label, lines, row_height in zip(bars, labels, censuses, rows, strict=True):
         for offset, line in enumerate(label):
@@ -175,13 +185,18 @@ def outcome_bar_svg(title: str, bars: Sequence[OutcomeBar], *, chart_id: str) ->
             width = max(span * segment.count / longest - _SEGMENT_GAP, 1.0)
             mark = f"{bar.arm}: {segment.label}, {segment.count} of the {bar.total} trials it ran"
             alt = " viz-alt" if segment.state == "lost" and lost % 2 else ""
+            hatch = ""
+            if segment.state == "failed":
+                alt, hatch = failures[segment.label]
             lost += segment.state == "lost"
             marks.append(
                 f'<rect class="viz-{segment.state}{alt}" x="{x:.1f}" y="{bar_top}" width="{width:.1f}" '
                 f'height="{_BAR_HEIGHT}" rx="2"><title>{_escape(mark)}</title></rect>'
             )
+            marks.append(_hatching(hatch, x, bar_top, width, _BAR_HEIGHT))
             if width >= _COUNT_INSIDE:
-                inside = ' class="viz-on-fill"' if segment.state != "lost" else ""
+                # A count on a light tone is in ink, as on a lost segment; on a solid fill, in the fill's contrast.
+                inside = ' class="viz-on-fill"' if segment.state != "lost" and not alt else ""
                 marks.append(
                     f'<text x="{x + width / 2:.1f}" y="{bar_top + _BAR_HEIGHT - 4}"{inside} text-anchor="middle">'
                     f"{segment.count}</text>"
@@ -272,24 +287,76 @@ def _label_column(labels: Sequence[str]) -> tuple[int, list[str]]:
     return start, [label if len(label) <= room else label[: room - 1] + "…" for label in labels]
 
 
-def _legend(start: int, height: int, states: Sequence[str]) -> str:
-    """The outcome bar's key: each state that occurs, its swatch beside its name, so the colours are read off words.
+def _failure_styles(bars: Sequence[OutcomeBar]) -> dict[str, tuple[str, str]]:
+    """Each failure cause's ink on the chart, by its segment's label: one style per cause on every bar, in the order
+    the causes first occur, so a cause reads alike on each arm and the key names it once."""
+    labels = dict.fromkeys(segment.label for bar in bars for segment in bar.segments if segment.state == "failed")
+    return {label: _FAILURE_INK[index % len(_FAILURE_INK)] for index, label in enumerate(labels)}
+
+
+#: A failure cause's ink, as ``(class, hatching)``, in the order causes take it: solid; a lighter tone edged in the hue;
+#: lighter still with a heavier edge; that tone with a hairline edge, hatched one way; and with a mid edge,
+#: cross-hatched. One per failure cause (``FailCause``), one hue throughout: a failure is one state, its causes told
+#: apart without a new colour.
+_FAILURE_INK: tuple[tuple[str, str], ...] = (
+    ("", ""),
+    (" viz-alt", ""),
+    (" viz-alt2", ""),
+    (" viz-alt3", "/"),
+    (" viz-alt4", "x"),
+)
+
+#: The gap between two hatch lines, along either edge.
+_HATCH_STEP = 4
+
+
+def _hatching(hatch: str, x: float, y: float, width: float, height: float) -> str:
+    """The hatch lines over one mark, drawn inside its box: ``/`` one way, ``x`` both ways, ``""`` none.
+
+    Drawn as lines rather than a pattern fill, so the chart references nothing by URL.
+    """
+    if not hatch:
+        return ""
+    strokes: list[str] = []
+    for falling in (False, True) if hatch == "x" else (False,):
+        for index in range(1, int((width + height) / _HATCH_STEP) + 1):
+            # Across the box by u and down it by s: a ``/`` line holds u + s = c, a ``\`` line u - s = c.
+            c = index * _HATCH_STEP - (height if falling else 0)
+            first, last = (max(0.0, c), min(width, c + height)) if falling else (max(0.0, c - height), min(width, c))
+            if last - first < 1:
+                continue
+            ends = [(u, u - c if falling else c - u) for u in (first, last)]
+            strokes.append("M" + " L".join(f"{x + u:.1f} {y + down:.1f}" for u, down in ends))
+    return f'<path class="viz-hatch" d="{" ".join(strokes)}"></path>'
+
+
+def _legend(start: int, states: Sequence[str], failures: Mapping[str, tuple[str, str]]) -> tuple[str, int]:
+    """The outcome bar's key and its height: each state that occurs, its swatch beside its name, so the colours are
+    read off words; a failure by each cause that occurs (``failed: check``, ``failed: judge``), in its own ink.
 
     A lost trial's name is the glossary's term, with its definition as the swatch's title, so a hover says what the
-    test setup spoiling a trial means without a line of its own.
+    test setup spoiling a trial means without a line of its own. A key too long for one line wraps onto the next.
     """
-    parts = []
-    x = start
+    entries: list[tuple[str, str, str, str]] = []
     for state in ("passed", "failed", "lost"):
         if state not in states:
             continue
-        title = f"<title>{_escape(GLOSSARY['lost'])}</title>" if state == "lost" else ""
-        parts.append(
-            f'<rect class="viz-{state}" x="{x}" y="{height - 20}" width="12" height="12" rx="2">{title}</rect>'
-        )
-        parts.append(_text(x + 17, height - 10, state, muted=True))
-        x += 17 + int(_CHAR_WIDTH * len(state)) + 18
-    return "".join(parts)
+        if state == "failed":
+            entries += [("failed" + ink, label, "", hatch) for label, (ink, hatch) in failures.items()]
+            continue
+        entries.append((state, state, f"<title>{_escape(GLOSSARY['lost'])}</title>" if state == "lost" else "", ""))
+    parts = []
+    x, line = start, 0
+    for classes, name, title, hatch in entries:
+        width = 17 + int(_CHAR_WIDTH * len(name)) + 18
+        if x > start and x + width - 18 > _BAR_END:
+            x, line = start, line + 1
+        y = 26 + _LINE * line
+        parts.append(f'<rect class="viz-{classes}" x="{x}" y="{y - 20}" width="12" height="12" rx="2">{title}</rect>')
+        parts.append(_hatching(hatch, x, y - 20, 12, 12))
+        parts.append(_text(x + 17, y - 10, name, muted=True))
+        x += width
+    return "".join(parts), 26 + _LINE * line
 
 
 def interval_rows_svg(

@@ -1648,7 +1648,7 @@
     },
     "threetears.evals.kernel.DefinitionStore": {
       "kind": "protocol",
-      "signature": "DefinitionStore{delete_judge_config(self, config_id: str, scope_id: str, /) -> bool; delete_rubric_dim(self, dim_id: str, scope_id: str, /) -> bool; delete_template(self, template_id: str, scope_id: str, /) -> bool; delete_test_case(self, test_case_id: str, scope_id: str, /) -> bool; load_active_judge_config(self, rubric_dim_id: str, scope_id: str, /) -> JudgeConfig | None; load_active_rubric_dim(self, key: str, scope_id: str, /) -> CatalogRubricDim | None; load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]; load_judge_config(self, config_id: str, scope_id: str, /) -> JudgeConfig | None; load_rubric_dim(self, dim_id: str, scope_id: str, /) -> CatalogRubricDim | None; load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None; load_template_by_name(self, name: str, scope_id: str, /) -> EvalTemplate | None; load_test_case(self, test_case_id: str, scope_id: str, /) -> EvalTestCase | None; load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]; query_judge_config_tombstones(self, scope_id: str, /) -> list[JudgeConfigTombstone]; query_judge_configs(self, scope_id: str, /, *, rubric_dim_id: str | None = None, archived: bool | None = None) -> list[JudgeConfig]; query_rubric_dim_tombstones(self, scope_id: str, /) -> list[RubricDimTombstone]; query_rubric_dims(self, scope_id: str, /, *, axis: str | None = None, universal: bool | None = None, archived: bool | None = None) -> list[CatalogRubricDim]; query_templates(self, scope_id: str, /, *, archived: bool | None = None, required_tool: str | None = None, universal: bool | None = None) -> list[EvalTemplate]; query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]; save_judge_config(self, config: JudgeConfig, /) -> None; save_judge_config_tombstone(self, tombstone: JudgeConfigTombstone, /) -> None; save_rubric_dim(self, dim: CatalogRubricDim, /) -> None; save_rubric_dim_tombstone(self, tombstone: RubricDimTombstone, /) -> None; save_template(self, template: EvalTemplate, /) -> None; save_test_case(self, test_case: EvalTestCase, /) -> None}",
+      "signature": "DefinitionStore{delete_judge_config(self, config_id: str, scope_id: str, /) -> bool; delete_rubric_dim(self, dim_id: str, scope_id: str, /) -> bool; delete_template(self, template_id: str, scope_id: str, /) -> bool; delete_test_case(self, test_case_id: str, scope_id: str, /) -> bool; load_active_judge_config(self, rubric_dim_id: str, scope_id: str, /) -> JudgeConfig | None; load_active_rubric_dim(self, key: str, scope_id: str, /) -> CatalogRubricDim | None; load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]; load_judge_config(self, config_id: str, scope_id: str, /) -> JudgeConfig | None; load_rubric_dim(self, dim_id: str, scope_id: str, /) -> CatalogRubricDim | None; load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None; load_template_by_name(self, name: str, scope_id: str, /) -> EvalTemplate | None; load_test_case(self, test_case_id: str, scope_id: str, /) -> EvalTestCase | None; load_test_case_with_etag(self, test_case_id: str, scope_id: str, /) -> tuple[EvalTestCase | None, str | None]; load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]; query_judge_config_tombstones(self, scope_id: str, /) -> list[JudgeConfigTombstone]; query_judge_configs(self, scope_id: str, /, *, rubric_dim_id: str | None = None, archived: bool | None = None) -> list[JudgeConfig]; query_rubric_dim_tombstones(self, scope_id: str, /) -> list[RubricDimTombstone]; query_rubric_dims(self, scope_id: str, /, *, axis: str | None = None, universal: bool | None = None, archived: bool | None = None) -> list[CatalogRubricDim]; query_templates(self, scope_id: str, /, *, archived: bool | None = None, required_tool: str | None = None, universal: bool | None = None) -> list[EvalTemplate]; query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]; save_judge_config(self, config: JudgeConfig, /) -> None; save_judge_config_tombstone(self, tombstone: JudgeConfigTombstone, /) -> None; save_rubric_dim(self, dim: CatalogRubricDim, /) -> None; save_rubric_dim_tombstone(self, tombstone: RubricDimTombstone, /) -> None; save_template(self, template: EvalTemplate, /) -> None; save_test_case(self, test_case: EvalTestCase, /, *, if_match: str | None = None) -> None}",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.delivered_a_turn": {
@@ -3036,6 +3036,11 @@
       "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), style: StyleProfile = StyleProfile(), world: WorldRegistry | None = None, caveat_kinds: frozenset[str] = frozenset(), variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), sweepables: SweepableRegistry (derived))",
       "tier": "host-contract"
     },
+    "threetears.evals.kernel.host.IgnoresTemplateFields": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.host.Interval": {
       "kind": "dataclass",
       "signature": "Interval(unit: str | None = None)",
@@ -3213,7 +3218,7 @@
     },
     "threetears.evals.kernel.host.TemplateChecks": {
       "kind": "dataclass",
-      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None])",
+      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, IgnoresTemplateFields])",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ToneRegister": {
@@ -4018,7 +4023,7 @@
     },
     "threetears.evals.run.refuse_ignored_template_fields": {
       "kind": "function",
-      "signature": "refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None",
+      "signature": "refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTemplateFields) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.run.refuse_raised_ceiling": {
@@ -4156,11 +4161,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.SCHEDULER_CALL_ATTEMPTS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
-    },
     "threetears.evals.run.SECOND_JUDGE_JOB": {
       "kind": "constant (LeasedJobKind)",
       "signature": "",
@@ -4240,16 +4240,6 @@
       "kind": "function",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.run.SIMULATOR_ANSWER_BUDGET_TOKENS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
-    },
-    "threetears.evals.run.SIMULATOR_MAX_TOKENS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
     },
     "threetears.evals.run.SIMULATOR_REASONING_ALLOWANCE_TOKENS": {
       "kind": "constant (int)",
@@ -4961,11 +4951,6 @@
       "signature": "generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]",
       "tier": "host-contract"
     },
-    "threetears.evals.analysis.generation_ceiling_s": {
-      "kind": "function",
-      "signature": "generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float",
-      "tier": "host-contract"
-    },
     "threetears.evals.analysis.GenerationError": {
       "kind": "exception",
       "signature": "",
@@ -5110,11 +5095,6 @@
       "kind": "function",
       "signature": "judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings",
       "tier": "stable"
-    },
-    "threetears.evals.analysis.judge_phase_ceiling_s": {
-      "kind": "function",
-      "signature": "judge_phase_ceiling_s(*, judge_dims: int, judge_concurrency: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float",
-      "tier": "host-contract"
     },
     "threetears.evals.analysis.judge_profiles_of": {
       "kind": "function",
@@ -6096,11 +6076,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.gen.PROPOSER_MAX_TOKENS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
-    },
     "threetears.evals.gen.RUBRIC_PROPOSAL_CONTRACT": {
       "kind": "constant (OutputContract)",
       "signature": "",
@@ -6546,6 +6521,11 @@
       "signature": "campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing",
       "tier": "stable"
     },
+    "threetears.evals.ops.case_rename": {
+      "kind": "function",
+      "signature": "case_rename(host: EvalHost, scope_id: str, case_id: str, name: str, *, corpus: SeedCorpus | None = None) -> CaseRenamed",
+      "tier": "host-contract"
+    },
     "threetears.evals.ops.case_set_mint": {
       "kind": "function",
       "signature": "case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> CaseSetLine",
@@ -6555,6 +6535,11 @@
       "kind": "function",
       "signature": "case_sets_list(host: EvalHost, scope_id: str, *, name: str | None = None) -> CaseSetListing",
       "tier": "stable"
+    },
+    "threetears.evals.ops.CaseRenamed": {
+      "kind": "model",
+      "signature": "CaseRenamed(test_case_id: str, old_name: str | None, new_name: str)",
+      "tier": "host-contract"
     },
     "threetears.evals.ops.CaseSetLine": {
       "kind": "model",
@@ -6873,7 +6858,7 @@
     },
     "threetears.evals.ops.OpsHost": {
       "kind": "dataclass",
-      "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None)",
+      "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None, seed_corpus: Callable[[str], SeedCorpus] | None = None)",
       "tier": "stable"
     },
     "threetears.evals.ops.out_of_run_spend_text": {

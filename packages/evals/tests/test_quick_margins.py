@@ -96,7 +96,7 @@ class TestADeclaredMargin:
         comparison = await _compare([grader(correct, margin=0.1)], cheaper_misses=0)
         row = _row(comparison, "correct")
         # A margin on a pass rate is stated in points, as the change it bounds is.
-        assert row["verdict"].startswith("equivalent to the control") and "(margin ±10 pts)" in row["verdict"]
+        assert row["verdict"].startswith("cheaper and current equivalent") and "(margin ±10 pts)" in row["verdict"]
         assert row["delta"] == 0.0
         assert _no_margin_lines(comparison) == [], "every tested measure declares a margin"
         assert _no_margin_advice(comparison) == {}
@@ -114,7 +114,9 @@ class TestADeclaredMargin:
 
     async def test_a_second_control_reads_the_same_margin(self) -> None:
         comparison = await _compare([grader(correct, margin=0.1)], cheaper_misses=0)
-        assert _row(await comparison.against("cheaper"), "correct")["verdict"].startswith("equivalent to the control")
+        assert _row(await comparison.against("cheaper"), "correct")["verdict"].startswith(
+            "current and cheaper equivalent"
+        )
 
 
 class TestHowManyCasesEquivalenceTakes:
@@ -138,8 +140,10 @@ class TestHowManyCasesEquivalenceTakes:
         self, margin: float, expected: bool, first: int
     ) -> None:
         """One reading in the family, or two when a field grader adds accuracy and Holm divides α between them."""
-        assert (await self._verdict(first - 1, margin, expected=expected)).startswith("not separated")
-        assert (await self._verdict(first, margin, expected=expected)).startswith("equivalent")
+        assert (await self._verdict(first - 1, margin, expected=expected)).startswith(
+            "cheaper and current not separated"
+        )
+        assert (await self._verdict(first, margin, expected=expected)).startswith("cheaper and current equivalent")
 
 
 class TestAPassFailInterval:
@@ -169,7 +173,7 @@ class TestAPassFailInterval:
 class TestNoMargin:
     async def test_no_contrast_reads_equivalent_and_the_report_says_why_in_one_line(self) -> None:
         comparison = await _compare()
-        assert _row(comparison, "correct")["verdict"].startswith("not separated")
+        assert _row(comparison, "correct")["verdict"].startswith("cheaper and current not separated")
         (line,) = _no_margin_lines(comparison)
         assert "not separated never means the arms are alike" in line
         # One sentence, then each reading once in a table, with how it takes a margin.
@@ -206,7 +210,7 @@ class TestAMarginOnAccuracy:
         comparison = await _classify(0.1)
         row = _row(comparison, "accuracy")
         assert row["verdict"] == (
-            "equivalent to the control, within the measure's margin (margin ±10 pts, declared on the runs)"
+            "cheaper and current equivalent, within the measure's margin (margin ±10 pts, declared on the runs)"
         )
         (verdict,) = comparison.verdicts("accuracy")
         assert (verdict.outcome, verdict.reason, verdict.margin, verdict.margin_source) == (
@@ -310,7 +314,7 @@ class TestADeclaredRange:
             2,
         )
         row = _row(comparison, "rating")
-        assert row["verdict"].startswith("equivalent to the control") and "(margin ±0.5)" in row["verdict"]
+        assert row["verdict"].startswith("cheaper and current equivalent") and "(margin ±0.5)" in row["verdict"]
         assert "value_range" not in report_markdown(comparison.report)
 
     async def test_a_score_outside_it_excludes_the_cell_naming_the_scorer(self) -> None:

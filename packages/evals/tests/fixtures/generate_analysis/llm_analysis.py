@@ -164,9 +164,8 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
 
     # The verdict code reached; nothing an analysis writes changes it.
     (row,) = comparison.contrasts("accuracy")
-    print(
-        f"Code's verdict: {row['arm']} vs {comparison.control} on {row['reading']}: delta {row['delta']:+.2f}, ", end=""
-    )
+    # The verdict's words name both arms (``candidate and baseline not separated``), so the line does not.
+    print(f"Code's verdict on {row['reading']}: delta {row['delta']:+.2f}, ", end="")
     print(f"interval {row['interval']}, Holm-adjusted p {row['p_adjusted']:.2g}: {row['verdict']}\n")
 
     # Freeze: assemble the bundle once and save it. The fingerprint is a sha256 of its canonical JSON.

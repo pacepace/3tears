@@ -262,8 +262,13 @@ class FireStore(Protocol):
         *,
         error: str,
         latency_ms: int | None = None,
+        output: dict[str, Any] | None = None,
     ) -> None:
         """Stamp a failed-dispatch result onto the fire row.
+
+        The engine passes ``output`` only when the callback returned one with its
+        ``status='failed'``, so a store written before the argument existed keeps
+        working until a handler of its own reports a failure with an output.
 
         :param partition_key: partition column value
         :ptype partition_key: UUID
@@ -273,6 +278,8 @@ class FireStore(Protocol):
         :ptype error: str
         :param latency_ms: optional latency up to the failure
         :ptype latency_ms: int | None
+        :param output: what the callback reported beside its failure; ``None`` leaves the row's output as it is
+        :ptype output: dict[str, Any] | None
         :return: nothing
         :rtype: None
         """

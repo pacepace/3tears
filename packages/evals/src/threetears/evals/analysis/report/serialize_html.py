@@ -7,8 +7,9 @@ is ``<details>``; moving between the screens is ``#`` anchors. The outcome bar i
 cell carrying an interval draws it as a small glyph beside its number, on one scale for the column, so a screen
 reader and a page with styles off lose nothing: every figure a glyph draws is in the row's text.
 
-**The first screen is the page's ``<header>``**: the title (the campaign's name), the arms line (always line 2), the
-declared question quoted whole where there is one, the verdict line, the scoreboard with its outcome bar, and the one
+**The first screen is the page's ``<header>``**: the title (the campaign's name); the declared question quoted whole
+on its own line where there is one, then the subhead (the arms line, and the rule's sentence where one was declared);
+the arms line alone (line 2) where none was; the verdict line, the scoreboard with its outcome bar, and the one
 caveat in normal weight that changes how the verdict is read. Everything a reader needs to decide whether to read on
 is there, written by code. Every term of art links to the glossary at the foot of the page.
 
@@ -30,6 +31,7 @@ from collections.abc import Sequence
 
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
+    RULE_ANCHOR,
     SECTION_TITLES,
     ChartBlock,
     DisclosureBlock,
@@ -77,7 +79,8 @@ code { font-family: var(--font-mono); font-size: 0.9em; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; padding: 0 0 0 12px;
   border-left: 1px solid var(--rule); font: 0.8125rem/1.45 var(--font-mono); max-height: 24rem; overflow-y: auto; }
 header { padding: 0 0 16px; }
-.arms { margin: 0 0 16px; color: var(--muted); }
+.question { font-size: 1.125rem; line-height: 1.4; margin: 0 0 8px; max-width: 75ch; }
+.arms { margin: 0 0 4px; color: var(--muted); }
 .verdict { font-size: 1.125rem; line-height: 1.4; margin: 16px 0 24px; padding: 2px 0 2px 14px;
   border-left: 3px solid var(--rule-strong); }
 .verdict[data-tone="decided"] { border-left-color: var(--tone-decided); }
@@ -326,6 +329,8 @@ def _table(block: TableBlock) -> str:
         if block.total_rows > len(block.rows):
             grid += f'<p class="order">{len(block.rows)} of {block.total_rows} rows shown.</p>'
     title = _escape(block.title)
+    if block.title_ref is not None:
+        title = f'<a href="#{_escape(block.title_ref)}">{title}</a>'
     if block.details:
         return f'<details data-table="{_escape(block.name)}"><summary>{title}</summary>{grid}</details>'
     if block.fold is not None:
@@ -533,6 +538,11 @@ def _disclosure(block: DisclosureBlock) -> str:
         text += " " + _term_link(block.term, f"({_escape(block.term)})", css="term")
     if block.source == "arms":
         return f'<p class="arms">{text}</p>'
+    if block.section == "header" and block.source == "basis":
+        return f'<p class="question">{text}</p>'
+    if block.section == "header" and block.source == "rule":
+        # The subhead's second line, which the Decision section's table links up to.
+        return f'<p class="arms" id="{RULE_ANCHOR}">{text}</p>'
     if block.source == "verdict":
         tone = f' data-tone="{_escape(block.tone)}"' if block.tone is not None else ""
         return f'<p class="verdict"{tone}><strong>{text}</strong></p>'

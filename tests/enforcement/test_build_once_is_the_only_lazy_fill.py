@@ -445,6 +445,16 @@ _NOT_BUILDS: dict[str, str] = {
         "logged' (see the comment there), and two racing timeouts logging the remedy twice is "
         "the throttle's accepted imprecision, with no object built and nothing registered"
     ),
+    (
+        "packages/models/src/threetears/models/anthropic_capabilities.py"
+        "::load_all_anthropic_capabilities::_CATALOGUE_LOADED"
+    ): (
+        "when the Models API listing was last read and which ids it named, replaced by every "
+        "listing older than max_age_seconds rather than built once, so BuildOnce (one value per "
+        "key for the life of the process) cannot hold it; the check is an age test, and two "
+        "callers that both find it stale each read the listing and record the same facts, with "
+        "no object built and nothing registered twice"
+    ),
 }
 
 

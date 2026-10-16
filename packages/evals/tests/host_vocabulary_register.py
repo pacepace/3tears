@@ -271,6 +271,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "quick/world.py": {},
     "ops/__init__.py": {},
     "ops/analysis.py": {},
+    "ops/cases.py": {},
     "ops/host.py": {},
     "ops/jobs.py": {},
     "ops/lenses.py": {},

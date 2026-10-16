@@ -57,6 +57,7 @@ from threetears.search.contracts import EGRESS_DIRECT, LocalCapExceeded, Spend, 
 from threetears.search.standalone import (
     DEFAULT_MAX_RESPONSE_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_TRANSPORT_USER_AGENT,
     StandaloneTransport,
 )
 
@@ -344,6 +345,7 @@ def build_fetch_transport(
     egress_name: str = EGRESS_DIRECT,
     allow_private_addresses: bool = False,
     max_redirects: int = DEFAULT_FETCH_MAX_REDIRECTS,
+    user_agent: str | None = None,
 ) -> StandaloneTransport:
     """The :class:`~threetears.search.contracts.transport.FetchTransport` this host injects.
 
@@ -370,6 +372,10 @@ def build_fetch_transport(
         for the reason stated there. 0 restores the strict stance for a
         deployment that wants it
     :ptype max_redirects: int
+    :param user_agent: the ``User-Agent`` every fetch sends: the deployment's own name, the
+        same one its robots checks are matched against. None keeps the standalone transport's
+        own default
+    :ptype user_agent: str | None
     :return: the configured fetch transport
     :rtype: StandaloneTransport
     """
@@ -379,4 +385,5 @@ def build_fetch_transport(
         egress_name=egress_name,
         allow_private_addresses=allow_private_addresses,
         max_redirects=max_redirects,
+        user_agent=user_agent or DEFAULT_TRANSPORT_USER_AGENT,
     )

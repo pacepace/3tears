@@ -117,6 +117,22 @@ class TestContextFormatter:
         assert "[conv:conv-3]" in output
         assert "hello" in output
 
+    def test_format_says_which_process_wrote_the_line_when_asked(self):
+        import os
+
+        set_context(cid="abc")
+        record = logging.LogRecord("test", logging.INFO, "test.py", 42, "hello", None, None)
+        record.funcName = "my_func"
+        asked = ContextFormatter(use_color=False, process_id=True).format(record)
+        assert asked.split(" ")[2:4] == [f"[pid:{os.getpid()}]", "[cid:abc]"]
+        assert "[pid:" not in ContextFormatter(use_color=False).format(record)
+
+    def test_format_reads_the_process_id_when_the_line_is_written(self):
+        record = logging.LogRecord("test", logging.INFO, "test.py", 42, "hello", None, None)
+        formatter = ContextFormatter(use_color=False, process_id=True)
+        with patch("threetears.observe.logging.os.getpid", return_value=4242):
+            assert " [pid:4242] " in formatter.format(record)
+
     def test_format_without_context(self):
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
@@ -375,6 +391,26 @@ class TestConfigureLogging:
         finally:
             py_root.handlers = original_py_handlers
             tt_root.level = original_tt_level
+
+    def test_configure_logging_puts_the_process_id_on_its_own_and_later_loggers(self):
+        import os
+
+        py_root = logging.getLogger()
+        late = logging.getLogger("test.third_party_after_pid")
+        original_py_handlers, original_level, original_late = py_root.handlers[:], py_root.level, late.handlers[:]
+        record = logging.LogRecord("test", logging.INFO, "test.py", 42, "hello", None, None)
+        try:
+            py_root.handlers = [h for h in py_root.handlers if not getattr(h, "threetears_owned", False)]
+            late.handlers.clear()
+            configure_logging(color=False, process_id=True)
+            configure_third_party_logging("test.third_party_after_pid")
+            [owned] = [h for h in py_root.handlers if getattr(h, "threetears_owned", False)]
+            for handler in (owned, late.handlers[0]):
+                assert f" [pid:{os.getpid()}] " in handler.format(record)
+        finally:
+            configure_logging(color=False)  # the choice is the process's: put it back for the tests after this one
+            py_root.handlers, py_root.level, late.handlers = original_py_handlers, original_level, original_late
+            late.propagate = True
 
     def test_configure_logging_with_strip_prefixes(self):
         original = path_strip_prefixes[:]

@@ -17,6 +17,7 @@ from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.job_timeout import default_job_timeout
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
+from threetears.evals.run.definition_seed import SeedCorpus
 from threetears.evals.run.launch import LaunchHost, LaunchSettings
 from threetears.evals.schema import EvalRun, WorldPlacement
 
@@ -55,7 +56,7 @@ class AnalysisGeneration:
             pre-spend disclosure.
         budget_s: The job's wall-clock ceiling on its generator calls; a generation that outruns it is recorded
             ``timed_out``. Derive it ABOVE the generation's own ceiling
-            (:func:`~threetears.evals.analysis.generation_ceiling_s`, over the host's own ceiling for one
+            (``Ceilings().generation_ceiling_s`` of :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for one
             request on its client): a budget below it cancels a repair round-trip still writing inside
             its cap, after both calls were billed.
     """
@@ -103,10 +104,14 @@ class OpsHost:
             the job manager every long-running operation is tracked by.
         generation: How an analysis is generated in the background; ``None`` for a host that does not
             generate analyses here, whose generation start is refused saying so.
+        seed_corpus: The host's seed corpus for a scope (``load_seed_corpus(its directory, scope_id)``), which a case
+            rename reads so a rename never changes how definition drift finds the case; ``None`` for a host that
+            seeds no template cases.
     """
 
     launch: LaunchHost
     generation: AnalysisGeneration | None = None
+    seed_corpus: Callable[[str], SeedCorpus] | None = None
 
     @classmethod
     def reading(cls, eval_host: EvalHost) -> OpsHost:

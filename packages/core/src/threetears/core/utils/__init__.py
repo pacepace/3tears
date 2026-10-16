@@ -5,6 +5,7 @@ beyond the ones core already declares (asyncpg, 3tears-observe).
 """
 
 from threetears.core.utils.atomic_write import atomic_write, atomic_write_sync
+from threetears.core.utils.local_time import parse_date_bound, render_local_time, resolve_zone
 from threetears.core.utils.pg_pool_kwargs import (
     DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS,
     DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS,
@@ -50,5 +51,8 @@ __all__ = [
     "is_yugabyte_stale_table_shape",
     "log_pool_created",
     "redact_dsn",
+    "parse_date_bound",
+    "render_local_time",
     "resolve_pool_connect_timeout",
+    "resolve_zone",
 ]

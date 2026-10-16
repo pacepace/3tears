@@ -34,6 +34,9 @@ if TYPE_CHECKING:
     from threetears.agent.tools.builtin.image_generation import (
         ImageGenerationContext,
         ImageGenerationInput,
+        SourceImage,
+        SourceImageContext,
+        SourceImageRefused,
         create_image_generation_tool,
     )
     from threetears.agent.tools.chunker import (
@@ -102,6 +105,9 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ImageGenerationBackend": ("threetears.agent.tools.protocols", "ImageGenerationBackend"),
     "ImageGenerationContext": ("threetears.agent.tools.builtin.image_generation", "ImageGenerationContext"),
     "ImageGenerationInput": ("threetears.agent.tools.builtin.image_generation", "ImageGenerationInput"),
+    "SourceImage": ("threetears.agent.tools.builtin.image_generation", "SourceImage"),
+    "SourceImageContext": ("threetears.agent.tools.builtin.image_generation", "SourceImageContext"),
+    "SourceImageRefused": ("threetears.agent.tools.builtin.image_generation", "SourceImageRefused"),
     "InvokeToolLlmInput": ("threetears.agent.tools.tool_llm_dispatch", "InvokeToolLlmInput"),
     "McpClient": ("threetears.agent.tools.mcp", "McpClient"),
     "McpTool": ("threetears.agent.tools.mcp", "McpTool"),
@@ -159,6 +165,9 @@ __all__ = [
     "ImageGenerationBackend",
     "ImageGenerationContext",
     "ImageGenerationInput",
+    "SourceImage",
+    "SourceImageContext",
+    "SourceImageRefused",
     "InvokeToolLlmInput",
     "McpClient",
     "McpTool",

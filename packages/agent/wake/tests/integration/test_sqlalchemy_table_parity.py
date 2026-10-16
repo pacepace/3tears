@@ -59,6 +59,7 @@ from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tables import (
     agent_wake_schedules_table,
     wake_fires_table,
+    webhook_refusals_table,
     webhook_subscriptions_table,
 )
 from threetears.conversations.migrations import register as register_conversations
@@ -68,16 +69,17 @@ from .conftest import AsyncpgStore
 
 pytestmark = pytest.mark.integration
 
-# The three wake tables this factory exposes, in dependency order:
+# The wake tables this factory exposes, in dependency order:
 # agent_wake_schedules (FK target of wake_fires) first,
-# webhook_subscriptions (the other FK target of wake_fires) next,
-# wake_fires (both FKs) last. Only these are compared; the agent_skills
-# tables are emitted into the factory schema solely so the
-# skill_id / default_skill_id FKs resolve.
+# webhook_subscriptions (the other FK target of wake_fires, and of
+# webhook_refusals) next, then wake_fires and webhook_refusals. Only these
+# are compared; the agent_skills tables are emitted into the factory schema
+# solely so the skill_id / default_skill_id FKs resolve.
 _TABLES = (
     "agent_wake_schedules",
     "webhook_subscriptions",
     "wake_fires",
+    "webhook_refusals",
 )
 
 # Tables emitted into the factory schema in DDL order: agent_skills
@@ -91,6 +93,7 @@ _FACTORY_EMIT_ORDER = (
     "agent_wake_schedules",
     "webhook_subscriptions",
     "wake_fires",
+    "webhook_refusals",
 )
 
 
@@ -126,6 +129,7 @@ def _factory_metadata() -> sa.MetaData:
     agent_wake_schedules_table(metadata)
     webhook_subscriptions_table(metadata)
     wake_fires_table(metadata)
+    webhook_refusals_table(metadata)
     return metadata
 
 

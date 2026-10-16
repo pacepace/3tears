@@ -68,7 +68,7 @@ _JUDGE_PARSE_RETRIES = 1
 
 #: Calls one judge dimension can make: the first, plus its parse retries. Each is one request on the
 #: host's client, so a caller sizing a judge phase's wall clock multiplies the host's own request ceiling
-#: by this (:func:`threetears.evals.analysis.reporter_kind.judge_phase_ceiling_s`).
+#: by this (``Ceilings().judge_phase_ceiling_s`` of :class:`~threetears.evals.run.Ceilings`).
 JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 
 #: How hard the eval judge reasons before it answers, as the effort word its reasoning budget reads as.

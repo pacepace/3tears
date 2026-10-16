@@ -34,6 +34,7 @@ from threetears.core.testing.kv import FakeNatsClient
 from threetears.agent.wake import tick as tick_mod
 from threetears.agent.wake.collections import WakeFireCollection, WakeScheduleCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.protected import delete_protected, update_protected
+from threetears.core.utils import render_local_time
 from threetears.agent.wake.rate_limit import resume_schedule_serialized
 from threetears.agent.wake.tables import (
     agent_wake_schedules_table,
@@ -379,6 +380,32 @@ class TestAProtectedWakeChangeSettlesAfterItsTransaction:
         fresh = await reader.get((conv, sid))
         assert store.reads > reads_before + 1, "the reader answered from a cache L3 no longer agrees with"
         assert fresh is not None and fresh.schedule_config == {"n": 6}
+
+    @pytest.mark.asyncio
+    async def test_a_protected_schedule_change_says_what_was_there_before_and_what_is_there_now(self) -> None:
+        store = _Store()
+        conv, sid, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        key = ("agent_wake_schedules", str(conv), str(sid))
+        store.rows[key] = _schedule_row(conv, sid, agent_id=agent_id, protected=True)
+        was_due = store.rows[key]["next_fire_at"]
+        writer = WakeScheduleCollection(registry=await _replica(FakeNatsClient(), store), config=_config())
+
+        store.staged[key] = _schedule_row(
+            conv, sid, agent_id=agent_id, protected=True, schedule_config={"n": 6}, next_fire_at=_LATER
+        )
+        change = await update_protected(collection=writer, agent_id=agent_id, schedule_id=sid, schedule_config={"n": 6})
+
+        assert (change.config_before, change.config_after) == ({"n": 3}, {"n": 6}) and change.changed
+        assert (change.next_fire_before, change.next_fire_after) == (was_due, _LATER)
+        assert change.schedule_type == "every_n_hours"
+        assert change.schedule.schedule_config == {"n": 6}, "the wake as it now stands rides with the change"
+        assert change.said("America/Los_Angeles") == (
+            "Was every 3 hours, next fire Sep 30, 2026 at 8:00 AM PDT. "
+            f"Now every 6 hours, next fire {render_local_time(_LATER, 'America/Los_Angeles')}."
+        )
+        assert change.said() == (
+            f"Was every 3 hours, next fire {was_due.isoformat()}. Now every 6 hours, next fire {_LATER.isoformat()}."
+        )
 
     @pytest.mark.asyncio
     async def test_a_protected_delete_on_its_own_transaction_reaches_every_reader(self) -> None:

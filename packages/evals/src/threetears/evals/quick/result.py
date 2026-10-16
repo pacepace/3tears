@@ -31,7 +31,7 @@ A factor's effect at another level of another factor is read against a second co
 from __future__ import annotations
 
 import csv
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -74,6 +74,7 @@ from threetears.evals.kernel import (
 from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale, utc_now_iso
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
 from threetears.evals.analysis.summary import CaseResult, EvalSummary
@@ -397,7 +398,11 @@ class Result:
             lines += [f"  excluded: {cause}" for cause in _exclusion_causes(summary)]
         if not one_arm:
             lines += self.calibration_lines()
-        misses = [(arm, miss) for arm, summary in self.arms.items() for miss in summary.misses()]
+        order = self._page_order()
+        misses = sorted(
+            ((arm, miss) for arm, summary in self.arms.items() for miss in summary.misses()),
+            key=lambda pair: order(pair[0], pair[1]),
+        )
         if misses:
             lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)}):")
             for arm, miss in misses[:QUIET_MISSES]:
@@ -406,6 +411,15 @@ class Result:
         lines += self.disclosures
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
         return "\n".join(lines)
+
+    def _page_order(self) -> Callable[[str, CaseResult], tuple[str, int, str, int, int]]:
+        """Where an arm's result stands in the page's Trials order (:func:`trial_order`), so the console lists misses
+        as the page does: case by case, then arm as the bundle lists them, then repeat."""
+        arm_of_variant = {variant: key for key, variant in self.arm_variants.items()}
+        position = {
+            arm_of_variant.get(row.variant_key): index for index, row in enumerate(self.report.bundle.scoreboard)
+        }
+        return lambda arm, result: trial_order(result.case_id, position.get(arm, len(position)), result.repeat)
 
     def _guardrail_said(self, arm: str) -> dict[str, str]:
         """What this comparison came to on each guardrail for ``arm``, by measure name, as its measure line says it:
@@ -441,12 +455,15 @@ class Result:
     def _verdict_line(self) -> str:
         """The first line: what the comparison decided, or how the one arm's cases came out (:func:`_cases_verdict`)."""
         if len(self.arms) == 1:
-            return f"{self.name}: {_cases_verdict(self.summary)}"
+            (arm,) = self.arms
+            order = self._page_order()
+            return f"{self.name}: {_cases_verdict(self.summary, order=lambda result: order(arm, result))}"
         decided = [row for row in self.contrasts() if row["outcome"] in ("improved", "regressed", "equivalent")]
         if not decided:
-            return f"{self.name}: no arm separated from the control {self.control!r}"
-        said = "; ".join(f"{row['arm']} {row['outcome']} on {row['reading']}" for row in decided)
-        return f"{self.name}: against the control {self.control!r}, {said}"
+            others = " or ".join(arm for arm in self.arms if arm != self.control)
+            return f"{self.name}: nothing separated {others} from {self.control}"
+        # The report's words, which name both arms: ``Accuracy: v2 better than v1``.
+        return f"{self.name}: " + "; ".join(f"{row['reading']}: {row['verdict']}" for row in decided)
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the report as one self-contained page, its Markdown and its bundle, and the judged answers to label.
@@ -736,8 +753,13 @@ def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
         raise ValueError(f"{arm!r} names no arm; the arms are {', '.join(map(repr, arms))}")
 
 
-def _cases_verdict(summary: EvalSummary) -> str:
+def _cases_verdict(
+    summary: EvalSummary, *, order: Callable[[CaseResult], tuple[str, int, str, int, int]] | None = None
+) -> str:
     """How one arm's cases came out, in plain words: passed of usable, the cases missed, the cases excluded by cause.
+
+    The cases missed are listed in ``order``, a case by its first result's place (the page's, from
+    :meth:`Result._page_order`), else in the summary's.
 
     Counted as the page counts them, off each repeat's :attr:`~threetears.evals.analysis.summary.CaseResult.state`,
     which the page's own trial reader decided: a case is usable when any of its repeats was not lost, and passed when
@@ -759,6 +781,8 @@ def _cases_verdict(summary: EvalSummary) -> str:
         usable += 1
         if any(result.state == "failed" for result in kept):
             missed.append(case)
+    if order is not None:
+        missed.sort(key=lambda case: min(order(result) for result in repeats[case]))
     text = f"{usable - len(missed)}/{usable} cases passed; {len(missed)} {'miss' if len(missed) == 1 else 'misses'}"
     if missed:
         text += f": {', '.join(missed[:QUIET_MISSES])}"

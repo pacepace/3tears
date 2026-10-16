@@ -53,6 +53,7 @@ from threetears.observe import get_logger
 __all__ = [
     "AgentSkillCollection",
     "AgentSkillInvocationCollection",
+    "OutcomeRecorded",
     "SkillShapeError",
     "merged_skill_shape",
     "skill_shape_error",
@@ -104,6 +105,7 @@ _INVOCATION_FIELD_TYPES: dict[str, Any] = {
     "outcome": str | None,
     "outcome_source": str | None,
     "notes": str | None,
+    "outcome_notes": str | None,
 }
 
 
@@ -166,18 +168,24 @@ _INVOCATION_INSERT_COLUMNS: tuple[str, ...] = (
     "outcome",
     "outcome_source",
     "notes",
+    "outcome_notes",
 )
 
 
 # invocations are append-mostly with a small set of mutable fields
-# (``message_id`` populated post-LLM, ``outcome`` populated by the
-# marker parser). everything else is immutable once written.
+# (``message_id`` populated post-LLM, ``outcome`` and ``outcome_notes``
+# reported by the agent). everything else is immutable once written.
 _INVOCATION_UPDATE_COLUMNS: tuple[str, ...] = (
     "message_id",
     "outcome",
     "outcome_source",
     "notes",
+    "outcome_notes",
 )
+
+# columns every invocation read selects: exactly the written ones, so a column
+# added to the insert list reaches every read with no second edit.
+_INVOCATION_SELECT_LIST = ", ".join(_INVOCATION_INSERT_COLUMNS)
 
 
 class SkillShapeError(ValueError):
@@ -373,9 +381,7 @@ _AGENT_SKILLS_DELETE_SQL = "DELETE FROM agent_skills WHERE agent_id = $1 AND ski
 
 
 _AGENT_SKILL_INVOCATIONS_FETCH_SQL = (
-    "SELECT agent_id, invocation_id, skill_id, user_id, conversation_id, "
-    "message_id, invocation_source, invoked_at, outcome, outcome_source, notes "
-    "FROM agent_skill_invocations WHERE agent_id = $1 AND invocation_id = $2"
+    f"SELECT {_INVOCATION_SELECT_LIST} FROM agent_skill_invocations WHERE agent_id = $1 AND invocation_id = $2"
 )
 
 
@@ -778,6 +784,60 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         return None
 
 
+@dataclass(frozen=True)
+class OutcomeRecorded:
+    """What one outcome report did to its invocation and to the skill's counts.
+
+    :ivar found: whether the invocation exists for that skill; nothing was
+        written when it does not
+    :ivar previous: the outcome the use carried before, or ``None``
+    :ivar previous_notes: the outcome notes it carried before, or ``None``
+    :ivar counted: whether the skill's success and failure counts moved; they
+        do not when the use already carried this outcome
+    """
+
+    found: bool
+    previous: str | None = None
+    previous_notes: str | None = None
+    counted: bool = False
+
+
+# One statement, so no second report can land between reading the use's outcome
+# and moving the counts: the row is locked as it is read, and a report waiting on
+# the lock reads the outcome the first one wrote. A use that already carries the
+# outcome moves no count; a use that carried the other one moves one count back.
+_RECORD_OUTCOME_SQL = """
+WITH prior AS (
+    SELECT outcome AS was, outcome_notes AS was_notes
+      FROM agent_skill_invocations
+     WHERE agent_id = $1 AND invocation_id = $2 AND skill_id = $3
+       FOR UPDATE
+), marked AS (
+    UPDATE agent_skill_invocations AS i
+       SET outcome = $4::text,
+           outcome_source = $5::text,
+           outcome_notes = COALESCE($6::text, prior.was_notes)
+      FROM prior
+     WHERE i.agent_id = $1 AND i.invocation_id = $2
+    RETURNING prior.was, prior.was_notes
+), counted AS (
+    UPDATE agent_skills AS s
+       SET success_count = s.success_count
+               + (CASE WHEN $4::text = 'success' THEN 1 ELSE 0 END)
+               - (CASE WHEN m.was = 'success' THEN 1 ELSE 0 END),
+           failure_count = s.failure_count
+               + (CASE WHEN $4::text = 'failure' THEN 1 ELSE 0 END)
+               - (CASE WHEN m.was = 'failure' THEN 1 ELSE 0 END),
+           last_failure_at = CASE WHEN $4::text = 'failure' THEN now() ELSE s.last_failure_at END,
+           date_updated = now()
+      FROM marked AS m
+     WHERE s.agent_id = $1 AND s.skill_id = $3 AND m.was IS DISTINCT FROM $4::text
+    RETURNING 1
+)
+SELECT m.was, m.was_notes, EXISTS (SELECT 1 FROM counted) AS counted FROM marked AS m
+"""
+
+
 class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity]):
     """Three-tier collection for :class:`AgentSkillInvocationEntity`.
 
@@ -943,9 +1003,7 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         # addressable; L1 row cache cannot serve. method on the
         # Collection preserves the single SQL entry point.
         sql = (
-            "SELECT agent_id, invocation_id, skill_id, user_id, conversation_id, "
-            "message_id, invocation_source, invoked_at, outcome, outcome_source, notes "
-            "FROM agent_skill_invocations "
+            f"SELECT {_INVOCATION_SELECT_LIST} FROM agent_skill_invocations "
             f"WHERE {where_clause} "
             f"ORDER BY invoked_at DESC "
             f"LIMIT {limit_param} OFFSET {offset_param}"
@@ -1030,9 +1088,7 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         # cache-bypass: per-conversation scan is not primary-key
         # addressable.
         rows = await self.l3_pool.fetch(
-            "SELECT agent_id, invocation_id, skill_id, user_id, conversation_id, "
-            "message_id, invocation_source, invoked_at, outcome, outcome_source, notes "
-            "FROM agent_skill_invocations "
+            f"SELECT {_INVOCATION_SELECT_LIST} FROM agent_skill_invocations "
             "WHERE agent_id = $1 AND conversation_id = $2 "
             "ORDER BY invoked_at DESC LIMIT $3",
             agent_id,
@@ -1128,6 +1184,69 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
             source,
         )
         return None
+
+    async def record_outcome(
+        self,
+        agent_id: UUID,
+        invocation_id: UUID,
+        *,
+        skill_id: UUID,
+        outcome: SkillOutcome,
+        source: OutcomeSource,
+        notes: str | None = None,
+    ) -> OutcomeRecorded:
+        """Set one use's outcome and notes, and move the skill's counts once.
+
+        A use is counted once however often it is reported. A second report of
+        the same outcome moves no count; a report of the other outcome moves
+        the count from one to the other. ``notes`` replaces the use's outcome
+        notes when given and leaves them when ``None``. The use and the skill
+        are written in one statement (:data:`_RECORD_OUTCOME_SQL`), so two
+        reports of one use cannot both count.
+
+        The skill row's cache entry is the skills collection's to drop; the
+        caller invalidates it when :attr:`OutcomeRecorded.counted` is set.
+
+        :param agent_id: partition column
+        :ptype agent_id: UUID
+        :param invocation_id: the use
+        :ptype invocation_id: UUID
+        :param skill_id: the skill the use is of; a use of another skill is not found
+        :ptype skill_id: UUID
+        :param outcome: ``'success'`` or ``'failure'``
+        :ptype outcome: SkillOutcome
+        :param source: who classified it
+        :ptype source: OutcomeSource
+        :param notes: the agent's line on why, or ``None`` to keep what is there
+        :ptype notes: str | None
+        :return: what the report changed
+        :rtype: OutcomeRecorded
+        :raises ValueError: when ``outcome`` is not one of the valid values
+        """
+        if outcome not in ("success", "failure"):
+            raise ValueError(f"record_outcome: outcome must be 'success' or 'failure'; got {outcome!r}")
+        if self.l3_pool is None:
+            return OutcomeRecorded(found=False)
+        # cache-bypass: a two-table write in one statement; the use's row is
+        # dropped from the cache below so the next read fetches through.
+        row = await self.l3_pool.fetchrow(
+            _RECORD_OUTCOME_SQL,
+            agent_id,
+            invocation_id,
+            skill_id,
+            outcome,
+            source,
+            notes,
+        )
+        if row is None:
+            return OutcomeRecorded(found=False)
+        await self.invalidate_cache((agent_id, invocation_id))
+        return OutcomeRecorded(
+            found=True,
+            previous=row["was"],
+            previous_notes=row["was_notes"],
+            counted=bool(row["counted"]),
+        )
 
 
 # --- helpers -----------------------------------------------------------

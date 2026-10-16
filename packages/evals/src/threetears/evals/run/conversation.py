@@ -35,7 +35,7 @@ loop ends the conversation ``budget_stopped`` — never ``candidate_error`` — 
 recorded, and returns. **The bound on overshoot**: a simulator call on a client that prices its calls, and a
 candidate call its kind reserves, never takes the run past its cap; a call nobody can price is admitted only
 while the cap is not reached, so such calls pass it by at most one each per running cell — the ``llm_decided``
-scheduler's repair counts as a call of its own (:data:`~threetears.evals.run.simulator.SCHEDULER_CALL_ATTEMPTS`).
+scheduler's repair counts as a call of its own (``Ceilings().scheduler_call_attempts`` of :class:`~threetears.evals.run.Ceilings`).
 """
 
 from __future__ import annotations

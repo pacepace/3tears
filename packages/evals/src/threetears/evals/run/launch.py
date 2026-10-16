@@ -66,7 +66,11 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedGeneration, OutOfRunBudget, plan_variation_calls
-from threetears.evals.run.authoring import refuse_undeclared_judges, validated_kind_spec
+from threetears.evals.run.authoring import (
+    refuse_ignored_template_fields,
+    refuse_undeclared_judges,
+    validated_kind_spec,
+)
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.case_sets import resolve_case_set
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
@@ -1484,33 +1488,6 @@ class _Launchable(NamedTuple):
     overlays: BaseModel | None
     kind_spec: BaseModel | None
     apparatus_settings: dict[str, ApparatusSettingValue]
-
-
-def refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None:
-    """Refuse a template stating a field its kind never acts on (:attr:`LaunchableKind.ignored_template_fields`).
-
-    The dispatch's own refusal, public so a host's authoring check can refuse the same template before it is
-    stored rather than restate the list or the rule: a field is stated when it holds anything but its default. It
-    reads the registry entry it is handed, never the template's kind, which the dispatch reads once.
-
-    Args:
-        template: The template, as authored or as stored.
-        launchable: The registry entry of the kind it declares.
-
-    Raises:
-        ValidationFailedError: The template states a field the kind ignores; every one is named.
-    """
-    if stated := [
-        name
-        for name in sorted(launchable.ignored_template_fields)
-        if getattr(template, name) != EvalTemplate.model_fields[name].get_default(call_default_factory=True)
-    ]:
-        raise ValidationFailedError(
-            f"template {template.id!r} declares a kind that never acts on its "
-            + ", ".join(stated)
-            + " — it would run as if the template had not stated them",
-            remedy="remove them from the template, or run it as a kind that reads them",
-        )
 
 
 def _launchable(
@@ -4224,7 +4201,6 @@ __all__ = [
     "plan_judge",
     "price_arms",
     "quote_launch",
-    "refuse_ignored_template_fields",
     "require_candidate_model",
     "resolve_judge_pin",
     "settable_apparatus",

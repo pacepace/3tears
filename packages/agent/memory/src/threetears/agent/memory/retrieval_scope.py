@@ -51,12 +51,15 @@ class RetrievalScope:
     :ivar tags_all: row carries every one of these tags
     :ivar restrict_to_ids: only these rows are eligible
     :ivar exclude_ids: these rows are never eligible
+    :ivar tags_none: row carries none of these tags; an empty tuple excludes
+        nothing, like an empty ``exclude_ids``
     """
 
     tags_any: tuple[str, ...] | None = None
     tags_all: tuple[str, ...] | None = None
     restrict_to_ids: frozenset[UUID] | None = None
     exclude_ids: frozenset[UUID] | None = None
+    tags_none: tuple[str, ...] | None = None
 
 
 def scope_matches_nothing(scope: RetrievalScope | None) -> bool:
@@ -125,5 +128,11 @@ def build_scope_conditions(
         if scope.exclude_ids:
             conditions.append(f"NOT (memory_id = ANY(${next_param}::uuid[]))")
             params.append(list(scope.exclude_ids))
+            next_param += 1
+        for tag in scope.tags_none or ():
+            # one single-key test per tag, the form ``_NOT_RETRACTED`` uses: a
+            # multi-key ``?|`` is what YugabyteDB's GIN index refuses.
+            conditions.append(f"NOT (COALESCE(tags, '[]'::jsonb) ? ${next_param}::text)")
+            params.append(tag)
             next_param += 1
     return conditions, params, next_param

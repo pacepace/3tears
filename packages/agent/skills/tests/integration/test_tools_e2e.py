@@ -18,6 +18,7 @@ deployment.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -40,6 +41,7 @@ from threetears.agent.skills.tools import (
     load_skill_create_tool,
     load_skill_delete_tool,
     load_skill_get_tool,
+    load_skill_history_tool,
     load_skill_invoke_tool,
     load_skill_list_tool,
     load_skill_report_outcome_tool,
@@ -752,3 +754,191 @@ class TestToolCallSkillPersistence:
             ("errors", None, "loki.query", {"q": "error"}),
             ("steps", None, "loki.query", {"q": "warn"}),
         ]
+
+
+# --- a use is counted once, its note is kept, and its history reads back ---
+
+
+async def _invoked(pool: asyncpg.Pool) -> tuple[Any, Any, UUID, UUID, AgentSkillCollection, Any]:
+    """A skill on real Postgres, invoked once in a conversation, and the report and history tools over it."""
+    agent_id, user_id, conversation_id = _new_uuid(), _new_uuid(), _new_uuid()
+    skills, invocations = _build_collections(pool)
+    [create_tool] = load_skill_create_tool(
+        agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=_FakeRegistry()
+    )
+    out = await create_tool.ainvoke({"name": "tide-check", "summary": "s", "body": "read the table"})
+    skill_id = UUID(out.split("[skill:")[1].split("]")[0])
+    active: dict[str, Any] = {"id": None}
+    [invoke_tool] = load_skill_invoke_tool(
+        agent_id=agent_id,
+        user_id=user_id,
+        skills_collection=skills,
+        invocations_collection=invocations,
+        conversation_id_resolver=lambda: conversation_id,
+        active_skill_probe=lambda: active["id"],
+        active_skill_setter=lambda sid: active.__setitem__("id", sid),
+        bindable_tools=lambda: {"web_search"},
+    )
+    await invoke_tool.ainvoke({"skill_id": str(skill_id), "rationale": "the person asked"})
+    [report_tool] = load_skill_report_outcome_tool(
+        agent_id=agent_id,
+        conversation_id_resolver=lambda: conversation_id,
+        active_skill_probe=lambda: active["id"],
+        invocations_collection=invocations,
+        skills_collection=skills,
+    )
+    [history_tool] = load_skill_history_tool(
+        agent_id=agent_id,
+        user_id=user_id,
+        skills_collection=skills,
+        invocations_collection=invocations,
+        tz="Europe/Dublin",
+    )
+    return report_tool, history_tool, agent_id, skill_id, skills, invocations
+
+
+async def _counts(pool: asyncpg.Pool, agent_id: UUID, skill_id: UUID) -> tuple[int, int]:
+    row = await pool.fetchrow(
+        "SELECT success_count, failure_count FROM agent_skills WHERE agent_id = $1 AND skill_id = $2",
+        agent_id,
+        skill_id,
+    )
+    assert row is not None
+    return int(row["success_count"]), int(row["failure_count"])
+
+
+class TestAUseIsCountedOnce:
+    """``skill_report_outcome`` over :meth:`AgentSkillInvocationCollection.record_outcome`, on real Postgres."""
+
+    async def test_the_note_is_stored_beside_the_reason(self, pool_with_schema: asyncpg.Pool) -> None:
+        report, _, agent_id, skill_id, _, _ = await _invoked(pool_with_schema)
+        out = await report.ainvoke({"outcome": "success", "notes": "low water at 04:11"})
+        assert out.startswith(f'Recorded success for this use of [skill:{skill_id}] tide-check ("low water at 04:11").')
+        row = await pool_with_schema.fetchrow(
+            "SELECT outcome, outcome_source, notes, outcome_notes FROM agent_skill_invocations WHERE agent_id = $1",
+            agent_id,
+        )
+        assert dict(row) == {
+            "outcome": "success",
+            "outcome_source": "agent_tool",
+            "notes": "the person asked",
+            "outcome_notes": "low water at 04:11",
+        }
+        assert await _counts(pool_with_schema, agent_id, skill_id) == (1, 0)
+
+    async def test_a_second_report_of_the_same_outcome_counts_nothing(self, pool_with_schema: asyncpg.Pool) -> None:
+        report, _, agent_id, skill_id, _, _ = await _invoked(pool_with_schema)
+        await report.ainvoke({"outcome": "success"})
+        out = await report.ainvoke({"outcome": "success"})
+        assert out.startswith("[NO CHANGE] skill_report_outcome:")
+        assert await _counts(pool_with_schema, agent_id, skill_id) == (1, 0)
+
+    async def test_a_corrected_outcome_moves_one_count_and_keeps_the_note(self, pool_with_schema: asyncpg.Pool) -> None:
+        report, _, agent_id, skill_id, skills, _ = await _invoked(pool_with_schema)
+        await report.ainvoke({"outcome": "success", "notes": "first look"})
+        out = await report.ainvoke({"outcome": "failure"})
+        assert out.startswith(f"Changed this use of [skill:{skill_id}] tide-check from success to failure.")
+        assert "It has worked 0 and failed 1 time(s)." in out, "the counts read back fresh, not from a stale cache"
+        assert await _counts(pool_with_schema, agent_id, skill_id) == (0, 1)
+        kept = await pool_with_schema.fetchval(
+            "SELECT outcome_notes FROM agent_skill_invocations WHERE agent_id = $1", agent_id
+        )
+        assert kept == "first look"
+
+    async def test_two_reports_at_once_count_once(
+        self, pool_with_schema: asyncpg.Pool, pg_schema: tuple[str, str]
+    ) -> None:
+        """Both reports wait on a lock another transaction holds, then run: the second reads the first's outcome."""
+        _, _, agent_id, skill_id, _, invocations = await _invoked(pool_with_schema)
+        [use] = await invocations.list_for_skill(agent_id, skill_id)
+        url, schema = pg_schema
+        blocker = await asyncpg.connect(url, server_settings={"search_path": f"{schema}, public"})
+        held = blocker.transaction()
+        await held.start()
+        await blocker.execute(
+            "SELECT 1 FROM agent_skill_invocations WHERE invocation_id = $1 FOR UPDATE", use.invocation_id
+        )
+        reports = [
+            asyncio.create_task(
+                invocations.record_outcome(
+                    agent_id, use.invocation_id, skill_id=skill_id, outcome="success", source="agent_tool"
+                )
+            )
+            for _ in range(2)
+        ]
+        await asyncio.sleep(0.5)  # both statements have started and wait on the row
+        assert not any(task.done() for task in reports)
+        await held.commit()
+        await blocker.close()
+        results = await asyncio.gather(*reports)
+        assert sorted(r.counted for r in results) == [False, True]
+        assert await _counts(pool_with_schema, agent_id, skill_id) == (1, 0)
+
+    async def test_a_repeated_failure_moves_nothing(self, pool_with_schema: asyncpg.Pool) -> None:
+        """The same failure reported again counts nothing and leaves when the skill last failed."""
+        _, _, agent_id, skill_id, _, invocations = await _invoked(pool_with_schema)
+        [use] = await invocations.list_for_skill(agent_id, skill_id)
+
+        async def report() -> Any:
+            return await invocations.record_outcome(
+                agent_id, use.invocation_id, skill_id=skill_id, outcome="failure", source="agent_tool"
+            )
+
+        async def last_failure() -> Any:
+            return await pool_with_schema.fetchval(
+                "SELECT last_failure_at FROM agent_skills WHERE agent_id = $1 AND skill_id = $2", agent_id, skill_id
+            )
+
+        first = await report()
+        stamped = await last_failure()
+        second = await report()
+        assert (first.counted, second.counted) == (True, False)
+        assert second.previous == "failure"
+        assert await last_failure() == stamped
+        assert await _counts(pool_with_schema, agent_id, skill_id) == (0, 1)
+
+    async def test_a_use_of_another_skill_is_not_found_and_writes_nothing(self, pool_with_schema: asyncpg.Pool) -> None:
+        _, _, agent_id, skill_id, _, invocations = await _invoked(pool_with_schema)
+        [use] = await invocations.list_for_skill(agent_id, skill_id)
+        result = await invocations.record_outcome(
+            agent_id, use.invocation_id, skill_id=_new_uuid(), outcome="failure", source="agent_tool"
+        )
+        assert result.found is False
+        assert await _counts(pool_with_schema, agent_id, skill_id) == (0, 0)
+
+
+class TestSkillHistoryOnRealRows:
+    async def test_the_use_reads_back_with_its_outcome_note_and_reason(self, pool_with_schema: asyncpg.Pool) -> None:
+        report, history, agent_id, skill_id, _, _ = await _invoked(pool_with_schema)
+        await report.ainvoke({"outcome": "failure", "notes": "the table was a day old"})
+        out = await history.ainvoke({"skill_id": "tide-check"})
+        lines = out.splitlines()
+        assert lines[0] == (
+            f"[skill:{skill_id}] tide-check: 1 use(s) in all; worked 0, failed 1. Uses 1-1 of 1, newest first:"
+        )
+        assert ", invoked: failure -- the table was a day old [conversation:" in lines[1]
+        assert lines[1].split(", invoked")[0].endswith(("GMT", "IST")), "said in the reader's zone"
+        assert lines[2] == "  why it was invoked: the person asked"
+
+
+class TestSkillUpdateOnRealRows:
+    async def test_the_change_is_said_and_saved(self, pool_with_schema: asyncpg.Pool) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        skills, _ = _build_collections_with_l1(pool_with_schema)
+        registry = _FakeRegistry()
+        [create_tool] = load_skill_create_tool(
+            agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=registry
+        )
+        [update_tool] = load_skill_update_tool(
+            agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=registry
+        )
+        out = await create_tool.ainvoke({"name": "tide-check", "summary": "s", "body": "read the table"})
+        skill_id = UUID(out.split("[skill:")[1].split("]")[0])
+        said = await update_tool.ainvoke({"skill_id": str(skill_id), "body": "read the table aloud"})
+        assert said.splitlines()[1] == '- body: "read the table" -> "read the table aloud"'
+        stored = await pool_with_schema.fetchval(
+            "SELECT body FROM agent_skills WHERE agent_id = $1 AND skill_id = $2", agent_id, skill_id
+        )
+        assert stored == "read the table aloud"
+        again = await update_tool.ainvoke({"skill_id": str(skill_id), "body": "read the table aloud"})
+        assert again.startswith("[NO CHANGE] skill_update:")

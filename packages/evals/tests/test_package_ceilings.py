@@ -2,7 +2,7 @@
 
 A host derives its outer budgets from :class:`~threetears.evals.run.Ceilings`, so a field that drifted from the
 constant or function the engine bounds by would derive a budget from a number nothing holds. Each field is held
-to the exported original here, by identity for the two functions.
+to the engine's own original here, by identity for the two functions.
 """
 
 from __future__ import annotations
@@ -11,14 +11,9 @@ import dataclasses
 
 import pytest
 
-from threetears.evals.analysis import generation_ceiling_s, judge_phase_ceiling_s
-from threetears.evals.gen import PROPOSER_MAX_TOKENS
-from threetears.evals.run import (
-    SCHEDULER_CALL_ATTEMPTS,
-    SIMULATOR_ANSWER_BUDGET_TOKENS,
-    SIMULATOR_MAX_TOKENS,
-    Ceilings,
-)
+from threetears.evals.kernel.inner_ceilings import PROPOSER_MAX_TOKENS, generation_ceiling_s, judge_phase_ceiling_s
+from threetears.evals.run import Ceilings
+from threetears.evals.run.simulator import SCHEDULER_CALL_ATTEMPTS, SIMULATOR_ANSWER_BUDGET_TOKENS, SIMULATOR_MAX_TOKENS
 
 
 def test_each_field_is_the_ceiling_it_names() -> None:

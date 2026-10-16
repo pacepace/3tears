@@ -36,8 +36,9 @@ Spec ref: ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -45,7 +46,11 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 from uuid_utils import uuid7
 
-from threetears.agent.wake.collections import WakeScheduleCollection
+from threetears.agent.wake.collections import (
+    WakeFireCollection,
+    WakeScheduleCollection,
+    WebhookSubscriptionCollection,
+)
 from threetears.agent.wake.config import (
     DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT as _CONFIG_DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
 )
@@ -56,9 +61,11 @@ from threetears.agent.wake.rate_limit import (
     resume_schedule_serialized,
 )
 from threetears.agent.wake.types import WakeConversations
+from threetears.agent.wake.wording import describe_schedule, format_wake_time
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.utils.local_time import resolve_zone
 from threetears.scheduled_jobs import compute_next_fire_at
-from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_schedule_id
+from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_schedule_id, parse_subscription_id
 from threetears.agent.wake.tools.validators import (
     ChainNode,
     validate_context_from_chain,
@@ -79,13 +86,18 @@ __all__ = [
     "WakeRegistryClient",
     "WakeYieldProbe",
     "WakeYieldSetter",
+    "WakeFiresInput",
+    "load_wake_fires_tool",
     "load_wake_schedule_create_tool",
     "load_wake_schedule_delete_tool",
+    "load_wake_schedule_get_tool",
     "load_wake_schedule_list_tool",
     "load_wake_schedule_pause_tool",
     "load_wake_schedule_resume_tool",
     "load_wake_schedule_update_tool",
     "load_wake_yield_tool",
+    "next_fires",
+    "standing_same_wake",
 ]
 
 
@@ -330,6 +342,76 @@ def _tool_error(tool_name: str, description: str) -> str:
     return f"[TOOL ERROR] {tool_name}: {description}"
 
 
+def _no_change(tool_name: str, what: str) -> str:
+    """Format ``[NO CHANGE] <tool>: <what>``: a call that ran and changed nothing.
+
+    The words ``threetears.agent.tools.utils.tool_no_change`` writes; this
+    package does not depend on that one.
+    """
+    return f"[NO CHANGE] {tool_name}: {what}"
+
+
+async def standing_same_wake(
+    schedules_collection: WakeScheduleCollection,
+    agent_id: UUID,
+    *,
+    name: str | None,
+    schedule_type: str,
+    schedule_config: dict[str, Any],
+    task_prompt: str | None,
+    skill_id: UUID | None,
+    missed_fire_policy: str,
+    context_from_schedule_id: UUID | None,
+    include_conversation_history: bool,
+) -> Any | None:
+    """The agent's active or paused wake that is this one in every part, or ``None``.
+
+    The same name, schedule, text, skill and settings. A wake made twice fires
+    twice, each fire a turn of its own; nothing on the table says two rows are
+    one wake, so the create asks first. A wake that differs in any part is
+    another wake. A wake with no name and no text says nothing of what it is
+    for, so two of those are never taken for one.
+
+    :param schedules_collection: the wake schedules
+    :ptype schedules_collection: WakeScheduleCollection
+    :param agent_id: the agent
+    :ptype agent_id: UUID
+    :param name: the new wake's name
+    :ptype name: str | None
+    :param schedule_type: its schedule type
+    :ptype schedule_type: str
+    :param schedule_config: its schedule
+    :ptype schedule_config: dict[str, Any]
+    :param task_prompt: its text
+    :ptype task_prompt: str | None
+    :param skill_id: its skill
+    :ptype skill_id: UUID | None
+    :param missed_fire_policy: its missed-fire policy
+    :ptype missed_fire_policy: str
+    :param context_from_schedule_id: the wake whose context it reads
+    :ptype context_from_schedule_id: UUID | None
+    :param include_conversation_history: whether its fires read the conversation
+    :ptype include_conversation_history: bool
+    :return: the standing wake, or ``None``
+    :rtype: Any | None
+    """
+    if not (name or "").strip() and not (task_prompt or "").strip():
+        return None
+    for held in await schedules_collection.list_for_agent(agent_id):
+        if (
+            held.schedule_type == schedule_type
+            and dict(held.schedule_config or {}) == dict(schedule_config)
+            and (held.task_prompt or None) == (task_prompt or None)
+            and (held.name or None) == (name or None)
+            and held.skill_id == skill_id
+            and held.missed_fire_policy == missed_fire_policy
+            and held.context_from_schedule_id == context_from_schedule_id
+            and bool(held.include_conversation_history) == bool(include_conversation_history)
+        ):
+            return held
+    return None
+
+
 def _validate_name(name: str | None) -> str | None:
     """Validate optional schedule/subscription name."""
     if name is None:
@@ -352,17 +434,11 @@ def _validate_task_prompt(prompt: str | None) -> str | None:
     return None
 
 
-def _format_next_fire(value: datetime | None) -> str:
-    """Render ``next_fire_at`` for the catalog row; ``-`` when unset."""
-    if value is None:
-        return "-"
-    return value.isoformat()
-
-
 def _format_schedule_line(
     entity: Any,
     *,
     skill_name: str | None,
+    zone: tzinfo | None = None,
 ) -> str:
     """Render a one-line catalog entry for a schedule row."""
     name = entity.name or "untitled"
@@ -373,10 +449,102 @@ def _format_schedule_line(
     protected_segment = " · protected" if entity.protected else ""
     return (
         f"[schedule:{entity.schedule_id}] · {name} · {entity.schedule_type}"
-        f" · next: {_format_next_fire(entity.next_fire_at)}"
+        f" · {describe_schedule(entity.schedule_type, entity.schedule_config or {})}"
+        f" · next: {format_wake_time(entity.next_fire_at, zone)}"
+        f" · last: {format_wake_time(entity.last_fired_at, zone, unset='never')}"
         f" · {entity.status} · in [conversation:{entity.conversation_id}]"
         f"{skill_segment}{history_segment}{protected_segment}"
     )
+
+
+#: Schedule types whose later fires cannot be told from the one that is due: a one-shot
+#: has no later fire, and a random window draws each fire when the one before it runs.
+_ONE_KNOWN_FIRE = frozenset({"one_shot_at", "relative_delay", "random_within_window"})
+
+
+def next_fires(entity: Any, count: int = 3) -> list[datetime]:
+    """The next fires of a wake, soonest first: the one that is due, then the ones after it.
+
+    Stepped with the engine that reschedules the wake, each fire from the one
+    before, so what is shown is what the tick will do. A wake that is not
+    active, or has no next fire, has none. A one-shot and a random window show
+    only the fire that is due.
+
+    :param entity: the wake
+    :ptype entity: Any
+    :param count: how many fires at most
+    :ptype count: int
+    :return: the fires, at most ``count``
+    :rtype: list[datetime]
+    """
+    due = entity.next_fire_at
+    if due is None or entity.status != "active" or count < 1:
+        return []
+    upcoming = [due]
+    config = dict(entity.schedule_config or {})
+    while len(upcoming) < count and entity.schedule_type not in _ONE_KNOWN_FIRE:
+        try:
+            # catch_up steps exactly once past the occurrence given, on every repeating type
+            following = compute_next_fire_at(
+                entity.schedule_type,
+                config,
+                "catch_up",
+                last_fired_at=upcoming[-1],
+                now=upcoming[-1],
+                current_fire_at=upcoming[-1],
+            )
+        except ValueError:  # NOSILENT: a config the engine cannot step shows the one fire that is due
+            break
+        if following is None or following <= upcoming[-1]:
+            break
+        upcoming.append(following)
+    return upcoming
+
+
+def _state_said(entity: Any, zone: tzinfo | None) -> str:
+    """A wake's schedule and its fires, as the end of a result: what it is, next fire, last fire."""
+    return (
+        f"{describe_schedule(entity.schedule_type, entity.schedule_config or {})}; "
+        f"next fire {format_wake_time(entity.next_fire_at, zone, unset='not set')}; "
+        f"last fire {format_wake_time(entity.last_fired_at, zone, unset='never')}"
+    )
+
+
+def _update_snapshot(entity: Any) -> dict[str, Any]:
+    """The fields ``wake_schedule_update`` can change, copied out before the edit touches the entity."""
+    return {
+        "name": entity.name,
+        "schedule": describe_schedule(entity.schedule_type, entity.schedule_config or {}),
+        "task_prompt": entity.task_prompt,
+        "skill": entity.skill_id,
+        "missed_fire_policy": entity.missed_fire_policy,
+        "context_from": entity.context_from_schedule_id,
+        "history": bool(entity.include_conversation_history),
+    }
+
+
+def _shown(field: str, value: Any) -> str:
+    if value is None or value == "":
+        return "none"
+    if field == "task_prompt":
+        text = " ".join(str(value).split())
+        return f'"{text[:80]}{"…" if len(text) > 80 else ""}" ({len(str(value))} characters)'
+    if field == "skill":
+        return f"[skill:{value}]"
+    if field == "context_from":
+        return f"[schedule:{value}]"
+    if field == "history":
+        return "on" if value else "off"
+    return str(value)
+
+
+def _update_changes(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Each field an edit changed, as ``field: old -> new``."""
+    return [
+        f"{field.replace('_', ' ')}: {_shown(field, before[field])} -> {_shown(field, after[field])}"
+        for field in before
+        if before[field] != after[field]
+    ]
 
 
 async def _check_skill_acl(
@@ -442,6 +610,7 @@ def load_wake_schedule_create_tool(
     registry: WakeRegistryClient,
     max_active_schedules_per_agent: int = DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
     wake_conversations: WakeConversations | None = None,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_create`` tool bound to the actor triple.
 
@@ -470,9 +639,14 @@ def load_wake_schedule_create_tool(
     :ptype max_active_schedules_per_agent: int
     :param wake_conversations: the consumer's wake-conversation hooks
     :ptype wake_conversations: WakeConversations | None
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_create", args_schema=ScheduleCreateInput)
     async def wake_schedule_create(
@@ -574,6 +748,34 @@ def load_wake_schedule_create_tool(
                     "wake_schedule_create",
                     f"invalid context_from_schedule_id {context_from_schedule_id!r}",
                 )
+
+        # The same wake made twice fires twice. Asked before anything is made; a
+        # listing that cannot be read leaves the create to go ahead, as it did.
+        try:
+            standing = await standing_same_wake(
+                schedules_collection,
+                agent_id,
+                name=name,
+                schedule_type=schedule_type,
+                schedule_config=schedule_config,
+                task_prompt=task_prompt,
+                skill_id=attached_skill,
+                missed_fire_policy=missed_fire_policy,
+                context_from_schedule_id=parsed_context_from,
+                include_conversation_history=include_conversation_history,
+            )
+        except Exception as exc:  # noqa: BLE001 - the check must not cost the create
+            log.warning(
+                "wake_schedule_create could not read the agent's wakes; creating without the same-wake check",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+            standing = None
+        if standing is not None:
+            return (
+                f"[NO CHANGE] wake_schedule_create: you already have this wake, [schedule:{standing.schedule_id}] "
+                f"({standing.status}): the same name, schedule, text and settings. Nothing was made. "
+                "To change it use wake_schedule_update."
+            )
 
         # Compute next_fire_at via the pure helper from shard 02.
         now = datetime.now(UTC)
@@ -717,7 +919,7 @@ def load_wake_schedule_create_tool(
                 }
             },
         )
-        return _format_schedule_line(entity, skill_name=skill_name)
+        return _format_schedule_line(entity, skill_name=skill_name, zone=zone)
 
     wake_schedule_create.description = (
         (
@@ -747,6 +949,7 @@ def load_wake_schedule_update_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     registry: WakeRegistryClient,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_update`` tool with partial-update semantics.
 
@@ -767,9 +970,14 @@ def load_wake_schedule_update_tool(
     :ptype schedules_collection: WakeScheduleCollection
     :param registry: consumer-supplied registry client
     :ptype registry: WakeRegistryClient
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_update", args_schema=ScheduleUpdateInput)
     async def wake_schedule_update(
@@ -817,6 +1025,8 @@ def load_wake_schedule_update_tool(
             return _tool_error("wake_schedule_update", "schedule not found")
         if entity.protected:
             return _tool_error("wake_schedule_update", PROTECTED_REFUSAL)
+        before = _update_snapshot(entity)
+        next_fire_before = entity.next_fire_at
 
         merged_type = schedule_type if schedule_type is not None else entity.schedule_type
         merged_config = dict(schedule_config) if schedule_config is not None else dict(entity.schedule_config)
@@ -933,6 +1143,14 @@ def load_wake_schedule_update_tool(
         if include_conversation_history is not None:
             entity.include_conversation_history = include_conversation_history
 
+        changes = _update_changes(before, _update_snapshot(entity))
+        if not changes:
+            # Every value given is the one it had: saving would move its next fire for nothing.
+            return _no_change(
+                "wake_schedule_update",
+                f"every value given is the one [schedule:{parsed}] already has. It is {_state_said(entity, zone)}.",
+            )
+
         # Recompute next_fire_at if WHEN-relevant fields changed and
         # the schedule is active (paused schedules have NULL
         # next_fire_at by design).
@@ -985,12 +1203,17 @@ def load_wake_schedule_update_tool(
                 )
             except Exception:  # noqa: BLE001 - name lookup is best-effort
                 skill_name = None
-        return _format_schedule_line(entity, skill_name=skill_name)
+        if entity.next_fire_at != next_fire_before:
+            changes.append(
+                f"next fire: {format_wake_time(next_fire_before, zone, unset='not set')} -> "
+                f"{format_wake_time(entity.next_fire_at, zone, unset='not set')}"
+            )
+        return f"{_format_schedule_line(entity, skill_name=skill_name, zone=zone)}\nChanged: " + "; ".join(changes)
 
     wake_schedule_update.description = (
         "Change a wake schedule. Pass only what changes. To remove a skill, name or "
         "context_from, pass detach_skill, clear_name or detach_context_from, not the value "
-        "as well. Returns the schedule as it now stands."
+        "as well. Returns the schedule as it now stands and each thing that changed, old to new."
     )
 
     return [wake_schedule_update]
@@ -1007,6 +1230,7 @@ def load_wake_schedule_list_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     registry: WakeRegistryClient,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_list`` tool listing the agent's wakes in every conversation.
 
@@ -1018,9 +1242,14 @@ def load_wake_schedule_list_tool(
     :ptype schedules_collection: WakeScheduleCollection
     :param registry: consumer-supplied registry for skill_name lookups
     :ptype registry: WakeRegistryClient
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_list", args_schema=ScheduleListInput)
     async def wake_schedule_list(include_paused: bool = True) -> str:
@@ -1045,15 +1274,287 @@ def load_wake_schedule_list_tool(
                     )
                 except Exception:  # noqa: BLE001 - best-effort
                     skill_name = None
-            lines.append("- " + _format_schedule_line(entity, skill_name=skill_name))
+            lines.append("- " + _format_schedule_line(entity, skill_name=skill_name, zone=zone))
         return "\n".join(lines)
 
     wake_schedule_list.description = (
-        "List your wake schedules, in every conversation: id, name, type, next time, status "
-        "and the wake conversation each lives in."
+        "List your wake schedules, in every conversation: id, name, how often or when each fires, "
+        "its next and last fire, status and the wake conversation it lives in. "
+        "wake_schedule_get shows one in full."
     )
 
     return [wake_schedule_list]
+
+
+# ---------------------------------------------------------------------------
+# wake_schedule_get
+# ---------------------------------------------------------------------------
+
+
+def load_wake_schedule_get_tool(
+    *,
+    user_id: UUID,
+    agent_id: UUID,
+    schedules_collection: WakeScheduleCollection,
+    registry: WakeRegistryClient,
+    tz: tzinfo | str | None = None,
+) -> list[BaseTool]:
+    """Build a ``wake_schedule_get`` tool: one wake in full, with its next three fires.
+
+    :param user_id: caller's user UUID
+    :ptype user_id: UUID
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
+    :param schedules_collection: three-tier schedules collection
+    :ptype schedules_collection: WakeScheduleCollection
+    :param registry: consumer-supplied registry for skill_name lookups
+    :ptype registry: WakeRegistryClient
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
+    :return: list with one LangChain tool
+    :rtype: list[BaseTool]
+    """
+    zone = resolve_zone(tz)
+
+    @tool("wake_schedule_get", args_schema=ScheduleIdInput)
+    async def wake_schedule_get(schedule_id: str) -> str:
+        """Read one wake schedule in full."""
+        parsed = parse_schedule_id(schedule_id)
+        if parsed is None:
+            return _tool_error("wake_schedule_get", f"invalid schedule_id {schedule_id!r}")
+        entity = await schedules_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
+            return _tool_error("wake_schedule_get", "schedule not found; wake_schedule_list shows the ones you have")
+        skill = "none"
+        if entity.skill_id is not None:
+            try:
+                skill_name = await registry.skill_name_for_id(
+                    user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id
+                )
+            except Exception:  # noqa: BLE001 - name lookup is best-effort
+                skill_name = None
+            skill = f"{skill_name or 'unnamed'} [skill:{entity.skill_id}]"
+        upcoming = next_fires(entity, 3)
+        if upcoming:
+            fires_said = ", ".join(format_wake_time(at, zone) for at in upcoming)
+            if entity.schedule_type == "random_within_window":
+                fires_said += " (each later fire is drawn when the one before it runs)"
+        elif entity.status != "active":
+            fires_said = f"none: it is {entity.status}"
+        else:
+            fires_said = "none set"
+        context_from = (
+            f"[schedule:{entity.context_from_schedule_id}]" if entity.context_from_schedule_id is not None else "none"
+        )
+        lines = [
+            f"[schedule:{entity.schedule_id}] {entity.name or 'untitled'}",
+            f"status: {entity.status}" + (" (protected: it cannot be paused or deleted)" if entity.protected else ""),
+            f"fires: {describe_schedule(entity.schedule_type, entity.schedule_config or {})}",
+            f"schedule_type: {entity.schedule_type}",
+            f"schedule_config: {json.dumps(dict(entity.schedule_config or {}), sort_keys=True, default=str)}",
+            f"next fires: {fires_said}",
+            f"last fire: {format_wake_time(entity.last_fired_at, zone, unset='never')}",
+            f"missed fires: {entity.missed_fire_policy}",
+            f"lives in: [conversation:{entity.conversation_id}]",
+            f"skill: {skill}",
+            f"reads the last result of: {context_from}",
+            f"reads its conversation's recent messages: {'yes' if entity.include_conversation_history else 'no'}",
+            f"made: {format_wake_time(entity.date_created, zone)}",
+            f"last changed: {format_wake_time(entity.date_updated, zone)}",
+            "",
+            "It fires with this text:" if entity.task_prompt else "It has no text of its own on this row.",
+        ]
+        if entity.task_prompt:
+            lines += ["", entity.task_prompt]
+        return "\n".join(lines)
+
+    wake_schedule_get.description = (
+        "Read one wake schedule in full: how often or when it fires, its next three fires and its last, "
+        "its status, its text, its skill and its settings. It changes nothing. wake_fires shows how its "
+        "past fires went."
+    )
+    return [wake_schedule_get]
+
+
+# ---------------------------------------------------------------------------
+# wake_fires
+# ---------------------------------------------------------------------------
+
+
+class WakeFiresInput(BaseModel):
+    """Input schema for ``wake_fires``."""
+
+    schedule_id: str | None = Field(default=None, description="The [schedule:<id>] whose fires to read.")
+    subscription_id: str | None = Field(
+        default=None, description="Or the [webhook:<id>] whose deliveries to read. Give one of the two."
+    )
+    limit: int = Field(default=10, ge=1, le=50, description="How many of the newest to show, 1 to 50.")
+
+
+#: How much of a fire's error its line shows.
+_FIRE_ERROR_CHARS = 200
+
+#: What each fire status means, in the words a line shows.
+_STATUS_SAID: dict[str, str] = {
+    "dispatching": "running now",
+    "fired": "ran",
+    "fired_silent": "ran, and stayed silent",
+    "yielded": "ran, and yielded to a waiting message",
+    "skipped_busy": "skipped: the conversation was busy",
+    "skipped_rate_limit": "skipped: a fire limit was reached",
+    "skipped_cap": "skipped: a cap was reached",
+    "skipped_no_handler": "skipped: nothing could run it",
+    "skipped_life_off": "skipped: Life is off",
+    "checked_quiet": "checked, and found nothing",
+    "failed": "failed",
+}
+
+#: What each webhook refusal reason means, in the words a line shows.
+_REFUSAL_SAID: dict[str, str] = {
+    "paused": "the subscription was paused",
+    "missing_signature": "no signature was sent",
+    "bad_signature": "the signature did not match the secret",
+    "unknown_scheme": "its signature scheme is not one this address knows",
+    "source_not_allowed": "the sender's address is not one the source pattern allows",
+    "rate_limited": "too many arrived in a minute",
+    "bad_payload": "the body could not be read",
+    "bad_template": "the task template could not be filled from the body",
+}
+
+
+def _fire_line(fire: Any, zone: tzinfo | None) -> str:
+    """One fire, as a history line: when, how it started, how it ended, and where it ran."""
+    parts = [format_wake_time(fire.actual_fired_at, zone)]
+    if fire.fire_source == "manual":
+        parts.append(f"run by hand, asked by {fire.requested_by or 'unknown'}")
+    elif fire.fire_source == "webhook":
+        parts.append("a delivery")
+    else:
+        parts.append("on schedule")
+        if fire.scheduled_fire_at is not None:
+            late = int((fire.actual_fired_at - fire.scheduled_fire_at).total_seconds())
+            if late >= 60:
+                parts.append(f"due {format_wake_time(fire.scheduled_fire_at, zone)}, {late // 60} min late")
+    said = _STATUS_SAID.get(fire.status, fire.status)
+    if fire.error:
+        error = " ".join(str(fire.error).split())
+        said += f": {error[:_FIRE_ERROR_CHARS]}{'…' if len(error) > _FIRE_ERROR_CHARS else ''}"
+    parts.append(said)
+    if fire.latency_ms is not None:
+        parts.append(f"{fire.latency_ms / 1000:.0f}s")
+    if fire.started_conversation_id is not None:
+        parts.append(f"in [conversation:{fire.started_conversation_id}]")
+    return " · ".join(parts)
+
+
+def load_wake_fires_tool(
+    *,
+    agent_id: UUID,
+    schedules_collection: WakeScheduleCollection,
+    fires_collection: WakeFireCollection,
+    subscriptions_collection: WebhookSubscriptionCollection | None = None,
+    tz: tzinfo | str | None = None,
+) -> list[BaseTool]:
+    """Build a ``wake_fires`` tool: how a wake's past fires went, or a webhook's deliveries.
+
+    For a schedule, one line per fire, newest first: when it ran, whether it
+    was on schedule (and how late), by hand (and who asked) or a delivery, how
+    it ended, and the conversation it ran in. For a webhook subscription, its
+    accepted deliveries the same way, then the refused ones, counted per
+    reason and minute.
+
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
+    :param schedules_collection: three-tier schedules collection
+    :ptype schedules_collection: WakeScheduleCollection
+    :param fires_collection: three-tier fires collection
+    :ptype fires_collection: WakeFireCollection
+    :param subscriptions_collection: three-tier subscriptions collection; without it the tool
+        reads schedules only
+    :ptype subscriptions_collection: WebhookSubscriptionCollection | None
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
+    :return: list with one LangChain tool
+    :rtype: list[BaseTool]
+    """
+    zone = resolve_zone(tz)
+
+    async def _of_schedule(raw: str, limit: int) -> str:
+        parsed = parse_schedule_id(raw)
+        if parsed is None:
+            return _tool_error("wake_fires", f"invalid schedule_id {raw!r}")
+        entity = await schedules_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
+            return _tool_error("wake_fires", "schedule not found; wake_schedule_list shows the ones you have")
+        fires = await fires_collection.list_for_schedule(entity.conversation_id, parsed, limit=limit)
+        head = f"[schedule:{parsed}] {entity.name or 'untitled'}: {_state_said(entity, zone)}."
+        if not fires:
+            return f"{head}\nIt has not fired yet."
+        lines = [head, f"Its newest {len(fires)} fire(s), newest first:"]
+        lines += [f"- {_fire_line(fire, zone)}" for fire in fires]
+        if len(fires) == limit:
+            lines.append(f"There may be older ones: this shows {limit}. Ask for more with limit, up to 50.")
+        return "\n".join(lines)
+
+    async def _of_subscription(raw: str, limit: int) -> str:
+        if subscriptions_collection is None:
+            return _tool_error("wake_fires", "webhook subscriptions are not available here")
+        parsed = parse_subscription_id(raw)
+        if parsed is None:
+            return _tool_error("wake_fires", f"invalid subscription_id {raw!r}")
+        entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
+            return _tool_error(
+                "wake_fires", "subscription not found; webhook_subscription_list shows the ones you have"
+            )
+        fires = await fires_collection.list_for_subscription(entity.conversation_id, parsed, limit=limit)
+        refusals = await subscriptions_collection.list_refusals(parsed, limit=limit)
+        lines = [
+            f"[webhook:{parsed}] {entity.name or 'untitled'} ({entity.status}): last accepted delivery "
+            f"{format_wake_time(entity.last_fired_at, zone, unset='never')}."
+        ]
+        if fires:
+            lines.append(f"Its newest {len(fires)} accepted deliveries, newest first:")
+            lines += [f"- {_fire_line(fire, zone)}" for fire in fires]
+        else:
+            lines.append("No delivery has been accepted.")
+        if refusals:
+            lines.append("Refused deliveries, newest first, counted per reason and minute:")
+            for row in refusals:
+                why = _REFUSAL_SAID.get(row["reason"], row["reason"])
+                note = f" ({row['detail']})" if row["detail"] else ""
+                lines.append(
+                    f"- {format_wake_time(row['last_refused_at'], zone)} · {row['refusals']} refused · "
+                    f"{why}{note} · answered {row['status_code']}"
+                )
+        else:
+            lines.append("No delivery has been refused.")
+        return "\n".join(lines)
+
+    @tool("wake_fires", args_schema=WakeFiresInput)
+    async def wake_fires(schedule_id: str | None = None, subscription_id: str | None = None, limit: int = 10) -> str:
+        """Read how a wake's past fires went, or a webhook subscription's deliveries."""
+        if bool(schedule_id) == bool(subscription_id):
+            return _tool_error("wake_fires", "give a schedule_id or a subscription_id, one of the two")
+        limit = max(1, min(int(limit), 50))
+        try:
+            if schedule_id:
+                return await _of_schedule(schedule_id, limit)
+            return await _of_subscription(subscription_id or "", limit)
+        except Exception as exc:  # noqa: BLE001 - boundary: a read that failed says so
+            return _tool_error("wake_fires", f"the history could not be read: {exc}")
+
+    wake_fires.description = (
+        "Read how a wake schedule's past fires went, newest first: when each ran, whether on schedule "
+        "(and how late), run by hand (and who asked) or a delivery, how it ended, and the conversation "
+        "it ran in. With a subscription_id instead, a webhook subscription's accepted deliveries and its "
+        "refused ones with why. It changes nothing."
+    )
+    return [wake_fires]
 
 
 # ---------------------------------------------------------------------------
@@ -1065,6 +1566,7 @@ def load_wake_schedule_pause_tool(
     *,
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_pause`` tool (status -> 'paused', clear next_fire_at).
 
@@ -1075,9 +1577,12 @@ def load_wake_schedule_pause_tool(
     :ptype agent_id: UUID
     :param schedules_collection: three-tier schedules collection
     :ptype schedules_collection: WakeScheduleCollection
+    :param tz: the zone of the person the result is read to; ``None`` keeps times as stored
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_pause", args_schema=ScheduleIdInput)
     async def wake_schedule_pause(schedule_id: str) -> str:
@@ -1097,11 +1602,21 @@ def load_wake_schedule_pause_tool(
                 "schedule is expired (one-shot fires cannot be paused); create a new schedule",
             )
 
+        if entity.status == "paused":
+            return _no_change(
+                "wake_schedule_pause",
+                f"[schedule:{parsed}] ({entity.name or 'untitled'}) is already paused. "
+                f"It is {describe_schedule(entity.schedule_type, entity.schedule_config or {})}.",
+            )
+        was = _state_said(entity, zone)
         try:
             await schedules_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_pause", f"persist failed: {exc}")
-        return f"Paused [schedule:{parsed}]."
+        return (
+            f"Paused [schedule:{parsed}] ({entity.name or 'untitled'}). It was {was}. "
+            "It does not fire until wake_schedule_resume."
+        )
 
     wake_schedule_pause.description = "Pause a wake schedule. It does not fire until wake_schedule_resume."
     return [wake_schedule_pause]
@@ -1117,6 +1632,7 @@ def load_wake_schedule_resume_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     max_active_schedules_per_agent: int = DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_resume`` tool (status -> 'active'; recompute next_fire_at).
 
@@ -1135,9 +1651,14 @@ def load_wake_schedule_resume_tool(
     :param max_active_schedules_per_agent: cap on the agent's unprotected
         active schedules
     :ptype max_active_schedules_per_agent: int
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_resume", args_schema=ScheduleIdInput)
     async def wake_schedule_resume(schedule_id: str) -> str:
@@ -1212,7 +1733,12 @@ def load_wake_schedule_resume_tool(
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_resume", f"persist failed: {exc}")
-        return f"Resumed [schedule:{parsed}]. Next fires at {next_fire_at.isoformat()}."
+        return (
+            f"Resumed [schedule:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}. "
+            f"It is {describe_schedule(entity.schedule_type, entity.schedule_config or {})}. "
+            f"Next fires at {format_wake_time(next_fire_at, zone)}; "
+            f"last fire {format_wake_time(entity.last_fired_at, zone, unset='never')}."
+        )
 
     wake_schedule_resume.description = "Resume a paused wake schedule. Its next time is counted from now."
     return [wake_schedule_resume]
@@ -1227,6 +1753,7 @@ def load_wake_schedule_delete_tool(
     *,
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_delete`` tool (hard delete; cascades fires).
 
@@ -1237,9 +1764,12 @@ def load_wake_schedule_delete_tool(
     :ptype agent_id: UUID
     :param schedules_collection: three-tier schedules collection
     :ptype schedules_collection: WakeScheduleCollection
+    :param tz: the zone of the person the result is read to; ``None`` keeps times as stored
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_delete", args_schema=ScheduleDeleteInput)
     async def wake_schedule_delete(schedule_id: str) -> str:
@@ -1253,12 +1783,16 @@ def load_wake_schedule_delete_tool(
             return _tool_error("wake_schedule_delete", "schedule not found")
         if entity.protected:
             return _tool_error("wake_schedule_delete", PROTECTED_REFUSAL)
+        was = _state_said(entity, zone)
 
         try:
             await schedules_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_delete", f"persist failed: {exc}")
-        return f"Deleted [schedule:{parsed}] ({entity.name or 'untitled'})."
+        return (
+            f"Deleted [schedule:{parsed}] ({entity.name or 'untitled'}). It was {entity.status}: {was}. "
+            "Its history went with it, and it cannot be brought back."
+        )
 
     wake_schedule_delete.description = (
         "Delete a wake schedule and its history for good. To keep it for later, use wake_schedule_pause."

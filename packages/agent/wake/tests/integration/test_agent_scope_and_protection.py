@@ -269,12 +269,18 @@ class TestProtectedDoors:
             agent = _new_uuid()
             _conv, sid = await _seed_schedule(pool, agent_id=agent, protected=True)
             now = datetime.now(UTC)
-            updated = await update_protected(
+            was_due = await pool.fetchval("SELECT next_fire_at FROM agent_wake_schedules WHERE schedule_id = $1", sid)
+            change = await update_protected(
                 collection=schedules, agent_id=agent, schedule_id=sid, schedule_config={"seconds": 7200}, now=now
             )
+            updated = change.schedule
             assert updated.schedule_config == {"seconds": 7200}
             assert updated.status == "active"
             assert updated.next_fire_at == now + timedelta(seconds=7200)
+            # the change says what it replaced, read from the row before the write
+            assert (change.config_before, change.config_after) == ({"seconds": 3600}, {"seconds": 7200})
+            assert (change.next_fire_before, change.next_fire_after) == (was_due, now + timedelta(seconds=7200))
+            assert change.said().startswith("Was every hour, next fire ")
             # the gate closed with the transaction: a plain change is refused again
             with pytest.raises(asyncpg.CheckViolationError):
                 await pool.execute(
@@ -573,6 +579,227 @@ class TestPermitAndLimits:
             await pool.close()
 
 
+class TestAQuietCheck:
+    """A consumer's check that found nothing: recorded as ``checked_quiet``, never counted as a fire."""
+
+    async def test_a_quiet_check_from_the_handler_is_written_as_checked_quiet(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _conv, sid = await _seed_schedule(
+                pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
+            )
+
+            class _Quiet(HandlerCallback):
+                async def __call__(
+                    self, trigger: WakeTrigger, prepared_context: PreparedWakeContext, pool: Any
+                ) -> HandlerCallbackResult:
+                    del prepared_context, pool
+                    return HandlerCallbackResult(
+                        status="checked_quiet",
+                        assistant_message_content="Mail check: nothing new",
+                        target_conversation_id=trigger.conversation_id,
+                    )
+
+            async def dispatch(trigger: WakeTrigger, fire_id: UUID, pool_: object) -> WakeDispatchResult:
+                return await dispatch_wake(trigger, fire_id, pool_, handler=_Quiet())
+
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
+            row = await pool.fetchrow(
+                "SELECT status, display_suppressed, error, started_conversation_id FROM wake_fires WHERE schedule_id = $1",
+                sid,
+            )
+            assert dict(row) == {
+                "status": "checked_quiet",
+                "display_suppressed": False,
+                "error": None,
+                "started_conversation_id": None,
+            }
+        finally:
+            await pool.close()
+
+    async def test_quiet_checks_are_not_counted_by_the_fire_limits(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _schedules, fires = _collections(pool)
+            agent = _new_uuid()
+            conv, sid = await _seed_schedule(pool, agent_id=agent)
+            for _ in range(3):
+                fire_id = _new_uuid()
+                await fires.create_dispatching(
+                    fire_id=fire_id,
+                    schedule_id=sid,
+                    webhook_subscription_id=None,
+                    conversation_id=conv,
+                    scheduled_fire_at=None,
+                    actual_fired_at=datetime.now(UTC) - timedelta(minutes=1),
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                )
+                await fires.finalize_success(conv, fire_id, status="checked_quiet")
+            written = await pool.fetch("SELECT status FROM wake_fires WHERE schedule_id = $1", sid)
+            assert [r["status"] for r in written] == ["checked_quiet"] * 3, "the quiet rows are really there"
+
+            async def one_a_day(_trigger: WakeTrigger) -> FireLimits | None:
+                return FireLimits(per_wake=1, per_agent=1)
+
+            handler = _RecordingHandler()
+            result = await dispatch_wake(
+                WakeTrigger(
+                    schedule_id=sid,
+                    user_id=_new_uuid(),
+                    agent_id=agent,
+                    conversation_id=conv,
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                    schedule_type="interval",
+                    fired_at=datetime.now(UTC),
+                ),
+                _new_uuid(),
+                pool,
+                handler=handler,
+                permit=one_a_day,
+            )
+            assert result.status == "fired", "three quiet checks spent nothing of a one-a-day limit"
+        finally:
+            await pool.close()
+
+
+class TestAQuietCheckBeforeTheFire:
+    """A consumer whose check must start nothing runs it in the dispatch callback, before ``dispatch_wake``."""
+
+    async def test_the_callback_returns_checked_quiet_and_no_conversation_is_started(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _conv, sid = await _seed_schedule(
+                pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
+            )
+
+            async def dispatch(trigger: WakeTrigger, fire_id: UUID, pool_: object) -> WakeDispatchResult:
+                # the check found nothing: the fire ends here, before dispatch_wake could start a conversation
+                return WakeDispatchResult(status="checked_quiet", output_text="nothing new", latency_ms=1)
+
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
+            row = await pool.fetchrow(
+                "SELECT status, started_conversation_id, output_text FROM wake_fires WHERE schedule_id = $1", sid
+            )
+            assert dict(row) == {
+                "status": "checked_quiet",
+                "started_conversation_id": None,
+                "output_text": "nothing new",
+            }
+        finally:
+            await pool.close()
+
+
+class TestContextFromSkipsQuietChecks:
+    async def test_a_downstream_wake_reads_the_last_real_fire_past_later_quiet_checks(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _schedules, fires = _collections(pool)
+            agent = _new_uuid()
+            up_conv, upstream = await _seed_schedule(pool, agent_id=agent)
+            down_conv, downstream = await _seed_schedule(pool, agent_id=agent)
+            for minutes_ago, status, text in (
+                (10, "fired", "found three new messages"),
+                (5, "checked_quiet", "nothing new"),
+            ):
+                fire_id = _new_uuid()
+                await fires.create_dispatching(
+                    fire_id=fire_id,
+                    schedule_id=upstream,
+                    webhook_subscription_id=None,
+                    conversation_id=up_conv,
+                    scheduled_fire_at=None,
+                    actual_fired_at=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                )
+                await fires.finalize_success(up_conv, fire_id, status=status, output_text=text)
+
+            handler = _RecordingHandler()
+            await dispatch_wake(
+                WakeTrigger(
+                    schedule_id=downstream,
+                    user_id=_new_uuid(),
+                    agent_id=agent,
+                    conversation_id=down_conv,
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                    schedule_type="interval",
+                    fired_at=datetime.now(UTC),
+                    context_from_schedule_id=upstream,
+                ),
+                _new_uuid(),
+                pool,
+                handler=handler,
+            )
+            blocks = handler.prepared[0].context_blocks
+            assert len(blocks) == 1 and "found three new messages" in str(blocks[0])
+        finally:
+            await pool.close()
+
+    async def test_a_failed_latest_fire_behind_quiet_checks_still_gives_the_downstream_nothing(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        """Only a quiet check run is skipped: a failed latest fire makes the older output stale."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _schedules, fires = _collections(pool)
+            agent = _new_uuid()
+            up_conv, upstream = await _seed_schedule(pool, agent_id=agent)
+            down_conv, downstream = await _seed_schedule(pool, agent_id=agent)
+            for minutes_ago, status, text in (
+                (10, "fired", "found three new messages"),
+                (7, "failed", None),
+                (5, "checked_quiet", "nothing new"),
+            ):
+                fire_id = _new_uuid()
+                await fires.create_dispatching(
+                    fire_id=fire_id,
+                    schedule_id=upstream,
+                    webhook_subscription_id=None,
+                    conversation_id=up_conv,
+                    scheduled_fire_at=None,
+                    actual_fired_at=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                )
+                if status == "failed":
+                    await fires.finalize_failed(up_conv, fire_id, error="the mailbox went away")
+                else:
+                    await fires.finalize_success(up_conv, fire_id, status=status, output_text=text)
+
+            handler = _RecordingHandler()
+            await dispatch_wake(
+                WakeTrigger(
+                    schedule_id=downstream,
+                    user_id=_new_uuid(),
+                    agent_id=agent,
+                    conversation_id=down_conv,
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                    schedule_type="interval",
+                    fired_at=datetime.now(UTC),
+                    context_from_schedule_id=upstream,
+                ),
+                _new_uuid(),
+                pool,
+                handler=handler,
+            )
+            assert handler.prepared[0].context_blocks == ()
+        finally:
+            await pool.close()
+
+
 class TestFireConversationLink:
     async def test_the_hook_links_the_fire_before_the_handler_runs(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
@@ -807,6 +1034,32 @@ class TestReaper:
 
             await wake_tick_job(pool, None, dispatch, on_reaped=on_reaped, **_tick_collections(pool))
             assert (await _fire_row(pool, lost))["status"] == "failed"
+        finally:
+            await pool.close()
+
+    async def test_named_fires_are_reaped_whatever_their_age_and_others_are_left(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        """A consumer that knows a fire's dispatcher is gone does not wait out the reap age."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _schedules, fires = _collections(pool)
+            started = _new_uuid()
+            conv, lost = await self._dispatching_fire(pool, started=started, age=timedelta(seconds=5))
+            _other_conv, live = await self._dispatching_fire(pool, started=_new_uuid(), age=timedelta(seconds=5))
+            done_conv, done = await self._dispatching_fire(pool, started=_new_uuid(), age=timedelta(seconds=5))
+            await fires.finalize_success(done_conv, done, status="fired", output_text="finished")
+
+            # too young for the age sweep
+            assert await fires.reap_stale_dispatching(datetime.now(UTC), older_than=timedelta(minutes=15)) == []
+            reaped = await fires.reap_fires([lost, done, _new_uuid()])
+
+            assert reaped == [ReapedFire(conversation_id=conv, fire_id=lost, started_conversation_id=started)]
+            assert (await _fire_row(pool, lost))["error"] == REAPED_DISPATCH_ERROR
+            assert (await _fire_row(pool, live))["status"] == "dispatching"
+            assert (await _fire_row(pool, done))["status"] == "fired"
+            assert await fires.reap_fires([lost]) == [] and await fires.reap_fires([]) == []
         finally:
             await pool.close()
 

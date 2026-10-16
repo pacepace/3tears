@@ -400,7 +400,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`StyleProfile`** · dataclass · One host's bounded presentation contract.
 - **`Sweepable`** · *host contract* · dataclass · One score-determining input: what it is called, who owns it, how to read it.
 - **`SweepableRegistry`** · *host contract* · class · The declared inputs for one host, validated at construction.
-- **`TemplateChecks`** · *host contract* · dataclass · The three questions about a template that only the host can answer, asked wherever a template is admitted.
+- **`TemplateChecks`** · *host contract* · dataclass · The three questions about a template that only the host can answer, and the kinds it launches, read wherever a template is admitted.
 - **`Triggered`** · dataclass · State that arrives on a condition rather than at t=0.
 - **`UnsupportedSchemaError`** · exception · A schema uses a construct outside `HONOURED_KEYWORDS` — a gap to extend, never a value to pass.
 - **`WorldConformanceError`** · exception · An ENGINE gap: a check the kit cannot run, or a record its own vocabulary forbids.
@@ -485,7 +485,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str) -> CalibrationRating`
 - **`refuse_ignored_template_fields`** · *host contract* · function · Refuse a template stating a field its kind never acts on (`LaunchableKind.ignored_template_fields`).
-  <br>`refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None`
+  <br>`refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTemplateFields) -> None`
 - **`regrade`** · async function · Grade one stored result again from what its cell stored, and report every verdict that moved.
   <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade`
 - **`rejudge_result`** · async function · Re-score a finished result's failed judge dimensions from the evidence its judge read.
@@ -564,12 +564,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reply schema's answer budget plus the declared reasoning headroom, DERIVED rather than chosen, so it always leaves room to think and then answer.
   <br>`= 10240`
 - **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_asked_settings`.
-- **`SCHEDULER_CALL_ATTEMPTS`** · *host contract* · constant (int) · How many calls one `llm_decided` scheduling decision may make: the first, and one repair that names what was wrong with it.
-  <br>`= 2`
-- **`SIMULATOR_ANSWER_BUDGET_TOKENS`** · *host contract* · constant (int) · Output room kept for the simulated user's visible reply: the strict-schema JSON object holding one utterance or one scheduling pick.
-  <br>`= 4096`
-- **`SIMULATOR_MAX_TOKENS`** · *host contract* · constant (int) · The simulator's output cap: the reasoning allowance plus the answer budget, derived rather than chosen. It is the only bound in tokens a simulator call has.
-  <br>`= 5120`
 - **`SIMULATOR_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_asked_settings`.
 
 <a id="api-analysis"></a>
@@ -603,8 +597,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
 - **`generate_analysis`** · *host contract* · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
   <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
-- **`generation_ceiling_s`** · *host contract* · function · The wall-clock ceiling of one `generate_analysis`, derived from the ceilings it wraps.
-  <br>`generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float`
 - **`humanize`** · *host contract* · function · An identifier as a reader is shown it after its first mention.
   <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble a campaign's context bundle and return it, without generating.
@@ -621,8 +613,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`judge_key(result: EvalResult, dim: str) -> JudgeKey | None`
 - **`judge_kind_readings`** · function · Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
   <br>`judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings`
-- **`judge_phase_ceiling_s`** · *host contract* · function · The wall-clock ceiling of one cell's judge phase, derived from the ceilings of its requests.
-  <br>`judge_phase_ceiling_s(*, judge_dims: int, judge_concurrency: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
   <br>`judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement`
 - **`lint_prose`** · function · Every rule `text` breaks.
@@ -703,8 +693,6 @@ The engine's generation package: the prompts and expanders that author test mate
 
 - **`EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT`** · constant (SeedTemplate) · The seeded default `eval_boundary_gen` template: drafts a battery of simulated actors that pressure a subject's boundaries, and the refusal dimensions they are scored on.
 - **`EVAL_PROPOSER_TEMPLATE_DEFAULT`** · constant (SeedTemplate) · The seeded default `eval_proposer` template: drafts a capability rubric and the variation axes that stress it.
-- **`PROPOSER_MAX_TOKENS`** · *host contract* · constant (int) · Output-token ceiling for the capability/boundary proposer.
-  <br>`= 16384`
 
 <a id="api-storage"></a>
 ### `threetears.evals.storage`
@@ -821,6 +809,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine`
 - **`campaigns_list`** · function · The scope's campaigns.
   <br>`campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing`
+- **`case_rename`** · *host contract* · function · Rename a stored case: write its `name`, and nothing else but the seed name drift would have found it by.
+  <br>`case_rename(host: EvalHost, scope_id: str, case_id: str, name: str, *, corpus: SeedCorpus | None = None) -> CaseRenamed`
 - **`case_set_mint`** · function · Store the next version of a named case set: append-only, so a change is a new version, never an edit.
   <br>`case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> CaseSetLine`
 - **`case_sets_list`** · function · The scope's case sets — every version, or every version of one name.
@@ -868,6 +858,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
+- **`CaseRenamed`** · *host contract* · model · A renamed case: which, and its name before and after.
 - **`CaseSetLine`** · model · One version of a named case set.
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
@@ -1139,6 +1130,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `order` | `str` | required | The order the rows are in, in words. |
 | `total_rows` | `int` | required | How many rows the table has; more than are shown when it is truncated. |
 | `details` | `bool` | `False` | Whether the table is drill-down: HTML folds it in a `<details>`, closed. |
+| `title_ref` | `str \| None` | `None` | An anchor on the page the title links to, where the table reads a sentence said there (`rule`: the subhead stating the decision rule); None for none. |
 
 #### `ChartBlock`
 
@@ -1571,6 +1563,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 
 | Action | Class | Parameters | Description |
 |---|---|---|---|
+| `cases_rename` | `write` | `test_case_id`, `case_name` | Rename a stored case: the name the report calls it by, and nothing else about it. |
 | `run_archive` | `write` | `run_id`, `archived?` | Archive a run (or restore it): out of every cohort, nothing destroyed. |
 | `run_label` | `write` | `run_id`, `run_labels` | Name a run with labels (or clear them): runs_list lists runs by one, no key moves. |
 | `campaign_archive` | `write` | `campaign_id`, `archived?` | Archive a campaign (or restore it): out of listings, nothing destroyed. |
@@ -1603,6 +1596,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one afterwards with campaign_update. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
 | `case_material` | `string` | What the output is judged against: its source, or its facts. |
+| `case_name` | `string` | Its new name, as the report should call it: one token such as double-charge, not a bare number or a generated id, and used by no other case of its template or of a case set listing it. |
 | `case_set` | `string` | The case set's name; a new name starts at version 1. |
 | `case_set_filter` | `string` or `null` | List only this case set's versions. |
 | `case_set_name` | `string` or `null` | A named case set of the template to run, as case_sets_list names it; every arm runs exactly its cases and records it. Named with case_set_version, and refused beside n_variations. |
@@ -1694,6 +1688,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `template_id` (on `sweep_launch`, `case_set_mint`, `run_launch`, `launch_estimate`, `reporter_case_freeze`, `reporter_cases_list`, `judge_cases_freeze`, `judge_cases_list`, `judge_case_author`) | `string` | A template's id, as templates_list names it. |
 | `template_id` (on `campaign_create`) | `string` or `null` | A template's id, as templates_list names it. |
 | `template_name` | `string` | The judge template's name, unique in the scope. |
+| `test_case_id` | `string` | The case to rename, by its id, as judge_cases_list or results_list names it. |
 | `test_case_ids` | array of `string` | The cases, in order, each a stored case of the template; a list the latest version already holds is refused. |
 | `tracked` | `boolean` | Whether the set is a standing suite followed over time, or made for one launch. |
 | `variation_model` | `string` or `null` | The model that writes the template's llm variation axes' values; required when n_variations generates for such an axis, refused otherwise. |

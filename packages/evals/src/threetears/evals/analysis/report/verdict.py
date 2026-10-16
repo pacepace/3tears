@@ -49,6 +49,7 @@ from threetears.evals.analysis.report.decision import (
 )
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import humanize, lint_prose, measure_name
+from threetears.evals.analysis.report.words import LOWER_IS_BETTER, comparison_words
 from threetears.evals.kernel.declaration import Question, preregistered_questions
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 
@@ -122,9 +123,9 @@ FAIL_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
         short="check",
     ),
     "judged": CauseWords(
-        words="a judged dimension scored under the bar",
+        words="failed by the judge, on a judged dimension",
         remedy="read the judge's reasons below",
-        short="below the bar",
+        short="judge",
     ),
 }
 
@@ -576,27 +577,31 @@ def _declared(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str |
     return ". ".join(clauses) + "." + _guardrail_words(bundle, arm)
 
 
-#: A separated contrast's verdict, as the verdict line words it.
-_SEPARATED_WORDS: dict[str, str] = {"improved": "improved on", "regressed": "regressed on"}
+#: The contrast verdicts that separated, which the verdict line names.
+_SEPARATED = ("improved", "regressed")
 
 
 def _separated(
     bundle: AnalysisContextBundle, arm: Callable[[str], str], *, question_id: str | None, every_family: bool
 ) -> list[str]:
-    """Each contrast that separated from the control, in words: ``<arm> improved on <reading>``."""
+    """Each contrast that separated from the control, in words, both arms by label:
+    ``v2 better than v1 on <reading>``, a lower-is-better reading's better end in brackets after it."""
     said = []
     for family in bundle.multiple_comparisons.families:
         if not every_family and family.question_id != question_id:
             continue
         for comparison in family.comparisons:
-            if comparison.verdict in _SEPARATED_WORDS:
+            if comparison.verdict in _SEPARATED:
                 heading = bundle.measure_catalog.get(comparison.name)
                 reading = measure_name(comparison.name, heading.reader_name if heading is not None else None)
                 if comparison.reading == "judged":
                     reading = f"{humanize('dimension', comparison.name)} (judged)"
                 elif comparison.reading == "trial":
                     reading = "the pass rate"
-                line = f"{arm(comparison.contrast.variant_key)} {_SEPARATED_WORDS[comparison.verdict]} {reading}"
+                words = comparison_words(
+                    comparison.verdict, arm(comparison.contrast.variant_key), arm(comparison.control.variant_key)
+                )
+                line = f"{words} on {reading}{'' if comparison.higher_is_better else LOWER_IS_BETTER}"
                 if line not in said:
                     said.append(line)
     return said
