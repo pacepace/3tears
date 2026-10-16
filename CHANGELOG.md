@@ -31,6 +31,48 @@ Behaviour change for a host with a metered-call ceiling or a cost cap. Core sche
   `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
   `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
 
+### 3tears-evals: an analysis of a large campaign starts inside the host's call budget
+
+- **Fixed: assembling a campaign's bundle read every kept trial's trace one at a time, whole.** A 16-run judge campaign
+  (about 1,800 results) made up to 500 point reads of `eval_trace`, each hauling the trial's turns and spans to use
+  only what its judge was handed, so `analysis_generate` and `analysis_estimate` ran past a host's 120s call budget.
+  The bundle now reads every kept trial's judge evidence in one store call, projected to the evidence:
+  `EvalStorage.load_judge_evidence(result_ids, scope_id)` returns it by result id through the store's existing
+  `get_many(..., keep=...)`. Breaking for a host that implements `CampaignReadStore` itself: `load_eval_trace` is
+  replaced there by `load_judge_evidence`.
+- **Host contract: `DocumentStore.by_doc_type` takes `field_in`, a membership predicate.** Breaking for a host's
+  store, which must implement it: `field_in: Mapping[str, Sequence[Any]] | None = None`, keyword-only, its values
+  scalars, ANDed with `**field_eq`. A document matches when the field's stored value equals ANY listed value, compared on the stored
+  JSON type exactly as `field_eq` is (a listed `None` matches the field absent or null); repeated values are matched
+  once; an empty sequence matches nothing and asks the backend nothing; a field named in both `field_in` and
+  `field_eq` raises `ValueError`; a string in place of a sequence, or a value that is not a scalar, raises
+  `TypeError`. `field_in_values` (`threetears.evals.schema`) checks a call and reads its values as the port says, and
+  `STORE_CONFORMANCE_CASES` gains `query.field_in_matches_any`, `query.field_in_empty_matches_nothing` and
+  `query.field_in_and_field_eq_refused`. The in-memory, SQLite, routed and async-bridged stores implement it; the
+  SQLite store passes each type's values as one JSON array, so no list outgrows its bound-parameter limit.
+- **Fixed: every other read of a campaign's bundle grew with the campaign too.** Assembly read results once per run
+  (and again per archived run when a declared control needed them), each template up to three times, ratings once per
+  run twice over, and the archived flag once per minting analysis. Each is now one store call, so a bundle costs nine
+  or ten calls whatever its size. New on `EvalStorage`: `query_eval_results_by_runs(run_ids, scope_id)` (one
+  `by_doc_type` with `field_in`), `load_templates(template_ids, scope_id)`, `analyses_archived(analysis_ids,
+  scope_id)` (each a `get_many`, the last projected to the flag) and `query_calibration_ratings(..., run_ids=)`.
+  Breaking for a host that implements `CampaignReadStore`, `TierReadStore` or `LensStore` itself: they name these in
+  place of `query_eval_results_by_run`, `load_template`, `analysis_archived` and `run_id=`. `judges_tiers` takes the
+  `ratings` and `templates` its caller already read.
+- **Changed: `analysis_generate` returns its job before assembling anything; the job prepares and prices.** The call
+  now checks only that the host generates analyses, the campaign exists, no generation of it is running and a named
+  writer is allowed, records the attempt `running` with its lease, and returns. The job assembles the bundle, resolves
+  the prompt, builds the client, holds the host's default writer to its allowed list and prices the first call. A
+  refusal there (an empty bundle, an unknown prompt, a default writer the host does not allow, a first call over the
+  cap or unpriceable under it) no longer raises to the caller: the job ends `failed` with `refused before any call:
+  <why>` and the refusal's kind, which `job_poll` reads, with no call made and the client released. The running
+  attempt names the writer asked for (`(the host's default writer, not yet resolved)` when none was) and an empty
+  `bundle_fingerprint` until the job has assembled the bundle; no stored field changed. `analysis_estimate` still
+  answers in its call, over the batched bundle reads. `running_analysis_attempt` takes the attempt's fields
+  rather than a `PreparedGeneration`, and `prepare_analysis_generation` takes `attempt_id` and `on_assembled`.
+- **Fixed: `RoutedDocumentStore.holds_documents` abandoned a store's sweep part-way**, returning at its first id; it
+  now reads the ids through before answering, as `relocate` already did.
+
 ### 3tears-evals: a busy launch no longer loses its own job leases
 
 - **Fixed: under a busy launch, a healthy process's leases lapsed and its runs were written lost.** Renewals ran one

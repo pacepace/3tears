@@ -6,8 +6,10 @@ the one out-of-run rule (``OutOfRunBudget``): every call priced on the client be
 when the price would pass what is left of the cap, and ledgered under purpose ``analysis`` however it ends.
 Pinned here:
 
-- **The first call is priced before the job starts**: over the cap, or unpriceable under it, the start is
-  refused with nothing spent, no job and the client it built released.
+- **The first call is priced in the job, before it is sent**: over the cap, or unpriceable under it, the job ends
+  refused with nothing spent and the client it built released (a behaviour change: the start used to refuse it in its
+  call, which meant assembling the whole bundle inside the host's call budget). The start itself returns without
+  assembling anything.
 - **The repair round-trip is priced when it exists**: a refused first output buys a repair, which is
   refused before it is sent when it would pass what is left of the cap — the attempt records only the call
   that was made.
@@ -21,20 +23,22 @@ Pinned here:
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from typing import Any
 
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.kernel import ValidationFailedError
-from threetears.evals.schema import JobLease
+from threetears.evals.analysis import service as service_module
+from threetears.evals.schema import JobLease, JobRefusal
 from threetears.evals.ops import (
     analysis_estimate,
     analysis_generate,
     format_number,
     generation_key,
     job_cancel,
+    job_poll,
     run_job_id,
     scope_out_of_run_spend,
 )
@@ -52,7 +56,7 @@ def _ledger(fixture: Any) -> list[Any]:
 
 
 # =============================================================================
-# The first call: priced before the job starts
+# The first call: priced in the job, before it is sent
 # =============================================================================
 
 
@@ -61,17 +65,52 @@ def _ledger(fixture: Any) -> list[Any]:
     [(CAP + 1.0, "above the out-of-run cap"), (None, "cannot be priced before they are made")],
     ids=["over-the-cap", "unpriceable"],
 )
-async def test_a_generation_over_the_cap_is_refused_before_it_starts(ceiling: float | None, said: str) -> None:
+async def test_a_generation_over_the_cap_ends_its_job_refused_before_any_call(ceiling: float | None, said: str) -> None:
     fixture = off_loop(ops_fixture, ceiling_usd=ceiling)
 
-    with pytest.raises(ValidationFailedError, match=said):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    status = await settled(fixture.host, job.job_id)
 
+    assert status.state == "failed" and status.detail is not None
+    assert "refused before any call" in status.detail and said in status.detail
+    assert status.refusal == JobRefusal(kind="validation_failed", status=422)
     (writer,) = fixture.writers
     assert writer.calls == [], "nothing was sent"
     assert writer.closed == 1, "the client it built was released"
+    await fixture.host.launch.job_manager.wait_for([job.job_id.rpartition(":")[2]])
     assert fixture.host.launch.job_manager.active_task_ids(generation_key(fixture.campaign.id, TOYHOST_SCOPE)) == []
+    (attempt,) = off_loop(
+        fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
+    )
+    assert (attempt.outcome, attempt.calls, attempt.token_cost) == ("failed", 0, 0.0)
+    assert attempt.bundle_fingerprint, "the bundle was assembled before the price refused it"
     assert off_loop(_ledger, fixture) == []
+
+
+async def test_a_start_returns_its_job_without_assembling_the_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bundle is assembled in the job: a start whose assembly cannot finish still returns, and the job then runs."""
+    fixture = off_loop(ops_fixture)
+    release = threading.Event()
+    assembling: list[str] = []
+    assemble = service_module.assemble_context_bundle
+
+    def held_assembly(campaign: Any, **kwargs: Any) -> Any:
+        assembling.append(campaign.id)
+        assert release.wait(timeout=10), "the test never released the assembly"
+        return assemble(campaign, **kwargs)
+
+    monkeypatch.setattr(service_module, "assemble_context_bundle", held_assembly)
+
+    started = await asyncio.wait_for(analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE), timeout=5)
+
+    assert assembling == [], "the start assembled the bundle before it returned"
+    assert fixture.writers == [], "the start built a client before it returned"
+    (job,) = started.jobs
+    running = await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)
+    assert (running.state, running.done) == ("running", False)
+    release.set()
+    assert (await settled(fixture.host, job.job_id)).state == "completed"
+    assert assembling == [fixture.campaign.id]
 
 
 async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_lens_and_action() -> None:
@@ -162,9 +201,12 @@ async def test_an_estimate_prices_the_first_call_against_the_cap_and_makes_no_ca
     assert writer.calls == [] and writer.closed == 1, "priced, released, never called"
     assert off_loop(_ledger, fixture) == []
     if not would_start:
-        with pytest.raises(ValidationFailedError) as refused:
-            await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
-        assert str(refused.value) == estimate.refusal, "the estimate refuses in the start's own words"
+        (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+        status = await settled(fixture.host, job.job_id)
+        assert estimate.refusal is not None
+        assert status.state == "failed" and status.detail == f"refused before any call: {estimate.refusal}", (
+            "the estimate refuses in the job's own words"
+        )
 
 
 async def test_the_estimate_action_renders_the_price_and_the_cap() -> None:
@@ -212,7 +254,7 @@ async def test_a_generation_makes_no_store_call_on_the_event_loop(monkeypatch: p
     names = (
         "load_campaign",
         "load_eval_runs",
-        "query_eval_results_by_run",
+        "query_eval_results_by_runs",
         "query_insights",
         "save_analysis",
         "save_analysis_attempt",

@@ -12,11 +12,18 @@ real storage would confirm but not localize.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
 
-from threetears.evals.schema.models import EvalResult, EvalTrace, eval_trace_doc_id
+from threetears.evals.schema.models import (
+    EvalResult,
+    EvalTrace,
+    JudgedArtifact,
+    JudgeEvidence,
+    eval_trace_doc_id,
+)
 from threetears.evals.run.reads import get_result_trace
 from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.storage import EvalStorage
@@ -185,6 +192,82 @@ class TestReadsPayForWhatTheyAsked:
         store.save_eval_result(make_eval_result(id="res-1"), None)
 
         assert store.load_eval_trace("res-1", "uni-1") is None
+
+
+class _GetManyRecorder(InMemoryDocumentStore):
+    """The reference store, recording every batch read and every point read it is asked."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches: list[tuple[str, list[str], tuple[str, ...]]] = []
+        self.points: list[str] = []
+
+    def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+        self.points.append(doc_id)
+        return super().get(doc_id, scope_id)
+
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        self.batches.append((doc_type, list(doc_ids), tuple(keep)))
+        return super().get_many(doc_type, doc_ids, scope_id, exclude=exclude, keep=keep)
+
+
+class TestTheJudgeEvidenceIsReadInOneBatch:
+    """A reader of many results' judge evidence pays one store call, and never for the turns or the spans."""
+
+    def _stored(self) -> tuple[EvalStorage, _GetManyRecorder]:
+        store = _GetManyRecorder()
+        storage = EvalStorage(store)
+        for index in range(3):
+            result_id = f"res-{index}"
+            storage.save_eval_result(
+                make_eval_result(id=result_id),
+                make_eval_trace(
+                    result_id=result_id,
+                    trace=[{"turn": 1, "content": "x" * 1000}],
+                    otel_trace=[{"name": "gen_ai.agent.invoke"}],
+                    judge_evidence=JudgeEvidence(case_material=f"case {index}", artifact=f"reply {index}"),
+                    judged_artifact=JudgedArtifact.TRANSCRIPT,
+                ),
+            )
+        storage.save_eval_result(make_eval_result(id="res-unjudged"), make_eval_trace(result_id="res-unjudged"))
+        storage.save_eval_result(make_eval_result(id="res-untraced"), None)
+        return storage, store
+
+    def test_every_result_s_evidence_is_one_projected_store_call(self) -> None:
+        storage, store = self._stored()
+        store.points.clear()
+
+        evidence = storage.load_judge_evidence(
+            ["res-0", "res-1", "res-2", "res-0", "res-unjudged", "res-untraced", "res-absent"], "uni-1"
+        )
+
+        assert {result_id: shown.case_material for result_id, shown in evidence.items()} == {
+            "res-0": "case 0",
+            "res-1": "case 1",
+            "res-2": "case 2",
+        }, "a result with no trace, or a trace with no evidence, is absent"
+        ((doc_type, ids, keep),) = store.batches
+        assert doc_type == "eval_trace"
+        assert ids == [eval_trace_doc_id(r) for r in ("res-0", "res-1", "res-2", "res-unjudged", "res-untraced")] + [
+            eval_trace_doc_id("res-absent")
+        ], "each result asked for once"
+        assert {"trace", "otel_trace", "call_ledger", "end_state"}.isdisjoint(keep), "the payload was shipped"
+        assert {"judge_evidence", "judged_artifact"} <= set(keep)
+        assert store.points == [], "a batch read fell back to a point read per result"
+
+    def test_no_results_asks_the_store_nothing(self) -> None:
+        storage, store = self._stored()
+
+        assert storage.load_judge_evidence([], "uni-1") == {}
+        assert store.batches == []
 
 
 class TestDeletesTakeThePayloadWithThem:

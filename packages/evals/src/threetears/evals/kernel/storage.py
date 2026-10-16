@@ -73,6 +73,7 @@ from threetears.evals.schema.models import (
     EvalTestCase,
     EvalTrace,
     JudgeConfig,
+    JudgeEvidence,
     LabelKey,
     RubricDimTombstone,
     JudgeConfigTombstone,
@@ -90,6 +91,22 @@ from threetears.evals.schema.logs import get_logger
 RUN_LOST_STATUS: Final = "cancelled"
 
 log = get_logger(__name__)
+
+#: The fields a batch read of judge evidence keeps of each trace (:meth:`EvalStorage.load_judge_evidence`): those that
+#: locate and version an :class:`EvalTrace`, and the judge evidence with the declaration it is stored beside, so the
+#: reduced trace still reads as one. Never the turns, the spans, the call ledger or the end state, which are most of
+#: what a trace weighs.
+_JUDGE_EVIDENCE_FIELDS: Final = (
+    "id",
+    "doc_type",
+    "schema_version",
+    "schema_minor",
+    "scope_id",
+    "result_id",
+    "eval_run_id",
+    "judge_evidence",
+    "judged_artifact",
+)
 
 
 def _payload_exclusions(elide_payload: frozenset[str]) -> list[str]:
@@ -950,6 +967,21 @@ class EvalStorage:
         """Load a template by id within a scope."""
         return self._load(EvalTemplate, template_id, scope_id)
 
+    def load_templates(self, template_ids: Sequence[str], scope_id: str, /) -> list[EvalTemplate]:
+        """Load the named templates within a scope, archived or not, in one batch read.
+
+        :param template_ids: The templates to read. Empty asks the store nothing; one named twice is read once.
+        :ptype template_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: One template per id that resolves there; an absent id is skipped.
+        :rtype: list[EvalTemplate]
+        """
+        if not template_ids:
+            return []
+        items = self._store.get_many("eval_template", list(dict.fromkeys(template_ids)), scope_id)
+        return self._hydrate_all(EvalTemplate, items)
+
     def load_template_by_name(self, name: str, scope_id: str) -> EvalTemplate | None:
         """Load the template a ``name`` resolves to within a scope: its current revision.
 
@@ -1252,6 +1284,28 @@ class EvalStorage:
             return None
         return data.get("archived") is True
 
+    def analyses_archived(self, analysis_ids: Sequence[str], scope_id: str, /) -> dict[str, bool]:
+        """Whether each named analysis is archived, read off the documents in one batch read, hydrating none.
+
+        :meth:`analysis_archived` for many analyses at once — every analysis a subject's insight ledger names — and
+        for the same reason it reads the flag alone: the store reduces each analysis to its id and flag, so one a
+        newer validator rejects cannot abort the read, and a memo's bundle is never shipped.
+
+        :param analysis_ids: The analyses to ask about. Empty asks the store nothing; one named twice is read once.
+        :ptype analysis_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: Analysis id → whether it is archived, for each that resolves; one with no ``archived`` field was never
+            archived. An analysis that does not resolve is absent, where :meth:`analysis_archived` answers ``None``.
+        :rtype: dict[str, bool]
+        """
+        if not analysis_ids:
+            return {}
+        items = self._store.get_many(
+            "eval_analysis", list(dict.fromkeys(analysis_ids)), scope_id, keep=["id", "archived"]
+        )
+        return {str(item["id"]): item.get("archived") is True for item in items}
+
     def list_analyses_by_campaign(self, campaign_id: str, scope_id: str) -> list[EvalAnalysis]:
         """Return every analysis attached to a campaign, newest first."""
         items = self._store.by_doc_type(
@@ -1379,10 +1433,11 @@ class EvalStorage:
         scope_id: str,
         *,
         run_id: str | None = None,
+        run_ids: Sequence[str] | None = None,
         result_id: str | None = None,
         label_key: LabelKey | None = None,
     ) -> list[CalibrationRating]:
-        """Ratings in a scope, oldest first, optionally narrowed by run, by result and by what was read.
+        """Ratings in a scope, oldest first, optionally narrowed by run (or several), by result and by what was read.
 
         Unlimited, like every agreement input: a paged read would compute agreement over the first
         page and report it as the dimension's.
@@ -1391,6 +1446,9 @@ class EvalStorage:
         :ptype scope_id: str
         :param run_id: Optional equality filter on the rated result's run.
         :ptype run_id: str | None
+        :param run_ids: Optional filter on the rated result's run being any of these, in one read however many: the
+            ratings of a campaign's runs. Empty matches nothing and asks the store nothing. Never with ``run_id``.
+        :ptype run_ids: Sequence[str] | None
         :param result_id: Optional equality filter on the rated result.
         :ptype result_id: str | None
         :param label_key: Optional filter on the output and criterion the rating was given on (#628): every
@@ -1400,7 +1458,12 @@ class EvalStorage:
         :ptype label_key: LabelKey | None
         :return: The matching ratings, ordered by when they were rated.
         :rtype: list[CalibrationRating]
+        :raises ValueError: Both ``run_id`` and ``run_ids`` were given.
         """
+        if run_id is not None and run_ids is not None:
+            raise ValueError("query_calibration_ratings narrows by run_id or by run_ids, never both")
+        if run_ids is not None and not run_ids:
+            return []
         field_eq: dict[str, Any] = {}
         if run_id is not None:
             field_eq["run_id"] = run_id
@@ -1410,7 +1473,12 @@ class EvalStorage:
             field_eq["output_fingerprint"] = label_key.output_fingerprint
             field_eq["criterion_fingerprint"] = label_key.criterion_fingerprint
         items = self._store.by_doc_type(
-            "calibration_rating", scope_id, order_by="rated_at", descending=False, **field_eq
+            "calibration_rating",
+            scope_id,
+            order_by="rated_at",
+            descending=False,
+            field_in=None if run_ids is None else {"run_id": list(run_ids)},
+            **field_eq,
         )
         return self._hydrate_all(CalibrationRating, items)
 
@@ -2030,6 +2098,36 @@ class EvalStorage:
         """
         return self._load(EvalTrace, eval_trace_doc_id(result_id), scope_id)
 
+    def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str, /) -> dict[str, JudgeEvidence]:
+        """What each named result's judge was handed, read off their traces in one batch read.
+
+        For a reader of many results' evidence at once (a campaign's trials): one store call however many results
+        are named, where a :meth:`load_eval_trace` per result is one round trip each. The store reduces each trace to
+        the fields that locate and version it and the judge evidence with the declaration stored beside it, so the
+        turns and spans that are most of a trace's weight are never shipped. The reduced trace is read as an
+        :class:`EvalTrace`, upgraded and validated as a whole one is, and never leaves this method: only its evidence
+        is returned, so nothing downstream can take the reduced trace for the whole one.
+
+        :param result_ids: The results whose evidence to read. Empty asks the store nothing; one named twice is read
+            once.
+        :ptype result_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: Result id → the evidence its judge was handed, for each result whose trace resolves and carries
+            evidence. A result with no stored trace, or whose trace holds no evidence (an unjudged kind), is absent.
+        :rtype: dict[str, JudgeEvidence]
+        :raises ValidationError: A stored trace this build cannot read, as :meth:`load_eval_trace` raises for one.
+        """
+        if not result_ids:
+            return {}
+        trace_ids = [eval_trace_doc_id(result_id) for result_id in dict.fromkeys(result_ids)]
+        items = self._store.get_many("eval_trace", trace_ids, scope_id, keep=list(_JUDGE_EVIDENCE_FIELDS))
+        return {
+            trace.result_id: trace.judge_evidence
+            for trace in self._hydrate_all(EvalTrace, items)
+            if trace.judge_evidence is not None
+        }
+
     def query_eval_results(
         self,
         scope_id: str,
@@ -2053,6 +2151,24 @@ class EvalStorage:
     def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
         """Return all results for a specific eval run."""
         return self.query_eval_results(scope_id, run_id=run_id)
+
+    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        """Return every result of the named runs, in one store call however many runs are named.
+
+        The batch form of :meth:`query_eval_results_by_run`, for a reader of a whole campaign's results: one
+        ``by_doc_type`` whose ``field_in`` names every run, where a read per run is a round trip each.
+
+        :param run_ids: The runs. Empty asks the store nothing; one named twice is read once.
+        :ptype run_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: Their results, in the store's order; a caller that needs them by run groups them by ``eval_run_id``.
+        :rtype: list[EvalResult]
+        """
+        if not run_ids:
+            return []
+        items = self._store.by_doc_type("eval_result", scope_id, field_in={"eval_run_id": list(dict.fromkeys(run_ids))})
+        return self._hydrate_all(EvalResult, items)
 
     def query_eval_result_ids_by_run(self, run_id: str, scope_id: str) -> list[str]:
         """The ids of every result stored for one run, read off the rows without reconstructing them.

@@ -437,11 +437,19 @@ class RoutedDocumentStore:
         descending: bool = True,
         limit: int | None = None,
         exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
         """Return documents of one type within a scope, from the store the type is kept in."""
         return self._routed(doc_type).by_doc_type(
-            doc_type, scope_id, order_by=order_by, descending=descending, limit=limit, exclude=exclude, **field_eq
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
         )
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
@@ -536,7 +544,10 @@ class RoutedDocumentStore:
         for scope_id in scope_ids:
             for doc_type in sorted(known):
                 for store in children.values():
-                    for _doc_id in store.iter_by_doc_type(doc_type, scope_id):
+                    # Drained before answering, as relocate and reset_core drain theirs: returning from inside the loop
+                    # would abandon the store's sweep part-way, and a store whose sweep holds a cursor or a connection
+                    # until it is read to the end would keep it until the iterator happened to be collected.
+                    if list(store.iter_by_doc_type(doc_type, scope_id)):
                         return True
         return False
 

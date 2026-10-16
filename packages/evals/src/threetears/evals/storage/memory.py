@@ -25,10 +25,10 @@ from __future__ import annotations
 import copy
 import itertools
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-from threetears.evals.schema.store_port import StoreConflict, keep_fields, omit_paths
+from threetears.evals.schema.store_port import StoreConflict, field_in_values, keep_fields, omit_paths
 
 __all__ = ["InMemoryDocumentStore"]
 
@@ -141,13 +141,16 @@ class InMemoryDocumentStore:
         descending: bool = True,
         limit: int | None = None,
         exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """Return documents of one type within a scope, matching ANDed equality predicates.
+        """Return documents of one type within a scope, matching ANDed equality and membership predicates.
 
         A predicate compares on the stored JSON type: ``True`` matches only ``true``, never ``1``, and a
-        number never matches its text. A ``None`` predicate matches a field that is absent or null. Under ``order_by``,
-        documents without the field (or with it null) sort as lower than every document that has it.
+        number never matches its text. A ``None`` predicate matches a field that is absent or null. A membership
+        predicate (``field_in``) matches a field equal, by the same comparison, to any of its values, and one with no
+        values matches nothing. Under ``order_by``, documents without the field (or with it null) sort as lower than
+        every document that has it.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -161,11 +164,19 @@ class InMemoryDocumentStore:
         :ptype limit: int | None
         :param exclude: Dotted paths left out of every returned document.
         :ptype exclude: Sequence[str]
+        :param field_in: Field-membership predicates: field → the values it may equal.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
         :ptype field_eq: Any
         :return: The matching documents.
         :rtype: list[dict[str, Any]]
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or holds a value that is
+            not a scalar.
         """
+        members = field_in_values(field_in, field_eq)
+        if any(not values for values in members.values()):
+            return []
         with self._lock:
             rows = [
                 document
@@ -173,6 +184,10 @@ class InMemoryDocumentStore:
                 if scope == scope_id
                 and document.get("doc_type") == doc_type
                 and all(_stored_equal(document.get(field), value) for field, value in field_eq.items())
+                and all(
+                    any(_stored_equal(document.get(field), value) for value in values)
+                    for field, values in members.items()
+                )
             ]
             if order_by is not None:
                 rows.sort(

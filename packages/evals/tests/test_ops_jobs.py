@@ -241,7 +241,10 @@ async def test_a_held_generation_is_running_refuses_a_second_and_cancels_to_canc
     gate = asyncio.Event()
     fixture = off_loop(ops_fixture, gate=gate)
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    await asyncio.sleep(0)
+    async with asyncio.timeout(10):
+        while not fixture.writers:
+            # The first generation's job prepares its client before it is held at its call.
+            await asyncio.sleep(0.01)
 
     running = await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)
     assert (running.state, running.done) == ("running", False)
@@ -313,8 +316,11 @@ async def test_a_live_run_is_cancelled_through_the_job_contract_and_converges(mo
     assert not gate.is_set(), "the run was stopped while held, not after it finished"
 
 
-async def test_a_generation_that_loses_the_race_releases_its_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Between the check and the start another generation took the key: the client this one built is released."""
+async def test_a_generation_that_loses_the_race_ends_its_attempt_having_built_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Between the check and the start another generation took the key: this one's attempt ends, refused, and the
+    start built no client to release, since the client is its job's."""
     fixture = off_loop(ops_fixture)
 
     def taken(*_: Any, **__: Any) -> str:
@@ -323,8 +329,11 @@ async def test_a_generation_that_loses_the_race_releases_its_client(monkeypatch:
     monkeypatch.setattr(fixture.host.launch.job_manager, "start_task", taken)
     with pytest.raises(ConflictError):
         await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
-    (writer,) = fixture.writers
-    assert writer.closed == 1 and writer.calls == []
+    assert fixture.writers == []
+    (attempt,) = off_loop(
+        fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
+    )
+    assert attempt.outcome == "failed" and attempt.error is not None and "already running" in attempt.error
 
 
 async def test_a_generation_with_no_attempt_record_reads_absent() -> None:

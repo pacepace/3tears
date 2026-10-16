@@ -571,6 +571,32 @@ def test_holds_documents_stops_at_the_first_document() -> None:
     assert asked == [first]
 
 
+def test_holds_documents_leaves_no_store_s_iteration_open() -> None:
+    """It answers at the first id, and still drains that store's sweep rather than abandoning it part-way."""
+    unfinished: list[str] = []
+
+    class _CursorStore(InMemoryDocumentStore):
+        """A store whose sweep holds a cursor until its last id is read, as a server-side cursor does."""
+
+        def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
+            ids = list(super().iter_by_doc_type(doc_type, scope_id))
+
+            def cursor() -> Iterator[str]:
+                unfinished.append(doc_type)
+                yield from ids
+                unfinished.remove(doc_type)
+
+            return cursor()
+
+    stores = {"evidence": _CursorStore(), "scratch": _CursorStore()}
+    first = sorted(DOC_TYPE_FACTS)[0]
+    stores["evidence"].upsert(_doc("d1", first))
+    stores["evidence"].upsert(_doc("d2", first))
+
+    assert RoutedDocumentStore.holds_documents(stores, [_SCOPE]) is True
+    assert unfinished == [], "a sweep was left part-way through"
+
+
 def test_relocate_refuses_two_different_documents_under_one_id() -> None:
     _, stores = _router(route=_EVERYTHING_IN_EVIDENCE)
     stores["evidence"].upsert(_doc("a1", "eval_analysis", v="one"))

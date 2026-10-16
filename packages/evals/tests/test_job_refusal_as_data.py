@@ -74,6 +74,10 @@ async def test_a_generation_its_provider_refused_keeps_the_refusal_on_its_attemp
     gate = asyncio.Event()
     fixture = off_loop(ops_fixture, gate=gate)
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    async with asyncio.timeout(10):
+        while not fixture.writers:
+            # The job builds its client as it prepares, before it is held at its call.
+            await asyncio.sleep(0.01)
     (writer,) = fixture.writers
     writer.raises = ConnectionResetError("status 529: overloaded, account acct-123")
     gate.set()

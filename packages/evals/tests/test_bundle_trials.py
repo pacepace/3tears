@@ -10,6 +10,7 @@ capped with the lost and failed kept first, and the writer reads the rows withou
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -19,8 +20,10 @@ from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema import EvalResult, EvalTrace, GoalStateOutcome, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import eval_trace_doc_id
+from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -32,11 +35,15 @@ class _TracedStorage(ToyhostStorage):
     def __init__(self, *args: Any, traces: dict[str, EvalTrace], **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.traces = traces
-        self.trace_reads: list[str] = []
+        self.evidence_reads: list[list[str]] = []
 
-    def load_eval_trace(self, result_id: str, scope_id: str) -> EvalTrace | None:
-        self.trace_reads.append(result_id)
-        return self.traces.get(result_id)
+    def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str) -> dict[str, JudgeEvidence]:
+        self.evidence_reads.append(list(result_ids))
+        return {
+            result_id: trace.judge_evidence
+            for result_id in result_ids
+            if (trace := self.traces.get(result_id)) is not None and trace.judge_evidence is not None
+        }
 
 
 def _result(case: str, k: int, **update: Any) -> EvalResult:
@@ -138,6 +145,79 @@ def test_a_trial_shows_what_the_judge_was_handed_its_tail_and_the_case_label_its
     assert trial.first_input.startswith("Queue three songs")
     assert trial.excerpt.startswith("[… 520 characters earlier]") and trial.excerpt.endswith("the reply ends here")
     assert len(trial.excerpt) < 2100
+
+
+class _TraceReadCounter(InMemoryDocumentStore):
+    """The reference store, counting every read that reaches a trace document."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.trace_batches = 0
+        self.trace_points = 0
+
+    def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+        self.trace_points += doc_id.endswith(":trace")
+        return super().get(doc_id, scope_id)
+
+    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        self.trace_batches += doc_type == "eval_trace"
+        return super().get_many(doc_type, doc_ids, scope_id, **kwargs)
+
+
+def test_a_bundle_over_many_traced_trials_reads_their_evidence_in_one_store_call() -> None:
+    """Forty kept trials, each with a trace: one batch read of the traces, never a point read per trial."""
+    run = make_eval_run(status="completed", rubric_scales={"conversation.tone": "ordinal"})
+    store = _TraceReadCounter()
+    storage = EvalStorage(store)
+    storage.save_eval_run(run)
+    for index in range(40):
+        result = _result(f"case-{index % 8}", index // 8 + 1, eval_run_id=run.id, scope_id=run.scope_id)
+        storage.save_eval_result(
+            result,
+            EvalTrace(
+                id=eval_trace_doc_id(result.id),
+                scope_id=run.scope_id,
+                result_id=result.id,
+                eval_run_id=run.id,
+                trace=[{"turn": 1, "content": "a long transcript"}],
+                judge_evidence=JudgeEvidence(case_material=f"asked {index}", artifact=f"answered {index}"),
+                judged_artifact=JudgedArtifact.TRANSCRIPT,
+            ),
+        )
+    campaign = EvalCampaign(
+        scope_id=run.scope_id,
+        name="many trials",
+        subject_id=run.subject_snapshot.subject_id,
+        subject_kind="s",
+        behavior="b",
+        run_ids=[run.id],
+        created_by="test:fixture",
+    )
+
+    bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
+
+    assert len(bundle.trials) == 40
+    assert {trial.first_input for trial in bundle.trials} == {f"asked {index}" for index in range(40)}
+    assert (store.trace_batches, store.trace_points) == (1, 0)
+
+
+def test_a_bundle_whose_kept_trials_record_no_trace_reads_none() -> None:
+    run = make_eval_run(status="completed", rubric_scales={"conversation.tone": "ordinal"})
+    campaign = EvalCampaign(
+        scope_id=run.scope_id,
+        name="untraced",
+        subject_id=run.subject_snapshot.subject_id,
+        subject_kind="s",
+        behavior="b",
+        run_ids=[run.id],
+        created_by="test:fixture",
+    )
+    members = [result.model_copy(update={"eval_run_id": run.id, "scope_id": run.scope_id}) for result in RESULTS]
+    storage = _TracedStorage([run], {run.id: members}, traces={})
+
+    assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
+
+    assert storage.evidence_reads == []
 
 
 def test_the_trials_are_capped_with_the_lost_and_failed_kept_first(monkeypatch: pytest.MonkeyPatch) -> None:

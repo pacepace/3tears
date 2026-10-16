@@ -108,8 +108,10 @@ OUT_OF_RUN_CALLERS: Mapping[str, tuple[Callable[..., Any], Callable[..., Any]]] 
     "case generation (an llm variation axis)": (kernel.plan_variation_calls, gen.generate_variations),
 }
 
-#: Out-of-run work the engine itself starts as a job: its builder admits every call in the call and returns work
-#: that only makes them, and its estimate quotes the same plan. A host calls the builder in its call.
+#: Out-of-run work the engine itself starts as a job: its builder admits every call before the first is made and
+#: returns work that only makes them, and its estimate quotes the same plan. A host calls the builder in its call,
+#: except for an analysis generation, whose builder assembles the campaign's whole bundle and so runs in its job,
+#: before the job's first call (``analysis_generate``).
 ADMITTED_IN_THE_CALL: Mapping[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
     "analysis generation": (analysis.estimate_analysis_generation, analysis.prepare_analysis_generation),
     "second judge and drift check": (run.estimate_second_judge, run.second_judge_work),
