@@ -224,6 +224,10 @@ class PreparedGeneration(NamedTuple):
     #: Every call the generation makes is priced and admitted against this before it is sent, and
     #: ledgered (purpose ``analysis``) after; its first call is already admitted.
     calls: BudgetedGenerator
+    #: When the attempt this generation runs as was started, when a background start recorded it before its job
+    #: prepared anything; ``None`` for a generation no recorded attempt precedes. The ended attempt keeps it, so
+    #: it never reads as started when its preparation finished.
+    started_at: str | None = None
 
 
 def _approx_analysis_input_tokens(bundle: AnalysisContextBundle, prompt: str) -> int:
@@ -547,6 +551,7 @@ async def prepare_analysis_generation(
     out_of_run_cap_usd: float | None,
     attempt_id: str | None = None,
     on_assembled: Callable[[AnalysisContextBundle, str], Awaitable[None]] | None = None,
+    started_at: str | None = None,
 ) -> PreparedGeneration:
     """Check and build everything a generation needs before it spends anything, its first call priced and admitted.
 
@@ -582,6 +587,9 @@ async def prepare_analysis_generation(
         writers, before the first call is priced, with the bundle and the writer the client resolved — so a recorded
         attempt can name both, even when the price then refuses it. A raise releases the client and propagates.
     :ptype on_assembled: Callable[[AnalysisContextBundle, str], Awaitable[None]] | None
+    :param started_at: When the attempt was started, as its recorded start says, carried to the ended attempt;
+        ``None`` stamps the start of the call.
+    :ptype started_at: str | None
     :return: The prepared generation. It holds a built generator client, which the run enters and
         releases; one prepared and never run keeps its transport open until it is collected.
     :rtype: PreparedGeneration
@@ -592,9 +600,10 @@ async def prepare_analysis_generation(
     :raises ValueError: The host supplies no completion clients.
     """
     assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
-    calls = BudgetedGenerator(_generation_budget(host, assembled, out_of_run_cap_usd), assembled.client)
     first = assembled.first_call
     try:
+        # Built inside the guard: a raise here (a budget that cannot be derived) still releases the client.
+        calls = BudgetedGenerator(_generation_budget(host, assembled, out_of_run_cap_usd), assembled.client)
         if on_assembled is not None:
             await on_assembled(assembled.bundle, assembled.client.model_name)
         await refresh_prices(assembled.client)
@@ -613,6 +622,7 @@ async def prepare_analysis_generation(
         resolved_model=assembled.client.model_name,
         attempt_id=attempt_id or str(uuid.uuid7()),
         calls=calls,
+        started_at=started_at,
     )
 
 
@@ -840,7 +850,7 @@ async def run_analysis_generation(
     # however the generation ends — including a cancellation, which returns nothing and raises
     # nothing the generator could have annotated.
     tally = GenerationTally()
-    started_at = utc_now_iso()
+    started_at = prepared.started_at or utc_now_iso()
 
     async def record(
         outcome: AttemptOutcome,

@@ -42,9 +42,28 @@ packages (bumped in lock-step).
   cap or unpriceable under it) no longer raises to the caller: the job ends `failed` with `refused before any call:
   <why>` and the refusal's kind, which `job_poll` reads, with no call made and the client released. The running
   attempt names the writer asked for (`(the host's default writer, not yet resolved)` when none was) and an empty
-  `bundle_fingerprint` until the job has assembled the bundle; no stored field changed. `analysis_estimate` still
-  answers in its call, over the batched bundle reads. `running_analysis_attempt` takes the attempt's fields
-  rather than a `PreparedGeneration`, and `prepare_analysis_generation` takes `attempt_id` and `on_assembled`.
+  `bundle_fingerprint` until the job has assembled the bundle; no stored field changed. The returned
+  `JobHandle.label` is likewise `(the host's default writer, not yet resolved)` when no model was named, and a host
+  that supplies no completion clients no longer gets its `ValueError` from the call: the job ends `failed` with it
+  (and logs it). `analysis_estimate` still answers in its call, over the batched bundle reads.
+  `running_analysis_attempt` takes the attempt's fields rather than a `PreparedGeneration`, and
+  `prepare_analysis_generation` takes `attempt_id`, `on_assembled` and `started_at`. A refusal is a designed ending,
+  recorded on the attempt and not logged as a task failure; the ended attempt keeps the `started_at` its call
+  recorded, not the moment preparation finished.
+- **New: a generation's preparation is bounded.** The job starts with no budget of its own, so a store call that hung
+  during assembly would have left the attempt `running` for as long as its lease kept renewing. Preparation now runs
+  under `ANALYSIS_PREPARATION_BUDGET_S` (`ops.analysis`; 28800 s, the engine's cap on one job, as a launch's
+  preparation gets): one that outruns it ends the attempt `failed` with `refused before any call: preparation did not
+  finish in <N> s`, the client released.
+- **Fixed: a client was leaked when the generation's budget could not be built**: the budget is now built inside the
+  guard that releases the client.
+- **Host contract: `EvalStorage` refuses a store whose `by_doc_type` does not declare `field_in`.** A store written
+  before `field_in` took it into `**field_eq` as an equality against a mapping and answered every membership read
+  with no documents. `EvalStorage(store)` now raises `TypeError` naming the missing parameter; `**kwargs` alone does
+  not count, so a wrapper must declare `field_in` and forward it. `STORE_CONFORMANCE_CASES` gains
+  `query.field_in_string_refused` and `query.field_in_non_scalar_refused`, which hold a host store to the port's
+  `TypeError`s. `CORE_ADDRESSING_FIELDS["eval_trace"]` lists the five fields the judge-evidence projection keeps
+  (`result_id`, `eval_run_id`, `judge_evidence`, `judged_artifact`, `schema_minor`).
 - **Fixed: `RoutedDocumentStore.holds_documents` abandoned a store's sweep part-way**, returning at its first id; it
   now reads the ids through before answering, as `relocate` already did.
 
