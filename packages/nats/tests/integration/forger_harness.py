@@ -207,19 +207,18 @@ async def admin_client(uri: str, namespace: str) -> Any:
         await client.shutdown(drain_timeout=timedelta(seconds=1))
 
 
-async def collect(client: NatsClient, subjects: list[str], seconds: float = 5.0) -> dict[str, list[bytes]]:
-    """subscribe ``subjects`` on ``client`` and return what each received within ``seconds``.
+async def watch(client: NatsClient, subjects: list[str]) -> dict[str, list[bytes]]:
+    """subscribe ``subjects`` and return the live dict each delivery appends to.
 
     The receiver stands in for a service whose door the forgery targets: anything delivered here is a
-    message the bus let through, which the door must still refuse to act on.
+    message the bus let through, which the door must still refuse to act on. Core NATS does not
+    replay, so a caller watches BEFORE it publishes, then waits with :func:`settle`.
 
     :param client: the receiving client
     :ptype client: NatsClient
     :param subjects: the subjects to watch
     :ptype subjects: list[str]
-    :param seconds: how long to wait for deliveries
-    :ptype seconds: float
-    :return: subject to the list of bodies it received
+    :return: subject to the list of bodies it has received, filled as deliveries arrive
     :rtype: dict[str, list[bytes]]
     """
     received: dict[str, list[bytes]] = {subject: [] for subject in subjects}
@@ -229,7 +228,23 @@ async def collect(client: NatsClient, subjects: list[str], seconds: float = 5.0)
             received[subject].append(bytes(msg.data))
 
         await client.raw.subscribe(subject, cb=note)
+    await asyncio.sleep(0.2)  # let the subscriptions register before the caller publishes
+    return received
+
+
+async def settle(received: dict[str, list[bytes]], want: int, seconds: float = 5.0) -> dict[str, list[bytes]]:
+    """wait until ``received`` holds at least ``want`` bodies in total, or ``seconds`` pass.
+
+    :param received: the dict a :func:`watch` returned
+    :ptype received: dict[str, list[bytes]]
+    :param want: the number of deliveries to wait for
+    :ptype want: int
+    :param seconds: how long to wait
+    :ptype seconds: float
+    :return: the same dict, for chaining
+    :rtype: dict[str, list[bytes]]
+    """
     deadline = asyncio.get_running_loop().time() + seconds
-    while not all(received.values()) and asyncio.get_running_loop().time() < deadline:
+    while sum(len(v) for v in received.values()) < want and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.1)
     return received
