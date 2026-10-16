@@ -6,7 +6,7 @@ does not cover is never answered, so each claim runs against a real nats-server:
 
 - through the wrapper, the pod binds its own Object Store and pointer bucket, puts an object larger
   than a chunk, reads it back, describes and lists it, and watches its pointers by prefix;
-- nats-py's own ``ObjectStore.get`` -- an unnamed ordered consumer -- is refused;
+- nats-py's own ``ObjectStore.get`` is refused, at the metadata read it starts with;
 - deleting an object, purging, deleting or reshaping the bucket, and every route into another pod's
   bucket are refused, and the bucket is unchanged.
 
@@ -188,7 +188,7 @@ async def test_a_tool_pod_works_inside_its_object_store_and_manages_nothing(tmp_
                 assert first is not None and (first.key, first.value) == ("snap.TX", b"7")
                 assert await asyncio.wait_for(anext(watch), timeout=_WAIT) is None
 
-            # === REFUSED: nats-py's own read, an unnamed ordered consumer =========================
+            # === REFUSED: nats-py's own read, at its metadata lookup (STREAM.MSG.GET) ==============
             stock = await pod.jetstream_context().object_store(own)
             violations = Violations()
             with watching_client_log(violations):

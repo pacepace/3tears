@@ -207,7 +207,7 @@ async def test_an_agent_pod_reaches_only_its_own_keys_in_the_shared_pod_buckets(
                 # === REFUSED: another agent's key, and an unscoped key, on every route ===========
                 for key in (f"{theirs}.digest-1", "digest-1"):
                     named = f"$kv.{nonces}.{key}"
-                    await refused(violations, kv.get(key), naming=named)
+                    await refused(violations, kv.get(key), naming=f"$js.api.direct.get.kv_{nonces}.{named}")
                     await refused(violations, kv.put(key, b"overwritten"), naming=named)
                     await refused(violations, kv.delete(key), naming=named)
                 await refused(

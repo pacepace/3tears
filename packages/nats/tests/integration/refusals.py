@@ -91,7 +91,13 @@ class Violations:
         return len(self.errors)
 
     def naming(self, fragment: str, *, since: int = 0) -> list[str]:
-        """the violations after ``since`` whose text contains ``fragment``, compared case-insensitively.
+        """the violations after ``since`` whose refused subject starts with ``fragment``.
+
+        The server quotes the subject it refused (``... for publish to "<subject>"``), so the match
+        is anchored at that opening quote: ``$kv.b.k`` names a refused ``$KV.b.k`` and never a
+        ``$JS.API.DIRECT.GET.KV_b.$KV.b.k`` that merely contains it. A prefix still names a subject
+        whose tail the client chose, such as a consumer create's ``<stream>.<consumer>``. Compared
+        case-insensitively: nats-py lowercases the frame.
 
         :param fragment: a subject (or part of one) the violation must name
         :ptype fragment: str
@@ -100,7 +106,7 @@ class Violations:
         :return: the matching violations
         :rtype: list[str]
         """
-        needle = fragment.lower()
+        needle = '"' + fragment.lower()
         return [e for e in self.errors[since:] if needle in e.lower()]
 
     async def wait_naming(self, fragment: str, *, since: int) -> str:
