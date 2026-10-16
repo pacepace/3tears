@@ -21,13 +21,16 @@ from pathlib import Path
 
 from threetears.enforcement.common import iter_python_files, parse_python_file
 
-__all__ = ["FREE_TEXT", "MARKER", "unbroken_text", "unbroken_text_in"]
+__all__ = ["FREE_TEXT", "FREE_TEXT_WORDS", "MARKER", "unbroken_text", "unbroken_text_in"]
 
 #: A name that says its value is text someone wrote, and so can hold line breaks.
 FREE_TEXT = re.compile(
     r"(?i)(excerpt|snippet|summary|content|text|body|description|desc|preview|reason|error|note|message|detail|"
     r"prose|answer|reply|said|words|output|title|label|headline|gist|plan|step|quote)"
 )
+
+#: A name that is free text only as a whole word: ``shown`` and ``value`` are, ``deadline`` is no ``line``.
+FREE_TEXT_WORDS = re.compile(r"(?i)(?:^|_)(value|shown|what|cut|said|line)(?:_|$)")
 
 #: The comment that says a matched value is one line by what it is.
 MARKER = "# one line:"
@@ -63,7 +66,8 @@ def _what(value: ast.expr) -> list[str]:
     safe names nothing.
     """
     if isinstance(value, ast.Attribute):
-        return [value.attr]
+        # ``x.value`` is what ``x`` is: ``kind.value`` is an enum's name, not a text
+        return _what(value.value) if value.attr == "value" else [value.attr]
     if isinstance(value, ast.Name):
         return [value.id]
     if isinstance(value, ast.Subscript):
@@ -87,7 +91,9 @@ def _what(value: ast.expr) -> list[str]:
 
 def _free(value: ast.expr) -> bool:
     """Whether an interpolated expression is free text that did not pass a call that makes it safe."""
-    return any(FREE_TEXT.search(name) and not _AN_ID.search(name) for name in _what(value))
+    return any(
+        (FREE_TEXT.search(name) or FREE_TEXT_WORDS.search(name)) and not _AN_ID.search(name) for name in _what(value)
+    )
 
 
 def _after_indent(node: ast.JoinedStr) -> list[ast.FormattedValue]:
@@ -98,7 +104,8 @@ def _after_indent(node: ast.JoinedStr) -> list[ast.FormattedValue]:
         if isinstance(part, ast.Constant) and isinstance(part.value, str):
             text += part.value
         elif isinstance(part, ast.FormattedValue):
-            if _INDENTED_LINE.search(text):
+            # ``{x!r}`` is a repr, which writes a line break as \\n: one line whatever x holds
+            if _INDENTED_LINE.search(text) and part.conversion != ord("r"):
                 found.append(part)
             # a digit: ``f"{n}. {title}"`` is a numbered item, its number interpolated
             text += "0"
