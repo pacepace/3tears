@@ -487,8 +487,8 @@ def _counted_reads(shared: Catalogue, monkeypatch: pytest.MonkeyPatch) -> list[P
     reads: list[PriceRefresh] = []
     read = shared.read
 
-    async def counted() -> PriceRefresh:
-        found = await read()
+    async def counted(*, timeout: float | None = None) -> PriceRefresh:
+        found = await read(timeout=timeout)
         reads.append(found)
         return found
 
