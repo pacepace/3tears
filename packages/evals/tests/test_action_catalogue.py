@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
 
+import re
 from typing import Any
 
 import pytest
@@ -420,6 +421,21 @@ def test_a_short_action_declaring_no_render_is_refused() -> None:
     }
     with pytest.raises(ValueError, match="declares its render"):
         Action(**fields)
+
+
+def test_no_engine_parameter_is_described_by_the_action_that_takes_it() -> None:
+    """A host merging these actions with its own shows the model one description per parameter name (#815).
+
+    A description that says what its action does with the value ("The case to rename") cannot be shared by a
+    host action using the same name for another purpose; it says what the value is.
+    """
+    named_by_action = []
+    for action in engine_actions():
+        verb = action.name.rsplit("_", 1)[1]
+        for field_name, field in action.params.model_fields.items():
+            if re.search(rf"\bto {verb}\b", field.description or ""):
+                named_by_action.append(f"{action.name}.{field_name}: {field.description}")
+    assert named_by_action == []
 
 
 def test_the_valid_action_the_refusals_start_from_is_accepted() -> None:

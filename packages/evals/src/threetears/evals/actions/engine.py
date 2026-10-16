@@ -190,10 +190,7 @@ Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the s
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
 RunIds = Annotated[
     list[str],
-    Field(
-        description="The runs, by id, all in the caller's scope: those a campaign is created with, or those added to "
-        "or taken out of it."
-    ),
+    Field(description="Runs, by id, as runs_list names them; every one in the caller's scope."),
 ]
 GeneratorModel = Annotated[
     str | None,
@@ -508,12 +505,12 @@ class CasesRenameParams(EvalBaseModel):
     """``cases_rename``."""
 
     test_case_id: str = Field(
-        min_length=1, description="The case to rename, by its id, as judge_cases_list or results_list names it."
+        min_length=1, description="A test case's id, as judge_cases_list or results_list names it."
     )
     case_name: str = Field(
         min_length=1,
         description=(
-            "Its new name, as the report should call it: one token such as double-charge, not a bare number or a "
+            "A case's name, as the report should call it: one token such as double-charge, not a bare number or a "
             "generated id, and used by no other case of its template or of a case set listing it."
         ),
     )
@@ -690,7 +687,8 @@ SecondJudgeTemperature = Annotated[
     ),
 ]
 ResultIds = Annotated[
-    list[str] | None, Field(description="The run's results to draw from; omitted for every result of the run.")
+    list[str] | None,
+    Field(description="A run's result ids, as results_list names them; omitted for every result of the run."),
 ]
 
 

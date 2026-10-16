@@ -1594,7 +1594,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one afterwards with campaign_update. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
 | `case_material` | `string` | What the output is judged against: its source, or its facts. |
-| `case_name` | `string` | Its new name, as the report should call it: one token such as double-charge, not a bare number or a generated id, and used by no other case of its template or of a case set listing it. |
+| `case_name` | `string` | A case's name, as the report should call it: one token such as double-charge, not a bare number or a generated id, and used by no other case of its template or of a case set listing it. |
 | `case_set` | `string` | The case set's name; a new name starts at version 1. |
 | `case_set_filter` | `string` or `null` | List only this case set's versions. |
 | `case_set_name` | `string` or `null` | A named case set of the template to run, as case_sets_list names it; every arm runs exactly its cases and records it. Named with case_set_version, and refused beside n_variations. |
@@ -1605,7 +1605,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `condition_filter` | `'ok'` \| `'candidate_fail'` \| `'infra_exclude'` or `null` | List only results in this condition: ok (delivered, scored), candidate_fail (scored as a hard fail) or infra_exclude (a harness fault, in no aggregate). |
 | `confirm` | `string` | Must echo the id of what is destroyed, exactly. |
 | `control_from_run_id` | `string` or `null` | One of the campaign's runs whose variant becomes the declared control, the cell every other is read against: its variant key is resolved from the run, so nobody types it. Requires a declaration — declared_design in the same call, or, on an update, the stored one — and is refused beside a design that types its own control. On an update, null clears the control and omitted leaves it as it is. |
-| `criteria` | array of `string` or `null` | The criteria to freeze; omitted freezes every dim each result was judged on. |
+| `criteria` | array of `string` or `null` | Criteria, by dimension name; omitted takes every dimension a result was judged on. |
 | `criterion` | `string` | The rubric dimension's name on that template. |
 | `criterion_dim` | `string` or `null` | Only the profiles of this criterion's dim; omitted lists every one. |
 | `criterion_template_id` | `string` | The subject template whose rubric dimension the case is judged on, as templates_list names it. |
@@ -1627,8 +1627,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judge_model` | `string` or `null` | The judge model, where the kind is model-judged. |
 | `judge_run_ids` | array of `string` | The finished judge-kind runs whose trials make up the measurement — every arm of the judge campaign, as runs_list names them. Each judge and criterion they measured is recorded from all of them together. |
 | `judged_artifact` | `'document'` \| `'transcript'` | 'document' (judged against its material) or 'transcript' (a conversation's). |
-| `judged_result_ids` | array of `string` or `null` | The results to freeze; omitted freezes every result of the runs. |
-| `judged_run_ids` | array of `string` | The judged runs whose stored results to freeze, as runs_list names them; omitted with from_labels, and required without it. |
+| `judged_result_ids` | array of `string` or `null` | Results, by id, as results_list names them; omitted takes every result of the runs. |
+| `judged_run_ids` | array of `string` | Judged runs, by id, as runs_list names them, whose stored results the cases come from; omitted with from_labels, and required without it. |
 | `judges` | `boolean` | Name its judged dims whose judging failed; this action never asks a judge. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
 | `label` | `string` or `null` | List only runs carrying this label (run_label sets them); every run if unset. |
@@ -1661,11 +1661,11 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `repeats` | `integer` | How many times each dim is judged at each temperature. |
 | `reporter_case_id` | `string` | A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it. |
 | `result_id` | `string` | A result's id, as results_list names it. |
-| `result_ids` | array of `string` or `null` | The run's results to draw from; omitted for every result of the run. |
+| `result_ids` | array of `string` or `null` | A run's result ids, as results_list names them; omitted for every result of the run. |
 | `row_factor` | `string` | The coordinate the rows are: a declared one (model, template_id, ...) or a lever the host registers. |
 | `rubric_dim` | `string` | The judged dimension rated, spelled as the result's score spells it. |
 | `run_id` | `string` | A run's id, as runs_list or a launch's job names it. |
-| `run_ids` | array of `string` | The runs, by id, all in the caller's scope: those a campaign is created with, or those added to or taken out of it. |
+| `run_ids` | array of `string` | Runs, by id, as runs_list names them; every one in the caller's scope. |
 | `run_labels` | array of `string` | The run's labels, replacing any it has; [] clears them. Each 1 to 64 characters, stored sorted and each once. A label names the run (a baseline, a production snapshot) and moves no key or fingerprint. |
 | `run_status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `string` | Read only runs with this status, or 'all'. Completed unless named: a run still going is still adding results. |
 | `sample_fraction` | `number` | The share of the run's judged results the second judge is asked about. |
@@ -1686,7 +1686,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `template_id` (on `sweep_launch`, `case_set_mint`, `run_launch`, `launch_estimate`, `reporter_case_freeze`, `reporter_cases_list`, `judge_cases_freeze`, `judge_cases_list`, `judge_case_author`) | `string` | A template's id, as templates_list names it. |
 | `template_id` (on `campaign_create`) | `string` or `null` | A template's id, as templates_list names it. |
 | `template_name` | `string` | The judge template's name, unique in the scope. |
-| `test_case_id` | `string` | The case to rename, by its id, as judge_cases_list or results_list names it. |
+| `test_case_id` | `string` | A test case's id, as judge_cases_list or results_list names it. |
 | `test_case_ids` | array of `string` | The cases, in order, each a stored case of the template; a list the latest version already holds is refused. |
 | `tracked` | `boolean` | Whether the set is a standing suite followed over time, or made for one launch. |
 | `variation_model` | `string` or `null` | The model that writes the template's llm variation axes' values; required when n_variations generates for such an axis, refused otherwise. |
