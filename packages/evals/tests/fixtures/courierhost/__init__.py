@@ -40,10 +40,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from packages.evals.tests.fixtures.toyhost.host import with_registry
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateOutput,
@@ -77,6 +76,7 @@ from threetears.evals.kernel.host import (
     MeasureRegistry,
     SeedRefused,
     Sweepable,
+    TemplateChecks,
     WorldDimension,
     WorldRegistry,
     default_cell_timeout,
@@ -457,6 +457,10 @@ COURIER_LAUNCH_SETTINGS = LaunchSettings(
 )
 
 
+def _admit(_checked: object) -> None:
+    """A template check the courier host has nothing to say about: it admits."""
+
+
 def courier_launch_host() -> LaunchHost:
     """The courier as a launching host, with its scenario already authored in its store.
 
@@ -501,17 +505,24 @@ def courier_launch_host() -> LaunchHost:
         return UnknownSubject(remedy=f"the courier host holds one subject, {COURIER_SUBJECT.subject_id}")
 
     launch_host = LaunchHost(
-        eval_host=with_registry(
+        # The launch registry lives on the host's template checks, stated once; the courier host checks nothing else.
+        eval_host=replace(
             eval_host,
-            {
-                COURIER_KIND: LaunchableKind(
-                    launch=launch,
-                    resolve_subject=resolve_subject,
-                    unhonoured_launch_arguments=frozenset(
-                        {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
-                    ),
-                )
-            },
+            template_checks=TemplateChecks(
+                require_known_tools_allowed=_admit,
+                refuse_undeclared_world_seed=_admit,
+                refuse_undeliverable_template=_admit,
+                refuse_inadmissible_template_case=_admit,
+                kinds={
+                    COURIER_KIND: LaunchableKind(
+                        launch=launch,
+                        resolve_subject=resolve_subject,
+                        unhonoured_launch_arguments=frozenset(
+                            {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
+                        ),
+                    )
+                },
+            ),
         ),
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
