@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: an analysis of a large campaign starts inside the host's call budget
+
+- **Fixed: assembling a campaign's bundle read every kept trial's trace one at a time, whole.** A 16-run judge campaign
+  (about 1,800 results) made up to 500 point reads of `eval_trace`, each hauling the trial's turns and spans to use
+  only what its judge was handed, so `analysis_generate` and `analysis_estimate` ran past a host's 120s call budget.
+  The bundle now reads every kept trial's judge evidence in one store call, projected to the evidence:
+  `EvalStorage.load_judge_evidence(result_ids, scope_id)` returns it by result id through the store's existing
+  `get_many(..., keep=...)`. Breaking for a host that implements `CampaignReadStore` itself: `load_eval_trace` is
+  replaced there by `load_judge_evidence`.
+
 ### 3tears-evals: a busy launch no longer loses its own job leases
 
 - **Fixed: under a busy launch, a healthy process's leases lapsed and its runs were written lost.** Renewals ran one

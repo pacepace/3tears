@@ -162,7 +162,7 @@ from threetears.evals.analysis.bundle.surface import _measure_catalog
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
-    from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, EvalTrace
+    from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
 
 
 class CampaignReadStore(Protocol):
@@ -174,8 +174,8 @@ class CampaignReadStore(Protocol):
     stratum each of their cases declares, the
     people's calibration ratings of those results, the templates the runs were judged
     against and the scope's stored judge profiles (for the tier of a judge whose own
-    evidence decides none), the trace of each trial the bundle keeps (what its case asked and what its judge was
-    handed), the subject's prior insights, and — for an insight that names one — whether the
+    evidence decides none), the judge evidence of the trials the bundle keeps, in one read (what each case asked and
+    what its judge was handed), the subject's prior insights, and — for an insight that names one — whether the
     analysis that minted it is archived, and writes nothing at all. That flag is read
     because archiving an analysis RETRACTS what it minted (:func:`retracted_insights`),
     and it is a fact about the analysis, not the insight. Only the flag is asked for, so
@@ -246,11 +246,12 @@ class CampaignReadStore(Protocol):
         """Every stored judge profile in a scope — unpaged, since a judge's profile is looked up among them (#628)."""
         ...
 
-    def load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None:
-        """One result's stored trace, or ``None`` when it has none.
+    def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str, /) -> dict[str, JudgeEvidence]:
+        """What each named result's judge was handed, by result id, in one read; a result with none is absent.
 
         Read for what each kept trial shows a reader — what its case asked and the tail of what the judge was handed —
-        and only for a result that records a trace (``EvalResult.has_trace``) among the trials the bundle keeps.
+        once, for every result that records a trace (``EvalResult.has_trace``) among the trials the bundle keeps. Only
+        the evidence is asked for, so a trace's turns and spans are never shipped.
         """
         ...
 
@@ -768,7 +769,7 @@ def assemble_context_bundle(
         criteria=_criteria(runs, storage, scope_id),
         rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
         catalog=bundle.measure_catalog,
-        load_trace=lambda result: storage.load_eval_trace(result.id, scope_id),
+        load_judge_evidence=lambda result_ids: storage.load_judge_evidence(result_ids, scope_id),
     )
     bundle.scoreboard = census.scoreboard
     bundle.trials = census.trials

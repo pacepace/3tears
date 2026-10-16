@@ -73,6 +73,7 @@ from threetears.evals.schema.models import (
     EvalTestCase,
     EvalTrace,
     JudgeConfig,
+    JudgeEvidence,
     LabelKey,
     RubricDimTombstone,
     JudgeConfigTombstone,
@@ -90,6 +91,22 @@ from threetears.evals.schema.logs import get_logger
 RUN_LOST_STATUS: Final = "cancelled"
 
 log = get_logger(__name__)
+
+#: The fields a batch read of judge evidence keeps of each trace (:meth:`EvalStorage.load_judge_evidence`): those that
+#: locate and version an :class:`EvalTrace`, and the judge evidence with the declaration it is stored beside, so the
+#: reduced trace still reads as one. Never the turns, the spans, the call ledger or the end state, which are most of
+#: what a trace weighs.
+_JUDGE_EVIDENCE_FIELDS: Final = (
+    "id",
+    "doc_type",
+    "schema_version",
+    "schema_minor",
+    "scope_id",
+    "result_id",
+    "eval_run_id",
+    "judge_evidence",
+    "judged_artifact",
+)
 
 
 def _payload_exclusions(elide_payload: frozenset[str]) -> list[str]:
@@ -2029,6 +2046,36 @@ class EvalStorage:
         that is what the marker is for.
         """
         return self._load(EvalTrace, eval_trace_doc_id(result_id), scope_id)
+
+    def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str, /) -> dict[str, JudgeEvidence]:
+        """What each named result's judge was handed, read off their traces in one batch read.
+
+        For a reader of many results' evidence at once (a campaign's trials): one store call however many results
+        are named, where a :meth:`load_eval_trace` per result is one round trip each. The store reduces each trace to
+        the fields that locate and version it and the judge evidence with the declaration stored beside it, so the
+        turns and spans that are most of a trace's weight are never shipped. The reduced trace is read as an
+        :class:`EvalTrace`, upgraded and validated as a whole one is, and never leaves this method: only its evidence
+        is returned, so nothing downstream can take the reduced trace for the whole one.
+
+        :param result_ids: The results whose evidence to read. Empty asks the store nothing; one named twice is read
+            once.
+        :ptype result_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: Result id → the evidence its judge was handed, for each result whose trace resolves and carries
+            evidence. A result with no stored trace, or whose trace holds no evidence (an unjudged kind), is absent.
+        :rtype: dict[str, JudgeEvidence]
+        :raises ValidationError: A stored trace this build cannot read, as :meth:`load_eval_trace` raises for one.
+        """
+        if not result_ids:
+            return {}
+        trace_ids = [eval_trace_doc_id(result_id) for result_id in dict.fromkeys(result_ids)]
+        items = self._store.get_many("eval_trace", trace_ids, scope_id, keep=list(_JUDGE_EVIDENCE_FIELDS))
+        return {
+            trace.result_id: trace.judge_evidence
+            for trace in self._hydrate_all(EvalTrace, items)
+            if trace.judge_evidence is not None
+        }
 
     def query_eval_results(
         self,
