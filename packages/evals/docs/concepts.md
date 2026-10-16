@@ -523,9 +523,9 @@ A place the engine calls code your host supplies, through a protocol the engine 
 #### Sink and reservation
 A **sink** is what code reports into rather than returns: a cell's `CellSink` keeps its spend by source,
 `TraceSink` is your tracing, and a `RegressionWatch` awaits a sink of yours with each alert. A **reservation**
-holds a priced call's worst case against the run's cost cap while the call is in flight (`sink.reserve(source,
-ceiling)`, then `settle(cost)` or `release()`), so cells running side by side cannot together pass the cap;
-`CappedCompletion` does it for every call. See [Caps](cost-and-budgets.md#caps).
+is the handle of a paid call a cell is making (`sink.reserve(source, ceiling)`, then `settle(cost)` or
+`release()`), which lands the call's cost on the cell's spend; it holds nothing back, because the run's cost cap is
+read between cells and refuses no call inside one. `CappedCompletion` does it for every call. See [Caps](cost-and-budgets.md#caps).
 
 #### Store, `DocumentStore` and port
 A **port** is a protocol the engine declares and your host implements: `DocumentStore`, `CompletionClient`,

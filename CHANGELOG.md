@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
+
+Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).
+
+- **The metered-call ceiling and the cost cap are read between cells, against what has landed.** Once the recorded
+  cells' metered calls reach `max_metered_calls`, or their spend passes `max_cost_usd`, no new cell starts, the cells
+  already running finish whole, and the run ends `budget_stopped`. Nothing is refused inside a cell: at width above 1
+  the old refusal contaminated whichever cell asked after the ceiling was spent, so two identical runs differed in
+  which cell was cut. A run may land past a ceiling by up to the width's worth of cells; a looping cell is bounded
+  by the cell timeout. `MeteredCallLedger.admit` no longer refuses on the ceiling, `CellSink.reserve` never refuses
+  and `CellSink.cost_cap_reached` is always `False`, and `drive_conversation` asks no cap. A host that declared no
+  metered tools (`max_metered_calls=None`) is unchanged: its metered call is refused at dispatch, and that is the only
+  thing `metered_calls_refused` now counts.
+- **The stop is a typed record.** `EvalRun.budget_stops` holds a `BudgetStop` (`currency`, `ceiling`,
+  `landed_at_stop`, `landed_final`, `cells_in_flight`, `cells_not_started`, `unpriced_results`) for each ceiling
+  that stopped the run, both when both did; the overshoot is `landed_final - ceiling`, derived. The run's summary
+  prints one line from the record: `stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3 running
+  cells finished (+7); 12 cells not started`.
+- Breaking for a host that read them: `CapBreach.refused_call_usd` is gone, `CostCapReached` is no longer raised by
+  the engine (it still imports), and `MeteredCallLedger.refusal_message` raises for a host that declared metered
+  tools. New: `MeteredCallLedger.land`, `.landed_calls` and `.ceiling_reached` (`stable`), and `BudgetStop` and
+  `BudgetStopCurrency` (`threetears.evals.schema`, `provisional`).
+
 ## v0.70.0 -- 2026-10-16
 
 ### 3tears-evals: the question under the title, verdicts by arm, and a case renamed through the package (evaladopt.33)

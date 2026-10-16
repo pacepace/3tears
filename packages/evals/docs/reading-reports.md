@@ -393,6 +393,26 @@ other arm's share of the same cause under the same rig. Read it before any compa
 threshold the arms are not compared over the same trials, and the lost ones were lost for a reason that may differ
 by arm (a challenger whose long answers run its judge out of room, say). It is a flag, not a test.
 
+## A run a ceiling stopped
+
+A run whose cost cap or metered-call ceiling was reached ends `budget_stopped`, and says so in one line written from
+its stop records, never from prose:
+
+> stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells not started
+
+Read it left to right. *40 of 40 at the stop* is what the recorded cells had landed against the ceiling when the run
+decided to start no new cell. *47 once 3 running cells finished (+7)* is where it ended: those cells were running at
+the stop, were refused nothing, and finished whole, so the run lands past a ceiling by up to the width's worth of
+cells and that overshoot is the design. *12 cells not started* is the part of the matrix never measured. Money reads
+as `$` (`stopped by its cost cap: $10.20 of $10.00 at the stop, $12.35 once 1 running cell finished (+$2.35); ...`).
+A run both ceilings stopped at one boundary reads both. The figures are `EvalRun.budget_stops`; a run stopped by its
+wall-clock budget has none and gives its reason instead.
+
+Every cell that ran is whole: a ceiling refuses no call inside a cell, so no cell's score was taken on a world it
+could not fully reach because of the budget, and two identical runs never differ in which cell was cut. The one
+refusal left is a host that declared no metered tools; a non-zero `metered_calls_refused` means that declaration is
+wrong, not that the run ran out.
+
 ## Methods
 
 Every test is two-sided at α = 0.05, and every interval is 95% unless a correction widens it. The case is the

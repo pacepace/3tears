@@ -184,7 +184,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 3`
+  <br>`= 4`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -273,7 +273,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CellSpanWindow`** · *host contract* · protocol · One cell's two tracing windows, as the kind driving that cell sees them.
 - **`ConflictError`** · *host contract* · exception · State conflict (status 409).
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
-- **`CostCapReached`** · *host contract* · exception · The run's cost cap has no room for the cell's next paid call, so the cell stops making them.
+- **`CostCapReached`** · *host contract* · exception · Deprecated: the engine no longer raises it, because no ceiling is asked inside a cell.
 - **`CostLower`** · *host contract* · model · A clause of a decision rule: the arm must cost less per reply than the control.
 - **`DecisionRule`** · *host contract* · model · When a question's answer switches from the control: typed clauses, never words the engine has to parse.
 - **`DefinitionStore`** · *host contract* · protocol · What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.

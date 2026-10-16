@@ -15,8 +15,8 @@ defined in [Concepts](concepts.md).
 There, the engine does not spend money it has not priced first:
 
 - Every **run** has a dollar cap. Before a launch starts, the engine predicts what each arm will cost and
-  refuses an arm it predicts will blow its cap — or one it cannot predict at all. A capped run stops at its
-  first unpriced result.
+  refuses an arm it predicts will blow its cap — or one it cannot predict at all. A capped run stops before its
+  next cell once a recorded result is unpriced.
 - Calls made **outside any run** (writing new cases, proposing a rubric, writing an analysis, re-asking a
   judge) are priced before they are sent, against a separate out-of-run cap, and written to a ledger you
   can read back.
@@ -35,50 +35,56 @@ The sections below state each rule exactly.
 mid-flight ends `budget_stopped`, with the results it already delivered kept: an honest outcome, not
 an infrastructure failure.
 
-**What the per-run cap counts while a cell runs.** Each cell's sink keeps one running total per source —
-the candidate, its background work, the simulator, the judge — each only ever added to, plus the ceilings of
-the priced calls in flight. Every question of the cap, in a cell or between cells, counts the sum over every
-running cell beside what the run has already recorded. So no part of a cell reporting its spend can hide
-another part's, and a sibling cell sees all of it.
+**Both per-run ceilings are read between cells, against what has landed.** The cost cap and the metered-call
+ceiling (`max_metered_calls`) are checked before each cell starts, against the recorded cells only: their
+`cost_usd` for the cap, their metered calls for the ceiling. Once either is reached no new cell starts, the cells
+already running finish whole, and the run ends `budget_stopped` once they are saved. **Neither ever refuses a call
+inside a cell.** A refusal inside a cell made the cell that happened to ask after the ceiling was spent the
+contaminated one, so at width above 1 two identical runs contaminated different cells; a cell is the unit of
+measurement, and it is measured whole or never begun.
 
-- **A priced call is reserved before it is made.** Its ceiling (the client's `price_ceiling` times every attempt
-  the engine makes for it) is held against the cap while it is in flight, and settled to what it actually cost
-  when it returns, or released if it raised. A call whose ceiling would take the run past its cap is refused
-  before it is made. **A run whose paid calls are all reserved never spends past its cap**, however many cells
-  run at once. The shipped adapter's resend of a request a provider refused for a setting it carried is not another
-  attempt: the refused request generated nothing and is taken to be unbilled (an assumption no provider documents),
-  so its `price_ceiling` prices one attempt per request. **It is not free in time.** A refused send can take up to
+- **A run may land past a ceiling by up to the width's worth of cells, and that is the design.** The cells
+  running when the stop is decided are not asked and not refused anything, so the overshoot is what they add:
+  at most `width - 1` cells, plus the one whose landing reached the ceiling. A serial run (`measure_latency=True`)
+  has none. A run whose last cell reaches a ceiling stops nothing: no cell was kept from starting.
+- **A looping cell is bounded by the cell timeout, not by a ceiling.** Nothing inside a cell ends it on its
+  spend; a candidate that loops until `cell_timeout_s` is excluded as `cell_timeout`, as before.
+- **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) is made like any other.
+  An unpriced spend still counts: a capped run stops before its next cell once a recorded result's spend could not
+  be priced, because the cap cannot be read against what it cannot count.
+- **A kind reports its spend as it lands** (`CellSink.add_spend`, or settling a `CellSink.reserve` handle, or by
+  wrapping its client in `CappedCompletion`), and returns it on its output, which is what the cap counts once the
+  cell's result is recorded. `CellSink.reserve` never refuses and `CellSink.cost_cap_reached` is always `False`;
+  `CostCapReached` is no longer raised by the engine. They remain so a host that imports them keeps importing.
+  The shipped adapter's resend of a request a provider refused for a setting it carried is not another attempt:
+  the refused request generated nothing and is taken to be unbilled (an assumption no provider documents), so its
+  `price_ceiling` prices one attempt per request. **It is not free in time.** A refused send can take up to
   one request timeout before it is refused, and a call makes at most `MAX_RESENDS` of them
   (`threetears.evals.negotiation`, 4) before the one that is served, so an outer wall-clock ceiling around one call
   (a host's own, or a cell timeout sized for a number of calls) allows `MAX_RESENDS` × the request timeout past the
   served request's own: up to `MAX_RESENDS + 1` timeouts per call. A host's own client built on `negotiate` is
-  bounded the same way. The engine reserves its own calls this way: every simulator call (a conversation's
-  `drive_conversation`), every judge call in a cell's judge phase, the judge kind's call and the reporter kind's
-  generator calls. A host's kind reserves its candidate's calls through `CellSink.reserve`, or wraps the client
-  in `CappedCompletion`.
-- **A call whose ceiling is above the whole cap can never be made.** Its reservation is refused at any spend, so the
-  run stops `budget_stopped` on reaching it and its case is excluded, after the cases before it were paid for. A
-  launch therefore refuses such an arm before anything is spent (step 3 below), when its kind prices its calls
-  before launch. The judge kind's call reserves the client's `price_ceiling` for the case's prompt times 2 (the
-  judge's parse retry, `JUDGE_CALL_ATTEMPTS`), and the judge asks up to `JUDGE_MAX_TOKENS` (10,240) output
-  tokens, so a judge-role `price_ceiling` well above what 10,240 output tokens plus the prompt cost at the model's
-  rates is pricing a larger output cap than the judge sends.
-- **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) holds nothing; it is
-  made only while the cap is not yet reached. Such calls can pass the cap by about one call per running cell. The
-  shipped client answers `None` before its catalogue is read, for a model the catalogue does not price or lists a
-  price for that it cannot bound, and once the rows are `Catalogue.ceiling_stale_after` old (six hours by default):
-  an enforced cap never holds a call against old prices. The engine awaits the client's `refresh_prices()` before
-  pricing, and the call takes that read as its own (one catalogue read per request), so rows reach that age only
-  when a refresh failed, never by the host sitting idle ([Adopting the engine](adopting-a-host.md#bringing-a-provider)).
-- **Spend nothing reported** is counted only once the cell's result lands, so a kind that neither reserves its
-  calls nor reports them (`CellSink.add_spend`) can pass the cap by up to one whole cell per running cell.
+  bounded the same way.
+- **A call whose ceiling is above the whole cap** is made, and the run stops `budget_stopped` before its next
+  cell having spent more than the cap on it. A launch still refuses such an arm before anything is spent (step 3
+  below), when its kind prices its calls before launch: a cap smaller than one call cannot bound the run. The
+  judge kind's call is priced at the client's `price_ceiling` for the case's prompt times 2 (the judge's parse
+  retry, `JUDGE_CALL_ATTEMPTS`), and the judge asks up to `JUDGE_MAX_TOKENS` (10,240) output tokens, so a
+  judge-role `price_ceiling` well above what 10,240 output tokens plus the prompt cost at the model's rates is
+  pricing a larger output cap than the judge sends.
 
-A call the cap refuses stops the cell: a conversation ends `budget_stopped` — a kind's candidate turn raises
-`CostCapReached` to end it the same way — and a one-shot kind returns what it has. The cell is excluded, no cell
-starts after it, and the run ends `budget_stopped` once the cells running are saved. A judge call the cap refuses
-leaves its dim unscored with an error naming the cap, which a re-judge can repair; the candidate's work is kept.
-When a refused reservation is what stopped the run, the stop says so: the call's ceiling, and what the run would
-have spent with it.
+**What stopped the run is recorded as a typed record, from the counters.** `EvalRun.budget_stops` holds one
+`BudgetStop` per ceiling that stopped it: the `currency` (`cost_usd` or `metered_calls`), the `ceiling`,
+`landed_at_stop` (what had landed when the stop was decided), `landed_final` (once the running cells finished),
+`cells_in_flight` and `cells_not_started`. The overshoot is `landed_final - ceiling`, derived and never stored. When
+both ceilings are reached at the same boundary, both are recorded. The run's summary prints one line written from
+the records, never from prose, for example `stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3
+running cells finished (+7); 12 cells not started`; money reads as `$`. A run the wall-clock budget stopped has no
+record, and its `budget_stop_reason` says so.
+
+**The metered-call ceiling.** `max_metered_calls` bounds the third-party calls a run's tools may make, counted at
+the host's action dispatcher (`MeteredCallLedger.admit`). It counts landed calls, those of the recorded cells
+(`MeteredCallLedger.land`), and stops new cells as above. `metered_calls_refused` (on the run and on each cell) now
+counts only the one refusal that remains.
 
 **An uncapped run** (the host's cost enforcement off) records `max_cost_usd` as null and
 `max_cost_usd_origin` as `uncapped`. When an analysis or a bisection compares spend ceilings, it reads that
@@ -88,9 +94,8 @@ one. Only a run that recorded no ceiling and no origin is undecided.
 **The quick path's cap.** An `Eval` runs uncapped unless given `max_cost_usd=`, and the summary
 says which. The cap is the per-run cap above, counting each result's reported spend (the runner's, and the
 judge's); an eval of several arms splits it equally across them. The candidate cannot be priced before it is called, so
-the cap is asked before each call, and what its `Answer` reports is counted as soon as it returns; the judge's
-calls are reserved. A run can overshoot by the candidate calls in flight when the cap is reached — one per case
-running. A runner that returns no `Answer` and calls no `Model` is invisible to it, and the summary says so.
+the cap is read between cases against the results already recorded. A run can overshoot by the cases running when
+the cap is reached; `measure_latency=True` runs one case at a time and has none. A runner that returns no `Answer` and calls no `Model` is invisible to it, and the summary says so.
 
 **The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
 the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
@@ -115,15 +120,17 @@ at once. The arms of one launch run side by side in one concurrency slot. Estima
 run's wall time as cases × k × the time one cell takes, divided by the width: 30 cases at k=3 and 6 s a cell
 is a little over 2 minutes at a width of 4. A launch that declares latency under test (`measure_latency=True`)
 runs its cells one at a time and its arms one after another, with no other run beside them: the same run
-then takes about 9 minutes, times the number of arms. The cost cap and the metered-call ceiling hold at any
-width: reserved calls never pass the cap, and what can (above) is bounded per running cell. A host with its own
+then takes about 9 minutes, times the number of arms. The cost cap and the metered-call ceiling are read between
+cells at any width, so a run lands past one by at most the cells running when it is reached (above). A host with its own
 pool or queue supplies a `CellExecutor` on `LaunchHost.cell_executor`.
 
 **The out-of-run cap** is `LaunchSettings.max_out_of_run_cost_usd`. It bounds every call the engine makes
 outside a run (below).
 
 **A host with no metered tools** sets `LaunchSettings.max_metered_calls=None`: its runs record a
-ceiling of `0` with origin `none_declared`, and a metered call that happens anyway is refused and counted.
+ceiling of `0` with origin `none_declared`, and a metered call that happens anyway is refused at dispatch and
+counted on `metered_calls_refused`. That is the one in-cell refusal left, and it is no budget: it catches a wrong
+declaration, so it stays, and no between-cells stop is read from it.
 
 ## Every arm is priced before any launcher runs
 

@@ -302,8 +302,8 @@ unasked) answers `None`, logged once with the reason. So do rows older than `Cat
 (`refresh_after` unless given), though a completion is still priced from them. Rows do not reach that age by sitting
 idle: before it prices a call, in a run or out of one, the engine awaits the client's `refresh_prices()` if it has
 one, which on `Model` refreshes rows past `refresh_after`. Only a refresh that failed leaves them old. Under an
-enforced cap, `None` refuses an out-of-run call, and lets a call in a run through unreserved only while the cap is not
-yet reached ([Cost and budgets](cost-and-budgets.md#caps)). A client of your own whose rates go stale offers the same
+enforced cap, `None` refuses an out-of-run call; a call in a run is made either way, and the cap is read between
+cells ([Cost and budgets](cost-and-budgets.md#caps)). A client of your own whose rates go stale offers the same
 `async refresh_prices()`. Optionally, to ride out a short outage without refusing calls, refresh more often than the
 bound (`Catalogue(refresh_after=timedelta(hours=1), ceiling_stale_after=timedelta(hours=6))`), or await
 `catalogue.load()` on a timer of your own; neither is needed for an idle host.
@@ -1072,17 +1072,16 @@ the narrowest of that, the host's `LaunchSettings.max_concurrent_cells` (a ceili
 The runner holds every cell's kind to it, refusing a kind that declares less than the run executes at before
 anything is spent.
 
-**Your kind's paid calls answer to the run's cost cap as they are made.** The cell's sink keeps the cell's spend
-by source and holds each priced call against the cap while it is in flight, so cells running side by side cannot
-together pass it. Before a call whose worst case your client can price, reserve it — `held =
-sink.reserve("candidate", ceiling)`, then `held.settle(cost)` when it returns and `held.release()` if it raises —
-or wrap the client in `CappedCompletion(client, sink=sink, source="candidate")`, which does both for every call,
-pricing each by the client's `price_ceiling`. A call that cannot be priced is reserved with no ceiling, which
-only asks whether the cap is already reached. Spend you learn of any other way, report as it lands
-(`sink.add_spend(source, cost)`); it adds, and never replaces what another source reported. A reservation the
-cap refuses raises `CostCapReached`: a one-shot kind catches it and returns what it has, and inside
-`drive_conversation` it simply propagates out of your candidate turn. The full rule is in [Cost and budgets:
-caps](cost-and-budgets.md#caps).
+**Your kind's paid calls are counted by the run's cost cap when its cell lands, and never refused.** The cell's
+sink keeps the cell's spend by source, and the cap is read between cells, against the cells already recorded: a
+cell running when the cap is reached finishes whole, and a run may land past it by up to the width's worth of cells
+([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
+`CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or take a handle,
+`held = sink.reserve("candidate", ceiling)`, then `held.settle(cost)` when it returns and `held.release()` if it
+raises. Spend you learn of any other way, report as it lands (`sink.add_spend(source, cost)`); it adds, and never
+replaces what another source reported. Return the cell's spend on its output; that is what the cap counts.
+`sink.reserve` never refuses, `sink.cost_cap_reached()` is always `False`, and `CostCapReached` is no longer raised
+by the engine: they stay so a host that imports them keeps importing, and a kind has nothing to catch.
 
 A run is one arm with one `candidate_model`; a launch naming several models starts one run per model, and
 runs of different kinds are always different variants. A reader of yours that answers for a run its lever
@@ -1562,13 +1561,10 @@ stored on the cell's `EvalTrace`, and a re-judge sends exactly what the first ju
 **Conversations.** A conversing kind's template carries a `ConversationSpec`: its simulated actors, who
 speaks next, and the turn limit. A document or classifier template carries none. The kind runs it with
 `drive_conversation(driver, candidate_turn, post_user_turn, llm=..., sink=sink)`, handing over its cell's
-sink: every simulator call is reserved against the run's cost cap at the client's own ceiling before it is
-made (a client with no `price_ceiling` has the cap asked instead), and the loop asks before every decision
-whether the cap is reached (`CellSink.cost_cap_reached`), stopping `budget_stopped` when it is — the runner
-excludes that cell and ends the run `budget_stopped`, so one conversation (thousands of simulator calls at the
-schema's maxima) cannot run past the cap. Your `candidate_turn` holds the candidate's own calls the same way;
-when the cap has no room it raises `CostCapReached` (a refused `sink.reserve` raises it for you), and the
-conversation ends `budget_stopped` — not `candidate_error` — with the rounds already answered kept. Fold the driver's calls with `fold_usage`: the stored
+sink: every simulator call goes through it, and its cost lands on the cell's `simulator` total. The loop asks no
+ceiling: a conversation runs to its turn limit or its actors' departure, and the run's cost cap is read between
+cells, so a conversation the run has outspent still finishes. What bounds one is its turn budget and the cell
+timeout. Fold the driver's calls with `fold_usage`: the stored
 `simulator` rows are one per actor and purpose (`RoleUsage.actor_id`, `RoleUsage.purpose`).
 
 **A round can be the world's.** `ConversationSpec.world_rounds` names rounds whose stimulus is a triggered
@@ -1662,9 +1658,12 @@ so it goes through the deprecation cycle, never straight out in one release's no
 - **The `inner_agent` and `external` usage roles** (`KnownUsageRole`). They put a background task's own model
   calls and its paid third-party calls on spend lines of their own. Skip them and that spend is not in the
   role breakdown or the blended cost.
-- **`MeteredCallLedger`** (`run.metering`). It caps the third-party calls a run's tools may make, counted at
+- **`MeteredCallLedger`** (`run.metering`). It bounds the third-party calls a run's tools may make, counted at
   your action dispatcher (`max_metered_calls`), for a provider quota the cost cap cannot see (search credits,
-  a billed API). Skip it and a run's third-party quota is bounded only by your tools' own configuration.
+  a billed API). The ceiling is read between cells against the calls of the cells already recorded: once it is
+  reached no new cell starts and the run ends `budget_stopped`; it never refuses a call inside a cell. A host that
+  declared no metered tools is the exception: a metered call there is refused at dispatch. Skip it and a run's
+  third-party quota is bounded only by your tools' own configuration.
 - **Triggered world dimensions** (`Triggered`, `ConversationSpec.world_rounds`). State that arrives on a
   condition (a turn, an event, a person) rather than at the first turn: a case's seed arms it, and a world
   round or your kind fires it. Skip them and your world is set once, before the first turn, and no goal check
