@@ -38,6 +38,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -137,7 +139,7 @@ def test_only_bind_constructs_the_border_key() -> None:
         relative = _relative(path)
         if relative == _SANCTIONED_SITE or relative in exempt:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_python_path(path)
         offenders.extend(
             f"{relative}:{key.lineno}"
             for key in _dict_keys_written(tree)
@@ -175,7 +177,7 @@ def test_no_module_spells_the_border_key_as_a_literal() -> None:
         relative = _relative(path)
         if relative in allowed:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_python_path(path)
         offenders.extend(
             f"{relative}:{node.lineno}"
             for node in ast.walk(tree)
@@ -195,7 +197,7 @@ def test_the_sanctioned_site_actually_constructs_it() -> None:
     An enforcement test whose sanctioned entry has moved silently enforces
     nothing: every file passes, including the one that took over the job.
     """
-    tree = ast.parse((_REPO_ROOT / _SANCTIONED_SITE).read_text(encoding="utf-8"))
+    tree = parse_python_path(_REPO_ROOT / _SANCTIONED_SITE)
 
     constructed = [key for key in _dict_keys_written(tree) if isinstance(key, ast.Name) and key.id == _BORDER_KEY]
 
@@ -222,7 +224,7 @@ def test_the_guard_catches_a_planted_second_site(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    tree = ast.parse(planted.read_text(encoding="utf-8"))
+    tree = parse_python_path(planted)
     offenders = [key for key in _dict_keys_written(tree) if isinstance(key, ast.Name) and key.id == _BORDER_KEY]
 
     assert offenders, "the AST walk missed a dict literal keyed by the border constant"
@@ -240,7 +242,7 @@ def test_a_docstring_mention_is_not_an_offence(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    tree = ast.parse(innocent.read_text(encoding="utf-8"))
+    tree = parse_python_path(innocent)
     offenders = [key for key in _dict_keys_written(tree) if isinstance(key, ast.Name) and key.id == _BORDER_KEY]
 
     assert not offenders, "a docstring mentioning the key was treated as a construction site"

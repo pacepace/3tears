@@ -36,6 +36,9 @@ from pathlib import Path
 
 import pytest
 
+from threetears.enforcement.common import parse_python_path
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 #: shipped source AND tests. a test fixture reintroducing the override is
 #: not harmless: the two suites best placed to catch an addressing
@@ -152,7 +155,7 @@ def test_no_entity_writes_its_own_id(path: Path) -> None:
     if relative == _DERIVATION_OWNER:
         pytest.skip("owns the derivation every entity inherits")
 
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = parse_python_path(path)
     offenders = _id_assignments(tree)
 
     assert not offenders, (

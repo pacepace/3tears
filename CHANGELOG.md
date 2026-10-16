@@ -37,6 +37,25 @@ text of one line reads exactly as before.
 **Fixed (tests):** the hook-installer tests run git with the test repository's config only; a
 machine whose global `core.hooksPath` is a directory they may not write failed all of them.
 
+### The enforcement gates parse each file once per run
+
+- `threetears.enforcement.common.parse_python_path(path)` parses a file as
+  `ast.parse(path.read_text(encoding="utf-8"))` would, and raises what it would, but caches the
+  result by path while the file's `mtime_ns`, size and inode are unchanged. `parse_python_file`
+  is its error-absorbing form and shares the cache. **A cached tree is shared by every caller:
+  read it, never mutate it.** `clear_parse_cache()` releases the cache, which holds every tree a
+  whole repository scan produced (hundreds of megabytes). One limit: a same-size rewrite inside
+  one tick of the filesystem's timestamp clock keeps the stamp, so a caller that rewrites a file
+  and re-parses it at once changes its size or clears the cache first.
+- The shared walkers that parsed files by hand now go through the cache. Most `src/` files were
+  parsed about 60 times per `tests/enforcement` run; that suite went from about 135 s to 82 s on
+  a macOS checkout, and `ast.parse` calls from 84,418 to 11,462. `tests/enforcement/conftest.py`
+  clears the cache once the run leaves that directory.
+- `scan_private_bindings` resolves each module name against each search root once per scan,
+  not once per import: 1,045,907 `stat` calls on this repo became about 48,600. A `stat` that
+  misses costs about 120 us on a Docker Desktop bind mount, where that scan's setup had taken
+  461 s.
+
 ## v0.69.0 -- 2026-10-15
 
 ### The collection keys purge door takes proofs; develop's purge and export requests read tolerantly
