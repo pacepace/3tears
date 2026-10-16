@@ -22,6 +22,7 @@ from threetears.evals.run import KindWiring, LaunchHost, LaunchRequest, MeteredC
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
 from packages.evals.tests.off_loop import off_loop
@@ -58,7 +59,9 @@ def _host(
         )
 
     (launchable,) = host.kinds.values()
-    launching = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=launch)})
+    launching = replace(
+        host, eval_host=with_registry(host.eval_host, {TOY_EXTRACTOR_KIND: replace(launchable, launch=launch)})
+    )
     return launching, storage, admitted
 
 

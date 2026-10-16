@@ -11,7 +11,7 @@ would run is its kinds' answer (``LaunchableKind.plan_arm``), which a launch est
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.host import EvalHost
@@ -122,9 +122,12 @@ class OpsHost:
         :return: The host.
         :rtype: OpsHost
         """
+        # The registry is the host's template checks' ``kinds``, so nothing launches here by emptying it.
+        checks = eval_host.template_checks
+        if checks is not None and checks.kinds:
+            eval_host = replace(eval_host, template_checks=replace(checks, kinds={}))
         launch = LaunchHost(
             eval_host=eval_host,
-            kinds={},
             settings=_reading_settings,
             job_timeout_factory=default_job_timeout,
             # A world's placement is stamped on a launched run, and nothing launches here.

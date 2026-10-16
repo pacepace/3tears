@@ -34,7 +34,7 @@ from threetears.evals.run import (
     start_run,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT, toyhost_observation
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host, with_registry
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -125,7 +125,7 @@ async def test_admission_is_refused_against_the_hosts_ceiling_naming_its_setting
 async def test_a_kind_the_host_registers_no_launcher_for_is_refused():
     """The launch registry is the host's: a host with no entry for the template's kind launches nothing."""
     host, _ = off_loop(_launching)
-    bare = replace(host, kinds={})
+    bare = replace(host, eval_host=with_registry(host.eval_host, {}))
 
     with pytest.raises(ValidationFailedError, match="has no launcher"):
         await start_run(
@@ -206,7 +206,6 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
     eval_host = replace(toyhost_host(), clients=lambda role, model, *, temperature=None: None)  # type: ignore[arg-type,return-value]
     launch_host = LaunchHost(
         eval_host=eval_host,
-        kinds={},
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: {},
@@ -218,7 +217,6 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
     with pytest.raises(TypeError, match="job_manager"):
         LaunchHost(  # type: ignore[call-arg]
             eval_host=eval_host,
-            kinds={},
             settings=lambda: TOYHOST_LAUNCH_SETTINGS,
             job_timeout_factory=default_job_timeout,
             world_placements=lambda _run: {},
@@ -271,14 +269,17 @@ def _launching_with(
 
     launching = replace(
         host,
-        kinds={
-            TOY_EXTRACTOR_KIND: LaunchableKind(
-                launch=launch,
-                resolve_subject=lambda _subject, _scope: None,
-                unhonoured_launch_arguments=unhonoured,
-                plan_arm=None if "n_variations" in unhonoured else plan,
-            )
-        },
+        eval_host=with_registry(
+            host.eval_host,
+            {
+                TOY_EXTRACTOR_KIND: LaunchableKind(
+                    launch=launch,
+                    resolve_subject=lambda _subject, _scope: None,
+                    unhonoured_launch_arguments=unhonoured,
+                    plan_arm=None if "n_variations" in unhonoured else plan,
+                )
+            },
+        ),
         # Every arm priced at nothing, so a generating launch reaches the launcher this drives.
         launch_pricer=lambda _quote: ArmPrice(predicted_usd=0.0, basis="scripted"),
     )

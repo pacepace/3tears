@@ -670,6 +670,7 @@
 "threetears.evals.run.AdmissionTicket": "provisional",
 "threetears.evals.run.admit_group": "provisional",
 "threetears.evals.run.admit_launch": "provisional",
+"threetears.evals.run.admit_template": "host-contract",
 "threetears.evals.run.AdmittedLaunch": "provisional",
 "threetears.evals.run.ArmOutcome": "provisional",
 "threetears.evals.run.ArmPlan": "stable",

@@ -3238,7 +3238,7 @@
     },
     "threetears.evals.kernel.host.TemplateChecks": {
       "kind": "dataclass",
-      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, IgnoresTemplateFields], refuse_inadmissible_template_case: Callable[[TemplateCaseFields], None])",
+      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, LaunchableKind], refuse_inadmissible_template_case: Callable[[TemplateCaseFields], None])",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ToneRegister": {
@@ -3345,6 +3345,11 @@
       "kind": "async function",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.run.admit_template": {
+      "kind": "function",
+      "signature": "admit_template(template: EvalTemplate, *, profile: HostProfile, checks: TemplateChecks, active_judge_config: Callable[[str], str | None]) -> EvalTemplate",
+      "tier": "host-contract"
     },
     "threetears.evals.run.AdmittedLaunch": {
       "kind": "class",
@@ -3893,7 +3898,7 @@
     },
     "threetears.evals.run.LaunchHost": {
       "kind": "dataclass",
-      "signature": "LaunchHost(eval_host: EvalHost, kinds: Mapping[str, LaunchableKind], settings: Callable[[], LaunchSettings], job_timeout_factory: JobTimeoutFactory, world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None, launch_pricer: LaunchPricer | None = None, max_concurrent_jobs: int = 2, cell_executor: CellExecutor | None = None, on_job_progress: Callable[[str, dict[str, Any]], None] | None = None, on_run_end: RunEndHook | None = None, job_lease_s: float = 60.0, job_leases: JobLeases (derived), job_manager: EvalJobManager (derived))",
+      "signature": "LaunchHost(eval_host: EvalHost, settings: Callable[[], LaunchSettings], job_timeout_factory: JobTimeoutFactory, world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None, launch_pricer: LaunchPricer | None = None, max_concurrent_jobs: int = 2, cell_executor: CellExecutor | None = None, on_job_progress: Callable[[str, dict[str, Any]], None] | None = None, on_run_end: RunEndHook | None = None, job_lease_s: float = 60.0, job_leases: JobLeases (derived), job_manager: EvalJobManager (derived))",
       "tier": "host-contract"
     },
     "threetears.evals.run.LaunchPricer": {

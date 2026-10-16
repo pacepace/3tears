@@ -19,7 +19,7 @@ from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatc
 from threetears.evals.run.launch import LaunchHost
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, make_eval_run
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host, with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.off_loop import off_loop
 
@@ -73,8 +73,7 @@ def _results(run: EvalRun, *, cost: float, transcript: int) -> list[EvalResult]:
 def _launch_host(storage: EvalStorage, watch: RegressionWatch) -> LaunchHost:
     eval_host = toyhost_host(storage=storage)
     return LaunchHost(
-        eval_host=eval_host,
-        kinds={},
+        eval_host=with_registry(eval_host, {}),
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda run: {},

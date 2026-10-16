@@ -43,6 +43,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateOutput,
@@ -500,16 +501,18 @@ def courier_launch_host() -> LaunchHost:
         return UnknownSubject(remedy=f"the courier host holds one subject, {COURIER_SUBJECT.subject_id}")
 
     launch_host = LaunchHost(
-        eval_host=eval_host,
-        kinds={
-            COURIER_KIND: LaunchableKind(
-                launch=launch,
-                resolve_subject=resolve_subject,
-                unhonoured_launch_arguments=frozenset(
-                    {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
-                ),
-            )
-        },
+        eval_host=with_registry(
+            eval_host,
+            {
+                COURIER_KIND: LaunchableKind(
+                    launch=launch,
+                    resolve_subject=resolve_subject,
+                    unhonoured_launch_arguments=frozenset(
+                        {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
+                    ),
+                )
+            },
+        ),
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: world.place(seeded=("road_closures",), carriers=RoutePlannerKind.CARRIERS),

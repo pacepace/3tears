@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.kernel.host.timeouts import CellTimeoutFactory
+    from threetears.evals.run.launch import LaunchableKind
     from threetears.evals.schema.traces import TraceSink
     from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
     from threetears.evals.schema.models import EvalTemplate
@@ -169,10 +170,11 @@ class TemplateChecks:
     :ivar refuse_undeliverable_template: Whether the template declares only apparatus its candidate kind can honour: the
         host's kind capability table. The template fields a kind never acts on are not its to refuse: every path
         refuses those itself, from ``kinds``.
-    :ivar kinds: The host's launch registry, by kind name: the mapping its ``LaunchHost`` is built with. Every path that
-        admits a template refuses one stating a field its kind's entry ignores
-        (``threetears.evals.run.authoring.refuse_ignored_template_fields``), as the launch dispatch does; a kind
-        the registry does not carry is refused nothing here, and its launch is refused by name.
+    :ivar kinds: The host's launch registry, by kind name, stated here and nowhere else: ``LaunchHost.kinds`` reads
+        this mapping off the host's checks, so the registry a template is admitted against and the one a launch
+        dispatches through cannot differ. Every path that admits a template refuses one stating a field its kind's
+        entry ignores (``threetears.evals.run.authoring.refuse_ignored_template_fields``), as the launch dispatch
+        does; a kind the registry does not carry is refused nothing here, and its launch is refused by name.
     :ivar refuse_inadmissible_template_case: Whether a template's own case (``SeedTemplateCase``, ``host_payload``
         included) is one the host admits: its label, the shape of its payload. Read by the seed, a definition reset and
         ``case_rename``, before any of them writes, so a host's validation of its cases lives in one place; a case it
@@ -183,7 +185,7 @@ class TemplateChecks:
     require_known_tools_allowed: Callable[[Sequence[str] | None], None]
     refuse_undeclared_world_seed: Callable[[EvalTemplate], None]
     refuse_undeliverable_template: Callable[[EvalTemplate], None]
-    kinds: Mapping[str, IgnoresTemplateFields]
+    kinds: Mapping[str, LaunchableKind]
     refuse_inadmissible_template_case: Callable[[TemplateCaseFields], None]
 
 

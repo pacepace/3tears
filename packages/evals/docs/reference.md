@@ -429,6 +429,8 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 **Functions**
 
+- **`admit_template`** · *host contract* · function · Every refusal a template meets before it is first written, in `create_template`'s order.
+  <br>`admit_template(template: EvalTemplate, *, profile: HostProfile, checks: TemplateChecks, active_judge_config: Callable[[str], str | None]) -> EvalTemplate`
 - **`assert_preconditions`** · function · Assert at t=0 that the world this template presumes actually holds.
   <br>`assert_preconditions(template: EvalTemplate, test_case: EvalTestCase, seeded: Mapping[str, Any], *, world: WorldRegistry | None) -> list[PreconditionOutcome]`
 - **`build_judge_service`** · function · Build the `JudgeService` for a run, with its judge attribution.
