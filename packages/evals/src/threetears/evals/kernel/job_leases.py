@@ -561,7 +561,7 @@ class JobLeases:
     held lease renews at once, one hop each, so one slow record delays no other. The store is called from that pool's
     threads as it is from the host's: a store must be safe to call from several threads. A renewal that loses its
     conditional writes to the holder's own progress writes is tried again within the interval after a short jittered
-    wait (:data:`CONTENDED_BACKOFF_S`),.
+    wait (:data:`CONTENDED_BACKOFF_S`).
     """
 
     def __init__(
