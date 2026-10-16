@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.69.0 -- 2026-10-16
+
 ### 3tears-evals: the question under the title, verdicts by arm, and a case renamed through the package (evaladopt.33)
 
 Breaking for a host in one place: `TemplateChecks` takes a required `kinds`. Every typed verdict is unchanged; only
