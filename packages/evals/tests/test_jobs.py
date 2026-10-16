@@ -1028,9 +1028,11 @@ class TestShutdownSaysWhatItCouldNotSettle:
         storage = InMemoryRunStore()
         manager = EvalJobManager(storage)
         release = asyncio.Event()
+        inside = asyncio.Event()
 
         async def work(_progress: Any) -> None:
             try:
+                inside.set()
                 await asyncio.Event().wait()
             finally:
                 # A cancelled job whose teardown outlasts the settle window — the shape of a
@@ -1038,6 +1040,9 @@ class TestShutdownSaysWhatItCouldNotSettle:
                 await asyncio.shield(release.wait())
 
         task = await self._started(manager, storage, "run-slow", work)
+        # `running` is written before the work is entered: a cancel in that gap settles at once, with no
+        # teardown to outlast the wait, so the shutdown waits until the work is inside its `try`.
+        await asyncio.wait_for(inside.wait(), timeout=5)
         try:
             with caplog.at_level(logging.WARNING, logger="threetears.evals.run.jobs"):
                 unsettled = await manager.shutdown(timeout=0.05)
