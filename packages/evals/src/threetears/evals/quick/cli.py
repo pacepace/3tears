@@ -586,7 +586,7 @@ async def _judge_temperature(host: EvalHost, args: argparse.Namespace) -> None:
     # The comparison's own work, awaited here in the foreground: its record is written and held as a job's is, so
     # it is kept in the store beside the run, and the comparison is read off the answers it recorded.
     work = await judge_temperature_work(host, args.run_id, args.scope, **common)
-    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    leases = JobLeases(host.storage)
     try:
         check = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
     finally:
