@@ -354,6 +354,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 'template'`
 - **`KIND_TEXT`** · *host contract* · constant (str) · A seed whose constant is a single string, registered with a shared-prompt registry.
   <br>`= 'text'`
+- **`LEASE_POOL_WORKERS`** · *host contract* · constant (int) · How many threads the leases' own pool (`JobLeases`) runs store round-trips on: enough that every lease a busy launch holds (a launch and each of its runs) renews at once; renewals past it wait only for each other.
+  <br>`= 8`
 - **`MATCH_MEASURE`** · constant (str) · The core measure one classification's verdict is reported under — the one a classifier kind lands on `host_measures`, a bool.
   <br>`= 'match'`
 - **`METRIC_DESCRIPTORS`** · constant (dict) · The engine's own measures, each one's descriptor keyed by its name.

@@ -439,6 +439,7 @@
 "threetears.evals.kernel.KIND_TEMPLATE": "host-contract",
 "threetears.evals.kernel.KIND_TEXT": "host-contract",
 "threetears.evals.kernel.lease_lapsed": "provisional",
+"threetears.evals.kernel.LEASE_POOL_WORKERS": "host-contract",
 "threetears.evals.kernel.LEASE_WRITE_ATTEMPTS": "provisional",
 "threetears.evals.kernel.LeaseClock": "provisional",
 "threetears.evals.kernel.LeasedJobKind": "provisional",

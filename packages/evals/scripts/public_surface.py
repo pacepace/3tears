@@ -687,6 +687,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.StoreClock",
         "threetears.evals.schema.AsyncStoreClock",
         "threetears.evals.schema.StoreConflict",
+        # How many threads the job leases' own pool runs store round-trips on: a host sizing a database pool per
+        # process adds it, so a renewal never waits on a connection behind cell work.
+        "threetears.evals.kernel.LEASE_POOL_WORKERS",
         "threetears.evals.testing.STORE_CONFORMANCE_CASES",
         "threetears.evals.testing.StoreConformanceCase",
         "threetears.evals.testing.check_completion_conformance",
@@ -1185,7 +1188,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 521  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's.
+DECLARED_CEILING = 522  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's.; LEASE_POOL_WORKERS, which a host sizing its database pool reads.
 
 
 def tier_of(qualified: str) -> Tier:

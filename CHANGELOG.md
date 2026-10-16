@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a host reads the lease pool's width rather than copying it
+
+- `threetears.evals.kernel.LEASE_POOL_WORKERS` (`host-contract`) is exported: how many threads the job leases' own
+  pool runs store round-trips on. A host that sizes a database pool per process adds it to its blocking executor's
+  width, so a renewal never waits on a connection behind cell work, and the sizing follows the package's width.
+
 ### 3tears-evals: a model bounds its own wait on the price catalogue (`Model(catalogue_fetch_timeout=)`)
 
 - **`Model(catalogue_fetch_timeout=)` overrides `CATALOGUE_FETCH_TIMEOUT_S` for one model** (`None`, the default, keeps
