@@ -56,7 +56,11 @@ def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseR
     The name is curation, as a run's labels are: no digest or identity key reads it, so the case keeps its id, its
     ``content_hash``, its ``seed_name`` and ``seed_digest`` (a renamed seeded case still reads stale or customized by
     its content alone) and every result measured against it. The write goes through the store's own path for a case
-    (``save_test_case``), so the host's routing and its write rules hold. The name already carried writes nothing.
+    (``save_test_case``), so the host's routing and its write rules hold, conditionally on the token read with the
+    case: a write that landed between the read and the save (a retirement, an edit) refuses the rename with
+    :class:`ConflictError` rather than being undone. The name already carried writes nothing. Two renames of sibling
+    cases to one name at once can both pass the duplicate check, since the check reads other documents than the one
+    each writes.
 
     Args:
         host: The host whose store holds the case.
@@ -73,7 +77,8 @@ def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseR
             inside, a bare number, a generated id, or one longer than a case label runs (``humanize("case", name)``
             is empty), so the page would name it ``case N``.
         NotFoundError: No case with that id in the scope.
-        ConflictError: Another case of its template, or of a case set listing it, already carries the name.
+        ConflictError: Another case of its template, or of a case set listing it, already carries the name; or the
+            case was written since it was read.
         StorageError: The write did not land.
     """
     given = name.strip()
@@ -84,7 +89,7 @@ def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseR
             remedy="name it the way its author would, such as double-charge",
         )
     storage = host.storage
-    case = storage.load_test_case(case_id, scope_id)
+    case, etag = storage.load_test_case_with_etag(case_id, scope_id)
     if case is None:
         raise NotFoundError("test case", case_id, remedy=FIND_TEST_CASE)
     if case.name == given:
@@ -103,7 +108,7 @@ def case_rename(host: EvalHost, scope_id: str, case_id: str, name: str) -> CaseR
         )
     data = case.to_dict()
     data["name"] = given
-    storage.save_test_case(EvalTestCase.from_dict(data))
+    storage.save_test_case(EvalTestCase.from_dict(data), if_match=etag)
     log.info("eval.case_rename case=%s scope=%s old=%s new=%s", case.id, scope_id, case.name, given)
     return CaseRenamed(test_case_id=case.id, old_name=case.name, new_name=given)
 

@@ -18,12 +18,13 @@ from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standa
 from threetears.evals.analysis import assemble_context_bundle, build_code_only_report, get_campaign, report_markdown
 from threetears.evals.kernel import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.ops import CaseRenamed, case_rename
+from threetears.evals.ops import CaseRenamed, case_rename, reporter_case_archive
 from threetears.evals.schema import CaseSet, EvalTestCase, case_set_doc_id
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.test_reporter_case_actions import _fixture as reporter_fixture, _freeze as freeze
 
 _SCOPE = TOYHOST_SCOPE
 
@@ -114,6 +115,27 @@ def test_a_name_another_case_of_a_case_set_listing_it_carries_is_refused() -> No
 def test_an_unknown_case_is_refused() -> None:
     with pytest.raises(NotFoundError, match="test case 'nope' not found"):
         case_rename(_host(), _SCOPE, "nope", "refund")
+
+
+def test_a_write_landing_between_the_read_and_the_save_refuses_the_rename_rather_than_undoing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = reporter_fixture()
+    host = fixture.host.eval_host
+    case_id = freeze(fixture).test_case_id
+    read = host.storage.load_test_case_with_etag
+
+    def retired_meanwhile(test_case_id: str, scope_id: str) -> tuple[EvalTestCase | None, str | None]:
+        loaded = read(test_case_id, scope_id)
+        reporter_case_archive(host, test_case_id, scope_id, archived=True, reason="orphaned")
+        return loaded
+
+    monkeypatch.setattr(host.storage, "load_test_case_with_etag", retired_meanwhile)
+    with pytest.raises(ConflictError, match="changed since it was read"):
+        case_rename(host, _SCOPE, case_id, "orphaned-memo")
+    stored = host.storage.load_test_case(case_id, _SCOPE)
+    assert stored is not None and stored.archived and stored.archived_reason == "orphaned"
+    assert stored.name != "orphaned-memo"
 
 
 # --- the action -----------------------------------------------------------------------------------------------------

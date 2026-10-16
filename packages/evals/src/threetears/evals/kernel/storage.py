@@ -571,12 +571,16 @@ class DefinitionStore(Protocol):
         """See :meth:`EvalStorage.delete_template`."""
         ...
 
-    def save_test_case(self, test_case: EvalTestCase, /) -> None:
+    def save_test_case(self, test_case: EvalTestCase, /, *, if_match: str | None = None) -> None:
         """See :meth:`EvalStorage.save_test_case`."""
         ...
 
     def load_test_case(self, test_case_id: str, scope_id: str, /) -> EvalTestCase | None:
         """See :meth:`EvalStorage.load_test_case`."""
+        ...
+
+    def load_test_case_with_etag(self, test_case_id: str, scope_id: str, /) -> tuple[EvalTestCase | None, str | None]:
+        """See :meth:`EvalStorage.load_test_case_with_etag`."""
         ...
 
     def query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]:
@@ -1491,13 +1495,22 @@ class EvalStorage:
     # EvalTestCase
     # =========================================================================
 
-    def save_test_case(self, test_case: EvalTestCase) -> None:
-        """Persist a test case."""
-        self._save(test_case.to_dict())
+    def save_test_case(self, test_case: EvalTestCase, *, if_match: str | None = None) -> None:
+        """Persist a test case; with ``if_match`` (from :meth:`load_test_case_with_etag`), only if nothing else wrote
+        it since it was read, else :class:`ConflictError`."""
+        self._save(test_case.to_dict(), if_match=if_match)
 
     def load_test_case(self, test_case_id: str, scope_id: str) -> EvalTestCase | None:
         """Load a test case by id + scope."""
         return self._load(EvalTestCase, test_case_id, scope_id)
+
+    def load_test_case_with_etag(self, test_case_id: str, scope_id: str) -> tuple[EvalTestCase | None, str | None]:
+        """Load a test case plus the token a conditional write of it must present (:meth:`save_test_case`)."""
+        data, etag = self._store.get_with_etag(test_case_id, scope_id)
+        data = self._of_type(EvalTestCase, data)
+        if data is None:
+            return None, None
+        return self._hydrate(EvalTestCase, data), etag
 
     def query_test_cases(
         self,
