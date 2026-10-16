@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host, with_registry
 from packages.evals.tests.fixtures.toyhost.kind import (
     TOY_EXTRACTOR_KIND,
     ScriptedExtractionClient,
@@ -451,7 +451,9 @@ async def test_a_launched_run_stopped_by_its_ceiling_stores_the_record_and_its_s
         )
 
     (launchable,) = host.kinds.values()
-    launching = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=launch)})
+    launching = replace(
+        host, eval_host=with_registry(host.eval_host, {TOY_EXTRACTOR_KIND: replace(launchable, launch=launch)})
+    )
     template = toyhost_template().model_copy(update={"goal_state_checks": []})
     off_loop(storage.save_template, template)
 

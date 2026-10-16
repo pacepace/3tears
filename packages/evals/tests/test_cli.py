@@ -43,6 +43,7 @@ from threetears.evals.run import (
     launch_run,
     start_run,
 )
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.courierhost import (
     COURIER_KIND,
     COURIER_LAUNCH_SETTINGS,
@@ -229,8 +230,9 @@ def test_run_exits_one_when_a_run_does_not_complete(capsys: pytest.CaptureFixtur
         return await launch_run(launch_host, request, wiring)
 
     launch_host = LaunchHost(
-        eval_host=eval_host,
-        kinds={COURIER_KIND: LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None)},
+        eval_host=with_registry(
+            eval_host, {COURIER_KIND: LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None)}
+        ),
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: world.place(seeded=(), carriers=()),
@@ -312,8 +314,9 @@ def _launch_host_whose_launcher_raises() -> LaunchHost:
         raise ValueError("the launcher tripped over its own config")
 
     return LaunchHost(
-        eval_host=eval_host,
-        kinds={COURIER_KIND: LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None)},
+        eval_host=with_registry(
+            eval_host, {COURIER_KIND: LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None)}
+        ),
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: world.place(seeded=(), carriers=()),

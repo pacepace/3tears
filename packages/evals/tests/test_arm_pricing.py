@@ -61,6 +61,7 @@ from packages.evals.tests.factories import make_judge_config
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import (
     TOYHOST_LAUNCH_SETTINGS,
     plan_toyhost_arm,
@@ -104,7 +105,9 @@ class _Launched:
 
         self.host: LaunchHost = replace(
             toy,
-            kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=launch, plan_arm=plan)},
+            eval_host=with_registry(
+                toy.eval_host, {TOY_EXTRACTOR_KIND: replace(launchable, launch=launch, plan_arm=plan)}
+            ),
             launch_pricer=quoted if priced and pricer is not None else None,
         )
 
@@ -419,14 +422,17 @@ class _Judged:
 
         self.host: LaunchHost = replace(
             toy,
-            kinds={
-                TOY_EXTRACTOR_KIND: replace(
-                    launchable,
-                    launch=launch,
-                    plan_arm=plan,
-                    unhonoured_launch_arguments=frozenset({"cassette_mode", "n_variations", "simulator_model"}),
-                )
-            },
+            eval_host=with_registry(
+                toy.eval_host,
+                {
+                    TOY_EXTRACTOR_KIND: replace(
+                        launchable,
+                        launch=launch,
+                        plan_arm=plan,
+                        unhonoured_launch_arguments=frozenset({"cassette_mode", "n_variations", "simulator_model"}),
+                    )
+                },
+            ),
             launch_pricer=quoted,
         )
 

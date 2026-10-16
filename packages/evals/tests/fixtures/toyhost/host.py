@@ -12,6 +12,10 @@ the engine's bare cell timeout. A caller that wants spans passes its own sink.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import replace
+
+from threetears.evals.run import LaunchableKind, LaunchHost
 from threetears.evals.kernel import EvalStorage, withhold_failure_detail
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.kernel.host import (
@@ -38,6 +42,35 @@ TOYHOST_TEMPLATE_CHECKS = TemplateChecks(
     refuse_undeliverable_template=_admit,
     kinds={},
 )
+
+
+def with_registry(eval_host: EvalHost, kinds: Mapping[str, LaunchableKind]) -> EvalHost:
+    """``eval_host`` with ``kinds`` as the launch registry, which a host states once, on its template checks.
+
+    A host with no template checks gets the admit-everything ones (:data:`TOYHOST_TEMPLATE_CHECKS`).
+
+    :param eval_host: The host.
+    :ptype eval_host: EvalHost
+    :param kinds: The launch registry, by kind name.
+    :ptype kinds: Mapping[str, LaunchableKind]
+    :return: The host, over ``kinds``.
+    :rtype: EvalHost
+    """
+    checks = eval_host.template_checks if eval_host.template_checks is not None else TOYHOST_TEMPLATE_CHECKS
+    return replace(eval_host, template_checks=replace(checks, kinds=kinds))
+
+
+def with_kinds(launch_host: LaunchHost, kinds: Mapping[str, LaunchableKind]) -> LaunchHost:
+    """``launch_host`` launching ``kinds`` instead: the registry lives on its template checks, so that is what changes.
+
+    :param launch_host: The host.
+    :ptype launch_host: LaunchHost
+    :param kinds: The launch registry, by kind name.
+    :ptype kinds: Mapping[str, LaunchableKind]
+    :return: The host, with everything else as it was and ``kinds`` as its registry.
+    :rtype: LaunchHost
+    """
+    return replace(launch_host, eval_host=with_registry(launch_host.eval_host, kinds))
 
 
 def toyhost_host(
@@ -82,4 +115,4 @@ def toyhost_host(
     )
 
 
-__all__ = ["TOYHOST_TEMPLATE_CHECKS", "toyhost_host"]
+__all__ = ["TOYHOST_TEMPLATE_CHECKS", "toyhost_host", "with_kinds", "with_registry"]

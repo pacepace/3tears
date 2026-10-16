@@ -26,6 +26,7 @@ from threetears.evals import Answer, Eval, Judge
 from threetears.evals.quick import run_cli
 from threetears.evals.schema import RubricDim
 from threetears.evals.run import LaunchHost, LaunchSettings
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.off_loop import off_loop
 
 CASES = [{"n": index} for index in range(24)]
@@ -108,8 +109,7 @@ async def test_the_action_and_the_cli_return_the_python_call_s_frontier(capsys: 
     )
     ops_host = OpsHost(
         launch=LaunchHost(
-            eval_host=host,
-            kinds={},
+            eval_host=with_registry(host, {}),
             settings=lambda: settings,
             job_timeout_factory=default_job_timeout,
         )

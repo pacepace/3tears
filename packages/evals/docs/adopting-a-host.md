@@ -130,8 +130,9 @@ pass it to every entrypoint. It holds:
   about a template only you can answer, and the kinds you launch. `require_known_tools_allowed` asks whether each tool
   it allows is in your catalog, `refuse_undeclared_world_seed` whether its world seed names only paths your world can
   seed, and `refuse_undeliverable_template` whether its kind can honour what it declares; each raises
-  `ValidationFailedError` to refuse and returns `None` to admit. `kinds` (required) is the registry your `LaunchHost`
-  is built with, the same mapping: a template stating a field its kind's entry never acts on
+  `ValidationFailedError` to refuse and returns `None` to admit. `kinds` (required) is your launch registry, by
+  kind name, stated here and nowhere else: your `LaunchHost` reads it off its `EvalHost`'s checks and takes no `kinds`
+  of its own, so no template is admitted against a kind your launch does not carry, or the reverse. A template stating a field its kind's entry never acts on
   (`LaunchableKind.ignored_template_fields`) is refused with the launch dispatch's own message, so your
   `refuse_undeliverable_template` need not check those fields itself; it keeps only the refusals the package cannot
   make for you. `create_template`, `update_template`, the boot seed, a definition reset and the `definitions_reset`
@@ -142,7 +143,7 @@ pass it to every entrypoint. It holds:
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
 An app that starts runs builds a `LaunchHost` (in `threetears.evals.run`) around its `EvalHost`: the
-launch settings, a registry of the kinds it can launch, a job timeout, `world_placements` (required exactly
+launch settings (its registry of launchable kinds is the `kinds` of the `EvalHost`'s template checks, above), a job timeout, `world_placements` (required exactly
 when the profile declares a world: what each assembled run did with every dimension) and a `launch_pricer`
 (without one, an arm under an enforced cap is refused unless the launch names its own cap; see
 [Cost and budgets](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs)); it builds its job manager over

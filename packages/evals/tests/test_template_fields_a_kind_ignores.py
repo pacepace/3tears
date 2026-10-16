@@ -35,7 +35,7 @@ from threetears.evals.run.authoring import refuse_ignored_template_fields
 from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host, with_registry
 from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "judge-template-fields"
@@ -52,8 +52,7 @@ def _judge_host() -> LaunchHost:
     )
     holder: list[LaunchHost] = []
     launch_host = LaunchHost(
-        eval_host=eval_host,
-        kinds={JUDGE_KIND: launchable_judge_kind(lambda: holder[0])},
+        eval_host=with_registry(eval_host, {JUDGE_KIND: launchable_judge_kind(lambda: holder[0])}),
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: {},
@@ -127,12 +126,8 @@ _SEED = WorldSeed(namespaces={"inbox": {"unread": 3}})
 
 
 def _authoring_host() -> EvalHost:
-    """The judge host's own EvalHost, its template checks handed the registry it launches with."""
-    launch_host = _judge_host()
-    return dataclasses.replace(
-        launch_host.eval_host,
-        template_checks=dataclasses.replace(TOYHOST_TEMPLATE_CHECKS, kinds=launch_host.kinds),
-    )
+    """The judge host's own EvalHost: its template checks carry the registry it launches with."""
+    return _judge_host().eval_host
 
 
 def _host_call(template: EvalTemplate) -> ValidationFailedError:

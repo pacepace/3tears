@@ -491,10 +491,8 @@ class LaunchHost:
     through.
 
     :ivar eval_host: The host every run this launches belongs to — its vocabulary, its storage, its
-        clients, its tracing, its executor and its cell timeout.
-    :ivar kinds: The launch registry: every candidate kind this host launches, keyed by the name a
-        template declares, with its launcher. A template naming a kind with no entry is refused
-        before anything is read.
+        clients, its tracing, its executor and its cell timeout, and the template checks whose ``kinds`` are the
+        launch registry (:attr:`kinds`).
     :ivar settings: Reads the host's :class:`LaunchSettings` — a callable because they hot-reload.
     :ivar job_timeout_factory: What bounds each run's job, as
         :class:`~threetears.evals.run.jobs.EvalJobManager` takes it. No default, for the reason the
@@ -536,7 +534,6 @@ class LaunchHost:
     """
 
     eval_host: EvalHost
-    kinds: Mapping[str, LaunchableKind]
     settings: Callable[[], LaunchSettings]
     job_timeout_factory: JobTimeoutFactory
     world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None
@@ -592,6 +589,20 @@ class LaunchHost:
                 leases=leases,
             ),
         )
+
+    @property
+    def kinds(self) -> Mapping[str, LaunchableKind]:
+        """The launch registry: every candidate kind this host launches, keyed by the name a template declares.
+
+        Read off the host's template checks (``eval_host.template_checks.kinds``), where the host states it once, so a
+        template is admitted against the registry its launch dispatches through. A host with no template checks
+        launches no kind. A template naming a kind with no entry is refused before anything is read.
+
+        :return: The registry, empty for a host with no template checks.
+        :rtype: Mapping[str, LaunchableKind]
+        """
+        checks = self.eval_host.template_checks
+        return {} if checks is None else checks.kinds
 
     def place(self, run: EvalRun) -> dict[str, WorldPlacement]:
         """Where ``run`` sits in this host's world: one placement per declared dimension.
@@ -1294,7 +1305,7 @@ def no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[s
         "collaborators, because the runner cannot build a client it has never heard of",
         remedy=(
             f"launch a template of a kind this host launches ({', '.join(launchable) or 'it launches none'}), or "
-            f"register a launcher for {candidate_kind!r} in the LaunchHost's kinds"
+            f"register a launcher for {candidate_kind!r} in the host's TemplateChecks.kinds"
         ),
     )
 

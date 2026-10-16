@@ -147,7 +147,7 @@ AT_MOST_ONE_SWITCH = 'call_count("room.switch_light") <= 1'
 accept = lambda *_: None  # stand-ins for a host's own tool-catalog, seed-walk and kind checks
 authoring = replace(host, template_checks=TemplateChecks(  # a host of your own builds its EvalHost with them
     require_known_tools_allowed=accept, refuse_undeclared_world_seed=accept, refuse_undeliverable_template=accept,
-    kinds={},  # the registry your LaunchHost launches with; this host launches none
+    kinds={},  # the registry your LaunchHost reads off these checks; this host launches none
 ))
 switch = lambda to: RecordedCall(tool="room", action="switch_light", params={"to": to})
 
