@@ -52,8 +52,8 @@ packages (bumped in lock-step).
   recorded, not the moment preparation finished.
 - **New: a generation's preparation is bounded.** The job starts with no budget of its own, so a store call that hung
   during assembly would have left the attempt `running` for as long as its lease kept renewing. Preparation now runs
-  under `ANALYSIS_PREPARATION_BUDGET_S` (`ops.analysis`; 28800 s, the engine's cap on one job, as a launch's
-  preparation gets): one that outruns it ends the attempt `failed` with `refused before any call: preparation did not
+  under `ANALYSIS_PREPARATION_BUDGET_S` (`ops.analysis`; 900 s: preparation makes no model call, so a hang reads
+  as refused within minutes): one that outruns it ends the attempt `failed` with `refused before any call: preparation did not
   finish in <N> s`, the client released.
 - **Fixed: a client was leaked when the generation's budget could not be built**: the budget is now built inside the
   guard that releases the client.

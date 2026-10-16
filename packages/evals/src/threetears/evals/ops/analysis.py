@@ -71,7 +71,6 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
-from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, WRITER_REMEDY
@@ -107,12 +106,13 @@ class CampaignListing(EvalBaseModel):
 ENDED_TASK_UNWIND_S = 30.0
 
 #: A generation job's wall-clock ceiling on its preparation — assembling the bundle, the prompt, the client, the
-#: default-writer check and the first call's price — in seconds: the engine's cap on one run's job. The job starts with
-#: no budget of its own (its generator calls enter ``AnalysisGeneration.budget_s`` themselves), so without this a store
-#: call that hangs during assembly would leave the attempt ``running`` for as long as its lease kept renewing. Assembly
-#: is the heaviest read the engine makes, so the bound is the generous one a launch's preparation also gets
-#: (``LAUNCH_PREPARATION_BUDGET_S``): a backstop against a hang, not a tuning knob.
-ANALYSIS_PREPARATION_BUDGET_S = JOB_TIMEOUT_CAP_S
+#: default-writer check and the first call's price — in seconds. The job starts with no budget of its own (its generator
+#: calls enter ``AnalysisGeneration.budget_s`` themselves), so without this a store call that hangs during assembly would
+#: leave the attempt ``running`` for as long as its lease kept renewing. Preparation makes no model call: a fixed handful
+#: of batched store reads and a catalogue fetch bounded by its own timeout, seconds on a large campaign. So the bound is
+#: tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose launchers call providers: a hang reads as refused
+#: within minutes rather than ``running`` for hours.
+ANALYSIS_PREPARATION_BUDGET_S = 900.0
 
 #: What a declared design is, said once for the operations and the actions that take it — creating and updating alike,
 #: since a tool's flat parameters give one name one meaning.
