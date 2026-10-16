@@ -104,6 +104,13 @@ results already delivered are kept and counted in the run's completeness record.
 the two apart (a clock stop's reason opens with `wall-clock budget`), and `error_details` stays empty,
 because that list counts faults.
 
+**A generation's preparation bound.** An analysis generation's preparation (the bundle, the prompt, the client, the
+default-writer check and the first call's price) makes no model call, so it runs under its own short bound:
+`AnalysisGeneration.preparation_budget_s`, a positive finite number of seconds that defaults to
+`ANALYSIS_PREPARATION_BUDGET_S` (900 s). The host reads it from its own config and may set it per call. A
+preparation that outruns it ends the attempt `failed` with `refused before any call: preparation did not finish in
+<N> s`, N being the budget used, with nothing spent.
+
 **The cell deadline.** Each cell runs under a deadline: the kind's own (its launcher's
 `KindWiring.cell_timeout_s`, else 600 s). A cell that outlives it is excluded as `cell_timeout`. A launch can
 name `cell_timeout_s` for a long-horizon run, up to the host's `LaunchSettings.max_cell_timeout_s`. A host that

@@ -254,7 +254,7 @@ ceiling — and refuses there with nothing spent; the job does the spending. An 
 its call: assembling its bundle reads every member run's results, so its job assembles it, builds the client and
 prices the first call against the cap, and a refusal at any of those ends the job `failed` with
 `refused before any call: <why>` for `job_poll` to read, with nothing spent. That preparation is bounded: one
-that has not finished in `ANALYSIS_PREPARATION_BUDGET_S` (8 hours, the engine's cap on one job) ends the same way.
+that has not finished in `AnalysisGeneration.preparation_budget_s` (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s; the host may set it per call) ends the same way.
 So a call is a few store round-trips, and a transport holds every call to one fixed timeout (`mount_fastmcp(..., call_timeout_s=...)`, 60s by default)
 rather than one sized to what a call might spend. The timeout may be a function in place of the number, read once
 as each call starts, so an operator retunes it from live configuration without remounting.

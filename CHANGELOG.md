@@ -9,7 +9,10 @@ packages (bumped in lock-step).
 ### 3tears-evals: a host reads the analysis preparation bound rather than restating it
 
 - `threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S` (`host-contract`, 900 s) is exported: the bound on an
-  analysis generation's preparation, which a host cites when it explains a generation's total wall time.
+  analysis generation's preparation, which a host cites when it explains a generation's total wall time. It is now the
+  default: `AnalysisGeneration.preparation_budget_s` (a positive finite number of seconds) carries the bound a host
+  wants, is read on every call, so the host may set it per call, and defaults to this constant. The refusal still
+  reads `refused before any call: preparation did not finish in <N> s`, with the budget actually used.
 
 ### 3tears-evals: a host reads the lease pool's width rather than copying it
 

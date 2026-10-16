@@ -890,7 +890,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Constants**
 
-- **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · A generation job's wall-clock ceiling on its preparation — assembling the bundle, the prompt, the client, the default-writer check and the first call's price — in seconds.
+- **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): assembling the bundle, the prompt, the client, the default-writer check and the first call's price — in seconds.
   <br>`= 900.0`
 - **`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`** · constant (frozenset) · The launch arguments a reporter arm cannot honour, for its `LaunchableKind`: it drives no simulated user, calls no tool a cassette could record, and generates no case — each is frozen from a campaign.
 

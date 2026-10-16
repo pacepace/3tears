@@ -45,7 +45,6 @@ and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.ops.analysis import (
-    ANALYSIS_PREPARATION_BUDGET_S,
     AnalysisDeleted,
     AnalysisGenerationEstimate,
     AnalysisLine,
@@ -84,7 +83,7 @@ from threetears.evals.ops.analysis import (
     report_read,
 )
 from threetears.evals.ops.cases import CaseRenamed, case_rename
-from threetears.evals.ops.host import AnalysisGeneration, OpsHost
+from threetears.evals.ops.host import ANALYSIS_PREPARATION_BUDGET_S, AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
     JUDGE_TEMPERATURE_JOB_PREFIX,

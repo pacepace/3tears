@@ -1328,6 +1328,10 @@ analysis as its provenance), and `plan_draft(..., system_prompt=..., reset=...)`
 from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
 other name.
 
+**The preparation bound is yours to set.** `AnalysisGeneration(preparation_budget_s=...)` bounds a generation's
+preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s), alongside `budget_s`, which bounds its generator calls.
+Both are read on every generation, so a timeout kept in host config can change without a restart.
+
 **A proposer override states the draft shape it was written for, and the engine checks it.** Each shipped
 proposer default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
 (`gen.RUBRIC_PROPOSAL_CONTRACT.line`): the digest of the draft's schema as the call sends it, its field

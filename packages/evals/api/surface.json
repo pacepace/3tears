@@ -6463,7 +6463,7 @@
     },
     "threetears.evals.ops.AnalysisGeneration": {
       "kind": "dataclass",
-      "signature": "AnalysisGeneration(prompt_id: str = 'eval_analysis_gen', resolve_prompt: Callable[[], Awaitable[str]] | None = None, max_output_tokens: int, budget_s: float)",
+      "signature": "AnalysisGeneration(prompt_id: str = 'eval_analysis_gen', resolve_prompt: Callable[[], Awaitable[str]] | None = None, max_output_tokens: int, budget_s: float, preparation_budget_s: float = 900.0)",
       "tier": "stable"
     },
     "threetears.evals.ops.AnalysisGenerationEstimate": {

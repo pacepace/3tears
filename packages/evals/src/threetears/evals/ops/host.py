@@ -10,6 +10,7 @@ would run is its kinds' answer (``LaunchableKind.plan_arm``), which a launch est
 
 from __future__ import annotations
 
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
@@ -42,6 +43,17 @@ def _reading_settings() -> LaunchSettings:
     )
 
 
+#: The default wall-clock ceiling on a generation job's preparation, used when a host supplies none
+#: (``AnalysisGeneration.preparation_budget_s``, read on every call): assembling the bundle, the prompt, the client, the
+#: default-writer check and the first call's price — in seconds. The job starts with no budget of its own (its generator
+#: calls enter ``AnalysisGeneration.budget_s`` themselves), so without this a store call that hangs during assembly would
+#: leave the attempt ``running`` for as long as its lease kept renewing. Preparation makes no model call: a fixed handful
+#: of batched store reads and a catalogue fetch bounded by its own timeout, seconds on a large campaign. So the bound is
+#: tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose launchers call providers: a hang reads as refused
+#: within minutes rather than ``running`` for hours. A host that wants another bound sets it per call.
+ANALYSIS_PREPARATION_BUDGET_S = 900.0
+
+
 @dataclass(frozen=True, kw_only=True)
 class AnalysisGeneration:
     """How this host generates an analysis as a background job.
@@ -58,12 +70,17 @@ class AnalysisGeneration:
         (``Ceilings().generation_ceiling_s`` of :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for
         one request on its client): a budget below it cancels a repair round-trip still writing inside
         its cap, after both calls were billed.
+    :ivar preparation_budget_s: The job's wall-clock ceiling on its preparation (the bundle, the prompt, the client, the
+        default-writer check and the first call's price), in seconds; a generation whose preparation outruns it ends
+        refused before any call. :data:`ANALYSIS_PREPARATION_BUDGET_S` unless the host sets it, and read on every
+        call, so a host may set it per call.
     """
 
     prompt_id: str = ANALYSIS_GEN_PROMPT
     resolve_prompt: Callable[[], Awaitable[str]] | None = None
     max_output_tokens: int
     budget_s: float
+    preparation_budget_s: float = ANALYSIS_PREPARATION_BUDGET_S
 
     async def prompt(self) -> str:
         """The generator prompt a generation runs: the host's override when it registered one, else the shipped default.
@@ -76,9 +93,10 @@ class AnalysisGeneration:
         return await self.resolve_prompt()
 
     def __post_init__(self) -> None:
-        """Refuse an empty prompt id, and a cap or budget that is not positive.
+        """Refuse an empty prompt id, and a cap or budget that is not positive, and a preparation budget that is not positive and finite.
 
-        :raises ValueError: ``prompt_id`` is blank, or ``max_output_tokens`` or ``budget_s`` is not positive.
+        :raises ValueError: ``prompt_id`` is blank, ``max_output_tokens`` or ``budget_s`` is not positive, or
+            ``preparation_budget_s`` is not a positive finite number.
         """
         if not self.prompt_id.strip():
             raise ValueError("AnalysisGeneration.prompt_id is blank; name the registry key the prompt resolves under")
@@ -86,6 +104,10 @@ class AnalysisGeneration:
             raise ValueError(f"AnalysisGeneration.max_output_tokens must be positive; got {self.max_output_tokens}")
         if self.budget_s <= 0:
             raise ValueError(f"AnalysisGeneration.budget_s must be positive; got {self.budget_s}")
+        if not (math.isfinite(self.preparation_budget_s) and self.preparation_budget_s > 0):
+            raise ValueError(
+                f"AnalysisGeneration.preparation_budget_s must be positive and finite; got {self.preparation_budget_s}"
+            )
 
 
 def _placed_nowhere(run: EvalRun) -> dict[str, WorldPlacement]:

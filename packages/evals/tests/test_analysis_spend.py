@@ -24,6 +24,7 @@ Pinned here:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import threading
 from typing import Any
@@ -32,9 +33,10 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import service as service_module
-from threetears.evals.ops import analysis as ops_analysis
 from threetears.evals.schema import JobLease, JobRefusal
 from threetears.evals.ops import (
+    ANALYSIS_PREPARATION_BUDGET_S,
+    AnalysisGeneration,
     analysis_estimate,
     analysis_generate,
     format_number,
@@ -272,7 +274,10 @@ async def test_a_preparation_that_never_finishes_ends_the_attempt_failed_and_rel
 ) -> None:
     fixture = off_loop(ops_fixture)
     release = threading.Event()
-    monkeypatch.setattr(ops_analysis, "ANALYSIS_PREPARATION_BUDGET_S", budget_s)
+    assert fixture.host.generation is not None
+    host = dataclasses.replace(
+        fixture.host, generation=dataclasses.replace(fixture.host.generation, preparation_budget_s=budget_s)
+    )
     if hangs_in == "assembly":
         assemble = service_module.assemble_context_bundle
 
@@ -288,8 +293,8 @@ async def test_a_preparation_that_never_finishes_ends_the_attempt_failed_and_rel
 
         monkeypatch.setattr(service_module, "refresh_prices", never_priced)
 
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    status = await settled(fixture.host, job.job_id)
+    (job,) = (await analysis_generate(host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    status = await settled(host, job.job_id)
     release.set()
 
     assert status.state == "failed"
@@ -298,6 +303,20 @@ async def test_a_preparation_that_never_finishes_ends_the_attempt_failed_and_rel
     assert [writer.closed for writer in fixture.writers] == ([] if hangs_in == "assembly" else [1])
     await fixture.host.launch.job_manager.wait_for([job.job_id.rpartition(":")[2]])
     assert fixture.host.launch.job_manager.active_task_ids(generation_key(fixture.campaign.id, TOYHOST_SCOPE)) == []
+
+
+async def test_a_generation_without_a_preparation_budget_runs_under_the_default() -> None:
+    fixture = off_loop(ops_fixture)
+    assert fixture.host.generation is not None
+    assert fixture.host.generation.preparation_budget_s == ANALYSIS_PREPARATION_BUDGET_S == 900.0
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    assert (await settled(fixture.host, job.job_id)).state == "completed"
+
+
+@pytest.mark.parametrize("budget_s", [0.0, -1.0, float("inf"), float("nan")])
+def test_a_preparation_budget_that_is_not_positive_and_finite_is_refused(budget_s: float) -> None:
+    with pytest.raises(ValueError, match="preparation_budget_s must be positive and finite"):
+        AnalysisGeneration(max_output_tokens=10, budget_s=1.0, preparation_budget_s=budget_s)
 
 
 async def test_an_ended_attempt_keeps_the_start_its_call_recorded(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -105,15 +105,6 @@ class CampaignListing(EvalBaseModel):
 #: its client and its slot) before refusing it as still running. Unwinding is a few store writes, so this is generous.
 ENDED_TASK_UNWIND_S = 30.0
 
-#: A generation job's wall-clock ceiling on its preparation — assembling the bundle, the prompt, the client, the
-#: default-writer check and the first call's price — in seconds. The job starts with no budget of its own (its generator
-#: calls enter ``AnalysisGeneration.budget_s`` themselves), so without this a store call that hangs during assembly would
-#: leave the attempt ``running`` for as long as its lease kept renewing. Preparation makes no model call: a fixed handful
-#: of batched store reads and a catalogue fetch bounded by its own timeout, seconds on a large campaign. So the bound is
-#: tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose launchers call providers: a hang reads as refused
-#: within minutes rather than ``running`` for hours.
-ANALYSIS_PREPARATION_BUDGET_S = 900.0
-
 #: What a declared design is, said once for the operations and the actions that take it — creating and updating alike,
 #: since a tool's flat parameters give one name one meaning.
 DECLARED_DESIGN_DESCRIPTION = (
@@ -799,7 +790,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         # ending, not a task failure: the attempt records it and this returns None, so the manager logs no error for
         # it. What nobody designed for (a store that raised) is recorded the same way and raised on as itself.
         try:
-            async with manager.job_timeout_factory(ANALYSIS_PREPARATION_BUDGET_S):
+            async with manager.job_timeout_factory(generation.preparation_budget_s):
                 return await prepare_analysis_generation(
                     eval_host,
                     campaign_id,
