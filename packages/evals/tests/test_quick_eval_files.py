@@ -93,7 +93,7 @@ def test_verbose_prints_each_result_whole(capsys: pytest.CaptureFixture[str]) ->
 def test_a_comparison_whose_gate_fails_exits_4(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([_write("regression.py", REGRESSION)]) == EXIT_GATE_FAILED
 
-    assert "wrong regressed" in capsys.readouterr().out
+    assert "exit 4: the gate failed on Accuracy: wrong worse than right" in capsys.readouterr().out
 
 
 def test_a_run_stopped_short_exits_1(capsys: pytest.CaptureFixture[str]) -> None:

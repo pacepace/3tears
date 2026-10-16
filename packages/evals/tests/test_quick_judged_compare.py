@@ -140,7 +140,7 @@ async def test_a_judged_compare_contrasts_every_arm_on_each_judged_dimension_wit
     comparison = await _compare({"baseline": vague, "candidate": helpful}, [_judge(client)])
     (row,) = comparison.contrasts("answer.helpful (judged)")
     assert row["arm"] == "candidate" and row["delta"] == pytest.approx(1.5)
-    assert row["verdict"].startswith("improved")
+    assert row["verdict"] == "candidate better than baseline"
     runs = [off_loop(get_run, comparison.host.storage, summary.run_id, SCOPE) for summary in comparison.arms.values()]
     assert {run.judge_model for run in runs} == {JUDGE_MODEL}
     assert len({run.template_id for run in runs}) == 1, "one template, so one rubric, for every arm"
