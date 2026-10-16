@@ -12,17 +12,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """bind a subject namespace for every workspace test.
+def _bind_workspace_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bind the ``3tears`` subject namespace for every workspace test.
 
-    the production subject namespace has no default and must be
-    configured explicitly (see
-    :func:`threetears.nats.get_default_namespace`). workspace tools build
-    subjects (e.g. ``Subjects.workspaces_create``) deep in their execute
-    path, so bind a value via the environment variable here. this mirrors
-    the root conftest fixture and additionally covers isolated per-package
-    runs (``pytest packages/agent/workspace/tests/``), which do not load
-    the workspace-root conftest.
+    workspace tools build subjects (e.g. ``Subjects.workspaces_create``) deep in their execute
+    path, and these tests assert the ``3tears`` prefix. the root conftest's
+    ``_bind_test_subject_namespace`` runs first and clears the process-wide namespace global; this
+    then overrides the environment variable it set. the name must differ from the root fixture's:
+    sharing it replaced that fixture, so the global was never cleared, and a namespace another
+    module set at import time leaked into whichever workspace test ran first in the process.
     """
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "3tears")
 
