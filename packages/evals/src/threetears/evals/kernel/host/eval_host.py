@@ -116,10 +116,44 @@ class IgnoresTemplateFields(Protocol):
         ...  # pragma: no cover — protocol
 
 
+class TemplateCaseFields(Protocol):
+    """What a host's check over a template case reads of it: the fields of a seed corpus's
+    ``threetears.evals.run.SeedTemplateCase``, which is what the check is handed.
+
+    Structural, because this package imports nothing of the run package that defines the case; a host annotates its
+    check's parameter with this protocol (a ``SeedTemplateCase`` is one) and reads ``host_payload`` as it wrote it.
+    """
+
+    @property
+    def template(self) -> str:
+        """The name of the template the case belongs to."""
+        ...  # pragma: no cover — protocol
+
+    @property
+    def name(self) -> str:
+        """The case's name, unique within its template."""
+        ...  # pragma: no cover — protocol
+
+    @property
+    def variation_params(self) -> Mapping[str, str]:
+        """The case's axis values."""
+        ...  # pragma: no cover — protocol
+
+    @property
+    def host_payload(self) -> Mapping[str, object]:
+        """The case's own stimulus in the host's vocabulary, as written."""
+        ...  # pragma: no cover — protocol
+
+    @property
+    def stratum(self) -> str | None:
+        """The kind of case it is, or ``None``."""
+        ...  # pragma: no cover — protocol
+
+
 @dataclass(frozen=True, kw_only=True)
 class TemplateChecks:
-    """The three questions about a template that only the host can answer, and the kinds it launches, read wherever a
-    template is admitted.
+    """The questions about a template, and about one of its own cases, that only the host can answer, and the kinds it
+    launches, read wherever a template or a template case is admitted.
 
     ``create_template``, ``update_template``, the boot seed (``seed_eval_definitions``), a definition reset
     (``reset_definitions``) and the ``definitions_reset`` action all read them from the one host they are handed
@@ -139,12 +173,18 @@ class TemplateChecks:
         admits a template refuses one stating a field its kind's entry ignores
         (``threetears.evals.run.authoring.refuse_ignored_template_fields``), as the launch dispatch does; a kind
         the registry does not carry is refused nothing here, and its launch is refused by name.
+    :ivar refuse_inadmissible_template_case: Whether a template's own case (``SeedTemplateCase``, ``host_payload``
+        included) is one the host admits: its label, the shape of its payload. Read by the seed, a definition reset and
+        ``case_rename``, before any of them writes, so a host's validation of its cases lives in one place; a case it
+        refuses is written by none of them, and each reports the refusal with the host's reason. The engine
+        has already refused a case with no name.
     """
 
     require_known_tools_allowed: Callable[[Sequence[str] | None], None]
     refuse_undeclared_world_seed: Callable[[EvalTemplate], None]
     refuse_undeliverable_template: Callable[[EvalTemplate], None]
     kinds: Mapping[str, IgnoresTemplateFields]
+    refuse_inadmissible_template_case: Callable[[TemplateCaseFields], None]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -227,4 +267,11 @@ class EvalHost:
         return self.template_checks
 
 
-__all__ = ["CompletionClients", "CompletionRole", "EvalHost", "IgnoresTemplateFields", "TemplateChecks"]
+__all__ = [
+    "CompletionClients",
+    "CompletionRole",
+    "EvalHost",
+    "IgnoresTemplateFields",
+    "TemplateCaseFields",
+    "TemplateChecks",
+]

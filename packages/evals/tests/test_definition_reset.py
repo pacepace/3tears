@@ -74,7 +74,7 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND, toyhost_template
@@ -1004,6 +1004,7 @@ def test_a_reset_and_create_template_read_one_host_s_checks_and_a_host_with_none
             refuse_undeclared_world_seed=lambda _template: None,
             refuse_undeliverable_template=_refuse,
             kinds={},
+            refuse_inadmissible_template_case=lambda _case: None,
         ),
     )
     unchecked = toyhost_host(storage=storage, template_checks=None)
@@ -1067,3 +1068,109 @@ async def test_the_actions_read_drift_refuse_a_customized_reset_and_reset_with_d
     revisions = {line["name"]: line["revision"] for line in listed.structured["templates"]}
     assert revisions == {toyhost_judged_template().name: 2, JUDGE_NAME: 1}, revisions
     assert reset.text.splitlines()[-1] == "drift: 0 stale, 0 customized, 0 unknown, 0 absent, 7 current"
+
+
+def test_a_template_whose_every_revision_is_archived_is_absent_to_the_seed_on_every_boot() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus())
+    retired = _subject(storage)
+    storage.save_template(retired.model_copy(update={"archived": True}))
+    corpus = _own_corpus(_own("a"), _own("b"))
+
+    first = _boot(storage, corpus)
+    again = _boot(storage, corpus)
+
+    for outcome in (first, again):
+        assert outcome.archived == {"template_case": [f"{SUBJECT}/a", f"{SUBJECT}/b"]}
+        assert (outcome.created["template_case"], outcome.skipped["template_case"]) == (0, 0)
+        assert outcome.failed["template_case"] == 0 and not outcome.needs_reset and not outcome.conflicted
+        assert not outcome.nothing_to_do
+        assert "its template is archived (" + f"{SUBJECT}/a" in outcome.summary()
+    assert _cases_on(storage, retired) == [], "no revision of a retired template is written into"
+
+
+def test_a_template_with_one_live_revision_seeds_its_cases_though_an_older_revision_is_archived() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a")))
+    first = _subject(storage)
+    storage.save_template(first.model_copy(update={"archived": True}))
+    storage.save_template(first.model_copy(update={"id": "live-rev-2", "revision": 2, "archived": False}))
+
+    boot = _boot(storage, _own_corpus(_own("a")))
+
+    assert not boot.archived and boot.created_keys["template_case"] == [f"{SUBJECT}/a"]
+
+
+def _store_nameless(storage: EvalStorage, name: str, **changes: Any) -> EvalTestCase:
+    """Seed ``name``'s case, then blank its stored name as a case stored before names existed reads."""
+    _boot(storage, _own_corpus(_own(name, **changes)))
+    (case,) = _cases_on(storage, _subject(storage))
+    blank = case.model_copy(update={"name": None})
+    storage.save_test_case(blank)
+    return blank
+
+
+def test_the_seed_names_a_stored_nameless_case_from_the_corpus_case_of_its_content_and_changes_nothing_else() -> None:
+    storage, _ = memory_storage()
+    blank = _store_nameless(storage, "a")
+    corpus = _own_corpus(_own("a"))
+
+    first = _boot(storage, corpus)
+    again = _boot(storage, corpus)
+
+    (case,) = _cases_on(storage, _subject(storage))
+    assert first.named == {"template_case": [f"{SUBJECT}/a"]} and first.total_named == 1 and not first.nothing_to_do
+    assert not again.named, "a second boot finds it named"
+    assert case.name == "a"
+    assert (case.id, case.content_hash, case.seed_digest) == (blank.id, blank.content_hash, blank.seed_digest)
+
+
+def test_the_seed_never_overwrites_a_stored_name_with_the_corpus_s() -> None:
+    storage, _ = memory_storage()
+    _boot(storage, _own_corpus(_own("a")))
+    (case,) = _cases_on(storage, _subject(storage))
+    storage.save_test_case(case.model_copy(update={"name": "double-charge"}))
+
+    boot = _boot(storage, _own_corpus(_own("a")))
+
+    assert not boot.named
+    assert _cases_on(storage, _subject(storage))[0].name == "double-charge"
+
+
+def _refusing_cases(*, refuse: str) -> Any:
+    """A toy host whose check over a template case refuses the case named ``refuse``, with its own reason."""
+
+    def check(case: Any) -> None:
+        if case.name == refuse:
+            persona = case.host_payload.get("persona")
+            raise ValidationFailedError(f"label {persona!r} is not in the bank", remedy="fix it")
+
+    return replace(
+        toyhost_host(),
+        template_checks=replace(TOYHOST_TEMPLATE_CHECKS, refuse_inadmissible_template_case=check),
+    )
+
+
+def test_a_template_case_the_hosts_check_refuses_is_written_by_none_of_the_seed_the_reset_and_the_rename() -> None:
+    storage, _ = memory_storage()
+    base = _refusing_cases(refuse="bad")
+    host = replace(base, storage=storage)
+
+    with pytest.raises(ValidationFailedError, match=r"bad: label 'buyer bad' is not in the bank"):
+        seed_eval_definitions(host, _own_corpus(_own("good"), _own("bad")))
+    assert storage.query_templates(TOYHOST_SCOPE) == [], "nothing was written"
+
+    _boot(storage, _own_corpus(_own("good")))
+    with pytest.raises(ValidationFailedError, match=r"bad: label 'buyer bad' is not in the bank|host refuses it"):
+        reset_definitions(host, _own_corpus(_own("good"), _own("bad")), [TEMPLATE_KEY], overwrite_customized=True)
+    assert [c.name for c in _cases_on(storage, _subject(storage))] == ["good"]
+
+    (case,) = _cases_on(storage, _subject(storage))
+    with pytest.raises(ValidationFailedError, match="is not in the bank"):
+        case_rename(host, TOYHOST_SCOPE, case.id, "bad")
+    assert _cases_on(storage, _subject(storage))[0].name == "good"
+
+
+def test_a_template_case_with_a_blank_name_is_refused_at_authoring() -> None:
+    with pytest.raises(ValueError, match="at least 1 character"):
+        _own("   ")

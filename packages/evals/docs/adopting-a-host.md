@@ -134,7 +134,10 @@ pass it to every entrypoint. It holds:
   is built with, the same mapping: a template stating a field its kind's entry never acts on
   (`LaunchableKind.ignored_template_fields`) is refused with the launch dispatch's own message, so your
   `refuse_undeliverable_template` need not check those fields itself; it keeps only the refusals the package cannot
-  make for you. `create_template`, `update_template`, the boot seed, a definition reset and the `definitions_reset`
+  make for you. `refuse_inadmissible_template_case` (required) is the same question about one of a template's own cases
+  (a `SeedTemplateCase`, `host_payload` included): the boot seed, a definition reset and `case_rename` each ask it
+  before they write, so a case you refuse is written by none of them and each reports your reason; the engine has
+  already refused a case with no name. `create_template`, `update_template`, the boot seed, a definition reset and the `definitions_reset`
   action read the checks off the host they are handed, so every path admits a template under the same checks. A host
   with no template checks (`None`, the default) is refused by each of them, since a template it admitted would go
   unchecked; a check with nothing to refuse is a function that returns `None`.
@@ -1480,6 +1483,36 @@ for a judge case, it writes them only into a revision holding no cases yet, so a
 changed, for a template already holding cases is withheld under `needs_reset` until you reset the template (below).
 A case whose content the revision already holds is `already present`, so cases your own seed wrote before `.32` with
 the same content are kept as they are.
+A template whose every revision is archived is one an operator retired, and is absent to the seed as an archived
+rubric dim or judge config is: no case is written into any of its revisions, on any boot, and each case is reported
+under `SeedOutcome.archived` (`template_case`, keyed `<template>/<name>`), neither created, present nor failed.
+A stored case whose `name` is empty and whose content matches a corpus case (its `variation_params` and `host_payload`,
+as its id is derived) is given the corpus case's name on a boot, and reported under `SeedOutcome.named`. It is
+fill-only: a name a stored case already holds is never overwritten, and only `name` is written, so the case keeps its
+id, `content_hash` and `seed_digest` and its history.
+
+**A host that validates its cases moves onto `template_cases` with its check.** A classifier bank whose every case
+carries a label and an input moves its cases into `template_cases/*.json` (`host_payload` is `{"label": ..., "text":
+...}`) and its validation into the one check the seed, a reset and `case_rename` all ask:
+
+```python
+from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.host import TemplateCaseFields, TemplateChecks
+
+LABELS = {"refund", "complaint", "praise"}
+
+def refuse_bad_bank_case(case: TemplateCaseFields) -> None:
+    payload = case.host_payload
+    if payload.get("label") not in LABELS or not isinstance(payload.get("text"), str):
+        raise ValidationFailedError(
+            f"case {case.name!r} needs a `label` of {sorted(LABELS)} and a string `text`",
+            remedy="correct the case file",
+        )
+
+checks = TemplateChecks(..., refuse_inadmissible_template_case=refuse_bad_bank_case)
+```
+
+A corpus holding a case it refuses seeds nothing and names the case with your message.
 
 **A stored case is renamed through the package, never by writing its document.** The seed and a reset fill a name
 only into a case they write, so `case_rename(host, scope_id, case_id, name)` (from `threetears.evals.ops`, over your

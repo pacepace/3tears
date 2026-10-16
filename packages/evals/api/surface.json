@@ -3231,9 +3231,14 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.host.TemplateCaseFields": {
+      "kind": "protocol",
+      "signature": "TemplateCaseFields{host_payload: Mapping[str, object]; name: str; stratum: str | None; template: str; variation_params: Mapping[str, str]}",
+      "tier": "host-contract"
+    },
     "threetears.evals.kernel.host.TemplateChecks": {
       "kind": "dataclass",
-      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, IgnoresTemplateFields])",
+      "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, IgnoresTemplateFields], refuse_inadmissible_template_case: Callable[[TemplateCaseFields], None])",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ToneRegister": {
@@ -4223,7 +4228,7 @@
     },
     "threetears.evals.run.SeedOutcome": {
       "kind": "dataclass",
-      "signature": "SeedOutcome(created: dict[str, int] = dict(), skipped: dict[str, int] = dict(), failed: dict[str, int] = dict(), created_keys: dict[str, list[str]] = dict(), conflicted: dict[str, list[str]] = dict(), deleted: dict[str, list[str]] = dict(), needs_reset: dict[str, list[str]] = dict())",
+      "signature": "SeedOutcome(created: dict[str, int] = dict(), skipped: dict[str, int] = dict(), failed: dict[str, int] = dict(), created_keys: dict[str, list[str]] = dict(), conflicted: dict[str, list[str]] = dict(), deleted: dict[str, list[str]] = dict(), needs_reset: dict[str, list[str]] = dict(), archived: dict[str, list[str]] = dict(), named: dict[str, list[str]] = dict())",
       "tier": "stable"
     },
     "threetears.evals.run.SeedTemplateCase": {

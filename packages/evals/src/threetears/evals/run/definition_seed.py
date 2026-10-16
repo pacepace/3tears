@@ -143,6 +143,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.kernel.errors import ConflictError, StorageError, ValidationFailedError
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, AuthoredVerdict, JudgeCase
 from threetears.evals.schema.base import EvalBaseModel, VerbatimObject
@@ -153,7 +154,7 @@ from threetears.evals.schema.models import (
     JudgeConfig,
     JudgedArtifact,
 )
-from threetears.evals.run.authoring import active_judge_config_in, admit_template
+from threetears.evals.run.authoring import active_judge_config_in, admit_template, admit_template_case
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.definition_digests import (
     TEMPLATE_CASE_FIELDS,
@@ -477,6 +478,14 @@ class SeedOutcome:
     #: cases runs were measured against, under the same revision id), and a case set listing such a case. Reported on
     #: every boot until ``reset_definitions`` writes the template's next revision with every corpus case of it.
     needs_reset: dict[str, list[str]] = field(default_factory=dict)
+    #: Natural keys NOT written because the template they belong to is retired, per doc type: a template case whose
+    #: template has no live revision (every revision archived). Archiving is how an operator says a template is gone,
+    #: so it is absent to the seed, as an archived rubric dim or judge config is: nothing is written into any of its
+    #: revisions, and it is neither counted as created, skipped nor failed. Reported on every boot.
+    archived: dict[str, list[str]] = field(default_factory=dict)
+    #: Natural keys of stored cases whose EMPTY ``name`` the seed filled from the corpus case of the same content, per
+    #: doc type (``template_case``). Fill-only: a stored non-empty name is never overwritten.
+    named: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def total_created(self) -> int:
@@ -509,6 +518,16 @@ class SeedOutcome:
         return sum(len(keys) for keys in self.needs_reset.values())
 
     @property
+    def total_archived(self) -> int:
+        """Definitions withheld because their template is retired (every revision archived)."""
+        return sum(len(keys) for keys in self.archived.values())
+
+    @property
+    def total_named(self) -> int:
+        """Stored cases whose empty name the seed filled from the corpus."""
+        return sum(len(keys) for keys in self.named.values())
+
+    @property
     def nothing_to_do(self) -> bool:
         """True when the pass neither wrote, skipped, failed nor withheld anything.
 
@@ -524,6 +543,8 @@ class SeedOutcome:
             or self.total_conflicted
             or self.total_deleted
             or self.total_needs_reset
+            or self.total_archived
+            or self.total_named
         )
 
     def summary(self) -> str:
@@ -545,6 +566,8 @@ class SeedOutcome:
             | set(self.conflicted)
             | set(self.deleted)
             | set(self.needs_reset)
+            | set(self.archived)
+            | set(self.named)
         ):
             part = f"{doc_type}: {self.created.get(doc_type, 0)} created"
             if keys := self.created_keys.get(doc_type):
@@ -561,6 +584,10 @@ class SeedOutcome:
                     f", {len(needs_reset)} NOT WRITTEN, A STORED DEFINITION WOULD CHANGE: RESET IT "
                     f"({', '.join(needs_reset)})"
                 )
+            if archived := self.archived.get(doc_type):
+                part += f", {len(archived)} not written, its template is archived ({', '.join(archived)})"
+            if named := self.named.get(doc_type):
+                part += f", {len(named)} nameless, named from the corpus ({', '.join(named)})"
             parts.append(part)
         return "; ".join(parts)
 
@@ -685,6 +712,9 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
         store nor the corpus holds, a judge template of another kind, a criterion the template's
         rubric lacks, a verdict its scale cannot hold). Raised before anything is written, naming
         every refused definition and why.
+    :raises ValidationFailedError: (also) A corpus template case the host's check
+        (``TemplateChecks.refuse_inadmissible_template_case``) refuses, or one with no name; raised before anything is
+        written, with the host's reason.
     :raises RefusedInput: The host supplies no template checks.
     """
     checks = host.checks_for("the definition seed")
@@ -710,6 +740,18 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
             f"the seed corpus for scope {corpus.scope_id!r} carries templates authoring would refuse, so nothing "
             f"was seeded: {'; '.join(refusals)}",
             remedy="correct each template the refusals name in the seed corpus, and seed again",
+        )
+    case_refusals: list[str] = []
+    for own in corpus.template_cases:
+        try:
+            admit_template_case(own, checks=checks)
+        except ValidationFailedError as refused:
+            case_refusals.append(f"{own.template}/{own.name}: {refused}")
+    if case_refusals:
+        raise ValidationFailedError(
+            f"the seed corpus for scope {corpus.scope_id!r} carries template cases the host refuses, so nothing "
+            f"was seeded: {'; '.join(case_refusals)}",
+            remedy="correct each case the refusals name in the seed corpus, and seed again",
         )
 
     storage = host.storage
@@ -811,7 +853,8 @@ def _seed_template_cases(
 ) -> None:
     """Write each template case into its template's current revision, recording it under ``template_case``: created,
     already present (the revision holds its content), withheld (``needs_reset``, or ``conflicted`` for a stored judge
-    template of that name), or failed (the store refused it, or its template, written by this seed, is not stored).
+    template of that name), absent (``archived``: the template's every revision is archived, so an operator retired
+    it, and nothing is written into any revision of it), or failed (the store refused it, or its template, written by this seed, is not stored).
 
     **A case joins only an empty revision**, as a judge case joins only an empty battery and for the same reason: a
     template's live cases are what a launch of it runs, so a case added to a revision already holding cases would
@@ -821,6 +864,8 @@ def _seed_template_cases(
     created_keys: list[str] = []
     withheld: list[str] = []
     conflicted: list[str] = []
+    archived: list[str] = []
+    named: list[str] = []
     skipped = failed = 0
     held: dict[str, set[str]] = {}
     for case in cases:
@@ -830,10 +875,16 @@ def _seed_template_cases(
             # Its corpus template's write was refused (counted under eval_template): the next boot retries both.
             failed += 1
             continue
+        if template.archived:
+            # `load_template_by_name` falls back to the newest archived revision when every revision is archived: the
+            # operator retired the template, so it is absent here and nothing is written into any revision of it.
+            archived.append(key)
+            continue
         if template.candidate_kind == JUDGE_KIND:
             # The store is master, and its template of that name is a judge's, whose cases are judge cases.
             conflicted.append(key)
             continue
+        named.extend(_fill_empty_name(storage, scope_id, template, case))
         if template.id not in held:
             # Read once per revision, before this pass writes into it: what it held when the boot began.
             held[template.id] = {
@@ -859,6 +910,47 @@ def _seed_template_cases(
         outcome.needs_reset["template_case"] = withheld
     if conflicted:
         outcome.conflicted["template_case"] = conflicted
+    if archived:
+        outcome.archived["template_case"] = archived
+    if named:
+        outcome.named["template_case"] = named
+
+
+def _fill_empty_name(storage: EvalStorage, scope_id: str, template: EvalTemplate, case: SeedTemplateCase) -> list[str]:
+    """Name the stored, live, nameless cases of ``template`` whose content is ``case``'s, after it; the keys filled.
+
+    Fill-only: a stored case holding any name keeps it, and a name another live case of the revision already carries
+    is not given twice. Content is compared as the case's id and ``content_hash`` are derived (stratum left out), so
+    the write changes neither identity nor digest: only ``name`` is written, and conditionally on the token read with
+    the case, so a write landing in between is never undone.
+
+    :param storage: The store.
+    :ptype storage: EvalStorage
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param template: The template revision the case belongs to.
+    :ptype template: EvalTemplate
+    :param case: The corpus case.
+    :ptype case: SeedTemplateCase
+    :return: ``<template>/<name>`` for each case named (a ``StorageError`` or a lost conflict skips that case).
+    :rtype: list[str]
+    """
+    stored = [c for c in storage.query_test_cases(scope_id, template_id=template.id) if not c.archived]
+    if any(c.name == case.name for c in stored):
+        return []
+    content = template_case_content_digest(case)
+    for candidate in stored:
+        if candidate.name or template_case_content_digest(candidate) != content:
+            continue
+        current, etag = storage.load_test_case_with_etag(candidate.id, scope_id)
+        if current is None or current.name:
+            continue
+        try:
+            storage.save_test_case(current.model_copy(update={"name": case.name}), if_match=etag)
+        except StorageError, ConflictError:
+            continue
+        return [f"{case.template}/{case.name}"]
+    return []
 
 
 def _seed_judge_cases(

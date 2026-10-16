@@ -544,6 +544,7 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.HostProfile",
         "threetears.evals.kernel.host.CompletionClients",
         # The host's checks on a template, which create_template, update_template, the seed and a reset read off it.
+        "threetears.evals.kernel.host.TemplateCaseFields",
         "threetears.evals.kernel.host.TemplateChecks",
         "threetears.evals.kernel.host.default_cell_timeout",
         "threetears.evals.kernel.EvalStorage",
@@ -1181,7 +1182,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 519  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Plus current_cell_identity (#809): the one accessor a host log filter reads.
+DECLARED_CEILING = 520  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check.
 
 
 def tier_of(qualified: str) -> Tier:

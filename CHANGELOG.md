@@ -44,6 +44,43 @@ packages (bumped in lock-step).
   ends, however it ended. The same identity is the one handed to the sink's `cell_identity` scope.
   Run-level lines (the ceiling stop decided between cells) belong to no cell and read `None`.
 
+### 3tears-evals: TemplateChecks checks a template case, and no template case is nameless
+
+Host contract change: `TemplateChecks` gains a required field.
+
+- **`TemplateChecks.refuse_inadmissible_template_case`** (new, required, no default: a host with nothing to refuse
+  passes a function that returns `None`) is handed each `SeedTemplateCase`, `host_payload` included, typed as the
+  structural `threetears.evals.kernel.host.TemplateCaseFields` (new, `host-contract`; the kernel cannot import the run
+  package's case) and raises `ValidationFailedError` to refuse. The seed and a definition reset ask it for every
+  corpus case they would write, and `case_rename` for a template's own case under its new name, before any of them
+  writes: a refused case is written by none, and each refusal reaches the caller with the host's reason (the seed
+  and a reset refuse whole, naming every case). `run.admit_template_case` is the one door all three use. A host adds the
+  field to every `TemplateChecks(...)` it builds. `DECLARED_CEILING` is 519.
+- **No template case is nameless.** `SeedTemplateCase.name` refuses a blank name where the case is built, and `admit_template_case`
+  asks again before the host's check, for a case built another way.
+- The host guide shows a classifier bank moving onto `template_cases` with its check.
+
+### 3tears-evals: the seed names a stored case whose name is empty
+
+- **The seed fills an empty name, and only an empty one.** A stored template case with no `name` whose content (its
+  `variation_params` and `host_payload`) matches a corpus case reads with the corpus case's name after one seed, and
+  `SeedOutcome.named` (new, `dict[str, list[str]]`, `total_named`) lists it under `template_case`. A stored non-empty
+  name is never overwritten, a name another live case of the revision carries is not given twice, and only `name` is
+  written (conditionally), so the case keeps its id, `content_hash` and `seed_digest`. A host's own fill-only naming
+  pass after the seed can be dropped.
+
+### 3tears-evals: a template whose every revision is archived is absent to the seed
+
+Behaviour change for a host that seeds `template_cases`.
+
+- **A retired template is not seeded into.** `load_template_by_name` falls back to the newest archived revision when
+  every revision is archived, so the seed wrote corpus cases into a template an operator had retired. It now writes
+  nothing into any revision of one, on every boot, and `SeedOutcome.archived` (new, `dict[str, list[str]]`) names each
+  such case under `template_case`, keyed `<template>/<name>`. It is counted as neither created, skipped nor failed,
+  `total_archived` counts it, and `summary()` says its template is archived. A template with one live revision seeds as
+  before. A host reading `SeedOutcome` field by field adds the field; one that checks `nothing_to_do` now sees it false
+  while such a case is withheld.
+
 ### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
 
 Behaviour change for a host with a metered-call ceiling or a cost cap. Core schema v15.4 (additive).

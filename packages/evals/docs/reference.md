@@ -402,7 +402,8 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`StyleProfile`** · dataclass · One host's bounded presentation contract.
 - **`Sweepable`** · *host contract* · dataclass · One score-determining input: what it is called, who owns it, how to read it.
 - **`SweepableRegistry`** · *host contract* · class · The declared inputs for one host, validated at construction.
-- **`TemplateChecks`** · *host contract* · dataclass · The three questions about a template that only the host can answer, and the kinds it launches, read wherever a template is admitted.
+- **`TemplateCaseFields`** · *host contract* · protocol · What a host's check over a template case reads of it: the fields of a seed corpus's `threetears.evals.run.SeedTemplateCase`, which is what the check is handed.
+- **`TemplateChecks`** · *host contract* · dataclass · The questions about a template, and about one of its own cases, that only the host can answer, and the kinds it launches, read wherever a template or a template case is admitted.
 - **`Triggered`** · dataclass · State that arrives on a condition rather than at t=0.
 - **`UnsupportedSchemaError`** · exception · A schema uses a construct outside `HONOURED_KEYWORDS` — a gap to extend, never a value to pass.
 - **`WorldConformanceError`** · exception · An ENGINE gap: a check the kit cannot run, or a record its own vocabulary forbids.
