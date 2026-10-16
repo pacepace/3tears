@@ -67,6 +67,20 @@ machine whose global `core.hooksPath` is a directory they may not write failed a
   warm, shape F went from 7.8 s to 1.0 s under a profiler; unprofiled, shape D went from 0.5 s to
   0.03 s and shape I from 1.3 s to 0.25 s.
 
+### One model's rate limit no longer stops its provider's other models
+
+A 429 counted against the provider's circuit breaker, so one OpenRouter model's rate limit opened
+the breaker for every model on OpenRouter (metallm dev e2e, 2026-10-15: 26 OpenRouter 429s, then three models refused). A rate limit belongs to
+one model's route.
+
+**Added (models):** `errors.is_rate_limit(exc)` (a `ModelRateLimitError`, any error with HTTP 429,
+OpenRouter's mid-stream `(code: 429)`); `CircuitBreakerRegistry.get(..., model=)` and
+`model_status()`; `CircuitBreaker.make_callback(rate_limit=)`; `CircuitOpenError.model_name`.
+
+**Changed (models):** `create_chat_model` gives each model its own breaker for its rate limits; any
+other failure still counts against the provider's. `status()` reports the provider's own breakers
+only. A caller passing its own `breaker=` keeps the old behaviour.
+
 ## v0.69.0 -- 2026-10-15
 
 ### The collection keys purge door takes proofs; develop's purge and export requests read tolerantly
