@@ -24,15 +24,18 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
     "SKIP_DIRS",
+    "clear_parse_cache",
     "iter_python_files",
     "note_unscanned",
     "parse_python_file",
+    "parse_python_path",
     "relative_posix_path",
     "is_private_name",
     "is_logger_call",
@@ -154,6 +157,106 @@ def _walk_sorted(directory: Path) -> Iterable[Path]:
             yield entry
 
 
+#: the file's identity on disk when it was parsed: ``(st_mtime_ns, st_size, st_ino)``.
+_FileStamp = tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class _Parse:
+    """one file's parse: the stamp it was made at, and the tree or the error it raised.
+
+    :ivar path: the file
+    :ivar stamp: the file's :data:`_FileStamp` when it was read
+    :ivar outcome: the parsed module, or the error parsing raised
+    """
+
+    path: Path
+    stamp: _FileStamp
+    outcome: ast.Module | SyntaxError | UnicodeDecodeError
+
+
+def _stamp(path: Path) -> _FileStamp:
+    """the file's identity on disk now.
+
+    :param path: the file
+    :ptype path: Path
+    :return: its modification time, size and inode
+    :rtype: _FileStamp
+    :raises OSError: when the file cannot be read
+    """
+    stat = path.stat()
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
+def _parse(path: Path) -> _Parse:
+    """read and parse *path* now.
+
+    :param path: the file
+    :ptype path: Path
+    :return: the parse, failed or not
+    :rtype: _Parse
+    :raises OSError: when the file cannot be read
+    """
+    stamp = _stamp(path)
+    outcome: ast.Module | SyntaxError | UnicodeDecodeError
+    try:
+        outcome = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        outcome = exc
+    return _Parse(path=path, stamp=stamp, outcome=outcome)
+
+
+def _unchanged_on_disk(parse: _Parse) -> bool:
+    """whether the file is still the one *parse* read.
+
+    :param parse: a cached parse
+    :ptype parse: _Parse
+    :return: ``True`` while the file's stamp is the one it was parsed at
+    :rtype: bool
+    :raises OSError: when the file can no longer be read
+    """
+    return _stamp(parse.path) == parse.stamp
+
+
+#: every parse this process has made, by path. every gate walks every file, so without this a run
+#: parses each file once per gate. unbounded on purpose: the gates walk the same files in the
+#: same order, so any bound smaller than the file set evicts each entry just before it is wanted
+#: again. a file whose stamp moved is parsed again in place. a ``BuildOnce`` rather than a dict
+#: because a hand-filled module-level cache is a race between threads that ask first
+#: (``tests/enforcement/test_build_once_is_the_only_lazy_fill.py``); its one lock serialises
+#: parses, which costs nothing here because the gates parse from one thread.
+_PARSES: BuildOnce[Path, _Parse] = BuildOnce(is_current=_unchanged_on_disk)
+
+
+def parse_python_path(path: Path) -> ast.Module:
+    """parse a python file as utf-8: ``ast.parse(path.read_text(encoding="utf-8"))``, once.
+
+    the result is cached by path, and reused while the file's modification
+    time, size and inode are unchanged, so a file rewritten in place is
+    parsed again -- unless the rewrite keeps the same size inside one tick of
+    the filesystem's timestamp clock, which on Linux can be milliseconds wide.
+    a scan over files that are not being edited under it never meets that; a
+    caller that rewrites a file and re-parses it at once should change its size
+    or call :func:`clear_parse_cache` first. a file that does not parse raises
+    an equal error on every call. the returned tree is shared with every other caller: read it, never
+    mutate it. :func:`clear_parse_cache` releases the cache.
+
+    :param path: file to parse
+    :ptype path: Path
+    :return: parsed module AST
+    :rtype: ast.Module
+    :raises SyntaxError: when the file is not valid python
+    :raises UnicodeDecodeError: when the file is not valid utf-8
+    :raises OSError: when the file cannot be read; never cached
+    """
+    outcome = _PARSES.get(path, lambda: _parse(path)).outcome
+    if isinstance(outcome, ast.Module):
+        return outcome
+    # a fresh error per caller: re-raising the cached one would hand each caller the traceback
+    # and context the previous caller's raise left on it
+    raise type(outcome)(*outcome.args) from None
+
+
 def parse_python_file(path: Path) -> ast.Module | None:
     """parse a python file as utf-8, returning None on parse failure.
 
@@ -161,7 +264,11 @@ def parse_python_file(path: Path) -> ast.Module | None:
     walkers must be robust to template / non-python files that slipped
     past the iterator filters. every other I/O error propagates. both
     absorbed cases go through :func:`note_unscanned` -- a file no walker
-    could parse is a file no gate has actually checked.
+    could parse is a file no gate has actually checked -- on every call,
+    so each walker that skips it says so.
+
+    cached and shared as :func:`parse_python_path` is: read the tree, never
+    mutate it.
 
     :param path: file to parse
     :ptype path: Path
@@ -169,15 +276,26 @@ def parse_python_file(path: Path) -> ast.Module | None:
     :rtype: ast.Module | None
     """
     try:
-        source = path.read_text(encoding="utf-8")
+        return parse_python_path(path)
     except UnicodeDecodeError:
         note_unscanned(path, "not valid utf-8")
         return None
-    try:
-        return ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         note_unscanned(path, f"syntax error at line {exc.lineno}")
         return None
+
+
+def clear_parse_cache() -> None:
+    """release every tree :func:`parse_python_path` has cached.
+
+    a whole repository's trees run to hundreds of megabytes; a process that
+    has finished scanning, and goes on to other work, calls this to give them
+    back.
+
+    :return: nothing
+    :rtype: None
+    """
+    _PARSES.clear()
 
 
 def relative_posix_path(path: Path, root: Path) -> str:

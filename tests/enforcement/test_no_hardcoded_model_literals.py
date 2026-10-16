@@ -40,6 +40,9 @@ import ast
 import re
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 #: per-package source-tree subdirs scanned (every ``.py`` under each,
@@ -149,7 +152,7 @@ def _violations_in_file(src_file: Path) -> list[str]:
     :return: list of ``line N: <value>`` violation strings (empty if none)
     :rtype: list[str]
     """
-    tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
+    tree = parse_python_path(src_file)
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):

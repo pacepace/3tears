@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import ast
+import os
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
+from threetears.enforcement.common import ast_helpers
 from threetears.enforcement.common.ast_helpers import (
     argument_spellings,
     callee_names,
+    clear_parse_cache,
     dotted,
     is_logger_call,
     is_private_name,
     is_suppress_call,
     iter_python_files,
     parse_python_file,
+    parse_python_path,
     receiver,
     relative_posix_path,
 )
@@ -90,6 +96,97 @@ class TestParsePythonFile:
         tree = parse_python_file(path)
         assert tree is not None
         assert tree.body == []
+
+
+class TestParsePythonFileCache:
+    """every gate parses every file; an unchanged file is parsed once for all of them."""
+
+    def test_an_unchanged_file_is_parsed_once(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        assert parse_python_file(path) is parse_python_file(path)
+
+    def test_a_rewritten_file_is_parsed_again(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        first = parse_python_file(path)
+        path.write_text("def rewritten():\n    return 2\n")
+        second = parse_python_file(path)
+        assert first is not None and second is not None
+        assert isinstance(second.body[0], ast.FunctionDef)
+        assert second.body[0].name == "rewritten"
+
+    def test_a_rewrite_that_keeps_size_and_mtime_is_still_seen(self, tmp_path: Path) -> None:
+        # a same-size rewrite inside one mtime tick: the replaced file is a new inode
+        path = _touch(tmp_path / "mod.py", "a = 1\n")
+        first = parse_python_file(path)
+        stat = path.stat()
+        replacement = _touch(tmp_path / "replacement.py", "b = 2\n")
+        os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        replacement.replace(path)
+        second = parse_python_file(path)
+        assert first is not None and second is not None
+        target = second.body[0]
+        assert isinstance(target, ast.Assign) and isinstance(target.targets[0], ast.Name)
+        assert target.targets[0].id == "b"
+
+    def test_a_cached_failure_is_reported_on_every_call(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        notes: list[str] = []
+        monkeypatch.setattr(ast_helpers, "note_unscanned", lambda target, reason: notes.append(reason))
+        path = _touch(tmp_path / "bad.py", "def f(:\n")
+        assert parse_python_file(path) is None
+        assert parse_python_file(path) is None
+        assert len(notes) == 2
+        assert notes[0] == notes[1]
+        assert notes[0].startswith("syntax error at line")
+
+    def test_a_file_that_becomes_valid_parses(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "def f(:\n")
+        assert parse_python_file(path) is None
+        path.write_text("def f():\n    return 1\n")
+        assert parse_python_file(path) is not None
+
+    def test_clearing_releases_the_cached_tree(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        first = parse_python_file(path)
+        clear_parse_cache()
+        assert parse_python_file(path) is not first
+
+    def test_a_missing_file_still_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            parse_python_file(tmp_path / "absent.py")
+
+
+class TestParsePythonPath:
+    """the raising form: what ``ast.parse(path.read_text(encoding="utf-8"))`` raises, every time."""
+
+    def test_a_syntax_error_names_the_file_on_every_call(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "bad.py", "x = 1\ndef f(:\n")
+        for _ in range(2):
+            with pytest.raises(SyntaxError) as raised:
+                parse_python_path(path)
+            assert raised.value.filename == str(path)
+            assert raised.value.lineno == 2
+
+    def test_each_caller_gets_its_own_error(self, tmp_path: Path) -> None:
+        """a cached failure raised as one shared object would carry one caller's traceback to the next."""
+        path = _touch(tmp_path / "bad.py", "def f(:\n")
+        raised: list[SyntaxError] = []
+        for _ in range(2):
+            with pytest.raises(SyntaxError) as caught:
+                parse_python_path(path)
+            raised.append(caught.value)
+        assert raised[0] is not raised[1]
+        assert raised[0].args == raised[1].args
+
+    def test_invalid_utf8_raises_on_every_call(self, tmp_path: Path) -> None:
+        path = tmp_path / "binary.py"
+        path.write_bytes(b"\xff\xfe\xff")
+        for _ in range(2):
+            with pytest.raises(UnicodeDecodeError):
+                parse_python_path(path)
+
+    def test_shares_its_cache_with_parse_python_file(self, tmp_path: Path) -> None:
+        path = _touch(tmp_path / "mod.py", "x = 1\n")
+        assert parse_python_path(path) is parse_python_file(path)
 
 
 class TestRelativePosixPath:

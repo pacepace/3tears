@@ -18,6 +18,8 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
+from threetears.enforcement.common import parse_python_path
+
 __all__ = [
     "DURABLE_STORAGE",
     "KV_OPENING_CALLS",
@@ -78,9 +80,16 @@ def file_backed_kv_calls(path: Path) -> list[tuple[int, str]]:
     :rtype: list[tuple[int, str]]
     """
     try:
-        tree = ast.parse(path.read_text(errors="ignore"))
+        tree = parse_python_path(path)
+    except UnicodeDecodeError:
+        tree = None
     except OSError, SyntaxError:
         return []
+    if tree is None:
+        try:
+            tree = ast.parse(path.read_text(errors="ignore"))
+        except SyntaxError:
+            return []
 
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):

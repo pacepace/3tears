@@ -27,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Final
 
-from threetears.enforcement.common import is_private_name, parse_python_file
+from threetears.enforcement.common import is_private_name, parse_python_file, parse_python_path
 from threetears.enforcement.underscore_access.ruff_config import all_exempted_files
 
 __all__ = [
@@ -89,9 +89,16 @@ def private_accesses(path: Path) -> set[tuple[int, str]]:
     ``__init__`` and friends are public protocol, not private state.
     """
     try:
-        tree = ast.parse(path.read_text(errors="replace"))
+        tree = parse_python_path(path)
+    except UnicodeDecodeError:
+        tree = None
     except SyntaxError:  # a file the repo cannot parse is not this module's business
         return set()
+    if tree is None:
+        try:
+            tree = ast.parse(path.read_text(errors="replace"))
+        except SyntaxError:
+            return set()
 
     found: set[tuple[int, str]] = set()
     for node in ast.walk(tree):

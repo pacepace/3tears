@@ -37,6 +37,9 @@ from typing import Final
 
 import pytest
 
+from threetears.enforcement.common import parse_python_path
+
+
 pytestmark = pytest.mark.enforcement
 
 #: the packages' source roots, which is where a production construction lives. Tests build
@@ -59,7 +62,7 @@ def _constructions() -> list[tuple[str, int, bool]]:
         for path in sorted(root.rglob("src/**/*.py")):
             if path.name == _DEFINING_MODULE:
                 continue
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_python_path(path)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue

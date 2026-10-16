@@ -37,6 +37,9 @@ import ast
 from pathlib import Path
 from typing import Final
 
+from threetears.enforcement.common import parse_python_path
+
+
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 
 #: directory names never walked: environments, caches and build output hold code this
@@ -122,9 +125,7 @@ def test_no_name_is_cut_from_the_head_of_a_time_ordered_id() -> None:
     assert len(test_files) > 500, f"the walk found {len(test_files)} test files; the glob has gone wrong"
 
     found = [
-        f"{path.relative_to(_REPO_ROOT)}:{line}"
-        for path in files
-        for line in prefix_slices(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+        f"{path.relative_to(_REPO_ROOT)}:{line}" for path in files for line in prefix_slices(parse_python_path(path))
     ]
 
     assert found == [], (
