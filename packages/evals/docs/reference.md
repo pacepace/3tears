@@ -74,6 +74,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 **Functions**
 
+- **`field_in_values`** · *host contract* · function · Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
+  <br>`field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]) -> dict[str, list[Any]]`
 - **`label_key_of`** · function · The label key of one judgement: `evidence` read on `dim`.
   <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
 - **`nested_schemas`** · *host contract* · function · Every schema written directly inside `schema`, in declaration order.
