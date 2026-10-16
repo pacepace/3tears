@@ -545,6 +545,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.CompletionClients",
         # The host's checks on a template, which create_template, update_template, the seed and a reset read off it.
         "threetears.evals.kernel.host.TemplateChecks",
+        # Every refusal create_template makes before a write, as one call, so a host tests one of its own template
+        # checks (TemplateChecks) beside the engine's gates without a stored scope or a full valid create.
+        "threetears.evals.run.admit_template",
         "threetears.evals.kernel.host.default_cell_timeout",
         "threetears.evals.kernel.EvalStorage",
         "threetears.evals.kernel.withhold_failure_detail",
@@ -1179,7 +1182,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 518  # The host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields.
+DECLARED_CEILING = 519  # admit_template is exported so a host tests one template check directly (+1). Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields.
 
 
 def tier_of(qualified: str) -> Tier:

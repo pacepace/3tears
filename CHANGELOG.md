@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### 3tears-evals: a host states its kind registry once
+### 3tears-evals: a host states its kind registry once, and can call one template check directly
 
 Breaking for a host in one place: `LaunchHost` takes no `kinds`.
 
@@ -17,6 +17,9 @@ Breaking for a host in one place: `LaunchHost` takes no `kinds`.
   name). To port, drop `kinds=` from your `LaunchHost(...)` and keep it in your `TemplateChecks(kinds=...)`; code that
   rebuilt a launch host with `replace(host, kinds=...)` replaces the `eval_host`'s template checks instead.
   `threetears.evals.ops.OpsHost.reading` still launches nothing, whatever the checks carry.
+- **`admit_template` is exported** (`threetears.evals.run`, `host-contract`): every refusal `create_template` makes
+  before a write, over a `TemplateChecks` and a profile, with no store. A host tests one of its own template checks by
+  calling it, rather than through `create_template` with a template every earlier gate admits.
 
 ### 3tears-evals: both per-run ceilings stop a run between cells, never inside one
 

@@ -138,7 +138,10 @@ pass it to every entrypoint. It holds:
   make for you. `create_template`, `update_template`, the boot seed, a definition reset and the `definitions_reset`
   action read the checks off the host they are handed, so every path admits a template under the same checks. A host
   with no template checks (`None`, the default) is refused by each of them, since a template it admitted would go
-  unchecked; a check with nothing to refuse is a function that returns `None`.
+  unchecked; a check with nothing to refuse is a function that returns `None`. To test one of your checks alone,
+  call `admit_template(template, profile=, checks=, active_judge_config=)` (from `threetears.evals.run`), the one list
+  of create-time gates `create_template` and the seed both admit through, with your `TemplateChecks`: it takes no
+  store, and returns the admitted template or raises the refusal.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 

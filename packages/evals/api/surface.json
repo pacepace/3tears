@@ -3336,6 +3336,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.run.admit_template": {
+      "kind": "function",
+      "signature": "admit_template(template: EvalTemplate, *, profile: HostProfile, checks: TemplateChecks, active_judge_config: Callable[[str], str | None]) -> EvalTemplate",
+      "tier": "host-contract"
+    },
     "threetears.evals.run.AdmittedLaunch": {
       "kind": "class",
       "signature": "",
