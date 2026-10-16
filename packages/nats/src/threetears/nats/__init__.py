@@ -42,6 +42,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         PublishPin,
         Subscription,
         TokenCallback,
+        round_trip,
     )
     from threetears.nats.cross_worker_cancel import (
         CrossWorkerCanceller,
@@ -114,6 +115,8 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     )
 
 from threetears.nats.credential_refusal import (
+    CREDENTIAL_REFUSAL_ENVELOPE_AUDIENCE,
+    CREDENTIAL_REFUSAL_ENVELOPE_OP,
     CREDENTIAL_REFUSAL_SUBJECT_TOKEN,
     CredentialRefusal,
     CredentialRefusalReason,
@@ -160,6 +163,8 @@ from threetears.nats.errors import (
 )
 from threetears.nats.persisted_copy import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, PersistedCopyBucket
 from threetears.nats.renewal_request import (
+    CREDENTIAL_RENEWAL_ENVELOPE_AUDIENCE,
+    CREDENTIAL_RENEWAL_ENVELOPE_OP,
     CREDENTIAL_RENEWAL_SUBJECT_TOKEN,
     CredentialRenewalReason,
     CredentialRenewalRequest,
@@ -271,6 +276,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "PublishPin",
         "Subscription",
         "TokenCallback",
+        "round_trip",
     ),
     "cross_worker_cancel": ("CrossWorkerCanceller", "TaskCancelEnvelope"),
     "forward": (
@@ -411,13 +417,18 @@ __all__ = [
     "PublishPin",
     "Subscription",
     "TokenCallback",
+    "round_trip",
     # renewing a connection whose credential expires (NatsClient.renew_credential's arithmetic)
     "NATS_USER_JWT_TTL_ENV",
     "PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS",
+    "CREDENTIAL_REFUSAL_ENVELOPE_AUDIENCE",
+    "CREDENTIAL_REFUSAL_ENVELOPE_OP",
     "CREDENTIAL_REFUSAL_SUBJECT_TOKEN",
     "CredentialRefusal",
     "CredentialRefusalReason",
     "RefusedPrincipal",
+    "CREDENTIAL_RENEWAL_ENVELOPE_AUDIENCE",
+    "CREDENTIAL_RENEWAL_ENVELOPE_OP",
     "CREDENTIAL_RENEWAL_SUBJECT_TOKEN",
     "CredentialRenewalReason",
     "CredentialRenewalRequest",

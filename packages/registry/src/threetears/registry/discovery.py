@@ -200,6 +200,7 @@ class DiscoveryHandler:
         """
         self._nc = nc
         subject = Subjects.tools_discover()
+        # sender-posture: read-only open R6 -- lists tools for the body's agent
         self._sub = await nc.subscribe(
             subject=subject,
             queue="registry",

@@ -236,10 +236,10 @@ class TestTheNewFieldNeverCrossesAsNull:
         request = ProxyCallRequest(tool_name="t", tool_version="1", arguments={})
         assert "deadline_seconds" not in json.loads(request.model_dump_json())
 
-    def test_unknown_fields_are_still_refused(self) -> None:
-        """omitting nulls is not tolerating extras."""
-        with pytest.raises(ValidationError):
-            ProxyCallRequest.model_validate({"tool_name": "t", "tool_version": "1", "arguments": {}, "stray": 1})
+    def test_an_unknown_field_is_ignored_and_never_forwarded(self) -> None:
+        """a tolerant reader drops a newer sender's field; it does not reach the pod either."""
+        request = ProxyCallRequest.model_validate({"tool_name": "t", "tool_version": "1", "arguments": {}, "stray": 1})
+        assert "stray" not in request.model_dump_json()
 
 
 class TestTheForwardedCallGainsNoKey:

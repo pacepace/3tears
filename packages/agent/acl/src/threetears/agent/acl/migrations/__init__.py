@@ -35,6 +35,22 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     """
     pkg = PackageMigrations(name=PACKAGE_NAME, scope=MigrationScope.PLATFORM)
     pkg.version(1)(create_acl_tables)
+    # the five access tables are switched on: each carries the write-mark trigger from this run
+    from threetears.agent.acl.collections import (  # noqa: PLC0415 - the collections import the migrations' DDL
+        GroupCollection,
+        GroupMemberCollection,
+        NamespaceCollection,
+        RoleAssignmentCollection,
+        RoleCollection,
+    )
+
+    pkg.mark_write_generation(
+        GroupCollection.schema,
+        GroupMemberCollection.schema,
+        RoleCollection.schema,
+        RoleAssignmentCollection.schema,
+        NamespaceCollection.schema,
+    )
     runner.register(pkg)
     return pkg
 

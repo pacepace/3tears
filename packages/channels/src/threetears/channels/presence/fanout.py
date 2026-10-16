@@ -262,6 +262,7 @@ class RoomFanout:
         :return: nothing
         :rtype: None
         """
+        # sender-posture: unauthenticated open S7 -- frames go to browser sockets on the subject's say-so
         self._subscriptions[room_id] = await self._nats.subscribe_typed(
             subject=Subjects.room(room_id),
             message_type=RoomFrame,

@@ -274,6 +274,7 @@ class EpochGenerationReader:
             raise GenerationUnavailableError(
                 f"write generation for {table_name!r} could not be watched: {type(bucket).__name__} has no watch_key"
             )
+        # sender-posture: own-consumer -- a generation counts only through the KV key watch, which takes an update only with its own consumer's ack reply
         async with aclosing(bucket.watch_key(key=key)) as updates:
             async for update in updates:
                 value: bytes | None = update.value

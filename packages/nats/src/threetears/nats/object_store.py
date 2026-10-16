@@ -612,6 +612,7 @@ class NatsObjectStore:
                 name_prefix=prefix,
                 count=count,
                 timeout_seconds=self._op_timeout.total_seconds(),
+                receiver="object store read",
             ),
             failure=lambda message, _cause: ObjectStoreError(f"{message} ({self._full_name})"),
         )

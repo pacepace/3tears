@@ -11,6 +11,7 @@ scripted stand-in for the nats-py client; the live-broker proof under the real g
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -31,8 +32,20 @@ _KEY = "019470a8b5c37def8123456789abcdef"
 _SUBJECT = f"$KV.{_BUCKET}.{_KEY}"
 _FAST = timedelta(milliseconds=20)
 
+#: stands for the name of the consumer pushing to the inbox a scripted message is delivered on;
+#: the server puts that consumer's name in the ack reply of every delivery it makes for it.
+_OWN = "OWN-CONSUMER"
 
-def _delivered(data: bytes, *, sequence: int, operation: str | None = None) -> Msg:
+#: every scripted inbox name is unique, so the consumer pushing to it is known from the name alone.
+_INBOX_SEQ = itertools.count()
+
+#: the consumer the server pushes to each inbox, as recorded by ``_JetStream.add_consumer``.
+_CONSUMER_BY_INBOX: dict[str, str] = {}
+
+
+def _delivered(
+    data: bytes, *, sequence: int, operation: str | None = None, stream: str = _STREAM, consumer: str = _OWN
+) -> Msg:
     """a message as a push consumer delivers it, its stream sequence in the ack reply.
 
     :param data: the payload
@@ -41,12 +54,29 @@ def _delivered(data: bytes, *, sequence: int, operation: str | None = None) -> M
     :ptype sequence: int
     :param operation: the ``KV-Operation`` header, for a delete or purge marker
     :ptype operation: str | None
+    :param stream: the stream the ack reply names
+    :ptype stream: str
+    :param consumer: the consumer the ack reply names; :data:`_OWN` is the watch's own
+    :ptype consumer: str
     :return: the message
     :rtype: Msg
     """
     headers = {"KV-Operation": operation} if operation is not None else None
-    reply = f"$JS.ACK.{_STREAM}.kw_x.1.{sequence}.{sequence}.1700000000000000000.0"
+    reply = f"$JS.ACK.{stream}.{consumer}.1.{sequence}.{sequence}.1700000000000000000.0"
     return Msg(_client=None, subject=_SUBJECT, reply=reply, data=data, headers=headers)  # type: ignore[arg-type]
+
+
+def _forged(data: bytes, *, reply: str = "") -> Msg:
+    """bytes some other client got delivered onto the watch's inbox, with the reply it chose.
+
+    :param data: the payload
+    :ptype data: bytes
+    :param reply: the reply subject, empty for a plain publish
+    :ptype reply: str
+    :return: the message
+    :rtype: Msg
+    """
+    return Msg(_client=None, subject=_SUBJECT, reply=reply, data=data, headers=None)  # type: ignore[arg-type]
 
 
 def _heartbeat() -> Msg:
@@ -68,7 +98,13 @@ class _Inbox:
 
     async def next_msg(self, timeout: float) -> Msg:
         if self._script:
-            return self._script.pop(0)
+            msg = self._script.pop(0)
+            own = f".{_OWN}."
+            if own in msg.reply:
+                consumer = _CONSUMER_BY_INBOX[self.subject]
+                reply = msg.reply.replace(own, f".{consumer}.")
+                return Msg(_client=None, subject=msg.subject, reply=reply, data=msg.data, headers=msg.headers)  # type: ignore[arg-type]
+            return msg
         if self._closed_after:
             raise nats.errors.ConnectionClosedError
         await asyncio.sleep(timeout)
@@ -90,7 +126,7 @@ class _Raw:
 
     def new_inbox(self) -> str:
         self._count += 1
-        return f"_INBOX_pod.{self._count}"
+        return f"_INBOX_pod.{next(_INBOX_SEQ)}"
 
     async def subscribe(self, subject: str) -> _Inbox:
         self._log.append(f"subscribe {subject}")
@@ -102,9 +138,10 @@ class _Raw:
 
 # parity-exempt: stands in for the nats-py JetStream context; records add_consumer and refuses the stock KV watch path outright
 class _JetStream:
-    def __init__(self, log: list[str], *, failures: int = 0) -> None:
+    def __init__(self, log: list[str], *, failures: int = 0, pending: int = 0) -> None:
         self._log = log
         self._failures = failures
+        self._pending = pending
         self.creates: list[tuple[str, ConsumerConfig]] = []
 
     async def add_consumer(self, stream: str, config: ConsumerConfig) -> object:
@@ -113,10 +150,18 @@ class _JetStream:
             self._failures -= 1
             raise nats.errors.TimeoutError
         self.creates.append((stream, config))
-        return object()
+        assert config.deliver_subject is not None and config.name is not None
+        _CONSUMER_BY_INBOX[config.deliver_subject] = config.name
+        return _ConsumerInfo(num_pending=self._pending)
 
     async def key_value(self, bucket: str) -> Any:
         raise AssertionError("watch_key must not open nats-py's KeyValue: its watch() is refused under a key grant")
+
+
+# parity-exempt: stands in for nats-py's ConsumerInfo; the key listing reads only num_pending
+class _ConsumerInfo:
+    def __init__(self, *, num_pending: int) -> None:
+        self.num_pending = num_pending
 
 
 # parity-exempt: stands in for NatsClient; the watch calls only raw, is_closed and jetstream_context
@@ -366,3 +411,178 @@ class TestACredentialRenewal:
 
         assert len(js.creates) == 2
         assert len(successor.inboxes) == 1
+
+
+class TestOnlyItsOwnConsumer:
+    """any client can get bytes delivered onto the watch's inbox; only its own consumer's count."""
+
+    @pytest.mark.parametrize(
+        "forged",
+        [
+            _forged(b"forged: a plain publish"),
+            _forged(b"forged: a reply that is no ack", reply="_INBOX_tool_pod_forger.x"),
+            _delivered(b"forged: another stream", sequence=99, stream="OBJ_forger", consumer="c1"),
+            _delivered(b"forged: another consumer here", sequence=99, consumer="kw_someone_else"),
+        ],
+        ids=["no-reply", "not-an-ack", "other-stream", "other-consumer"],
+    )
+    async def test_a_delivery_not_from_its_own_consumer_is_never_applied(
+        self, forged: Msg, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        bucket, _raw, _js, _log = _bucket([[forged, _delivered(b"3", sequence=7)]])
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
+            updates = await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
+        refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
+        assert len(refusals) == 1
+        assert "key watch" in refusals[0].getMessage()
+
+    async def test_a_message_with_no_jetstream_metadata_is_no_longer_delivered_with_revision_zero(self) -> None:
+        bucket, _raw, _js, _log = _bucket([[_forged(b"forged config"), _delivered(b"real", sequence=3)]])
+
+        updates = await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"real", revision=3)]
+
+    async def test_every_consumer_name_is_random(self) -> None:
+        """a forger who can name the consumer can forge its ack reply; names share nothing past the prefix."""
+        names: list[str] = []
+        for _ in range(50):
+            bucket, _raw, js, _log = _bucket([[_delivered(b"3", sequence=7)]])
+            await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
+            name = js.creates[0][1].name
+            assert name is not None
+            names.append(name.removeprefix("kw_"))
+        assert all(len(name) == 32 for name in names)
+        assert len({name[:8] for name in names}) > 40
+
+
+def _listed(key: str, *, pending: int, consumer: str = _OWN, stream: str = _STREAM, reply: str | None = None) -> Msg:
+    """a key listing delivery: headers only, the key's subject, ``num_pending`` in the ack reply.
+
+    :param key: the key
+    :ptype key: str
+    :param pending: the messages the consumer still has to deliver after this one
+    :ptype pending: int
+    :param consumer: the consumer the ack reply names; :data:`_OWN` is the listing's own
+    :ptype consumer: str
+    :param stream: the stream the ack reply names
+    :ptype stream: str
+    :param reply: a reply some other sender chose, in place of an ack reply
+    :ptype reply: str | None
+    :return: the message
+    :rtype: Msg
+    """
+    ack = f"$JS.ACK.{stream}.{consumer}.1.5.5.1700000000000000000.{pending}"
+    chosen = ack if reply is None else reply
+    return Msg(_client=None, subject=f"$KV.{_BUCKET}.{key}", reply=chosen, data=b"", headers=None)  # type: ignore[arg-type]
+
+
+class TestTheKeyListingReadsOnlyItsOwnConsumer:
+    """any client can get bytes delivered onto the listing's inbox; only its own consumer's count.
+
+    A forgery that counted would add a key that does not exist, or, claiming nothing is pending,
+    end the listing before the live keys arrive.
+    """
+
+    async def test_forged_deliveries_neither_add_a_key_nor_cut_the_listing_short(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        forgeries = [
+            _listed("forged-plain", pending=0, reply=""),
+            _listed("forged-stream", pending=0, stream="OBJ_forger", consumer="c1"),
+            _listed("forged-consumer", pending=0, consumer="kl_someone_else"),
+        ]
+        own = [_listed("alpha", pending=1), _listed("beta", pending=0)]
+        log: list[str] = []
+        raw = _Raw([[*forgeries, *own]], log)
+        js = _JetStream(log, pending=2)
+        bucket = NatsKvBucket(
+            client=_Client(raw, js),  # type: ignore[arg-type]
+            full_name=_BUCKET,
+            kv=_ForbiddenKv(),  # type: ignore[arg-type]
+            ttl=None,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
+            keys = await asyncio.wait_for(bucket.list_keys(), timeout=2)
+
+        assert keys == ["alpha", "beta"]
+        refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
+        assert len(refusals) == len(forgeries)
+        assert all(r.getMessage().startswith("key listing ") for r in refusals)
+        name = js.creates[0][1].name
+        assert name is not None and len(name.removeprefix("kl_")) == 32
+
+
+class TestTheObjectStoreReadsOnlyItsOwnConsumer:
+    """the Object Store reads through the same named read as the key listing, and refuses what its
+    consumer did not deliver."""
+
+    async def test_an_object_listing_takes_only_its_own_consumers_records(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import json
+
+        from threetears.nats import NatsObjectStore
+
+        stream = "OBJ_pods"
+
+        def record(name: str) -> bytes:
+            return json.dumps({"name": name, "bucket": "pods", "nuid": f"n-{name}", "size": 0, "chunks": 0}).encode()
+
+        forged = [
+            _delivered(record("forged-stream"), sequence=1, stream="OBJ_forger"),
+            _delivered(record("forged-consumer"), sequence=2, stream=stream, consumer="ol_someone_else"),
+        ]
+        own = [_delivered(record("real"), sequence=3, stream=stream)]
+        log: list[str] = []
+        raw = _Raw([[*forged, *own]], log)
+        js = _JetStream(log, pending=1)
+        store = NatsObjectStore(client=_Client(raw, js), full_name="pods")  # type: ignore[arg-type]
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
+            listed = await asyncio.wait_for(store.list_objects(), timeout=2)
+
+        assert [info.name for info in listed] == ["real"]
+        refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
+        assert len(refusals) == len(forged)
+        assert all(r.getMessage().startswith("object store read ") for r in refusals)
+
+
+class TestForgeriesAreNoProofOfLife:
+    """a consumer the broker lost is replaced even while forgeries keep arriving on its inbox."""
+
+    async def test_a_stream_of_forgeries_does_not_hold_a_dead_consumer_in_place(self) -> None:
+        forgeries = [_forged(b"forged config") for _ in range(2000)]  # outlasts the test's budget
+
+        class _Trickle(_Inbox):
+            async def next_msg(self, timeout: float) -> Msg:
+                await asyncio.sleep(0.002)
+                return await super().next_msg(timeout)
+
+        log: list[str] = []
+        raw = _Raw([forgeries, [_delivered(b"3", sequence=7)]], log)
+        trickle = _Trickle(raw.new_inbox(), forgeries)
+
+        async def subscribe(subject: str) -> _Inbox:
+            inbox = trickle if not raw.inboxes else _Inbox(subject, [_delivered(b"3", sequence=7)])
+            inbox.subject = subject
+            raw.inboxes.append(inbox)
+            return inbox
+
+        raw.subscribe = subscribe  # type: ignore[method-assign]
+        js = _JetStream(log)
+        bucket = NatsKvBucket(
+            client=_Client(raw, js),  # type: ignore[arg-type]
+            full_name=_BUCKET,
+            kv=_ForbiddenKv(),  # type: ignore[arg-type]
+            ttl=None,
+        )
+
+        updates = await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
+        assert len(js.creates) == 2, "the dead consumer was not replaced while forgeries arrived"

@@ -46,6 +46,8 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from threetears.core.security.delegated_token import NAMESPACE_DISCOVER_DOOR
+from threetears.core.security.door_request import NAMESPACE_DISCOVER_OP, DoorCredential, ProvenDoorRequest
 from threetears.observe import get_logger, traced
 
 from threetears.agent.tools.config import get_namespace_discovery_request_timeout
@@ -82,7 +84,7 @@ NamespaceTypeFilter = Literal[
 ]
 
 
-class NamespaceDiscoveryRequest(BaseModel):
+class NamespaceDiscoveryRequest(ProvenDoorRequest):
     """local wire request mirroring the broker handler's shape.
 
     agent-tools carries its own copy of the request/response models
@@ -114,6 +116,9 @@ class NamespaceDiscoveryRequest(BaseModel):
         ``customer_id`` pair. ``None`` only when a user assertion is
         forwarded instead
     :ptype identity_token: str | None
+    :param identity_proof: the presenter's proof of possession of the token's key over this request
+        (:mod:`threetears.core.security.door_request`); ``None`` from a caller that holds no key
+    :ptype identity_proof: str | None
     :param user_identity_token: the per-turn hub-minted user
         assertion, when a human is in the loop. the broker verifies it,
         binds it to the identity token's principal, and takes the
@@ -295,6 +300,7 @@ class NamespaceDiscoveryClient:
         identity_token: str | None = None,
         user_identity_token: str | None = None,
         namespace_type: NamespaceTypeFilter | None = None,
+        credential: DoorCredential | None = None,
     ) -> list[NamespaceDiscoverySummary]:
         """issue one discovery request and return the caller's visible set.
 
@@ -321,6 +327,10 @@ class NamespaceDiscoveryClient:
         :param namespace_type: closed-set filter; ``None`` returns every
             visible namespace regardless of type
         :ptype namespace_type: NamespaceTypeFilter | None
+        :param credential: ``identity_token`` with the key it binds, to prove possession of it over
+            the request; the token alone when omitted. Pass it only when it proves, so a stand-in
+            written before it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: list of namespace summaries, newest-update first
         :rtype: list[NamespaceDiscoverySummary]
         :raises DiscoveryClientError: on NATS missing, transport failure,
@@ -336,6 +346,10 @@ class NamespaceDiscoveryClient:
             user_identity_token=user_identity_token,
             namespace_type=namespace_type,
         )
+        if credential is not None:
+            if credential.token != identity_token:
+                raise DiscoveryClientError("the credential carries another token than the request")
+            request = credential.presented(request, door=NAMESPACE_DISCOVER_DOOR, op=NAMESPACE_DISCOVER_OP)
         subject = f"{self._namespace}.namespace.discover"
         try:
             reply = await self._nats_client.request(

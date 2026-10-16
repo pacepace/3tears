@@ -36,6 +36,8 @@ in the 3tears hub deployment) is applied at the L3 pool's
 
 from __future__ import annotations
 
+from threetears.core.collections.generation import WRITE_GENERATION
+
 import json as _json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -45,7 +47,7 @@ from typing import Any
 from typing import ClassVar
 from uuid import UUID, uuid7
 
-from threetears.core.collections import WRITE_GENERATION, DeleteCascade
+from threetears.core.collections import DeleteCascade
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -214,7 +216,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
     # it (``AclCache``) are evicted row by row.
-    write_generation = WRITE_GENERATION
+    # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
     primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
     partition_exempt_methods = frozenset(
         {
@@ -250,6 +252,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     # column.
     schema = TableSchema(
         name="groups",
+        write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "group_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True),
@@ -630,7 +633,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
     # it (``AclCache``) are evicted row by row.
-    write_generation = WRITE_GENERATION
+    # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
     # a row's key names the group and the row, not the member whose cached group set it changes, so
     # its broadcast carries the member too
     invalidation_columns: ClassVar[tuple[str, ...]] = ("member_type", "member_id")
@@ -649,6 +652,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     # the ``member_type`` CHECK constraint live in the platform DDL.
     schema = TableSchema(
         name="group_members",
+        write_generation=WRITE_GENERATION,
         primary_key=("group_id", "id"),
         columns=[
             Column("id", UUID_TYPE),
@@ -942,10 +946,11 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
     # it (``AclCache``) are evicted row by row.
-    write_generation = WRITE_GENERATION
+    # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
     primary_key_column: str = "role_id"
     schema = TableSchema(
         name="roles",
+        write_generation=WRITE_GENERATION,
         primary_key="role_id",
         columns=[
             Column("role_id", UUID_TYPE),
@@ -1150,7 +1155,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     # the access tables carry write generations (epoch-task-06): every write advances the table's
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
     # it (``AclCache``) are evicted row by row.
-    write_generation = WRITE_GENERATION
+    # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
     # a row's key names the assignment, not the group whose cached contribution it changes, so its
     # broadcast carries the group too
     invalidation_columns: ClassVar[tuple[str, ...]] = ("group_id",)
@@ -1177,6 +1182,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     # schema declaration here reflects the post-rename column.
     schema = TableSchema(
         name="role_assignments",
+        write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "assignment_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True),
@@ -1729,7 +1735,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     # a per-namespace access decision reads the namespace row (its customer, its type), so the
     # table carries a write generation like the four access tables, and ``AclCache`` is evicted
     # by its rows (epoch-task-06)
-    write_generation = WRITE_GENERATION
+    # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
     primary_key_column: tuple[str, ...] = ("row_scope", "namespace_id")
     # role_assignments.scope_namespace_id cascades (v001): a namespace's grants go with it, and
     # every cached decision about them must go too
@@ -1754,6 +1760,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "get_by_agent_id",
             "get_by_owner_and_customer",
             "find_by_id",
+            # ``get_many`` is ``find_by_id`` for many ids: ``namespace_id`` is unique platform-wide,
+            # so the partition adds nothing to the lookup.
+            "get_many",
             # ``ensure_namespace`` DERIVES the partition from ``customer_id`` (``create`` does) and
             # addresses the existing row by ``namespace_id``, unique platform-wide; a ``row_scope``
             # argument would let a caller name a partition that contradicts the customer.
@@ -1792,6 +1801,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     # for non-tool namespaces.
     schema = TableSchema(
         name="namespaces",
+        write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "namespace_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True),
@@ -2101,6 +2111,33 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
+        return result
+
+    async def get_many(self, namespace_ids: Sequence[UUID]) -> dict[UUID, NamespaceEntity]:
+        """resolve many namespaces by ``namespace_id`` in one read, the batch form of :meth:`find_by_id`.
+
+        For a caller that would otherwise ask one row at a time -- an audit snapshot over every
+        namespace a member reaches, each a round trip to L3. Rows are promoted into L1/L2 exactly as
+        :meth:`find_by_id` promotes one. Empty input reads nothing.
+
+        :param namespace_ids: the namespace UUIDs
+        :ptype namespace_ids: Sequence[UUID]
+        :return: each found namespace by its id; an id with no row is absent
+        :rtype: dict[UUID, NamespaceEntity]
+        """
+        read_ticket = self.scan_ticket()  # before the first await
+        result: dict[UUID, NamespaceEntity] = {}
+        if self.l3_pool is not None and len(namespace_ids) > 0:
+            rows = await self.l3_pool.fetch(
+                "SELECT * FROM namespaces WHERE namespace_id = ANY($1::uuid[])",
+                list(namespace_ids),
+            )
+            for row in rows:
+                data = self._coerce_row(dict(row))
+                self.write_to_cache_sync(data, read_since=read_ticket)
+                key = _coerce_uuid(data["namespace_id"])
+                if key is not None:
+                    result[key] = self.entity_class(data, is_new=False, collection=self)
         return result
 
     async def ensure_namespace(

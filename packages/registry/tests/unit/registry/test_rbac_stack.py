@@ -29,6 +29,8 @@ these tests exercise:
 
 from __future__ import annotations
 
+import logging
+
 import asyncio
 import runpy
 from collections.abc import Callable
@@ -657,8 +659,50 @@ class TestRegistryServerUsageEmitterFactory:
             usage_emitter_factory=factory,
         )
         result = await server.apply_usage_emitter_factory(nc)
-        factory.assert_awaited_once_with(nc)
+        # the registry's own identity provider rides along, so an event can prove its publisher;
+        # this server was built with no identity factory, so there is none to hand over
+        factory.assert_awaited_once_with(nc, None)
         assert result is emitter
+
+    @pytest.mark.asyncio
+    async def test_a_factory_taking_the_client_alone_still_builds(self, caplog: pytest.LogCaptureFixture) -> None:
+        """a host factory written before the identity was handed over keeps working: no lockstep."""
+        nc = AsyncMock()
+        emitter = MagicMock()
+        seen: list[object] = []
+
+        async def factory(client: object) -> object:
+            seen.append(client)
+            return emitter
+
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer(), usage_emitter_factory=factory)
+
+        with caplog.at_level(logging.WARNING):
+            assert await server.apply_usage_emitter_factory(nc) is emitter
+        assert seen == [nc]
+        assert any("takes the connection alone" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_factory_whose_signature_cannot_be_read_is_called_with_the_client_alone(self) -> None:
+        """the safe call: a factory taking two arguments would fail loudly on one, never silently."""
+        nc = AsyncMock()
+        emitter = MagicMock()
+
+        class _Opaque:
+            __signature__ = "not a signature"  # inspect.signature raises TypeError on it
+
+            def __init__(self) -> None:
+                self.calls: list[tuple[object, ...]] = []
+
+            async def __call__(self, *args: object) -> object:
+                self.calls.append(args)
+                return emitter
+
+        factory = _Opaque()
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer(), usage_emitter_factory=factory)  # type: ignore[arg-type]
+
+        assert await server.apply_usage_emitter_factory(nc) is emitter
+        assert factory.calls == [(nc,)]
 
     @pytest.mark.asyncio
     async def test_fixed_emitter_kept_when_no_factory(self) -> None:

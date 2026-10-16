@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import string
+from datetime import timedelta
 
 from nats.aio.client import Client
 
 from threetears.nats._nats_py_internals import (
+    NUID_LENGTH,
     PRIVATE_SURFACE,
+    CsprngNuid,
     PrivateAttribute,
     missing_private_attributes,
     take_queued_messages,
@@ -80,5 +84,84 @@ def test_taking_the_queue_keeps_nats_py_pending_bytes_right() -> None:
                 assert subscription.pending_bytes == 0
             finally:
                 await connection.close()
+
+    asyncio.run(scenario())
+
+
+_BASE62 = set((string.digits + string.ascii_uppercase + string.ascii_lowercase).encode())
+
+
+def test_a_csprng_token_is_what_nats_py_slices_and_extends() -> None:
+    """22 base62 bytes, in a fresh mutable bytearray: nats-py slices at 22 and extends the result."""
+    nuid = CsprngNuid()
+    first, second = nuid.next(), nuid.next()
+
+    assert isinstance(first, bytearray)
+    assert len(first) == NUID_LENGTH == 22
+    assert set(first) <= _BASE62
+    assert first is not second
+    first.extend(b"ab")  # nats-py appends token_hex(2) to a request token
+    assert len(second) == NUID_LENGTH
+
+
+def test_csprng_tokens_share_no_prefix_and_no_step() -> None:
+    """10,000 draws: no token repeats, no 12-character prefix repeats, no constant step between them.
+
+    nats-py's NUID holds one 12-character prefix and adds a fixed increment, so one observed token
+    predicts the next; these must not.
+    """
+    nuid = CsprngNuid()
+    tokens = [bytes(nuid.next()) for _ in range(10_000)]
+
+    assert len(set(tokens)) == len(tokens)
+    assert len({token[:12] for token in tokens}) == len(tokens)
+    alphabet = sorted(_BASE62)
+
+    def value(token: bytes) -> int:
+        number = 0
+        for char in token[12:]:
+            number = number * 62 + alphabet.index(char)
+        return number
+
+    steps = {value(b) - value(a) for a, b in zip(tokens, tokens[1:], strict=False)}
+    assert len(steps) > 9_000
+
+
+def test_nats_py_own_nuid_fails_the_same_checks() -> None:
+    """non-vacuity: the sequential NUID these tests replace shares its prefix across draws."""
+    from nats.nuid import NUID
+
+    nuid = NUID()
+    tokens = [bytes(nuid.next()) for _ in range(100)]
+    assert len({token[:12] for token in tokens}) == 1
+
+
+def test_the_declared_surface_names_the_nuid_override() -> None:
+    """the NUID override is declared, so a nats-py release that renames ``_nuid`` fails by name."""
+    assert PrivateAttribute("Client", "_nuid", __import__("nats.nuid", fromlist=["NUID"]).NUID) in PRIVATE_SURFACE
+
+
+def test_a_threetears_connection_names_its_inboxes_from_the_csprng() -> None:
+    """every inbox a NatsClient's connection names is unpredictable from any other it named.
+
+    Through the front door: a NatsClient connects (to an in-process server, so no JetStream check)
+    and its connection's inboxes are read. Under nats-py's own NUID all of them share one prefix.
+    """
+    from threetears.nats import NatsClient
+
+    async def scenario() -> None:
+        async with wire_server() as server:
+            client = await NatsClient.connect(
+                nats_url=server.url,
+                nats_subject_namespace="3tears",
+                client_name="csprng-check",
+                verify_jetstream=False,
+            )
+            try:
+                tokens = [client.raw.new_inbox().removeprefix("_INBOX.") for _ in range(200)]
+            finally:
+                await client.shutdown(drain_timeout=timedelta(seconds=1))
+            assert all(len(token) == NUID_LENGTH for token in tokens)
+            assert len({token[:12] for token in tokens}) == len(tokens)
 
     asyncio.run(scenario())

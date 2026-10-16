@@ -360,6 +360,13 @@ class ToolEndpoint:
         publisher whose identity was verified; a pod id that has registered verified may not be
         re-registered by an unverified manifest
     :ptype verified_publisher: bool
+    :param holder_jkt: the thumbprint of the key the pod's verified registration was signed with,
+        which each delegated token minted for a call to this pod binds; ``None`` when unknown
+    :ptype holder_jkt: str | None
+    :param proves_delegation: whether the pod declared, in a verified registration, that it proves
+        a call's delegated token; a call to it then carries the delegation in place of the agent's own
+        token and user assertion
+    :ptype proves_delegation: bool
     """
 
     pod_id: str
@@ -368,6 +375,8 @@ class ToolEndpoint:
     date_last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
     definitions: dict[str, AnnouncedDefinition] = field(default_factory=dict)
     verified_publisher: bool = False
+    holder_jkt: str | None = None
+    proves_delegation: bool = False
 
     def announce(self, definition: ToolDefinition, now: datetime) -> None:
         """record that this pod announced ``definition`` at ``now``.

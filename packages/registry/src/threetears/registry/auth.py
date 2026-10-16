@@ -89,12 +89,17 @@ class ToolPodAuth:
         (unique by index) and for the identity it issues its own in-process
         pods. A manifest has no field that could set it.
     :ptype platform_shared: bool
+    :param holder_jkt: the thumbprint of the key the pod's verified token was signed with; the
+        registry binds each delegated token it mints for this pod to it. ``None`` from a host that
+        predates it, whose pods then get no delegated token
+    :ptype holder_jkt: str | None
     """
 
     pod_entity_id: str
     name: str
     owned_namespaces: list[str]
     platform_shared: bool = False
+    holder_jkt: str | None = None
 
 
 @runtime_checkable

@@ -16,6 +16,7 @@ which reaches any consumer on the stream by name -- the registry's over every po
 from __future__ import annotations
 
 import asyncio
+import itertools
 from datetime import timedelta
 from typing import Any
 
@@ -31,12 +32,34 @@ _SUBJECT = Subject.raw("3tears.tools.reply.019470a8-b5c3-7def-8123-0000000000aa.
 _STREAM = "3tears-tools-results"
 
 
-class _Msg:
-    """one message pushed to the waiter's inbox; records whether the waiter acked it."""
+#: every scripted inbox name is unique, so the consumer pushing to it is known from the name alone.
+_INBOX_SEQ = itertools.count()
 
-    def __init__(self, data: bytes, headers: dict[str, str] | None = None) -> None:
+#: the consumer the server pushes to each inbox, as recorded by ``_Js.add_consumer``.
+_CONSUMER_BY_INBOX: dict[str, str] = {}
+
+#: a delivery the server made for the consumer pushing to the inbox it arrives on.
+OWN = object()
+
+
+def _ack_reply(consumer: str, *, stream: str = _STREAM) -> str:
+    """the ack reply nats-server puts on a push delivery for ``consumer`` on ``stream``."""
+    return f"$JS.ACK.{stream}.{consumer}.1.7.1.1700000000000000000.0"
+
+
+class _Msg:
+    """one message pushed to the waiter's inbox; records whether the waiter acked it.
+
+    ``reply`` defaults to :data:`OWN`: the server's own delivery for the waiter's consumer, whose
+    ack reply is filled in when the message is delivered. A string is a reply some other sender
+    chose, and ``None`` is a message with no reply at all. Status messages carry no reply.
+    """
+
+    def __init__(self, data: bytes, headers: dict[str, str] | None = None, *, reply: object = OWN) -> None:
         self.data = data
         self.headers = headers
+        self.reply: Any = None if headers and not data else reply
+        self.subject = ""
         self.acked = False
 
     async def ack(self) -> None:
@@ -58,6 +81,11 @@ class _Sub:
         self._script = list(script)
         self.polls = 0
         self.unsubscribed = False
+        self.inbox = ""
+
+    def push(self, step: Any) -> None:
+        """script one more delivery after those given at construction."""
+        self._script.append(step)
 
     async def next_msg(self, timeout: float) -> Any:
         self.polls += 1
@@ -68,6 +96,9 @@ class _Sub:
             raise NatsTimeoutError
         if isinstance(step, BaseException):
             raise step
+        step.subject = self.inbox
+        if step.reply is OWN:
+            step.reply = _ack_reply(_CONSUMER_BY_INBOX[self.inbox])
         return step
 
     async def unsubscribe(self) -> None:
@@ -83,7 +114,7 @@ class _Raw:
         self.subscribed: list[str] = []
 
     def new_inbox(self) -> str:
-        inbox = f"_INBOX_agent_pod_x.{len(self.inboxes)}"
+        inbox = f"_INBOX_agent_pod_x.{next(_INBOX_SEQ)}"
         self.inboxes.append(inbox)
         return inbox
 
@@ -91,7 +122,9 @@ class _Raw:
         self.subscribed.append(subject)
         if not self._subs:
             raise RuntimeError("no scripted subscription left")
-        return self._subs.pop(0)
+        sub = self._subs.pop(0)
+        sub.inbox = subject
+        return sub
 
 
 class _RawWithJetStream(_Raw):
@@ -118,6 +151,7 @@ class _Js:
         failure = self._failures.pop(0) if self._failures else None
         if failure is not None:
             raise failure
+        _CONSUMER_BY_INBOX[config.deliver_subject] = config.name
         return object()
 
     async def pull_subscribe(self, *args: Any, **kwargs: Any) -> Any:
@@ -402,3 +436,95 @@ async def test_a_credential_renewal_mid_wait_moves_the_consumer_to_the_successor
     assert answer.acked
     assert len(successor.subscribed) == 1
     assert len(js.creates) == 2
+
+
+async def test_every_consumer_name_is_random_not_time_ordered() -> None:
+    """a forger who can name the consumer can forge its ack reply, so the name carries 128 random bits.
+
+    A time-ordered id shares its leading characters with every name minted near it; random names
+    share nothing past the prefix.
+    """
+    js = _Js()
+    for _ in range(50):
+        await _waiter(_Raw([_Sub([])]), js).open()
+    suffixes = [config.name.removeprefix("result-waiter-") for _, config in js.creates]
+    assert all(len(suffix) == 32 for suffix in suffixes)
+    assert len({suffix[:8] for suffix in suffixes}) > 40
+
+
+@pytest.mark.parametrize(
+    ("forged_reply", "why"),
+    [
+        (None, "no reply at all: a plain publish onto the inbox"),
+        ("$JS.ACK.forger-stream.forger-consumer.1.1.1.1700000000000000000.0", "another stream's consumer"),
+        (f"$JS.ACK.{_STREAM}.someone-elses-consumer.1.1.1.1700000000000000000.0", "another consumer on this stream"),
+        ("_INBOX_tool_pod_forger.reply", "a reply that is not a JetStream ack at all"),
+    ],
+)
+async def test_a_delivery_not_from_its_own_consumer_is_refused_and_the_real_answer_still_taken(
+    forged_reply: str | None, why: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """a forged result is dropped, never acked, and logged; the waiter goes on to its own answer."""
+    forged = _Msg(b"forged result", reply=forged_reply)
+    real = _Msg(b"the real result")
+    waiter = _waiter(_Raw([_Sub([forged, real])]), _Js())
+    await waiter.open()
+
+    payload = await waiter.wait(timeout=timedelta(seconds=5))
+
+    assert payload == b"the real result", why
+    assert not forged.acked
+    assert real.acked
+    refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
+    assert len(refusals) == 1
+
+
+async def test_a_delivery_in_the_domain_ack_form_from_its_own_consumer_is_taken() -> None:
+    """the ack reply of a JetStream domain (``$JS.ACK.<domain>.<account>.<stream>.<consumer>.…``) is read too."""
+    js = _Js()
+    sub = _Sub([])
+    waiter = _waiter(_Raw([sub]), js)
+    await waiter.open()
+    name = js.creates[0][1].name
+    domain_reply = f"$JS.ACK.hub.ACCOUNTHASH.{_STREAM}.{name}.1.7.1.1700000000000000000.0.rnd"
+    sub.push(_Msg(b"from a domain", reply=domain_reply))
+
+    assert await waiter.wait(timeout=timedelta(seconds=5)) == b"from a domain"
+
+
+async def test_only_forged_deliveries_end_at_the_deadline() -> None:
+    """a stream of forgeries never ends the wait early: nothing but the own consumer's answer counts."""
+    forgeries = [_Msg(b"forged", reply=None) for _ in range(5)]
+    waiter = _waiter(_Raw([_Sub(forgeries)]), _Js())
+    await waiter.open()
+
+    with pytest.raises(RequestTimeoutError):
+        await waiter.wait(timeout=timedelta(seconds=0.2))
+    assert not any(f.acked for f in forgeries)
+
+
+async def test_forgeries_into_a_quiet_consumer_do_not_keep_it_alive() -> None:
+    """a forged result is no proof of life: a consumer the broker lost is still replaced.
+
+    Only the waiter's own deliveries and the server's heartbeats count. Were a refused forgery to
+    reset the silence clock, a sender who reaches the inbox could hold a dead consumer in place
+    until the deadline while the stream still holds the answer.
+    """
+    forgeries = [_Msg(b"forged", reply=None) for _ in range(1000)]  # outlasts the deadline
+
+    class _Trickle(_Sub):
+        async def next_msg(self, timeout: float) -> Any:
+            await asyncio.sleep(0.005)
+            return await super().next_msg(timeout)
+
+    quiet = _Trickle(forgeries)
+    revived = _Sub([_Msg(b"delivered after the replacement")])
+    js = _Js()
+    waiter = _waiter(_Raw([quiet, revived]), js, poll=0.01, heartbeat=0.02)
+    await waiter.open()
+
+    payload = await waiter.wait(timeout=timedelta(seconds=2))
+
+    assert payload == b"delivered after the replacement"
+    assert len(js.creates) == 2
+    assert quiet.unsubscribed

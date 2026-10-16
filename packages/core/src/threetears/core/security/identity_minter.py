@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from threetears.observe import get_logger
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+from threetears.core.security.door_request import RegistrationKey
 from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityTokenError,
@@ -217,6 +218,21 @@ class IdentityMinter:
         )
         token: str = sign_identity_token(claims, signing_key=self._signing_key, kid=self._kid)
         return token
+
+    @property
+    def registration_key(self) -> RegistrationKey:
+        """the principal's key as the one a delegated token binds, which a tool pod proves at a door.
+
+        The registry binds each forwarded call's delegated token to the key a tool pod's verified
+        registration is signed with -- this one -- so the pod proves possession with the key it
+        already holds in custody, and no second key is provisioned
+        (:mod:`threetears.core.security.door_request`). Typed, so it cannot be taken for the pod's
+        proof-of-possession key.
+
+        :return: the key
+        :rtype: RegistrationKey
+        """
+        return RegistrationKey(self._signing_key)
 
     def jwks(self) -> dict[str, Any]:
         """the public JWKS the resolver verifies this minter's tokens against (public material only)."""

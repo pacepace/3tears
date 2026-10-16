@@ -237,17 +237,19 @@ class TestRevocationGuard:
         assert await fresh.is_revoked_before("sub:p1", moment=_NOW - timedelta(minutes=5)) is True
 
     @pytest.mark.asyncio
-    async def test_the_common_answer_reaches_l3_once_per_generation(self) -> None:
+    async def test_the_common_answer_reaches_l3_once_per_pod_per_generation(self) -> None:
         # nearly every check is of a key nobody revoked, and that answer must not be a database
-        # query every time.
+        # query every time. Absences live in each pod's L1 only, so each pod asks once.
         nats, store, generations = _Nats(), _Store(), _FakeGenerations()
         reader = _guard(_registry(nats, store, generations))
         peer = _guard(_registry(nats, store, generations))
         assert await reader.is_revoked_before("sub:quiet", moment=_NOW) is False
         for _ in range(5):
             assert await reader.is_revoked_before("sub:quiet", moment=_NOW) is False
-        assert await peer.is_revoked_before("sub:quiet", moment=_NOW) is False
         assert store.fetches == 1, "a recorded absence was not reused"
+        for _ in range(3):
+            assert await peer.is_revoked_before("sub:quiet", moment=_NOW) is False
+        assert store.fetches == 2, "the peer's recorded absence was not reused"
 
     @pytest.mark.asyncio
     async def test_a_revocation_supersedes_a_recorded_absence(self) -> None:

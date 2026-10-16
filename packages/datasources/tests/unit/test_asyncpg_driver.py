@@ -38,7 +38,7 @@ def _single_catalog_query(pool: MagicMock, schemas: list[str]) -> str:
     """the one catalog query the driver issued, after checking the allow-list was bound as ``$1``.
 
     the statement text is the driver's own; what the unit tier pins is that exactly one
-    statement ran, that it filters on ``table_schema = ANY($1)`` and that the caller's
+    statement ran, that it filters on ``table_schema::text = ANY($1::text[])`` and that the caller's
     allow-list is the bound value. the statement's result against a real engine is
     ``tests/integration/test_asyncpg_driver_live.py``'s.
 
@@ -52,7 +52,7 @@ def _single_catalog_query(pool: MagicMock, schemas: list[str]) -> str:
     pool.recorded_conn.fetch.assert_awaited_once()
     sql, bound = pool.recorded_conn.fetch.await_args.args
     assert bound == schemas
-    assert "table_schema = ANY($1)" in sql
+    assert "table_schema::text = ANY($1::text[])" in sql
     result: str = sql
     return result
 

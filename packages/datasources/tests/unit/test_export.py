@@ -32,6 +32,7 @@ from threetears.datasources.export import (
 )
 from threetears.datasources.query_client import (
     DatasourceExportDeleteRequest,
+    DatasourceExportListRequest,
     DatasourceExportRequest,
     DatasourceQueryRequest,
     RelationFingerprintRequest,
@@ -274,3 +275,28 @@ class TestDriverUnload:
                 await driver.unload("SELECT 1", "../elsewhere")
             await driver.close()
         connect.assert_not_called()
+
+
+class TestTheExportRequestsAreTolerantReaders:
+    """the hub reads each export request from a pod that may be newer: an added field is ignored,
+    while what each request checks it still checks."""
+
+    @pytest.mark.parametrize(
+        ("model", "body"),
+        [
+            (DatasourceExportRequest, {"select": "SELECT 1", "destination": "a/b"}),
+            (DatasourceExportDeleteRequest, {"destination": "a/b"}),
+            (DatasourceExportListRequest, {}),
+        ],
+    )
+    def test_a_field_a_newer_pod_adds_is_ignored(self, model: type, body: dict[str, str]) -> None:
+        model.model_validate({**body, "a_later_field": "x"})
+
+    def test_a_destination_leaving_the_prefix_is_still_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            DatasourceExportDeleteRequest.model_validate({"destination": "../elsewhere"})
+
+    @pytest.mark.parametrize("field", ["tool_pod_id", "pod_id", "principal_id", "agent_id"])
+    def test_a_delete_naming_a_pod_is_refused_not_ignored(self, field: str) -> None:
+        with pytest.raises(ValidationError):
+            DatasourceExportDeleteRequest.model_validate({"destination": "a/b", field: "x"})

@@ -1484,6 +1484,7 @@ class ScopedSnapshot:
         :rtype: None
         :raises KvError: when the NATS connection is closed
         """
+        # sender-posture: own-consumer -- a pointer counts only with the watch consumer's own ack reply
         async with aclosing(self._pointers_bucket.watch_prefix(prefix=prefix, heartbeat=self._heartbeat)) as watch:
             async for update in watch:
                 if update is None:

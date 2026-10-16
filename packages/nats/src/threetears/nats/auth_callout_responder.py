@@ -317,6 +317,7 @@ class AuthCalloutResponder:
 
     async def start(self) -> None:
         """subscribe the auth-callout subject on the system account (in the queue group)."""
+        # sender-posture: unauthenticated open H3 -- the request JWT is not verified against the server's key
         self._subscription = await self._nc.subscribe(
             subject=Subject.raw(AUTH_CALLOUT_SUBJECT),
             queue=self._queue_group,

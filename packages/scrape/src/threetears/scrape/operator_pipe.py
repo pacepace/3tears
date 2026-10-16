@@ -187,6 +187,7 @@ async def serve_display(
             benign=(_OperatorWentAway,),
         )
 
+    # sender-posture: unauthenticated open R7 -- an attach needs only the session id
     async with serve_pipe(
         nats,
         claim.session_id,

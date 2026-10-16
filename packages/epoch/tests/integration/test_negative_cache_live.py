@@ -5,9 +5,8 @@ each running the real cache-invalidation listener and the real epoch-bucket gene
 
 - a peer listener deleting a writer's fresh L2 value cannot revive an absence recorded before the
   write -- the reviewed failure, end to end;
-- an L2 marker carries a server-side lifetime and leaves the bucket when it passes;
-- an expired row is replaced by a marker through a compare-and-swap that carries a lifetime, which
-  the wrapper sends itself because nats-py's public update takes none;
+- no absence is recorded in the bucket: recorded absences live in each pod's L1 only;
+- an expired row is removed from the bucket at the revision the read found;
 - a collections bucket created before per-entry lifetimes were allowed is enabled in place by the
   declaring opener, keeping its existing entries -- and a file-backed one stays file-backed;
 - peers in one L2 scope, each running the listener, keep a write-behind compare-and-swap counter
@@ -137,7 +136,7 @@ async def test_a_peer_listener_deleting_the_writers_value_cannot_revive_an_absen
         reader, reader_registry = await _pod(reader_nc, rows)
         writer, writer_registry = await _pod(writer_nc, rows)
         try:
-            assert await reader.get("tok") is None  # absence recorded in the reader's L1 and in L2
+            assert await reader.get("tok") is None  # absence recorded in the reader's L1
             await _write(writer, "tok")
             # the reader's listener receives the broadcast and deletes the writer's fresh L2 value
             await asyncio.sleep(0.5)
@@ -151,7 +150,7 @@ async def test_a_peer_listener_deleting_the_writers_value_cannot_revive_an_absen
             await writer_registry.stop_invalidation_listener()
 
 
-async def test_a_marker_leaves_the_bucket_when_its_lifetime_passes(nats_container: str) -> None:
+async def test_no_absence_is_recorded_in_the_bucket(nats_container: str) -> None:
     namespace = f"negc{uuid.uuid4().hex[:6]}"
     set_default_namespace(namespace)
     async with await _connect(nats_container, "pod", namespace) as nc:
@@ -159,15 +158,12 @@ async def test_a_marker_leaves_the_bucket_when_its_lifetime_passes(nats_containe
         try:
             assert await coll.get("never") is None
             bucket = await nc.kv_bucket(name="collections")
-            key = coll.l2_key("never")
-            assert await bucket.get(key=key) is not None
-            await asyncio.sleep(3.5)
-            assert await bucket.get(key=key) is None, "a marker nobody reads again stayed in the bucket"
+            assert await bucket.get(key=coll.l2_key("never")) is None, "an absence was recorded in L2"
         finally:
             await registry.stop_invalidation_listener()
 
 
-async def test_an_expired_row_is_replaced_by_a_marker_that_carries_a_lifetime(nats_container: str) -> None:
+async def test_an_expired_row_is_removed_from_the_bucket(nats_container: str) -> None:
     namespace = f"negc{uuid.uuid4().hex[:6]}"
     set_default_namespace(namespace)
     rows: dict[str, dict[str, Any]] = {}
@@ -179,13 +175,7 @@ async def test_an_expired_row_is_replaced_by_a_marker_that_carries_a_lifetime(na
             try:
                 assert await cold.get("old") is None
                 bucket = await nc.kv_bucket(name="collections")
-                key = cold.l2_key("old")
-                raw = await bucket.get(key=key)
-                assert raw is not None and raw.startswith(b"\x00threetears.collections.absent\x00"), (
-                    "the expired row was not replaced by a marker through the compare-and-swap"
-                )
-                await asyncio.sleep(3.5)
-                assert await bucket.get(key=key) is None, "the compare-and-swapped marker carried no lifetime"
+                assert await bucket.get(key=cold.l2_key("old")) is None, "the expired row was left in L2"
             finally:
                 await cold_registry.stop_invalidation_listener()
         finally:
@@ -208,12 +198,13 @@ async def test_a_legacy_collections_bucket_is_enabled_in_place_and_keeps_its_ent
 
         coll, registry = await _pod(nc, {})
         try:
-            assert await coll.get("never") is None  # opens the bucket as its declarer, then writes a marker
+            assert await coll.get("never") is None  # opens the bucket as its declarer
             info = await js.stream_info(f"KV_{full_name}")
             assert info.config.allow_msg_ttl is True, "the declaring opener did not enable per-entry lifetimes"
             assert (await raw_kv.get("pre-existing")).value == b"kept"
             bucket = await nc.kv_bucket(name="collections")
-            assert await bucket.get(key=coll.l2_key("never")) is not None, "the marker write was refused"
+            await bucket.create(key="lifetime-probe", value=b"x", ttl=timedelta(seconds=5))
+            assert await bucket.get(key="lifetime-probe") is not None, "a write carrying a lifetime was refused"
         finally:
             await registry.stop_invalidation_listener()
 
@@ -234,12 +225,13 @@ async def test_a_legacy_file_backed_bucket_is_enabled_in_place_and_stays_file_ba
         try:
             coll, registry = await _pod(nc, {})
             try:
-                assert await coll.get("never") is None  # opens as declarer asking for memory, then writes a marker
+                assert await coll.get("never") is None  # opens as declarer asking for memory
                 info = await js.stream_info(f"KV_{full_name}")
                 assert info.config.allow_msg_ttl is True, "the reconcile did not enable per-entry lifetimes"
                 assert info.config.storage == StorageType.FILE
                 bucket = await nc.kv_bucket(name="collections")
-                assert await bucket.get(key=coll.l2_key("never")) is not None, "the marker write was refused"
+                await bucket.create(key="lifetime-probe", value=b"x", ttl=timedelta(seconds=5))
+                assert await bucket.get(key="lifetime-probe") is not None, "a write carrying a lifetime was refused"
             finally:
                 await registry.stop_invalidation_listener()
         finally:

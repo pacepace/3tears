@@ -28,6 +28,8 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 __all__ = [
+    "CREDENTIAL_REFUSAL_ENVELOPE_AUDIENCE",
+    "CREDENTIAL_REFUSAL_ENVELOPE_OP",
     "CREDENTIAL_REFUSAL_SUBJECT_TOKEN",
     "CredentialRefusal",
     "CredentialRefusalReason",
@@ -36,6 +38,12 @@ __all__ = [
 
 #: the token under a principal's inbox prefix a refusal is published on.
 CREDENTIAL_REFUSAL_SUBJECT_TOKEN = "credential-refused"
+
+#: the audience and operation of the hub's signed envelope on a refusal
+#: (:mod:`threetears.core.security.service_envelope`): any client that can name a runner's inbox can
+#: deliver a refusal there, and one that names the runner closes every connection it holds.
+CREDENTIAL_REFUSAL_ENVELOPE_AUDIENCE = "nats.credential_refusal"
+CREDENTIAL_REFUSAL_ENVELOPE_OP = "refuse"
 
 
 class CredentialRefusalReason(StrEnum):
@@ -57,11 +65,15 @@ class CredentialRefusal(BaseModel):
     :param identity_generation: the generation the refused connection presented; a runner holding a
         different generation is not the one refused
     :ptype identity_generation: str
+    :param service_envelope: the hub's signed envelope over the rest of the refusal, so a runner
+        closes only on a refusal the hub sent. ``None`` from a hub that predates it
+    :ptype service_envelope: str | None
     """
 
     reason: CredentialRefusalReason
     pod_id: str
     identity_generation: str
+    service_envelope: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
