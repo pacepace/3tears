@@ -78,7 +78,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sys
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -206,6 +206,44 @@ def keep_fields(document: dict[str, Any], fields: Sequence[str]) -> dict[str, An
     return {key: document[key] for key in fields if key in document}
 
 
+def field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]) -> dict[str, list[Any]]:
+    """Return ``field_in`` checked and each field's values with repeats dropped — the meaning of ``field_in``.
+
+    A value repeated is kept once, compared on its type as the store compares it: ``True`` and ``1`` are two values,
+    though Python's ``==`` reads them as one. Defined beside the port for the reason :func:`omit_paths` is: every
+    implementation refuses the same calls and reads the same values, whatever its backend does with them.
+
+    :param field_in: :meth:`DocumentStore.by_doc_type`'s membership predicates, or ``None``.
+    :ptype field_in: Mapping[str, Sequence[Any]] | None
+    :param field_eq: The same call's equality predicates.
+    :ptype field_eq: Mapping[str, Any]
+    :return: Field → its distinct values, in the order first listed; empty for ``None``. A field whose sequence was
+        empty maps to ``[]``, which matches nothing.
+    :rtype: dict[str, list[Any]]
+    :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+    :raises TypeError: A field's values are a string or bytes rather than a sequence of values, or a value is not a
+        scalar (``str``, ``int``, ``float``, ``bool``, ``None``).
+    """
+    if not field_in:
+        return {}
+    if both := sorted(field_in.keys() & field_eq.keys()):
+        raise ValueError(f"by_doc_type names a field in field_in or in field_eq, never both: {both}")
+    checked: dict[str, list[Any]] = {}
+    for field, values in field_in.items():
+        if isinstance(values, str | bytes):
+            raise TypeError(
+                f"field_in takes a sequence of values for each field, not {type(values).__name__}: {field}={values!r}"
+            )
+        values = list(values)
+        if unscalar := [value for value in values if value is not None and not isinstance(value, str | int | float)]:
+            raise TypeError(
+                f"by_doc_type compares a field to scalars (str, int, float, bool, None), not "
+                f"{type(unscalar[0]).__name__}: field_in {field}={unscalar[0]!r}"
+            )
+        checked[field] = list({(type(value), value): value for value in values}.values())
+    return checked
+
+
 class DocumentStore(Protocol):
     """A narrow document store over one ``(scope_id, doc_type, id)``-keyed collection.
 
@@ -306,9 +344,10 @@ class DocumentStore(Protocol):
         descending: bool = True,
         limit: int | None = None,
         exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """Return documents of one type within a scope, matching ANDed equality predicates.
+        """Return documents of one type within a scope, matching ANDed equality and membership predicates.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -329,6 +368,17 @@ class DocumentStore(Protocol):
             the documents but not a heavy value inside them; the store drops it before
             the document is shipped, so the value is never materialised at all.
         :ptype exclude: Sequence[str]
+        :param field_in: Field-membership predicates, ANDed with each other and with ``field_eq``: a document
+            matches when the field's stored value equals ANY of the listed values, compared on the stored JSON
+            type exactly as a ``field_eq`` predicate is — a number never equals its text, ``True`` never equals
+            ``1``, and a listed ``None`` matches the field absent or null. Values are scalars, as in ``field_eq``.
+            A value listed twice is matched once, so a document is returned once however many listed values it
+            equals. An empty sequence matches nothing: the store returns ``[]`` and asks the backend nothing, as
+            :meth:`get_many` does for no ids. A field is named here or in ``field_eq``, never both. For a read
+            across several values of one field in one call — the results of a campaign's runs — where a
+            ``field_eq`` read per value is a round trip each. :func:`field_in_values` checks a call and reads its
+            values as every implementation must.
+        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates over the document's other fields, compared on
             the stored JSON type: a number never equals its text, and ``True`` never equals
             ``1`` (nor ``False`` ``0``), as no JSON column's boolean equals a number. A
@@ -339,6 +389,9 @@ class DocumentStore(Protocol):
         :ptype field_eq: Any
         :return: The matching documents.
         :rtype: list[dict[str, Any]]
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values
+            (``{"run": "r1"}`` would read as the values ``"r"`` and ``"1"``), or one of its values is not a scalar.
         """
         ...
 
@@ -486,6 +539,7 @@ class AsyncDocumentStore(Protocol):
         descending: bool = True,
         limit: int | None = None,
         exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
         """See :meth:`DocumentStore.by_doc_type`."""
@@ -532,6 +586,7 @@ __all__ = [
     "StoreCalledOnEventLoop",
     "StoreClock",
     "StoreConflict",
+    "field_in_values",
     "keep_fields",
     "omit_paths",
     "refuse_on_event_loop",

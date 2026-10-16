@@ -574,15 +574,19 @@ because every stored model reads strictly.
 ## The store, and the conformance kit that proves it
 
 **Prove your store with the conformance kit.** `threetears.evals.testing.STORE_CONFORMANCE_CASES`
-states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, ordering,
-etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
+states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, `by_doc_type`'s
+equality and membership (`field_in`) predicates, ordering, etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
 hand a fresh, empty store. Every case is mandatory: in particular a store must implement both write
 preconditions — `if_match` (the stored document still carries this etag), because several writers share a
 run document as it finishes, and `create_only` (nothing is stored under this scope and id, of any type),
 because two processes racing to start one campaign's analysis generation both create its one generation
 slot and exactly one may land. A store that forwards writes to a backend passes both through. A store
 may also offer `StoreClock` (`now()`, the store's own time), which job leases are then stamped in; offer it
-only when the time is the store's, not the calling process's. Parametrise your test runner over it:
+only when the time is the store's, not the calling process's. `by_doc_type(..., field_in={"eval_run_id": [...]})`
+is how the engine reads a campaign's results across its runs in one call: push it into your backend (a SQL store
+writes `= ANY(%s)` per field, on the stored JSON type as its equality predicates are, and asks nothing for an empty
+list), and call `field_in_values` (in `threetears.evals.schema`) first, which refuses what the port refuses and
+drops repeated values. Parametrise your test runner over it:
 
 ```python
 @pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)

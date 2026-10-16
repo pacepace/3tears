@@ -15,6 +15,16 @@ packages (bumped in lock-step).
   `EvalStorage.load_judge_evidence(result_ids, scope_id)` returns it by result id through the store's existing
   `get_many(..., keep=...)`. Breaking for a host that implements `CampaignReadStore` itself: `load_eval_trace` is
   replaced there by `load_judge_evidence`.
+- **Host contract: `DocumentStore.by_doc_type` takes `field_in`, a membership predicate.** Breaking for a host's
+  store, which must implement it: `field_in: Mapping[str, Sequence[Any]] | None = None`, keyword-only, its values
+  scalars, ANDed with `**field_eq`. A document matches when the field's stored value equals ANY listed value, compared on the stored
+  JSON type exactly as `field_eq` is (a listed `None` matches the field absent or null); repeated values are matched
+  once; an empty sequence matches nothing and asks the backend nothing; a field named in both `field_in` and
+  `field_eq` raises `ValueError`; a string in place of a sequence, or a value that is not a scalar, raises
+  `TypeError`. `field_in_values` (`threetears.evals.schema`) checks a call and reads its values as the port says, and
+  `STORE_CONFORMANCE_CASES` gains `query.field_in_matches_any`, `query.field_in_empty_matches_nothing` and
+  `query.field_in_and_field_eq_refused`. The in-memory, SQLite, routed and async-bridged stores implement it; the
+  SQLite store passes each type's values as one JSON array, so no list outgrows its bound-parameter limit.
 
 ### 3tears-evals: a busy launch no longer loses its own job leases
 
